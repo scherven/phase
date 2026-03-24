@@ -1,5 +1,6 @@
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
+use engine::types::format::FormatConfig;
 use engine::types::game_state::GameState;
 use engine::types::log::GameLogEntry;
 use engine::types::match_config::MatchConfig;
@@ -10,7 +11,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeckData {
     pub main_deck: Vec<String>,
+    #[serde(default)]
     pub sideboard: Vec<String>,
+    #[serde(default)]
+    pub commander: Vec<String>,
 }
 
 /// AI seat configuration sent by the client when creating a game with AI opponents.
@@ -73,6 +77,8 @@ pub enum ClientMessage {
         match_config: MatchConfig,
         #[serde(default)]
         ai_seats: Vec<AiSeatRequest>,
+        #[serde(default)]
+        format_config: Option<FormatConfig>,
     },
     JoinGameWithPassword {
         game_code: String,
@@ -183,6 +189,7 @@ mod tests {
             deck: DeckData {
                 main_deck: vec!["Lightning Bolt".to_string(); 4],
                 sideboard: Vec::new(),
+                commander: Vec::new(),
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -202,6 +209,7 @@ mod tests {
             deck: DeckData {
                 main_deck: vec!["Forest".to_string()],
                 sideboard: Vec::new(),
+                commander: Vec::new(),
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -295,6 +303,7 @@ mod tests {
             deck: DeckData {
                 main_deck: vec!["Forest".to_string()],
                 sideboard: Vec::new(),
+                commander: Vec::new(),
             },
             display_name: "Alice".to_string(),
             public: true,
@@ -303,6 +312,7 @@ mod tests {
             player_count: 4,
             match_config: MatchConfig::default(),
             ai_seats: vec![],
+            format_config: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
@@ -356,6 +366,7 @@ mod tests {
             deck: DeckData {
                 main_deck: vec!["Forest".to_string()],
                 sideboard: Vec::new(),
+                commander: Vec::new(),
             },
             display_name: "Bob".to_string(),
             password: None,
@@ -626,6 +637,7 @@ mod tests {
             deck: DeckData {
                 main_deck: vec!["Forest".to_string()],
                 sideboard: Vec::new(),
+                commander: Vec::new(),
             },
             display_name: "Host".to_string(),
             public: false,
@@ -638,6 +650,7 @@ mod tests {
                 difficulty: AiDifficulty::VeryHard,
                 deck_name: None,
             }],
+            format_config: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ClientMessage = serde_json::from_str(&json).unwrap();

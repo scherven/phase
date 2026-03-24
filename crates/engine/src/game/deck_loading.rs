@@ -41,6 +41,8 @@ pub struct PlayerDeckList {
     pub main_deck: Vec<String>,
     #[serde(default)]
     pub sideboard: Vec<String>,
+    #[serde(default)]
+    pub commander: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

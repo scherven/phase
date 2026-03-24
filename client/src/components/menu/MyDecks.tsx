@@ -560,7 +560,7 @@ export function MyDecks({
 
       {(activeTab === "decks" || mode === "select") && (<>
       <div className="flex w-full flex-wrap items-center gap-2">
-        {FORMAT_FILTERS.map(({ key, label, aetherhubUrl }) => (
+        {FORMAT_FILTERS.filter((f) => !(mode === "select" && contextualFilter && f.key === "all")).map(({ key, label, aetherhubUrl }) => (
           <span key={key} className="inline-flex items-center gap-0.5">
             <button
               onClick={() => setActiveFilter(key)}
@@ -587,7 +587,7 @@ export function MyDecks({
             )}
           </span>
         ))}
-        {contextualFilter && activeFilter === contextualFilter && (
+        {mode === "manage" && contextualFilter && activeFilter === contextualFilter && (
           <button
             onClick={() => setActiveFilter("all")}
             className="rounded border border-indigo-500/50 bg-indigo-500/10 px-2 py-1 text-xs font-medium text-indigo-200 hover:bg-indigo-500/20"
@@ -639,14 +639,18 @@ export function MyDecks({
         <div className="flex w-full flex-col items-center justify-center gap-4 rounded-[20px] border border-dashed border-white/10 bg-black/12 px-6 py-12 text-center">
           <div className="text-lg font-medium text-white">No decks match this filter.</div>
           <div className="max-w-md text-sm leading-6 text-slate-400">
-            Pick a different filter or show all decks to choose from your full collection.
+            {mode === "select"
+              ? "Import a compatible deck or change your format to see available decks."
+              : "Pick a different filter or show all decks to choose from your full collection."}
           </div>
-          <button
-            onClick={() => setActiveFilter("all")}
-            className={menuButtonClass({ tone: "neutral", size: "sm" })}
-          >
-            Show All Decks
-          </button>
+          {mode === "manage" && (
+            <button
+              onClick={() => setActiveFilter("all")}
+              className={menuButtonClass({ tone: "neutral", size: "sm" })}
+            >
+              Show All Decks
+            </button>
+          )}
         </div>
       ) : (
         <div className="flex w-full flex-col gap-6">

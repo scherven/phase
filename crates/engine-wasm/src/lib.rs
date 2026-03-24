@@ -13,7 +13,7 @@ use engine::game::engine::apply;
 use engine::game::layers::evaluate_layers;
 use engine::game::{
     evaluate_deck_compatibility, load_deck_into_state, rehydrate_game_from_card_db,
-    resolve_deck_list, start_game, DeckCompatibilityRequest, DeckList,
+    resolve_deck_list, start_game, validate_deck_for_format, DeckCompatibilityRequest, DeckList,
 };
 use engine::types::format::FormatConfig;
 use engine::types::match_config::MatchConfig;
@@ -148,6 +148,7 @@ pub fn initialize_game(
         FormatConfig::standard()
     };
     let count = player_count.unwrap_or(2);
+    let game_format = format_config.format;
 
     let mut state = GameState::new(format_config, count, seed);
     state.match_config = if !match_config_js.is_null() && !match_config_js.is_undefined() {
@@ -160,22 +161,45 @@ pub fn initialize_game(
     // Load deck data if provided — resolve names via the loaded card database
     if !deck_data.is_null() && !deck_data.is_undefined() {
         if let Ok(deck_list) = serde_wasm_bindgen::from_value::<DeckList>(deck_data) {
-            CARD_DB.with(|cell| {
-                if let Some(db) = cell.borrow().as_ref() {
-                    let mut payload = resolve_deck_list(db, &deck_list);
+            let validation_error: Option<Vec<String>> = CARD_DB.with(|cell| {
+                let borrow = cell.borrow();
+                let Some(db) = borrow.as_ref() else {
+                    return None;
+                };
 
-                    // When player_count > 2 and no explicit AI decks provided,
-                    // replicate the opponent deck for all additional AI players.
-                    if count > 2 && payload.ai_decks.is_empty() {
-                        for _ in 2..count {
-                            payload.ai_decks.push(payload.opponent.clone());
-                        }
-                    }
-
-                    load_deck_into_state(&mut state, &payload);
-                    state.all_card_names = db.card_names();
+                // Validate player deck against the selected format before loading
+                let validation_request = DeckCompatibilityRequest {
+                    main_deck: deck_list.player.main_deck.clone(),
+                    sideboard: deck_list.player.sideboard.clone(),
+                    commander: deck_list.player.commander.clone(),
+                    selected_format: Some(game_format),
+                    selected_match_type: None,
+                };
+                if let Err(reasons) = validate_deck_for_format(db, &validation_request) {
+                    return Some(reasons);
                 }
+
+                let mut payload = resolve_deck_list(db, &deck_list);
+
+                // When player_count > 2 and no explicit AI decks provided,
+                // replicate the opponent deck for all additional AI players.
+                if count > 2 && payload.ai_decks.is_empty() {
+                    for _ in 2..count {
+                        payload.ai_decks.push(payload.opponent.clone());
+                    }
+                }
+
+                load_deck_into_state(&mut state, &payload);
+                state.all_card_names = db.card_names();
+                None
             });
+
+            if let Some(reasons) = validation_error {
+                return to_js(&serde_json::json!({
+                    "error": true,
+                    "reasons": reasons,
+                }));
+            }
         }
     }
 

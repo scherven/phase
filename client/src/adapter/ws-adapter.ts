@@ -14,6 +14,7 @@ import { useMultiplayerStore } from "../stores/multiplayerStore";
 export interface DeckData {
   main_deck: string[];
   sideboard: string[];
+  commander?: string[];
 }
 
 /** Events emitted by the WebSocketAdapter for UI state updates. */

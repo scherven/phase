@@ -235,7 +235,7 @@ impl SessionManager {
 
     /// Create a new game session (2-player default). Returns (game_code, player_token).
     pub fn create_game(&mut self, deck: PlayerDeckPayload) -> (String, String) {
-        self.create_game_n_players(deck, String::new(), None, 2, MatchConfig::default())
+        self.create_game_n_players(deck, String::new(), None, 2, MatchConfig::default(), None)
     }
 
     /// Create a new game session with lobby settings (2-player default). Returns (game_code, player_token).
@@ -246,7 +246,7 @@ impl SessionManager {
         timer_seconds: Option<u32>,
         match_config: MatchConfig,
     ) -> (String, String) {
-        self.create_game_n_players(deck, display_name, timer_seconds, 2, match_config)
+        self.create_game_n_players(deck, display_name, timer_seconds, 2, match_config, None)
     }
 
     /// Create a new N-player game session. Returns (game_code, player_token).
@@ -257,6 +257,7 @@ impl SessionManager {
         timer_seconds: Option<u32>,
         player_count: u8,
         match_config: MatchConfig,
+        format_config: Option<FormatConfig>,
     ) -> (String, String) {
         let game_code = generate_game_code();
         let player_token = generate_player_token();
@@ -271,8 +272,11 @@ impl SessionManager {
         let mut display_names = vec![String::new(); pc];
         display_names[0] = display_name;
 
-        let mut state =
-            GameState::new(FormatConfig::standard(), player_count, rand::rng().random());
+        let mut state = GameState::new(
+            format_config.unwrap_or_else(FormatConfig::standard),
+            player_count,
+            rand::rng().random(),
+        );
         state.match_config = if player_count == 2 {
             match_config
         } else {
@@ -387,6 +391,7 @@ impl SessionManager {
         match_config: MatchConfig,
         ai_requests: Vec<(u8, AiDifficulty, PlayerDeckPayload)>,
         card_names: Vec<String>,
+        format_config: Option<FormatConfig>,
     ) -> (String, String) {
         let total_players = 1 + ai_requests.len() as u8;
         let (game_code, player_token) = self.create_game_n_players(
@@ -395,6 +400,7 @@ impl SessionManager {
             timer_seconds,
             total_players,
             match_config,
+            format_config,
         );
 
         let session = self.sessions.get_mut(&game_code).unwrap();

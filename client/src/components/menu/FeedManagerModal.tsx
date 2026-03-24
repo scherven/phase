@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { menuButtonClass } from "./buttonStyles";
@@ -71,7 +72,7 @@ export function FeedManagerModal({ open, onClose }: FeedManagerModalProps) {
     }
   };
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -218,6 +219,7 @@ export function FeedManagerModal({ open, onClose }: FeedManagerModalProps) {
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }

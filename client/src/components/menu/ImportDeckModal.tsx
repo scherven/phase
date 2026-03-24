@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { menuButtonClass } from "./buttonStyles";
@@ -62,7 +63,7 @@ export function ImportDeckModal({ open, onClose, onImported }: ImportDeckModalPr
         : "border-b border-white/10 text-white/40 hover:text-white/70"
     }`;
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -159,6 +160,7 @@ export function ImportDeckModal({ open, onClose, onImported }: ImportDeckModalPr
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }

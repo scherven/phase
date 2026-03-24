@@ -51,8 +51,8 @@ pub use deck_loading::{
     DeckPayload,
 };
 pub use deck_validation::{
-    evaluate_deck_compatibility, CompatibilityCheck, DeckCompatibilityRequest,
-    DeckCompatibilityResult, DeckCoverage, UnsupportedCard,
+    evaluate_deck_compatibility, validate_deck_for_format, CompatibilityCheck,
+    DeckCompatibilityRequest, DeckCompatibilityResult, DeckCoverage, UnsupportedCard,
 };
 pub use engine::{apply, new_game, start_game, start_game_skip_mulligan, EngineError};
 pub use game_object::{BackFaceData, CounterType, GameObject};

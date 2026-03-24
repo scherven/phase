@@ -115,6 +115,7 @@ fn starter_to_deck_data(deck: &StarterDeck) -> DeckData {
     DeckData {
         main_deck,
         sideboard: Vec::new(),
+        commander: Vec::new(),
     }
 }
 

@@ -25,6 +25,7 @@ export interface AiSeatConfig {
 export interface HostingDeck {
   main_deck: string[];
   sideboard: string[];
+  commander?: string[];
 }
 
 export interface HostingSettings {
@@ -289,6 +290,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           } else if (msg.type === "Error") {
             const data = msg.data as { message: string };
             console.error("Host error:", data.message);
+            set({ toastMessage: data.message || "Failed to create game." });
             get().cancelHosting();
           }
         };
@@ -365,7 +367,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
             JSON.stringify({
               type: "CreateGameWithSettings",
               data: {
-                deck: { main_deck: deck.main_deck, sideboard: deck.sideboard },
+                deck: { main_deck: deck.main_deck, sideboard: deck.sideboard, commander: deck.commander ?? [] },
                 display_name: settings.displayName,
                 public: settings.public,
                 password: settings.password || null,

@@ -115,6 +115,37 @@ pub fn evaluate_deck_compatibility(
     }
 }
 
+/// Validate a deck against its selected format, returning `Ok(())` if legal or
+/// `Err` with human-readable reasons if not. Delegates to the same validation
+/// chain used by `evaluate_deck_compatibility`.
+///
+/// Returns `Ok(())` when no format is selected, or for formats without card-pool
+/// restrictions (FreeForAll, TwoHeadedGiant).
+pub fn validate_deck_for_format(
+    db: &CardDatabase,
+    request: &DeckCompatibilityRequest,
+) -> Result<(), Vec<String>> {
+    if request.selected_format.is_none() {
+        return Ok(());
+    }
+    let unknown_cards = collect_unknown_cards(db, request);
+    let standard = evaluate_standard(db, request, &unknown_cards);
+    let commander = evaluate_commander(db, request, &unknown_cards);
+    let bo3_ready = !request.sideboard.is_empty();
+    let (compatible, reasons) = evaluate_selected_format(
+        db,
+        request,
+        &unknown_cards,
+        &standard,
+        &commander,
+        bo3_ready,
+    );
+    match compatible {
+        Some(false) => Err(reasons),
+        _ => Ok(()),
+    }
+}
+
 fn evaluate_standard(
     db: &CardDatabase,
     request: &DeckCompatibilityRequest,
@@ -1716,5 +1747,78 @@ mod tests {
         let a = partner_face("A", vec![], vec![]);
         let b = partner_face("B", vec![], vec![]);
         assert!(!are_valid_partners(&a, &b));
+    }
+
+    // --- validate_deck_for_format tests ---
+
+    #[test]
+    fn validate_standard_rejects_non_standard_cards() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: vec!["Not Standard".to_string(); 60],
+            sideboard: vec![],
+            commander: vec![],
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let result = validate_deck_for_format(&db, &request);
+        assert!(result.is_err());
+        let reasons = result.unwrap_err();
+        assert!(reasons.iter().any(|r| r.contains("Not Standard legal")));
+    }
+
+    #[test]
+    fn validate_standard_accepts_legal_deck() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: vec!["Legal Standard".to_string(); 60],
+            sideboard: vec![],
+            commander: vec![],
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        assert!(validate_deck_for_format(&db, &request).is_ok());
+    }
+
+    #[test]
+    fn validate_ffa_accepts_any_deck() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: vec!["Not Standard".to_string(); 60],
+            sideboard: vec![],
+            commander: vec![],
+            selected_format: Some(GameFormat::FreeForAll),
+            selected_match_type: None,
+        };
+        assert!(validate_deck_for_format(&db, &request).is_ok());
+    }
+
+    #[test]
+    fn validate_no_format_accepts_any_deck() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: vec!["Not Standard".to_string(); 60],
+            sideboard: vec![],
+            commander: vec![],
+            selected_format: None,
+            selected_match_type: None,
+        };
+        assert!(validate_deck_for_format(&db, &request).is_ok());
+    }
+
+    #[test]
+    fn validate_commander_rejects_non_singleton() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: vec!["Legal Standard".to_string(); 99],
+            sideboard: vec![],
+            commander: vec!["Test Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = validate_deck_for_format(&db, &request);
+        assert!(result.is_err());
+        let reasons = result.unwrap_err();
+        assert!(reasons.iter().any(|r| r.contains("Singleton violations")));
     }
 }

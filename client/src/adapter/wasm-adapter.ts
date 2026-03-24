@@ -127,6 +127,11 @@ export class WasmAdapter implements EngineAdapter {
         matchConfig ?? null,
         playerCount ?? undefined,
       );
+      // Engine returns { error: true, reasons: [...] } when deck validation fails
+      if (result && typeof result === "object" && "error" in result && result.error) {
+        const reasons = (result as { reasons?: string[] }).reasons ?? [];
+        throw new Error(`Deck validation failed: ${reasons.join("; ")}`);
+      }
       return { events: result.events ?? [], log_entries: result.log_entries ?? [] };
     });
   }

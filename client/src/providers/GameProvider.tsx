@@ -8,7 +8,8 @@ import { WebSocketAdapter } from "../adapter/ws-adapter";
 import { audioManager } from "../audio/AudioManager";
 import type { DeckData, WsAdapterEvent } from "../adapter/ws-adapter";
 import { STORAGE_KEY_PREFIX, loadActiveDeck } from "../constants/storage";
-import { getCachedFeed } from "../services/feedService";
+import { getCachedFeed, listSubscriptions } from "../services/feedService";
+import type { FeedDeck } from "../types/feed";
 import { createGameLoopController } from "../game/controllers/gameLoopController";
 import { dispatchAction } from "../game/dispatch";
 import { hostRoom, joinRoom } from "../network/connection";
@@ -33,10 +34,33 @@ function parsedDeckToDeckData(deck: ParsedDeck): DeckData {
       sbNames.push(entry.name);
     }
   }
-  return { main_deck: names, sideboard: sbNames };
+  return { main_deck: names, sideboard: sbNames, commander: deck.commander ?? [] };
 }
 
-function pickOpponentDeck(playerDeck: ParsedDeck): Array<{ name: string; count: number }> {
+function pickOpponentDeck(playerDeck: ParsedDeck, formatConfig?: FormatConfig): Array<{ name: string; count: number }> {
+  // 1. Try format-specific feeds first (e.g., mtggoldfish-standard for Standard)
+  if (formatConfig) {
+    const formatKey = formatConfig.format.toLowerCase();
+    const formatDecks: FeedDeck[] = [];
+    for (const sub of listSubscriptions()) {
+      const feed = getCachedFeed(sub.sourceId);
+      if (feed?.format === formatKey) {
+        formatDecks.push(...feed.decks);
+      }
+    }
+    if (formatDecks.length > 0) {
+      const playerNames = new Set(playerDeck.main.map((e) => e.name));
+      const candidates = formatDecks.filter(
+        (d) => !d.main.every((c) => playerNames.has(c.name)),
+      );
+      const pick = candidates.length > 0
+        ? candidates[Math.floor(Math.random() * candidates.length)]
+        : formatDecks[Math.floor(Math.random() * formatDecks.length)];
+      return pick.main;
+    }
+  }
+
+  // 2. Fall back to starter-decks feed
   const feed = getCachedFeed("starter-decks");
   const feedDecks = feed?.decks ?? [];
 
@@ -51,7 +75,7 @@ function pickOpponentDeck(playerDeck: ParsedDeck): Array<{ name: string; count: 
     return pick.main;
   }
 
-  // Fallback: pick a random 60-card deck from localStorage
+  // 3. Fallback: pick a random 60-card deck from localStorage
   const candidates: ParsedDeck[] = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
@@ -68,14 +92,16 @@ function pickOpponentDeck(playerDeck: ParsedDeck): Array<{ name: string; count: 
   if (candidates.length > 0) {
     return candidates[Math.floor(Math.random() * candidates.length)].main;
   }
+
+  // 4. Last resort: mirror the player's deck
   return playerDeck.main;
 }
 
 /** Build a DeckList (name-only) for the WASM engine to resolve. */
-function buildDeckList(deck: ParsedDeck): {
-  player: { main_deck: string[]; sideboard: string[] };
-  opponent: { main_deck: string[]; sideboard: string[] };
-  ai_decks: Array<{ main_deck: string[]; sideboard: string[] }>;
+function buildDeckList(deck: ParsedDeck, formatConfig?: FormatConfig): {
+  player: { main_deck: string[]; sideboard: string[]; commander: string[] };
+  opponent: { main_deck: string[]; sideboard: string[]; commander: string[] };
+  ai_decks: Array<{ main_deck: string[]; sideboard: string[]; commander: string[] }>;
 } {
   const playerNames: string[] = [];
   for (const entry of deck.main) {
@@ -89,7 +115,7 @@ function buildDeckList(deck: ParsedDeck): {
       playerSideboard.push(entry.name);
     }
   }
-  const opponentCards = pickOpponentDeck(deck);
+  const opponentCards = pickOpponentDeck(deck, formatConfig);
   const opponentNames: string[] = [];
   for (const entry of opponentCards) {
     for (let i = 0; i < entry.count; i++) {
@@ -97,8 +123,8 @@ function buildDeckList(deck: ParsedDeck): {
     }
   }
   return {
-    player: { main_deck: playerNames, sideboard: playerSideboard },
-    opponent: { main_deck: opponentNames, sideboard: [] },
+    player: { main_deck: playerNames, sideboard: playerSideboard, commander: deck.commander ?? [] },
+    opponent: { main_deck: opponentNames, sideboard: [], commander: [] },
     ai_decks: [],
   };
 }
@@ -179,7 +205,7 @@ export function GameProvider({
         return;
       }
 
-      const deckList = buildDeckList(parsedDeck);
+      const deckList = buildDeckList(parsedDeck, formatConfig);
 
       const setupP2P = async () => {
         if (cancelled) return;
@@ -396,7 +422,7 @@ export function GameProvider({
             onNoDeckRef.current?.();
             return;
           }
-          const deckList = buildDeckList(parsedDeck);
+          const deckList = buildDeckList(parsedDeck, formatConfig);
           initGame(gameId, freshAdapter, deckList, formatConfig, playerCount, matchConfig).then(() => {
             if (cancelled) return;
             if (!freshAdapter.cardDbLoaded) {
@@ -405,6 +431,9 @@ export function GameProvider({
             controller = createGameLoopController({ mode, difficulty, playerCount });
             controller.start();
             audioManager.setContext("battlefield");
+          }).catch((err) => {
+            console.error("Deck validation failed:", err);
+            if (!cancelled) onNoDeckRef.current?.();
           });
         });
       return () => {
@@ -422,7 +451,7 @@ export function GameProvider({
       return;
     }
 
-    const deckList = buildDeckList(parsedDeck);
+    const deckList = buildDeckList(parsedDeck, formatConfig);
 
     initGame(gameId, adapter, deckList, formatConfig, playerCount, matchConfig).then(() => {
       if (cancelled) return;
@@ -434,6 +463,9 @@ export function GameProvider({
       controller = createGameLoopController({ mode, difficulty, playerCount });
       controller.start();
       audioManager.setContext("battlefield");
+    }).catch((err) => {
+      console.error("Deck validation failed:", err);
+      if (!cancelled) onNoDeckRef.current?.();
     });
 
     return () => {

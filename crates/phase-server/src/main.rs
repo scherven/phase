@@ -14,6 +14,7 @@ use axum::Router;
 use clap::Parser;
 use engine::ai_support::legal_actions as engine_legal_actions;
 use engine::database::CardDatabase;
+use engine::game::{validate_deck_for_format, DeckCompatibilityRequest};
 use engine::types::player::PlayerId;
 use http::HeaderValue;
 use server_core::lobby::LobbyManager;
@@ -316,7 +317,10 @@ async fn main() {
         }
     }
     if persisted > 0 {
-        info!(count = persisted, "flushed active sessions to disk on shutdown");
+        info!(
+            count = persisted,
+            "flushed active sessions to disk on shutdown"
+        );
     }
 }
 
@@ -1090,6 +1094,7 @@ async fn handle_client_message(
             player_count: requested_player_count,
             match_config,
             ai_seats,
+            format_config,
         } => {
             info!(
                 display_name = %display_name,
@@ -1128,6 +1133,30 @@ async fn handle_client_message(
                 }
             };
 
+            // Validate player deck against the selected format
+            if let Some(ref fc) = format_config {
+                let validation_request = DeckCompatibilityRequest {
+                    main_deck: deck.main_deck.clone(),
+                    sideboard: deck.sideboard.clone(),
+                    commander: deck.commander.clone(),
+                    selected_format: Some(fc.format),
+                    selected_match_type: None,
+                };
+                if let Err(reasons) = validate_deck_for_format(db, &validation_request) {
+                    let msg = ServerMessage::Error {
+                        message: format!(
+                            "Deck not legal for {}: {}",
+                            fc.format.label(),
+                            reasons.join("; ")
+                        ),
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = socket.send(Message::text(json)).await;
+                    }
+                    return;
+                }
+            }
+
             if !ai_seats.is_empty() {
                 // --- AI game path: create, start, and run initial AI actions ---
                 let mut ai_requests = Vec::new();
@@ -1162,6 +1191,7 @@ async fn handle_client_message(
                         match_config,
                         ai_requests,
                         db.card_names(),
+                        format_config.clone(),
                     );
 
                     let session = mgr.sessions.get_mut(&game_code).unwrap();
@@ -1256,6 +1286,7 @@ async fn handle_client_message(
                     timer_seconds,
                     pc,
                     match_config,
+                    format_config,
                 );
                 info!(game = %game_code, host = %display_name, players = pc, "game created via lobby");
 
