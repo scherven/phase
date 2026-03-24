@@ -15,6 +15,7 @@ use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::match_config::MatchType;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
+use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 use super::ability_utils::{
@@ -3117,6 +3118,28 @@ fn resolved_ability_from_definition(
     resolved
 }
 
+/// CR 604.2: If a land was played from the graveyard via a once-per-turn permission source,
+/// record the source as used to prevent a second play/cast from the same source this turn.
+fn record_graveyard_play_permission(state: &mut GameState, source: Option<ObjectId>) {
+    if let Some(source_id) = source {
+        // Check if the source has a once_per_turn permission
+        if let Some(obj) = state.objects.get(&source_id) {
+            let is_once_per_turn = obj.static_definitions.iter().any(|s| {
+                matches!(
+                    s.mode,
+                    StaticMode::GraveyardCastPermission {
+                        once_per_turn: true,
+                        ..
+                    }
+                )
+            });
+            if is_once_per_turn {
+                state.graveyard_cast_permissions_used.insert(source_id);
+            }
+        }
+    }
+}
+
 fn handle_play_land(
     state: &mut GameState,
     object_id: ObjectId,
@@ -3153,10 +3176,16 @@ fn handle_play_land(
         .expect("priority player exists");
     let in_hand = player_data.hand.contains(&object_id);
     // CR 305.1 + CR 604.2: Check graveyard for play-from-graveyard permission
-    let in_graveyard_with_permission = player_data.graveyard.contains(&object_id)
-        && super::casting::graveyard_lands_playable_by_permission(state, player)
+    // CR 604.2: Find graveyard play permission source (if any) for once-per-turn tracking.
+    let gy_permission_source = if player_data.graveyard.contains(&object_id) {
+        super::casting::graveyard_lands_playable_by_permission(state, player)
             .iter()
-            .any(|(obj_id, _)| *obj_id == object_id);
+            .find(|(obj_id, _)| *obj_id == object_id)
+            .map(|(_, source_id)| *source_id)
+    } else {
+        None
+    };
+    let in_graveyard_with_permission = gy_permission_source.is_some();
 
     if !in_hand && !in_graveyard_with_permission {
         return Err(EngineError::InvalidAction(
@@ -3217,6 +3246,8 @@ fn handle_play_land(
             // Increment counters now — the land play is committed, only the ETB
             // effect is pending.
             state.lands_played_this_turn += 1;
+            // CR 604.2: Record once-per-turn graveyard play permission usage.
+            record_graveyard_play_permission(state, gy_permission_source);
             if let Some(p) = state
                 .players
                 .iter_mut()
@@ -3240,6 +3271,8 @@ fn handle_play_land(
 
     // Increment land counter
     state.lands_played_this_turn += 1;
+    // CR 604.2: Record once-per-turn graveyard play permission usage.
+    record_graveyard_play_permission(state, gy_permission_source);
     let player = state
         .players
         .iter_mut()

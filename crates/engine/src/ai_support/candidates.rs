@@ -720,6 +720,19 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
                 }
             }
         }
+        // CR 604.2 + CR 305.1: Lands playable from graveyard via static permission
+        for (obj_id, _source) in casting::graveyard_lands_playable_by_permission(state, player) {
+            if let Some(obj) = state.objects.get(&obj_id) {
+                actions.push(candidate(
+                    GameAction::PlayLand {
+                        object_id: obj_id,
+                        card_id: obj.card_id,
+                    },
+                    TacticalClass::Land,
+                    Some(player),
+                ));
+            }
+        }
     }
 
     for object_id in casting::spell_objects_available_to_cast(state, player) {

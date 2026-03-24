@@ -729,7 +729,11 @@ pub enum CastingVariant {
     /// CR 601.2a: Cast from graveyard via a static permission source (e.g. Lurrus).
     /// Stores the granting permanent's ObjectId for once-per-turn tracking.
     /// CR 400.7: Zone change creates new ObjectId, naturally resetting permission.
-    GraveyardPermission { source: ObjectId },
+    GraveyardPermission {
+        source: ObjectId,
+        /// When true, casting consumes this source's once-per-turn permission.
+        once_per_turn: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -64,9 +64,8 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     );
     registry.insert(StaticMode::ExtraBlockers { count: None }, handle_rule_mod);
 
-    // Promoted static ability handlers
-    // CR 604.2 + CR 113.6e: Graveyard-cast permission statics (Lurrus, Karador, etc.)
-    registry.insert(StaticMode::GraveyardCastPermission, handle_rule_mod);
+    // Note: GraveyardCastPermission is a data-carrying variant — runtime enforcement is in
+    // casting.rs. Coverage support is via is_data_carrying_static().
 
     // CR 509.1b: CantBeBlocked — creature cannot be blocked.
     registry.insert(StaticMode::CantBeBlocked, handle_cant_be_blocked);

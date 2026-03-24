@@ -493,3 +493,136 @@ fn escape_cancel_returns_to_priority() {
         result.waiting_for
     );
 }
+
+// --- Graveyard land play permission tests ---
+
+use engine::types::ability::{CardPlayMode, StaticDefinition, TypeFilter};
+use engine::types::card_type::CoreType;
+use engine::types::statics::StaticMode;
+
+/// CR 604.2 + CR 305.1: A permanent with GraveyardCastPermission { play_mode: Play }
+/// allows playing lands from the graveyard.
+#[test]
+fn play_land_from_graveyard_with_permission() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Add a creature on the battlefield with the graveyard play permission
+    let _source_id = scenario
+        .add_creature(P0, "Crucible of Worlds", 0, 0)
+        .with_static_definition(
+            StaticDefinition::new(StaticMode::GraveyardCastPermission {
+                once_per_turn: false,
+                play_mode: CardPlayMode::Play,
+            })
+            .affected(TargetFilter::Typed(
+                engine::types::ability::TypedFilter::new(TypeFilter::Land),
+            )),
+        )
+        .id();
+
+    let mut runner = scenario.build();
+
+    // Put a Forest in P0's graveyard by creating it there directly
+    let forest_id = engine::game::zones::create_object(
+        runner.state_mut(),
+        engine::types::identifiers::CardId(99),
+        P0,
+        "Forest".to_string(),
+        Zone::Graveyard,
+    );
+    {
+        let obj = runner.state_mut().objects.get_mut(&forest_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.base_card_types = obj.card_types.clone();
+    }
+
+    let card_id = runner.state().objects[&forest_id].card_id;
+
+    // Play the Forest from graveyard
+    runner
+        .act(GameAction::PlayLand {
+            object_id: forest_id,
+            card_id,
+        })
+        .expect("should be able to play land from graveyard");
+
+    // Verify it entered the battlefield
+    assert!(
+        runner.state().battlefield.contains(&forest_id),
+        "Forest should be on the battlefield"
+    );
+    assert!(
+        !runner
+            .state()
+            .players
+            .iter()
+            .find(|p| p.id == P0)
+            .unwrap()
+            .graveyard
+            .contains(&forest_id),
+        "Forest should no longer be in graveyard"
+    );
+    // CR 305.2a: Playing from GY counts as a land drop
+    assert_eq!(runner.state().lands_played_this_turn, 1);
+}
+
+/// CR 305.2a: Playing a land from graveyard counts against the per-turn land limit.
+#[test]
+fn play_land_from_graveyard_respects_land_drop_limit() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let _source_id = scenario
+        .add_creature(P0, "Crucible of Worlds", 0, 0)
+        .with_static_definition(
+            StaticDefinition::new(StaticMode::GraveyardCastPermission {
+                once_per_turn: false,
+                play_mode: CardPlayMode::Play,
+            })
+            .affected(TargetFilter::Typed(
+                engine::types::ability::TypedFilter::new(TypeFilter::Land),
+            )),
+        )
+        .id();
+
+    // Also add a land in hand so we can play it first
+    let hand_land_id = scenario.add_land_to_hand(P0, "Plains").id();
+
+    let mut runner = scenario.build();
+
+    // Put a Forest in graveyard
+    let forest_id = engine::game::zones::create_object(
+        runner.state_mut(),
+        engine::types::identifiers::CardId(99),
+        P0,
+        "Forest".to_string(),
+        Zone::Graveyard,
+    );
+    {
+        let obj = runner.state_mut().objects.get_mut(&forest_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.base_card_types = obj.card_types.clone();
+    }
+
+    // Play the hand land first (uses the one land drop)
+    let hand_card_id = runner.state().objects[&hand_land_id].card_id;
+    runner
+        .act(GameAction::PlayLand {
+            object_id: hand_land_id,
+            card_id: hand_card_id,
+        })
+        .expect("should play land from hand");
+
+    // Now try to play from graveyard — should fail (land drop used)
+    let gy_card_id = runner.state().objects[&forest_id].card_id;
+    let result = runner.act(GameAction::PlayLand {
+        object_id: forest_id,
+        card_id: gy_card_id,
+    });
+
+    assert!(
+        result.is_err(),
+        "Should not be able to play second land without additional land drops"
+    );
+}

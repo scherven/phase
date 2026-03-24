@@ -5,7 +5,7 @@ use std::str::FromStr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::ability::{QuantityRef, TargetFilter};
+use super::ability::{CardPlayMode, QuantityRef, TargetFilter};
 use super::mana::ManaCost;
 
 /// CR 101.2: Who is prohibited from casting spells.
@@ -118,9 +118,14 @@ pub enum StaticMode {
     RevealTopOfLibrary {
         all_players: bool,
     },
-    /// CR 604.3 + CR 601.2a: Static ability granting permission to cast
-    /// matching cards from owner's graveyard once per turn.
-    GraveyardCastPermission,
+    /// CR 604.2 + CR 305.1: Static ability granting permission to play/cast
+    /// matching cards from owner's graveyard.
+    GraveyardCastPermission {
+        /// true = "once during each of your turns" (Lurrus, Karador)
+        once_per_turn: bool,
+        /// Play (lands+spells) vs Cast (spells only)
+        play_mode: CardPlayMode,
+    },
     /// CR 101.2: This spell/permanent can't be countered.
     CantBeCountered,
     /// CR 604.3: Cards in specified zones can't enter the battlefield.
@@ -212,6 +217,13 @@ impl Hash for StaticMode {
             StaticMode::CantBeBlockedExceptBy { filter } => filter.hash(state),
             StaticMode::AdditionalLandDrop { count } => count.hash(state),
             StaticMode::Other(s) => s.hash(state),
+            StaticMode::GraveyardCastPermission {
+                once_per_turn,
+                play_mode,
+            } => {
+                once_per_turn.hash(state);
+                play_mode.hash(state);
+            }
             // Data-carrying variants with non-Hash fields: discriminant only.
             // These are never used as HashMap keys (handled by is_data_carrying_static).
             StaticMode::ReduceCost { .. } | StaticMode::RaiseCost { .. } => {}
@@ -243,7 +255,10 @@ impl fmt::Display for StaticMode {
             StaticMode::CantDraw => write!(f, "CantDraw"),
             StaticMode::Panharmonicon => write!(f, "Panharmonicon"),
             StaticMode::IgnoreHexproof => write!(f, "IgnoreHexproof"),
-            StaticMode::GraveyardCastPermission => write!(f, "GraveyardCastPermission"),
+            StaticMode::GraveyardCastPermission {
+                once_per_turn,
+                play_mode,
+            } => write!(f, "GraveyardCastPermission({play_mode},{once_per_turn})"),
             StaticMode::CantBeCountered => write!(f, "CantBeCountered"),
             StaticMode::CantEnterBattlefieldFrom => write!(f, "CantEnterBattlefieldFrom"),
             StaticMode::CantCastFrom => write!(f, "CantCastFrom"),
@@ -347,7 +362,27 @@ impl FromStr for StaticMode {
             "CantDraw" => StaticMode::CantDraw,
             "Panharmonicon" => StaticMode::Panharmonicon,
             "IgnoreHexproof" => StaticMode::IgnoreHexproof,
-            "GraveyardCastPermission" => StaticMode::GraveyardCastPermission,
+            "GraveyardCastPermission" => StaticMode::GraveyardCastPermission {
+                once_per_turn: true,
+                play_mode: CardPlayMode::Cast,
+            },
+            s if s.starts_with("GraveyardCastPermission(") => {
+                let inner = s
+                    .strip_prefix("GraveyardCastPermission(")
+                    .and_then(|s| s.strip_suffix(')'))
+                    .unwrap_or("");
+                if let Some((pm, otp)) = inner.split_once(',') {
+                    StaticMode::GraveyardCastPermission {
+                        play_mode: pm.parse().unwrap_or(CardPlayMode::Cast),
+                        once_per_turn: otp == "true",
+                    }
+                } else {
+                    StaticMode::GraveyardCastPermission {
+                        once_per_turn: true,
+                        play_mode: CardPlayMode::Cast,
+                    }
+                }
+            }
             "CantBeCountered" => StaticMode::CantBeCountered,
             "CantEnterBattlefieldFrom" => StaticMode::CantEnterBattlefieldFrom,
             "CantCastFrom" => StaticMode::CantCastFrom,
@@ -517,6 +552,15 @@ mod tests {
             StaticMode::BlockRestriction,
             StaticMode::NoMaximumHandSize,
             StaticMode::MayPlayAdditionalLand,
+            // Graveyard cast/play permissions
+            StaticMode::GraveyardCastPermission {
+                once_per_turn: true,
+                play_mode: CardPlayMode::Cast,
+            },
+            StaticMode::GraveyardCastPermission {
+                once_per_turn: false,
+                play_mode: CardPlayMode::Play,
+            },
             // Casting prohibitions
             StaticMode::CantCastDuring {
                 who: CastingProhibitionScope::Opponents,

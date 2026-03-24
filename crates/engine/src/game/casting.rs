@@ -1,5 +1,6 @@
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, Effect, ResolvedAbility, TargetFilter, TargetRef,
+    AbilityCost, AbilityDefinition, AbilityKind, CardPlayMode, Effect, ResolvedAbility,
+    TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
@@ -239,7 +240,7 @@ fn graveyard_objects_castable_by_permission(
     };
 
     // Find all battlefield permanents controlled by player with GraveyardCastPermission
-    let sources: Vec<(ObjectId, &TargetFilter)> = state
+    let sources: Vec<(ObjectId, &TargetFilter, bool)> = state
         .battlefield
         .iter()
         .filter_map(|&obj_id| {
@@ -247,17 +248,19 @@ fn graveyard_objects_castable_by_permission(
             if obj.controller != player {
                 return None;
             }
-            obj.static_definitions
-                .iter()
-                .find(|s| s.mode == StaticMode::GraveyardCastPermission)
-                .and_then(|s| s.affected.as_ref())
-                .map(|filter| (obj_id, filter))
+            obj.static_definitions.iter().find_map(|s| match s.mode {
+                StaticMode::GraveyardCastPermission { once_per_turn, .. } => s
+                    .affected
+                    .as_ref()
+                    .map(|filter| (obj_id, filter, once_per_turn)),
+                _ => None,
+            })
         })
         .collect();
 
-    for (source_id, filter) in &sources {
-        // Skip if this source's permission was already used this turn
-        if state.graveyard_cast_permissions_used.contains(source_id) {
+    for (source_id, filter, once_per_turn) in &sources {
+        // CR 604.2: Skip if this source's once-per-turn permission was already used
+        if *once_per_turn && state.graveyard_cast_permissions_used.contains(source_id) {
             continue;
         }
         for &gy_obj_id in &player_data.graveyard {
@@ -272,31 +275,90 @@ fn graveyard_objects_castable_by_permission(
 }
 
 /// CR 601.2a: Find the first valid permission source for a specific graveyard object.
+/// Returns (source_id, once_per_turn) so the caller can track per-turn usage.
 fn graveyard_permission_source(
     state: &GameState,
     player: PlayerId,
     object_id: ObjectId,
-) -> Option<ObjectId> {
+) -> Option<(ObjectId, bool)> {
     state.battlefield.iter().find_map(|&src_id| {
         let obj = state.objects.get(&src_id)?;
         if obj.controller != player {
             return None;
         }
-        if state.graveyard_cast_permissions_used.contains(&src_id) {
+        let (filter, once_per_turn) = obj.static_definitions.iter().find_map(|s| match s.mode {
+            StaticMode::GraveyardCastPermission { once_per_turn, .. } => {
+                s.affected.as_ref().map(|f| (f, once_per_turn))
+            }
+            _ => None,
+        })?;
+        // CR 604.2: Skip if this source's once-per-turn permission was already used
+        if once_per_turn && state.graveyard_cast_permissions_used.contains(&src_id) {
             return None;
         }
-        let filter = obj
-            .static_definitions
-            .iter()
-            .find(|s| s.mode == StaticMode::GraveyardCastPermission)
-            .and_then(|s| s.affected.as_ref())?;
         if super::filter::matches_target_filter_controlled(state, object_id, filter, src_id, player)
         {
-            Some(src_id)
+            Some((src_id, once_per_turn))
         } else {
             None
         }
     })
+}
+
+/// CR 604.2 + CR 305.1: Find lands in the player's graveyard that can be played
+/// via a GraveyardCastPermission static with `play_mode: Play`.
+pub fn graveyard_lands_playable_by_permission(
+    state: &GameState,
+    player: PlayerId,
+) -> Vec<(ObjectId, ObjectId)> {
+    let mut results = Vec::new();
+    let player_data = match state.players.iter().find(|p| p.id == player) {
+        Some(p) => p,
+        None => return results,
+    };
+
+    let sources: Vec<(ObjectId, &TargetFilter, bool)> = state
+        .battlefield
+        .iter()
+        .filter_map(|&obj_id| {
+            let obj = state.objects.get(&obj_id)?;
+            if obj.controller != player {
+                return None;
+            }
+            obj.static_definitions.iter().find_map(|s| match s.mode {
+                StaticMode::GraveyardCastPermission {
+                    once_per_turn,
+                    play_mode: CardPlayMode::Play,
+                } => s
+                    .affected
+                    .as_ref()
+                    .map(|filter| (obj_id, filter, once_per_turn)),
+                _ => None,
+            })
+        })
+        .collect();
+
+    for (source_id, filter, once_per_turn) in &sources {
+        if *once_per_turn && state.graveyard_cast_permissions_used.contains(source_id) {
+            continue;
+        }
+        for &gy_obj_id in &player_data.graveyard {
+            if let Some(obj) = state.objects.get(&gy_obj_id) {
+                // CR 305.1: Only lands can be "played" (non-land cards require "cast")
+                if obj
+                    .card_types
+                    .core_types
+                    .contains(&crate::types::card_type::CoreType::Land)
+                    && super::filter::matches_target_filter_controlled(
+                        state, gy_obj_id, filter, *source_id, player,
+                    )
+                {
+                    results.push((gy_obj_id, *source_id));
+                }
+            }
+        }
+    }
+    results
 }
 
 fn prepare_spell_cast(
@@ -320,6 +382,7 @@ fn prepare_spell_cast(
         None
     };
     let has_graveyard_permission = graveyard_permission_src.is_some();
+
     // CR 601.2a: CastFromZone effects grant ExileWithAltCost on opponent's cards,
     // so ExileWithAltCost permits casting regardless of ownership.
     let has_unowned_exile_permission =
@@ -439,8 +502,11 @@ fn prepare_spell_cast(
         CastingVariant::Escape
     } else if harmonize_cost.is_some() {
         CastingVariant::Harmonize
-    } else if let Some(source) = graveyard_permission_src {
-        CastingVariant::GraveyardPermission { source }
+    } else if let Some((source, once_per_turn)) = graveyard_permission_src {
+        CastingVariant::GraveyardPermission {
+            source,
+            once_per_turn,
+        }
     } else if warp_cost.is_some() {
         CastingVariant::Warp
     } else {

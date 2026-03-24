@@ -868,7 +868,12 @@ pub(super) fn finalize_cast(
 
     // CR 601.2a: Record permission usage when spell is finalized onto the stack.
     // This prevents casting a second spell via the same source before the first resolves.
-    if let CastingVariant::GraveyardPermission { source } = casting_variant {
+    // Only once-per-turn permissions need tracking; unlimited permissions (Conduit of Worlds) skip.
+    if let CastingVariant::GraveyardPermission {
+        source,
+        once_per_turn: true,
+    } = casting_variant
+    {
         state.graveyard_cast_permissions_used.insert(source);
     }
 
