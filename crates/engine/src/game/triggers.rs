@@ -1228,7 +1228,8 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
         | Effect::Monstrosity { .. }
         | Effect::Forage
         | Effect::CollectEvidence { .. }
-        | Effect::Endure { .. } => None,
+        | Effect::Endure { .. }
+        | Effect::Seek { .. } => None,
     }
 }
 // ---------------------------------------------------------------------------

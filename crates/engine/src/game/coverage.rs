@@ -1044,7 +1044,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::Forage
         | Effect::CollectEvidence { .. }
         | Effect::Endure { .. }
-        | Effect::BlightEffect { .. } => {}
+        | Effect::BlightEffect { .. }
+        | Effect::Seek { .. } => {}
     }
     d
 }
