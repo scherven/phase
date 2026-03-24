@@ -42,8 +42,6 @@ describe("LobbyView", () => {
         onHostGame={vi.fn()}
         onHostP2P={vi.fn()}
         onJoinGame={vi.fn()}
-        activeDeckName="Deck A"
-        onChangeDeck={vi.fn()}
         onServerOffline={onServerOffline}
       />,
     );
@@ -61,8 +59,6 @@ describe("LobbyView", () => {
         onHostGame={vi.fn()}
         onHostP2P={vi.fn()}
         onJoinGame={vi.fn()}
-        activeDeckName="Deck A"
-        onChangeDeck={vi.fn()}
         onServerOffline={onServerOffline}
       />,
     );
@@ -78,8 +74,6 @@ describe("LobbyView", () => {
         onHostGame={vi.fn()}
         onHostP2P={vi.fn()}
         onJoinGame={vi.fn()}
-        activeDeckName="Deck A"
-        onChangeDeck={vi.fn()}
         connectionMode="p2p"
         onServerOffline={vi.fn()}
       />,

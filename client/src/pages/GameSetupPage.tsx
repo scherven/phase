@@ -607,8 +607,6 @@ export function GameSetupPage() {
             onHostGame={() => { setStep("host-setup"); }}
             onHostP2P={() => { setStep("host-setup"); }}
             onJoinGame={handleJoinWithPassword}
-            activeDeckName={activeDeckName}
-            onChangeDeck={() => setStep("deck-select")}
             connectionMode={connectionMode}
           />
         )}
