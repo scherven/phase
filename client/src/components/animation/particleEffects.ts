@@ -485,6 +485,64 @@ export function emitSummonBurst(system: ParticleSystem, x: number, y: number, co
   });
 }
 
+// ─── Effect: Slam Impact (card-on-card collision shockwave) ───
+
+export function emitSlamImpact(system: ParticleSystem, x: number, y: number, amount: number) {
+  const now = performance.now();
+  const intensity = Math.min(amount / 4, 1);
+
+  system.emit([
+    ...radialBurst(x, y, COMBAT_COLOR, {
+      count: 20 + Math.round(intensity * 10),
+      speedRange: [100, 280],
+      lifeRange: [0.3, 0.6],
+      sizeRange: [3, 7],
+      jitter: 0.4,
+      drag: 2.5,
+      glow: 14,
+      alpha: 0.95,
+    }),
+    ...coreSparkles(x, y, 8, [60, 140], { glow: 20, sizeRange: [4, 10] }),
+    ...emberDebris(x, y, COMBAT_COLOR, 6 + Math.round(intensity * 4)),
+  ]);
+
+  // Central flash + triple expanding shockwave rings
+  system.addEffect({
+    startTime: now,
+    duration: 700,
+    update() {},
+    draw(t, ctx) {
+      // White-hot center flash
+      const flashAlpha = (1 - easeOutCubic(t)) * 0.9;
+      const flashRadius = 18 + easeOutCubic(t) * 60;
+      system.drawGlowCircle(ctx, x, y, flashRadius, WHITE, flashAlpha * 0.7, 30);
+      system.drawGlowCircle(ctx, x, y, flashRadius * 0.5, COMBAT_COLOR, flashAlpha * 0.5, 18);
+
+      // Primary shockwave ring — fast, thick
+      const r1t = Math.min(t * 1.5, 1);
+      const r1radius = 12 + easeOutQuart(r1t) * 90;
+      const r1alpha = (1 - r1t) * 0.9;
+      system.drawGlowRing(ctx, x, y, r1radius, COMBAT_COLOR, r1alpha, 4 - r1t * 3, 16);
+
+      // Secondary ring — delayed, wider
+      const r2t = Math.max(0, Math.min((t - 0.08) * 1.3, 1));
+      if (r2t > 0) {
+        const r2radius = 10 + easeOutQuart(r2t) * 110;
+        const r2alpha = (1 - r2t) * 0.6;
+        system.drawGlowRing(ctx, x, y, r2radius, lerpColor(COMBAT_COLOR, WHITE, 0.3), r2alpha, 2.5 - r2t * 2, 12);
+      }
+
+      // Tertiary ring — further delayed, fading
+      const r3t = Math.max(0, Math.min((t - 0.18) * 1.15, 1));
+      if (r3t > 0) {
+        const r3radius = 8 + easeOutQuart(r3t) * 130;
+        const r3alpha = (1 - r3t) * 0.4;
+        system.drawGlowRing(ctx, x, y, r3radius, COMBAT_COLOR, r3alpha, 1.5 - r3t, 8);
+      }
+    },
+  });
+}
+
 // ─── Effect: Block Clash (sparks at block midpoint) ───
 
 export function emitBlockClash(system: ParticleSystem, x: number, y: number) {

@@ -12,6 +12,7 @@ import {
   emitSummonBurst,
   emitBlockClash,
   emitAttackBurst,
+  emitSlamImpact,
 } from "./particleEffects";
 
 export interface ParticleCanvasHandle {
@@ -24,6 +25,7 @@ export interface ParticleCanvasHandle {
   summonBurst: (x: number, y: number, color?: RGB) => void;
   blockClash: (x: number, y: number) => void;
   attackBurst: (x: number, y: number, color?: RGB) => void;
+  slamImpact: (x: number, y: number, amount: number) => void;
 }
 
 export const ParticleCanvas = forwardRef<ParticleCanvasHandle>(
@@ -89,6 +91,10 @@ export const ParticleCanvas = forwardRef<ParticleCanvasHandle>(
         attackBurst(x, y, color) {
           const s = getSystem();
           if (s) emitAttackBurst(s, x, y, color);
+        },
+        slamImpact(x, y, amount) {
+          const s = getSystem();
+          if (s) emitSlamImpact(s, x, y, amount);
         },
       }),
       [getSystem],

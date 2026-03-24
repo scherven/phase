@@ -11,6 +11,7 @@ import { useGameStore } from "../../stores/gameStore.ts";
 import { usePreferencesStore } from "../../stores/preferencesStore.ts";
 import { hexToRgb } from "./particleEffects.ts";
 import { CardRevealBurst } from "./CardRevealBurst.tsx";
+import { applyCardSlam } from "./CardSlamAnimation.tsx";
 import { CastArcAnimation } from "./CastArcAnimation.tsx";
 import { DamageVignette } from "./DamageVignette.tsx";
 import { DeathShatter } from "./DeathShatter.tsx";
@@ -126,24 +127,65 @@ export function AnimationOverlay({ containerRef }: AnimationOverlayProps) {
             pos = getPlayerHudPosition(target.Player);
           }
 
-          // Fire attack burst + projectile immediately (t=0)
-          const travelMs = PROJECTILE_TRAVEL_MS * speedMultiplier;
-          if (vfxQuality !== "minimal") {
-            const sourcePos = getObjectPosition(source_id);
-            if (sourcePos) {
-              particleRef.current?.attackBurst(sourcePos.x, sourcePos.y);
-              particleRef.current?.projectile(sourcePos.x, sourcePos.y, pos.x, pos.y, travelMs);
+          const sourcePos = getObjectPosition(source_id);
+
+          // Creature-on-creature: slam the actual card element (Arena-style)
+          if ("Object" in target && vfxQuality !== "minimal") {
+            // For bidirectional pairs (combat or fight), only slam the first direction.
+            // The second direction still gets its floating damage number below.
+            const effectIndex = stepEffects.indexOf(effect);
+            const isPairedReturn = stepEffects.slice(0, effectIndex).some(
+              (e) =>
+                e.event.type === "DamageDealt" &&
+                "Object" in e.event.data.target &&
+                e.event.data.source_id === (target as { Object: number }).Object &&
+                (e.event.data.target as { Object: number }).Object === source_id,
+            );
+
+            if (!isPairedReturn) {
+              const sourceEl = document.querySelector<HTMLElement>(
+                `[data-object-id="${source_id}"]`,
+              );
+              if (sourceEl) {
+                applyCardSlam(sourceEl, pos.x, pos.y, speedMultiplier, () => {
+                  // Impact effects: shockwave, floating number, screen shake
+                  particleRef.current?.slamImpact(pos.x, pos.y, amount);
+
+                  const id = ++floatIdCounter;
+                  setActiveFloats((prev) => [
+                    ...prev,
+                    { id, value: -amount, position: pos, color: "#ef4444" },
+                  ]);
+
+                  if (vfxQuality === "full" && containerRef.current) {
+                    const intensity = amount >= 7 ? "heavy" : amount >= 4 ? "medium" : "light";
+                    applyScreenShake(containerRef.current, intensity, speedMultiplier);
+                  }
+                });
+                break;
+              }
             }
+
+            // Paired return or source element not found: just show floating damage
+            const floatId = ++floatIdCounter;
+            setActiveFloats((prev) => [
+              ...prev,
+              { id: floatId, value: -amount, position: pos, color: "#ef4444" },
+            ]);
+            break;
+          }
+
+          // Creature-to-player (or minimal vfx): keep existing projectile animation
+          const travelMs = PROJECTILE_TRAVEL_MS * speedMultiplier;
+          if (vfxQuality !== "minimal" && sourcePos) {
+            particleRef.current?.attackBurst(sourcePos.x, sourcePos.y);
+            particleRef.current?.projectile(sourcePos.x, sourcePos.y, pos.x, pos.y, travelMs);
           }
 
           // Delay impact effects until projectile arrives
           const impactTimer = setTimeout(() => {
             if (vfxQuality !== "minimal") {
-              if ("Object" in target) {
-                particleRef.current?.damageFlash(pos.x, pos.y, amount);
-              } else if ("Player" in target) {
-                particleRef.current?.playerDamage(pos.x, pos.y, amount);
-              }
+              particleRef.current?.playerDamage(pos.x, pos.y, amount);
             }
 
             const id = ++floatIdCounter;

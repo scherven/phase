@@ -524,7 +524,7 @@ export type GameEvent =
   | { type: "Discarded"; data: { player_id: PlayerId; object_id: ObjectId } }
   | { type: "DamageCleared"; data: { object_id: ObjectId } }
   | { type: "GameOver"; data: { winner: PlayerId | null } }
-  | { type: "DamageDealt"; data: { source_id: ObjectId; target: TargetRef; amount: number } }
+  | { type: "DamageDealt"; data: { source_id: ObjectId; target: TargetRef; amount: number; is_combat: boolean } }
   | { type: "SpellCountered"; data: { object_id: ObjectId; countered_by: ObjectId } }
   | { type: "CounterAdded"; data: { object_id: ObjectId; counter_type: string; count: number } }
   | { type: "CounterRemoved"; data: { object_id: ObjectId; counter_type: string; count: number } }

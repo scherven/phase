@@ -132,14 +132,14 @@ function CardPreviewInner({
       {altHeld && obj ? (
         <ParsedAbilitiesPanel obj={obj} />
       ) : isLoading || !src ? (
-        <div className="max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] aspect-[5/7] rounded-[3.5%] border border-gray-600 bg-gray-700 shadow-2xl animate-pulse md:max-w-[45vw]" />
+        <div className="max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] aspect-[5/7] rounded-[4%] border border-gray-600 bg-gray-700 shadow-2xl animate-pulse md:max-w-[45vw]" />
       ) : (
-        <div>
-          <div className="relative">
+        <div className={`border border-gray-600 overflow-hidden shadow-2xl ${showInfoPanel ? "rounded-t-[4%] rounded-b-lg bg-gray-900" : "rounded-[4%]"}`}>
+          <div className="relative rounded-[4%] overflow-hidden">
             <img
               src={src}
               alt={cardName}
-              className={`max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] border border-gray-600 object-cover shadow-2xl md:max-w-[45vw] ${showInfoPanel ? "rounded-t-[3.5%]" : "rounded-[3.5%]"}`}
+              className="max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] object-cover md:max-w-[45vw]"
               draggable={false}
             />
             {classLevel != null && (
@@ -321,7 +321,7 @@ function CardInfoPanel({ obj }: { obj: GameObject }) {
     obj.color.some((c, i) => c !== obj.base_color[i]);
 
   return (
-    <div className="w-full rounded-b-[3.5%] border border-t-0 border-gray-600 bg-gray-900/95 px-3 py-2 text-xs text-gray-200">
+    <div className="w-full border-t border-gray-600 bg-gray-900/95 px-3 py-2 text-xs text-gray-200">
       {/* Type line */}
       <div className="truncate font-semibold text-gray-300">
         {formatTypeLine(obj.card_types)}
