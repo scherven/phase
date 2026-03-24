@@ -35,18 +35,29 @@ export function LibraryPile({ playerId }: LibraryPileProps) {
       playerId === myId &&
       (s.gameState?.players[playerId]?.can_look_at_top_of_library ?? false),
   );
+  const isRevealed = useGameStore((s) => {
+    const lib = s.gameState?.players[playerId]?.library;
+    if (!lib || lib.length === 0) return false;
+    return s.gameState?.revealed_cards?.includes(lib[0]) ?? false;
+  });
   const topCardName = useGameStore((s) => {
-    if (!canPeek) return null;
     const lib = s.gameState?.players[playerId]?.library;
     if (!lib || lib.length === 0) return null;
+    const topId = lib[0];
+    // Show top card if player can peek (Future Sight) or if card is publicly revealed
+    const peek =
+      playerId === myId &&
+      (s.gameState?.players[playerId]?.can_look_at_top_of_library ?? false);
+    const revealed = s.gameState?.revealed_cards?.includes(topId) ?? false;
+    if (!peek && !revealed) return null;
     // library[0] = top of library (engine convention from zones.rs)
-    return s.gameState?.objects[lib[0]]?.name ?? null;
+    return s.gameState?.objects[topId]?.name ?? null;
   });
 
   if (count === 0) return null;
 
   const stackDepth = Math.min(count - 1, 4);
-  const isPeeking = canPeek && topCardName;
+  const isPeeking = (canPeek || isRevealed) && topCardName;
 
   return (
     <div
@@ -74,7 +85,7 @@ export function LibraryPile({ playerId }: LibraryPileProps) {
       {/* Top card */}
       <div
         className={`relative h-full w-full overflow-hidden rounded-lg border shadow-md ${
-          isPeeking ? "border-cyan-600" : "border-gray-600"
+          isRevealed ? "border-amber-500" : isPeeking ? "border-cyan-600" : "border-gray-600"
         }`}
       >
         {isPeeking ? (

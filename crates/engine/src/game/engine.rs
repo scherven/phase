@@ -168,6 +168,17 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
 }
 
 fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResult, EngineError> {
+    // Clear revealed_cards for cards that are still in a library.
+    // Library reveals (e.g. Goblin Guide) are momentary — the card is shown for one
+    // state update, then hidden again on the next action. Hand reveals persist through
+    // interactive WaitingFor states (e.g. RevealChoice) and are cleaned up there.
+    state.revealed_cards.retain(|&id| {
+        !state
+            .players
+            .iter()
+            .any(|p| p.library.contains(&id))
+    });
+
     let mut events = Vec::new();
     let mut triggers_processed_inline = false;
 

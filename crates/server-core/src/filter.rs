@@ -42,7 +42,9 @@ pub fn filter_state_for_player(state: &GameState, viewer: PlayerId) -> GameState
         .collect();
     for obj_id in all_library_ids {
         // CR 701.62a: Don't hide cards that are revealed to the manifesting player
-        if !manifest_dread_visible.contains(&obj_id) {
+        // CR 701.20b: Don't hide cards currently revealed (e.g. Goblin Guide trigger)
+        if !manifest_dread_visible.contains(&obj_id) && !state.revealed_cards.contains(&obj_id)
+        {
             hide_card(&mut filtered, obj_id);
         }
     }
