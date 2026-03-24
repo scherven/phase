@@ -52,16 +52,32 @@ function CardPreviewInner({
   );
   const classLevel = obj?.class_level;
   const [pointerPosition, setPointerPosition] = useState<{ x: number; y: number } | null>(null);
+  const [altHeld, setAltHeld] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
 
     function handlePointerMove(event: MouseEvent) {
       setPointerPosition({ x: event.clientX, y: event.clientY });
+      setAltHeld(event.altKey);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Alt") setAltHeld(true);
+    }
+
+    function handleKeyUp(event: KeyboardEvent) {
+      if (event.key === "Alt") setAltHeld(false);
     }
 
     window.addEventListener("mousemove", handlePointerMove);
-    return () => window.removeEventListener("mousemove", handlePointerMove);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("mousemove", handlePointerMove);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
   }, []);
 
   const showInfoPanel = obj?.zone === "Battlefield";
@@ -76,22 +92,33 @@ function CardPreviewInner({
   const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
   const gap = 20;
 
+  const cursorStyle: React.CSSProperties | null = pointerPosition
+    ? {
+        left:
+          pointerPosition.x > viewportWidth / 2
+            ? Math.max(16, pointerPosition.x - previewWidth - gap)
+            : Math.min(pointerPosition.x + gap, viewportWidth - previewWidth - 16),
+      }
+    : null;
+
   const style: React.CSSProperties = position
     ? {
         left: Math.min(position.x + 16, window.innerWidth - 488),
         top: Math.min(position.y - 200, window.innerHeight - 736),
       }
-    : pointerPosition
-      ? {
-          left:
-            pointerPosition.x > viewportWidth / 2
-              ? Math.max(16, pointerPosition.x - previewWidth - gap)
-              : Math.min(pointerPosition.x + gap, viewportWidth - previewWidth - 16),
-          top: Math.min(
-            Math.max(16, pointerPosition.y - previewHeight / 2),
-            viewportHeight - previewHeight - 16,
-          ),
-        }
+    : cursorStyle
+      ? altHeld
+        ? {
+            ...cursorStyle,
+            top: Math.min(Math.max(16, pointerPosition!.y - 40), viewportHeight - 200),
+          }
+        : {
+            ...cursorStyle,
+            top: Math.min(
+              Math.max(16, pointerPosition!.y - previewHeight / 2),
+              viewportHeight - previewHeight - 16,
+            ),
+          }
     : {
         right: "calc(env(safe-area-inset-right) + 1rem + var(--game-right-rail-offset, 0px))",
         top: "calc(env(safe-area-inset-top) + var(--game-top-overlay-offset, 0px) + 1rem)",
@@ -102,15 +129,17 @@ function CardPreviewInner({
       className="fixed z-[100] pointer-events-none"
       style={style}
     >
-      {isLoading || !src ? (
-        <div className="max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] aspect-[5/7] rounded-xl border border-gray-600 bg-gray-700 shadow-2xl animate-pulse md:max-w-[45vw]" />
+      {altHeld && obj ? (
+        <ParsedAbilitiesPanel obj={obj} />
+      ) : isLoading || !src ? (
+        <div className="max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] aspect-[5/7] rounded-[3.5%] border border-gray-600 bg-gray-700 shadow-2xl animate-pulse md:max-w-[45vw]" />
       ) : (
         <div>
           <div className="relative">
             <img
               src={src}
               alt={cardName}
-              className={`max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] border border-gray-600 object-cover shadow-2xl md:max-w-[45vw] ${showInfoPanel ? "rounded-t-xl" : "rounded-xl"}`}
+              className={`max-h-[80vh] max-w-[42vw] w-[clamp(220px,26vw,472px)] border border-gray-600 object-cover shadow-2xl md:max-w-[45vw] ${showInfoPanel ? "rounded-t-[3.5%]" : "rounded-[3.5%]"}`}
               draggable={false}
             />
             {classLevel != null && (
@@ -130,6 +159,159 @@ function CardPreviewInner({
   );
 }
 
+type AbilityCategory = "keyword" | "ability" | "trigger" | "static" | "replacement";
+
+interface ParsedLine {
+  text: string;
+  category: AbilityCategory;
+  pills: string[];
+}
+
+const CATEGORY_STYLES: Record<AbilityCategory, { border: string; badge: string; badgeText: string; icon: string }> = {
+  keyword:     { border: "border-l-violet-400/60", badge: "bg-violet-400/15 text-violet-300", badgeText: "Keyword", icon: "◆" },
+  ability:     { border: "border-l-sky-400/60",    badge: "bg-sky-400/15 text-sky-300",       badgeText: "Effect",  icon: "✦" },
+  trigger:     { border: "border-l-amber-400/60",  badge: "bg-amber-400/15 text-amber-300",   badgeText: "Trigger", icon: "⚡" },
+  static:      { border: "border-l-teal-400/60",   badge: "bg-teal-400/15 text-teal-300",     badgeText: "Static",  icon: "🛡" },
+  replacement: { border: "border-l-orange-400/60", badge: "bg-orange-400/15 text-orange-300",  badgeText: "Replace", icon: "↺" },
+};
+
+function extractPills(data: Record<string, unknown>): string[] {
+  const pills: string[] = [];
+  const effect = data.effect as Record<string, unknown> | undefined;
+  if (effect?.type) pills.push(String(effect.type));
+
+  const target = (effect?.target ?? data.valid_target) as Record<string, unknown> | undefined;
+  if (target) {
+    if (target.type === "Any") pills.push("any target");
+    else if (target.controller) pills.push(`${target.controller} controlled`);
+    const filters = target.type_filters as unknown[] | undefined;
+    if (filters?.length) pills.push(filters.map((f) => (typeof f === "string" ? f : typeof f === "object" && f ? Object.values(f).join(" ") : "")).join(" "));
+  }
+
+  const amount = (effect?.amount ?? data.amount) as Record<string, unknown> | undefined;
+  if (amount?.type === "Fixed" && amount.value != null) pills.push(`${amount.value}`);
+  else if (amount?.type === "Ref" && (amount.qty as Record<string, unknown>)?.type) pills.push(String((amount.qty as Record<string, unknown>).type));
+
+  const mode = data.mode;
+  if (mode && typeof mode === "string" && mode !== "Continuous") pills.push(mode);
+  else if (mode && typeof mode === "object") {
+    const key = Object.keys(mode as object)[0];
+    if (key) pills.push(key);
+  }
+
+  if (data.kind && data.kind !== "Spell") pills.push(String(data.kind));
+  if (data.optional === true) pills.push("optional");
+
+  const sub = data.sub_ability as Record<string, unknown> | undefined;
+  if (sub?.effect) {
+    const subEffect = sub.effect as Record<string, unknown>;
+    if (subEffect.type) pills.push(`→ ${subEffect.type}`);
+  }
+
+  return pills.filter(Boolean);
+}
+
+function buildParsedLines(obj: GameObject): ParsedLine[] {
+  const lines: ParsedLine[] = [];
+
+  for (const kw of obj.keywords) {
+    const label = typeof kw === "string" ? kw : typeof kw === "object" && kw ? Object.keys(kw)[0] ?? "?" : "?";
+    lines.push({ text: label, category: "keyword", pills: [] });
+  }
+
+  for (const ab of obj.abilities) {
+    const data = ab as Record<string, unknown>;
+    const desc = data.description as string | undefined;
+    const pills = extractPills(data);
+    lines.push({ text: desc ?? "Ability", category: "ability", pills });
+  }
+
+  for (const tr of obj.trigger_definitions) {
+    const data = tr as Record<string, unknown>;
+    const desc = data.description as string | undefined;
+    const exec = data.execute as Record<string, unknown> | undefined;
+    const pills = exec ? extractPills({ ...data, ...exec }) : extractPills(data);
+    lines.push({ text: desc ?? "Trigger", category: "trigger", pills });
+  }
+
+  for (const st of obj.static_definitions) {
+    const data = st as Record<string, unknown>;
+    const desc = data.description as string | undefined;
+    const mods = data.modifications as Record<string, unknown>[] | undefined;
+    const pills: string[] = [];
+    const mode = data.mode;
+    if (mode && typeof mode === "string" && mode !== "Continuous") pills.push(mode);
+    else if (mode && typeof mode === "object") {
+      const key = Object.keys(mode as object)[0];
+      if (key) pills.push(key);
+    }
+    if (mods?.length) {
+      for (const mod of mods) {
+        if (mod.type) pills.push(String(mod.type));
+      }
+    }
+    if (data.characteristic_defining) pills.push("CDA");
+    lines.push({ text: desc ?? "Static ability", category: "static", pills });
+  }
+
+  for (const rp of obj.replacement_definitions) {
+    const data = rp as Record<string, unknown>;
+    const desc = data.description as string | undefined;
+    const pills = extractPills(data);
+    lines.push({ text: desc ?? "Replacement", category: "replacement", pills });
+  }
+
+  return lines;
+}
+
+function ParsedAbilitiesPanel({ obj }: { obj: GameObject }) {
+  const lines = buildParsedLines(obj);
+
+  return (
+    <div className="w-[clamp(220px,26vw,472px)] max-h-[80vh] overflow-y-auto pointer-events-auto rounded-[3.5%] border border-gray-600 bg-gray-950/95 shadow-2xl backdrop-blur-sm">
+      <div className="sticky top-0 z-10 bg-gray-950 border-b border-gray-700/80 px-3 py-2">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-gray-200">{obj.name}</div>
+          <div className="text-[9px] uppercase tracking-widest text-gray-600">Engine Parse</div>
+        </div>
+        {formatTypeLine(obj.card_types) && (
+          <div className="text-[10px] text-gray-500 mt-0.5">{formatTypeLine(obj.card_types)}</div>
+        )}
+      </div>
+      <div className="px-2 py-2 space-y-0.5">
+        {lines.length === 0 && (
+          <div className="px-1 py-2 text-xs text-gray-500 italic">Vanilla — no parsed abilities</div>
+        )}
+        {lines.map((line, i) => {
+          const style = CATEGORY_STYLES[line.category];
+          return (
+            <div key={i} className={`border-l-2 ${style.border} pl-2.5 py-1`}>
+              <div className="flex items-start gap-1.5">
+                <span className="text-[10px] mt-px shrink-0 opacity-60">{style.icon}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] leading-snug text-gray-300">{line.text}</div>
+                  {line.pills.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {line.pills.map((pill, j) => (
+                        <span
+                          key={j}
+                          className={`inline-block rounded-[4px] px-1.5 py-px text-[9px] leading-tight ${style.badge}`}
+                        >
+                          {pill}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function CardInfoPanel({ obj }: { obj: GameObject }) {
   const ptDisplay = computePTDisplay(obj);
   const counters = Object.entries(obj.counters).filter(([type]) => type !== "Loyalty");
@@ -139,7 +321,7 @@ function CardInfoPanel({ obj }: { obj: GameObject }) {
     obj.color.some((c, i) => c !== obj.base_color[i]);
 
   return (
-    <div className="w-full rounded-b-xl border border-t-0 border-gray-600 bg-gray-900/95 px-3 py-2 text-xs text-gray-200">
+    <div className="w-full rounded-b-[3.5%] border border-t-0 border-gray-600 bg-gray-900/95 px-3 py-2 text-xs text-gray-200">
       {/* Type line */}
       <div className="truncate font-semibold text-gray-300">
         {formatTypeLine(obj.card_types)}
