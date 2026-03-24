@@ -11,6 +11,7 @@ fn main() {
     let mut min_global: Option<f64> = None;
     let mut min_standard: Option<f64> = None;
     let mut run_audit = false;
+    let mut write_stats: Option<String> = None;
 
     let mut args_iter = args.iter().skip(1).peekable();
     while let Some(arg) = args_iter.next() {
@@ -18,6 +19,7 @@ fn main() {
             "--min-global" => min_global = args_iter.next().and_then(|v| v.parse().ok()),
             "--min-standard" => min_standard = args_iter.next().and_then(|v| v.parse().ok()),
             "--audit" => run_audit = true,
+            "--write-stats" => write_stats = args_iter.next().cloned(),
             _ => {}
         }
     }
@@ -41,6 +43,7 @@ fn main() {
             total_cards: 0,
             supported_cards: 0,
             coverage_pct: 0.0,
+            keyword_count: 0,
             coverage_by_format: Default::default(),
             cards: vec![],
             top_gaps: vec![],
@@ -64,6 +67,7 @@ fn main() {
                 total_cards: 0,
                 supported_cards: 0,
                 coverage_pct: 0.0,
+                keyword_count: 0,
                 coverage_by_format: Default::default(),
                 cards: vec![],
                 top_gaps: vec![],
@@ -78,6 +82,27 @@ fn main() {
 
     // Print JSON to stdout
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+
+    // Write compact stats file if requested
+    if let Some(stats_path) = &write_stats {
+        let stats = serde_json::json!({
+            "total_cards": summary.total_cards,
+            "supported_cards": summary.supported_cards,
+            "coverage_pct": (summary.coverage_pct * 10.0).round() / 10.0,
+            "keyword_count": summary.keyword_count,
+            "formats": summary.coverage_by_format.iter()
+                .map(|(k, v)| (k.clone(), serde_json::json!({
+                    "total": v.total_cards,
+                    "supported": v.supported_cards,
+                    "pct": (v.coverage_pct).round() as u32,
+                })))
+                .collect::<serde_json::Map<String, serde_json::Value>>(),
+        });
+        std::fs::write(stats_path, serde_json::to_string_pretty(&stats).unwrap()).unwrap_or_else(
+            |e| eprintln!("Warning: failed to write stats to {}: {}", stats_path, e),
+        );
+        eprintln!("Wrote coverage stats to {}", stats_path);
+    }
 
     // Print human-readable summary to stderr
     eprintln!(

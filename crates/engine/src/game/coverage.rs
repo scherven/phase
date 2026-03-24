@@ -145,6 +145,7 @@ pub struct CoverageSummary {
     pub total_cards: usize,
     pub supported_cards: usize,
     pub coverage_pct: f64,
+    pub keyword_count: usize,
     #[serde(default)]
     pub coverage_by_format: BTreeMap<String, FormatCoverageSummary>,
     pub cards: Vec<CardCoverageResult>,
@@ -1659,6 +1660,19 @@ pub fn analyze_coverage(card_db: &CardDatabase) -> CoverageSummary {
     let trigger_registry = build_trigger_registry();
     let static_registry = build_static_registry();
 
+    // Count distinct keyword variants across all cards (excluding Unknown)
+    let keyword_count = {
+        let mut seen = std::collections::HashSet::new();
+        for (_key, face) in card_db.face_iter() {
+            for kw in &face.keywords {
+                if !matches!(kw, Keyword::Unknown(_)) {
+                    seen.insert(std::mem::discriminant(kw));
+                }
+            }
+        }
+        seen.len()
+    };
+
     let mut cards = Vec::new();
     let mut freq: HashMap<String, usize> = HashMap::new();
     let mut coverage_by_format_accumulators: BTreeMap<String, (usize, usize)> = LegalityFormat::ALL
@@ -1942,6 +1956,7 @@ pub fn analyze_coverage(card_db: &CardDatabase) -> CoverageSummary {
         total_cards,
         supported_cards,
         coverage_pct,
+        keyword_count,
         coverage_by_format,
         cards,
         top_gaps,

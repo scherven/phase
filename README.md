@@ -12,19 +12,20 @@
 
 <!-- coverage-badges:start -->
 <p align="center">
-  <img alt="Card Coverage" src="https://img.shields.io/badge/card_coverage-71%25-yellowgreen">
-  <img alt="Keywords" src="https://img.shields.io/badge/keywords-140%2F140-brightgreen">
-  <img alt="Cards" src="https://img.shields.io/badge/cards-24208%2F34313-yellowgreen">
+  <img alt="Card Coverage" src="https://img.shields.io/badge/card_coverage-77%25-yellowgreen">
+  <img alt="Keywords" src="https://img.shields.io/badge/keywords-150%2F150-brightgreen">
+  <img alt="Cards" src="https://img.shields.io/badge/cards-26732%2F34313-yellowgreen">
   <br/>
-  <img alt="Pauper" src="https://img.shields.io/badge/Pauper-87%25-green">
-  <img alt="Modern" src="https://img.shields.io/badge/Modern-77%25-yellowgreen">
-  <img alt="Pioneer" src="https://img.shields.io/badge/Pioneer-77%25-yellowgreen">
-  <img alt="Legacy" src="https://img.shields.io/badge/Legacy-74%25-yellowgreen">
-  <img alt="Vintage" src="https://img.shields.io/badge/Vintage-74%25-yellowgreen">
-  <img alt="Commander" src="https://img.shields.io/badge/Commander-74%25-yellowgreen">
-  <img alt="Standard" src="https://img.shields.io/badge/Standard-72%25-yellowgreen">
+  <img alt="Pauper" src="https://img.shields.io/badge/Pauper-91%25-brightgreen">
+  <img alt="Pioneer" src="https://img.shields.io/badge/Pioneer-85%25-green">
+  <img alt="Standard" src="https://img.shields.io/badge/Standard-85%25-green">
+  <img alt="Modern" src="https://img.shields.io/badge/Modern-84%25-green">
+  <img alt="Legacy" src="https://img.shields.io/badge/Legacy-82%25-green">
+  <img alt="Vintage" src="https://img.shields.io/badge/Vintage-82%25-green">
+  <img alt="Commander" src="https://img.shields.io/badge/Commander-81%25-green">
 </p>
 <!-- coverage-badges:end -->
+
 
 ---
 
@@ -33,10 +34,11 @@ A Rust-native MTG engine compiling to native and WASM, powering a Tauri desktop 
 ## Features
 
 - **Rules engine** — Turns, priority, stack, combat, state-based actions, layers, triggers, replacement effects
-- **34,300+ cards** — Parsed from MTGJSON
+- **34,300+ cards** — Parsed from MTGJSON with format support (Commander, Modern, Pioneer, Standard, and more)
 - **AI opponent** — Per-card decision logic, game tree search, and evaluation heuristics
-- **Game UI** — Battlefield, hand, stack, targeting overlays, mana payment, and animations
-- **Multiplayer** — WebSocket server with hidden information and lobby system
+- **Game UI** — Battlefield, hand, stack, targeting overlays, mana payment, animations, and ambient audio
+- **Multiplayer** — WebSocket server with hidden information, lobby system, and WebRTC peer-to-peer
+- **Metagame feeds** — Automated scraping of top decks from MTGGoldfish, updated daily
 - **Deck builder** — Card search, visual builder, and `.dck`/`.dec` import
 - **Cross-platform** — Tauri desktop (Windows, macOS, Linux), browser PWA, and tablet
 - **Card images** — Scryfall integration with IndexedDB caching
@@ -78,18 +80,19 @@ cd client && pnpm install && pnpm dev # Start frontend
 | `engine-wasm` | WASM bindings via wasm-bindgen + tsify |
 | `server-core` | Server-side game session management |
 | `phase-server` | Axum WebSocket server for multiplayer |
+| `feed-scraper` | Metagame deck scraper (MTGGoldfish) |
 
-Dependency flow: `engine` <- `phase-ai` <- `engine-wasm` / `server-core` <- `phase-server`
+Dependency flow: `engine` <- `phase-ai` <- `engine-wasm` / `server-core` <- `phase-server` (feed-scraper is standalone)
 
 ### Frontend (`client/`)
 
 React + TypeScript + Tailwind v4 + Zustand + Framer Motion + Vite
 
 Transport-agnostic `EngineAdapter` interface with multiple implementations:
-- **WasmAdapter** -- Direct WASM calls (browser/PWA)
-- **TauriAdapter** -- Tauri IPC (desktop)
-- **WsAdapter** -- WebSocket (multiplayer)
-- **P2PHostAdapter / P2PGuestAdapter** -- WebRTC peer-to-peer via PeerJS
+- **WasmAdapter** — Direct WASM calls (browser/PWA)
+- **TauriAdapter** — Tauri IPC (desktop)
+- **WebSocketAdapter** — WebSocket (multiplayer)
+- **P2PHostAdapter / P2PGuestAdapter** — WebRTC peer-to-peer via PeerJS
 
 ### Design Principles
 
@@ -102,8 +105,8 @@ Transport-agnostic `EngineAdapter` interface with multiple implementations:
 ### Build Commands
 
 ```bash
-# Rust
-cargo test --all                           # Run all tests
+# Rust (uses cargo-nextest for test execution)
+cargo test-all                             # Run all tests (nextest)
 cargo clippy --all-targets -- -D warnings  # Lint
 cargo fmt --all -- --check                 # Format check
 
@@ -123,12 +126,14 @@ pnpm test                                  # Vitest
 ### Cargo Aliases
 
 ```
-cargo test-all          # Run all tests
+cargo test-all          # Run all tests (nextest)
 cargo clippy-strict     # Lint with -D warnings
 cargo export-cards      # Run card data exporter
+cargo coverage          # Card support coverage report
 cargo wasm              # Build WASM (debug)
 cargo wasm-release      # Build WASM (release)
 cargo serve             # Run multiplayer server
+cargo scrape-feeds      # Scrape metagame feeds
 ```
 
 ### Project Structure
@@ -140,9 +145,9 @@ crates/
   phase-ai/           AI opponent
   server-core/        Server session management
   phase-server/       Axum WebSocket server
+  feed-scraper/       Metagame deck scraper
 client/               React frontend
 scripts/              Build and setup scripts
-.planning/            Project planning docs
 ```
 
 ## License

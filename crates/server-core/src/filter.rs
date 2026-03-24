@@ -51,8 +51,7 @@ pub fn filter_state_for_player(state: &GameState, viewer: PlayerId) -> GameState
         // CR 701.20b: Don't hide cards currently revealed (e.g. Goblin Guide trigger),
         // but ManifestDread cards use their own visibility path — not generic revealed_cards
         let visible = manifest_dread_visible.contains(&obj_id)
-            || (state.revealed_cards.contains(&obj_id)
-                && !manifest_dread_cards.contains(&obj_id));
+            || (state.revealed_cards.contains(&obj_id) && !manifest_dread_cards.contains(&obj_id));
         if !visible {
             hide_card(&mut filtered, obj_id);
         }

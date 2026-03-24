@@ -26,6 +26,7 @@ client/coverage/
 # Downloaded card data (keep JSON data for CI)
 data/*
 !data/standard-cards.txt
+!data/coverage-stats.json
 !data/mtgjson/
 data/mtgjson/AtomicCards.json
 !data/abilities/

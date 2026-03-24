@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -54,7 +54,18 @@ jobs:
           mkdir -p data/mtgjson
           curl -fSL -o data/mtgjson/AtomicCards.json "https://mtgjson.com/api/v5/AtomicCards.json"
           cargo run --release --bin oracle-gen -- data/ --stats > client/public/card-data.json
-          cargo run --release --bin coverage-report -- data/ --all > client/public/coverage-data.json
+          cargo run --release --bin coverage-report -- data/ --write-stats data/coverage-stats.json --all > client/public/coverage-data.json
+
+      - name: Update README badges
+        run: ./scripts/update-badges.sh data/coverage-stats.json
+
+      - name: Commit updated stats and badges
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/coverage-stats.json README.md
+          git diff --cached --quiet || git commit -m "chore: update coverage stats and badges [skip ci]"
+          git push || true
 
       - name: Upload card data to R2 (staging)
         uses: cloudflare/wrangler-action@v3
