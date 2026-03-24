@@ -80,6 +80,9 @@ export default defineConfig({
     __COVERAGE_DATA_URL__: JSON.stringify(
       process.env.COVERAGE_DATA_URL || "/coverage-data.json",
     ),
+    __COVERAGE_SUMMARY_URL__: JSON.stringify(
+      process.env.COVERAGE_SUMMARY_URL || "/coverage-summary.json",
+    ),
     __AUDIO_BASE_URL__: JSON.stringify(
       process.env.AUDIO_BASE_URL || "",
     ),

@@ -9,16 +9,22 @@ R2_PUBLIC="https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev"
 
 export CARD_DATA_URL="${CARD_DATA_URL:-$R2_PUBLIC/card-data.json}"
 export COVERAGE_DATA_URL="${COVERAGE_DATA_URL:-$R2_PUBLIC/coverage-data.json}"
+export COVERAGE_SUMMARY_URL="${COVERAGE_SUMMARY_URL:-$R2_PUBLIC/coverage-summary.json}"
 export AUDIO_BASE_URL="${AUDIO_BASE_URL:-$R2_PUBLIC/audio}"
 
 DEPLOY_CACHE=".deploy-cache"
 touch "$DEPLOY_CACHE"
 
+# --- Generate lightweight coverage summary for menu page ---
+echo "Generating coverage summary..."
+jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' \
+  client/public/coverage-data.json > client/public/coverage-summary.json
+
 # --- R2 uploads (run in background, parallel to WASM build) ---
 upload_to_r2() {
   # Upload JSON data files in parallel, skipping unchanged
   local json_pids=()
-  for entry in "card-data.json:public/card-data.json" "coverage-data.json:public/coverage-data.json"; do
+  for entry in "card-data.json:public/card-data.json" "coverage-data.json:public/coverage-data.json" "coverage-summary.json:public/coverage-summary.json"; do
     key="${entry%%:*}"
     file="${entry#*:}"
     (
@@ -79,12 +85,14 @@ echo "All R2 uploads finished."
 echo "Building frontend..."
 echo "  CARD_DATA_URL=$CARD_DATA_URL"
 echo "  COVERAGE_DATA_URL=$COVERAGE_DATA_URL"
+echo "  COVERAGE_SUMMARY_URL=$COVERAGE_SUMMARY_URL"
 echo "  AUDIO_BASE_URL=$AUDIO_BASE_URL"
 (cd client && pnpm build)
 
 # Remove large data/audio files and their compressed variants — served from R2
 rm -f client/dist/card-data.json client/dist/card-data.json.br
 rm -f client/dist/coverage-data.json client/dist/coverage-data.json.br
+rm -f client/dist/coverage-summary.json client/dist/coverage-summary.json.br
 rm -f client/dist/audio/music/planeswalker-*.m4a
 
 # --- Deploy ---

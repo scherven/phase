@@ -6,6 +6,7 @@ OUTPUT_DIR="client/public"
 OUTPUT="${OUTPUT_DIR}/card-data.json"
 NAMES_OUTPUT="${OUTPUT_DIR}/card-names.json"
 COVERAGE_OUTPUT="${OUTPUT_DIR}/coverage-data.json"
+COVERAGE_SUMMARY="${OUTPUT_DIR}/coverage-summary.json"
 
 echo "=== Card Data Generation ==="
 
@@ -24,6 +25,7 @@ mkdir -p "$(dirname "$OUTPUT")"
 cargo run --profile tool --bin oracle-gen --features cli -- "$DATA_DIR" --stats --names-out "$NAMES_OUTPUT" > "$OUTPUT"
 echo "Generating card coverage data..."
 cargo run --profile tool --bin coverage-report -- "$DATA_DIR" --all > "$COVERAGE_OUTPUT"
+jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' "$COVERAGE_OUTPUT" > "$COVERAGE_SUMMARY"
 
 # Summary
 FILE_SIZE=$(du -h "$OUTPUT" | cut -f1)

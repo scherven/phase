@@ -78,7 +78,7 @@ export function MenuPage() {
   }, []);
 
   useEffect(() => {
-    fetch(__COVERAGE_DATA_URL__)
+    fetch(__COVERAGE_SUMMARY_URL__)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data?.coverage_by_format) return;

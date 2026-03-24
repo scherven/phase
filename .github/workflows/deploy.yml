@@ -81,6 +81,15 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: r2 object put phase-rs-data/staging/coverage-data.json --file client/public/coverage-data.json --content-type application/json --remote
 
+      - name: Generate and upload coverage summary to R2 (staging)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          preCommands: |
+            jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' client/public/coverage-data.json > client/public/coverage-summary.json
+          command: r2 object put phase-rs-data/staging/coverage-summary.json --file client/public/coverage-summary.json --content-type application/json --remote
+
       - name: Build WASM
         run: ./scripts/build-wasm.sh release
 
@@ -88,13 +97,14 @@ jobs:
         env:
           CARD_DATA_URL: "https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev/staging/card-data.json"
           COVERAGE_DATA_URL: "https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev/staging/coverage-data.json"
+          COVERAGE_SUMMARY_URL: "https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev/staging/coverage-summary.json"
         run: |
           cd client
           pnpm install --frozen-lockfile
           pnpm build
 
       - name: Remove large data files from dist (served from R2)
-        run: rm -f client/dist/card-data.json client/dist/card-data.json.br client/dist/coverage-data.json client/dist/coverage-data.json.br
+        run: rm -f client/dist/card-data.json client/dist/card-data.json.br client/dist/coverage-data.json client/dist/coverage-data.json.br client/dist/coverage-summary.json client/dist/coverage-summary.json.br
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
