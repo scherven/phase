@@ -334,7 +334,11 @@ async fn ws_handler(
 ) -> impl IntoResponse {
     let current = player_count.load(Ordering::Relaxed);
     if current >= MAX_CONNECTIONS {
-        warn!(current, limit = MAX_CONNECTIONS, "connection limit reached, rejecting");
+        warn!(
+            current,
+            limit = MAX_CONNECTIONS,
+            "connection limit reached, rejecting"
+        );
         return (http::StatusCode::SERVICE_UNAVAILABLE, "Server full").into_response();
     }
 
@@ -1072,7 +1076,10 @@ async fn handle_client_message(
             {
                 let mgr = state.lock().await;
                 if mgr.sessions.len() >= MAX_GAMES {
-                    warn!(limit = MAX_GAMES, "max games reached, rejecting CreateGameWithSettings");
+                    warn!(
+                        limit = MAX_GAMES,
+                        "max games reached, rejecting CreateGameWithSettings"
+                    );
                     let msg = ServerMessage::Error {
                         message: "Server is at game capacity, please try again later".to_string(),
                     };
