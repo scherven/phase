@@ -1,4 +1,5 @@
 use super::oracle_effect::{parse_effect_chain, try_parse_named_choice};
+use super::oracle_quantity::capitalize_first;
 use super::oracle_target::parse_type_phrase;
 use super::oracle_util::{normalize_card_name_refs, parse_number, strip_reminder_text};
 use crate::types::ability::{
@@ -868,13 +869,6 @@ fn is_color_word(word: &str) -> bool {
     matches!(word, "white" | "blue" | "black" | "red" | "green")
 }
 
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
 
 fn extract_replacement_effect(text: &str) -> Option<String> {
     // Find ", " after "would" or "instead" clause

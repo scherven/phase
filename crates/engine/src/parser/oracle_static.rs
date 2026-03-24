@@ -3,19 +3,19 @@ use std::str::FromStr;
 
 use super::oracle_cost::parse_oracle_cost;
 use super::oracle_effect::parse_effect_chain;
+use super::oracle_quantity::{capitalize_first, parse_cda_quantity, parse_quantity_ref};
 use super::oracle_target::{parse_combat_status_prefix, parse_counter_suffix, parse_type_phrase};
 use super::oracle_util::{
     has_unconsumed_conditional, parse_mana_symbols, parse_number, parse_subtype,
     strip_reminder_text, TextPair,
 };
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, AggregateFunction, BasicLandType, ChosenSubtypeKind,
-    Comparator, ContinuousModification, ControllerRef, CountScope, FilterProp, ObjectProperty,
-    PlayerFilter, QuantityExpr, QuantityRef, StaticCondition, StaticDefinition, TargetFilter,
-    TypeFilter, TypedFilter, ZoneRef,
+    AbilityDefinition, AbilityKind, BasicLandType, ChosenSubtypeKind, Comparator,
+    ContinuousModification, ControllerRef, CountScope, FilterProp, QuantityExpr, QuantityRef,
+    StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::keywords::Keyword;
-use crate::types::mana::{ManaColor, ManaCost};
+use crate::types::mana::ManaCost;
 use crate::types::statics::{CastingProhibitionCondition, CastingProhibitionScope, StaticMode};
 use crate::types::zones::Zone;
 
@@ -1448,124 +1448,6 @@ fn parse_quantity_comparison(lower: &str) -> Option<StaticCondition> {
     })
 }
 
-/// Map a quantity phrase to a dynamic QuantityRef.
-pub(super) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
-    let trimmed = text.trim().trim_end_matches('.');
-    match trimmed {
-        "cards in your hand" => Some(QuantityRef::HandSize),
-        "your life total" => Some(QuantityRef::LifeTotal),
-        "cards in your graveyard" => Some(QuantityRef::GraveyardSize),
-        // CR 208.3: Self-referential P/T lookups.
-        "~'s power" | "its power" | "this creature's power" => Some(QuantityRef::SelfPower),
-        "~'s toughness" | "its toughness" | "this creature's toughness" => {
-            Some(QuantityRef::SelfToughness)
-        }
-        _ => {
-            // "[counter type] counters on ~" / "[counter type] counters on it"
-            if let Some(rest) = trimmed
-                .strip_suffix(" counters on ~")
-                .or_else(|| trimmed.strip_suffix(" counters on it"))
-            {
-                let counter_type = rest
-                    .strip_prefix("the number of ")
-                    .unwrap_or(rest)
-                    .trim()
-                    .replace('+', "plus")
-                    .replace('-', "minus");
-                if !counter_type.is_empty() {
-                    return Some(QuantityRef::CountersOnSelf { counter_type });
-                }
-            }
-
-            // "the greatest power among {type phrase}" → Aggregate { Max, Power, filter }
-            if let Some(rest) = trimmed.strip_prefix("the greatest power among ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Max,
-                        property: ObjectProperty::Power,
-                        filter,
-                    });
-                }
-            }
-            // "the greatest toughness among {type phrase}"
-            if let Some(rest) = trimmed.strip_prefix("the greatest toughness among ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Max,
-                        property: ObjectProperty::Toughness,
-                        filter,
-                    });
-                }
-            }
-            // "the greatest mana value among {type phrase}"
-            if let Some(rest) = trimmed.strip_prefix("the greatest mana value among ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Max,
-                        property: ObjectProperty::ManaValue,
-                        filter,
-                    });
-                }
-            }
-            // "the total power of {type phrase}"
-            if let Some(rest) = trimmed.strip_prefix("the total power of ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Sum,
-                        property: ObjectProperty::Power,
-                        filter,
-                    });
-                }
-            }
-
-            // "the number of {type} you control" → ObjectCount { filter }
-            // "the number of opponents you have" → PlayerCount { Opponent }
-            if let Some(rest) = trimmed.strip_prefix("the number of ") {
-                if rest == "opponents you have" || rest == "opponent you have" {
-                    return Some(QuantityRef::PlayerCount {
-                        filter: PlayerFilter::Opponent,
-                    });
-                }
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::ObjectCount { filter });
-                }
-            }
-            // "your devotion to {color}" / "your devotion to {color} and {color}"
-            if let Some(rest) = trimmed.strip_prefix("your devotion to ") {
-                let colors = parse_devotion_colors(rest);
-                if !colors.is_empty() {
-                    return Some(QuantityRef::Devotion { colors });
-                }
-            }
-            None
-        }
-    }
-}
-
-/// Parse color names from a devotion phrase like "black", "black and red".
-fn parse_devotion_colors(text: &str) -> Vec<ManaColor> {
-    text.split(" and ")
-        .filter_map(|word| {
-            let capitalized = capitalize_first(word.trim());
-            ManaColor::from_str(&capitalized).ok()
-        })
-        .collect()
-}
-
-/// Capitalize the first letter of a word (for ManaColor::from_str).
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-    }
-}
-
 /// Strip a comparator prefix from a comparison clause, returning (Comparator, remainder).
 fn parse_comparator_prefix(text: &str) -> Option<(Comparator, &str)> {
     // Longer prefixes must be tried before shorter ones to avoid partial matches.
@@ -2320,7 +2202,7 @@ fn parse_continuous_gets_has(
             .unwrap_or(&pt_lower);
 
         if let Some((p, t)) = parse_pt_mod(pt_source) {
-            if let Some(qty) = super::oracle_effect::parse_for_each_clause(for_each_clause) {
+            if let Some(qty) = super::oracle_quantity::parse_for_each_clause(for_each_clause) {
                 let quantity = QuantityExpr::Ref { qty };
                 let mut modifications = Vec::new();
                 if p != 0 {
@@ -2834,182 +2716,6 @@ fn parse_cda_pt_equality(lower: &str, text: &str) -> Option<StaticDefinition> {
             .cda()
             .description(text.to_string()),
     )
-}
-
-/// Parse a CDA quantity phrase into a `QuantityExpr`.
-/// Handles patterns like:
-/// - "the number of creatures you control"
-/// - "the number of cards in your hand"
-/// - "your life total"
-/// - "the number of creature cards in your graveyard"
-/// - "the number of card types among cards in all graveyards"
-/// - "the number of basic land types among lands you control"
-/// - "N plus the number of X"
-pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
-    let text = text.trim().trim_end_matches('.');
-
-    // "twice [inner]" → Multiply { factor: 2, inner }
-    if let Some(rest) = text.strip_prefix("twice ") {
-        if let Some(inner) = parse_cda_quantity(rest) {
-            return Some(QuantityExpr::Multiply {
-                factor: 2,
-                inner: Box::new(inner),
-            });
-        }
-    }
-
-    // "three times [inner]" → Multiply { factor: 3, inner }
-    if let Some(rest) = text.strip_prefix("three times ") {
-        if let Some(inner) = parse_cda_quantity(rest) {
-            return Some(QuantityExpr::Multiply {
-                factor: 3,
-                inner: Box::new(inner),
-            });
-        }
-    }
-
-    // "N plus [inner]" generalized offset pattern
-    if let Some((prefix, rest)) = text.split_once(" plus ") {
-        if let Some((n, _)) = parse_number(prefix) {
-            if let Some(inner) = parse_cda_quantity(rest) {
-                return Some(QuantityExpr::Offset {
-                    inner: Box::new(inner),
-                    offset: n as i32,
-                });
-            }
-        }
-    }
-
-    // "N plus the number of X" offset pattern (legacy, specific)
-    if let Some(rest) = text.strip_suffix(" plus the number of cards in your hand") {
-        if let Some((n, _)) = parse_number(rest) {
-            return Some(QuantityExpr::Offset {
-                inner: Box::new(QuantityExpr::Ref {
-                    qty: QuantityRef::HandSize,
-                }),
-                offset: n as i32,
-            });
-        }
-    }
-
-    // "the number of card types among cards in all graveyards"
-    if text.contains("card types among cards in all graveyards") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::CardTypesInGraveyards {
-                scope: CountScope::All,
-            },
-        });
-    }
-    if text.contains("card types among cards in your graveyard") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::CardTypesInGraveyards {
-                scope: CountScope::Controller,
-            },
-        });
-    }
-
-    // "the number of basic land types among lands you control" (Domain)
-    if text.contains("basic land types among lands you control") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::BasicLandTypeCount,
-        });
-    }
-
-    // "the number of cards in your hand"
-    if text.contains("cards in your hand") || text == "the number of cards in your hand" {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::HandSize,
-        });
-    }
-
-    // "your life total"
-    if text.contains("your life total") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::LifeTotal,
-        });
-    }
-
-    // "the number of cards in your graveyard"
-    if text == "the number of cards in your graveyard" || text.contains("cards in your graveyard") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::ZoneCardCount {
-                zone: ZoneRef::Graveyard,
-                card_types: vec![],
-                scope: CountScope::Controller,
-            },
-        });
-    }
-
-    // "the number of {type} cards in your graveyard"
-    if let Some(rest) = text.strip_prefix("the number of ") {
-        if let Some(type_text) = rest.strip_suffix(" cards in your graveyard") {
-            if let Some(tf) = parse_cda_type_filter(type_text) {
-                return Some(QuantityExpr::Ref {
-                    qty: QuantityRef::ZoneCardCount {
-                        zone: ZoneRef::Graveyard,
-                        card_types: vec![tf],
-                        scope: CountScope::Controller,
-                    },
-                });
-            }
-        }
-        if let Some(type_text) = rest.strip_suffix(" cards in all graveyards") {
-            if let Some(tf) = parse_cda_type_filter(type_text) {
-                return Some(QuantityExpr::Ref {
-                    qty: QuantityRef::ZoneCardCount {
-                        zone: ZoneRef::Graveyard,
-                        card_types: vec![tf],
-                        scope: CountScope::All,
-                    },
-                });
-            }
-        }
-    }
-
-    // "the number of noncreature spells they've cast this turn"
-    // "the number of spells they've cast this turn"
-    if let Some(rest) = text.strip_prefix("the number of ") {
-        // Note: "this turn" may already be stripped by strip_trailing_duration at the clause
-        // level, so we also match the bare " they've cast" / " that player has cast" suffixes.
-        if let Some(spell_part) = rest
-            .strip_suffix(" they've cast this turn")
-            .or_else(|| rest.strip_suffix(" that player has cast this turn"))
-            .or_else(|| rest.strip_suffix(" they've cast"))
-            .or_else(|| rest.strip_suffix(" that player has cast"))
-        {
-            let filter = if spell_part.starts_with("noncreature ") {
-                Some(TypeFilter::Non(Box::new(TypeFilter::Creature)))
-            } else {
-                None
-            };
-            return Some(QuantityExpr::Ref {
-                qty: QuantityRef::SpellsCastThisTurn { filter },
-            });
-        }
-    }
-
-    // Delegate to existing parse_quantity_ref for patterns like
-    // "the number of {type} you control", "your devotion to X"
-    if let Some(qty) = parse_quantity_ref(text) {
-        return Some(QuantityExpr::Ref { qty });
-    }
-
-    None
-}
-
-/// Map a type word to a `TypeFilter` for CDA zone card counting.
-fn parse_cda_type_filter(text: &str) -> Option<TypeFilter> {
-    match text.trim() {
-        "creature" => Some(TypeFilter::Creature),
-        "instant" => Some(TypeFilter::Instant),
-        "sorcery" => Some(TypeFilter::Sorcery),
-        "land" => Some(TypeFilter::Land),
-        "artifact" => Some(TypeFilter::Artifact),
-        "enchantment" => Some(TypeFilter::Enchantment),
-        "planeswalker" => Some(TypeFilter::Planeswalker),
-        "instant and sorcery" | "instant or sorcery" => None, // Needs Vec, handled separately
-        _ => None,
-    }
 }
 
 /// CR 604.3 + CR 601.2a: Parse "Once during each of your turns, you may cast [filter] from your graveyard."
@@ -4566,48 +4272,6 @@ mod tests {
             .contains(&ContinuousModification::AddPower { value: 2 }));
     }
 
-    #[test]
-    fn parse_quantity_ref_object_count() {
-        let qty = parse_quantity_ref("the number of creatures you control").unwrap();
-        assert!(
-            matches!(qty, QuantityRef::ObjectCount { .. }),
-            "Expected ObjectCount, got {qty:?}"
-        );
-    }
-
-    #[test]
-    fn parse_quantity_ref_subtype_count() {
-        let qty = parse_quantity_ref("the number of Allies you control").unwrap();
-        assert!(
-            matches!(qty, QuantityRef::ObjectCount { .. }),
-            "Expected ObjectCount, got {qty:?}"
-        );
-    }
-
-    #[test]
-    fn parse_quantity_ref_devotion_single() {
-        let qty = parse_quantity_ref("your devotion to black").unwrap();
-        match qty {
-            QuantityRef::Devotion { colors } => {
-                assert_eq!(colors, vec![crate::types::mana::ManaColor::Black]);
-            }
-            other => panic!("Expected Devotion, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_quantity_ref_devotion_multi() {
-        let qty = parse_quantity_ref("your devotion to black and red").unwrap();
-        match qty {
-            QuantityRef::Devotion { colors } => {
-                assert_eq!(colors.len(), 2);
-                assert!(colors.contains(&crate::types::mana::ManaColor::Black));
-                assert!(colors.contains(&crate::types::mana::ManaColor::Red));
-            }
-            other => panic!("Expected Devotion, got {other:?}"),
-        }
-    }
-
     // --- split_keyword_list protection-awareness tests ---
 
     /// Helper: collect split results as owned strings for easy comparison.
@@ -4684,6 +4348,7 @@ mod tests {
     #[test]
     fn continuous_mods_protection_from_two_colors() {
         use crate::types::keywords::ProtectionTarget;
+        use crate::types::mana::ManaColor;
         let mods = parse_continuous_modifications("has protection from black and from red");
         let prot_keywords: Vec<_> = mods
             .iter()
@@ -4701,149 +4366,6 @@ mod tests {
                 ProtectionTarget::Color(ManaColor::Red),
             ]
         );
-    }
-
-    // ── parse_cda_quantity tests ────────────────────────────────────────
-
-    #[test]
-    fn cda_quantity_self_power() {
-        let qty = parse_cda_quantity("~'s power").unwrap();
-        assert!(matches!(
-            qty,
-            QuantityExpr::Ref {
-                qty: QuantityRef::SelfPower
-            }
-        ));
-    }
-
-    #[test]
-    fn cda_quantity_self_toughness() {
-        let qty = parse_cda_quantity("this creature's toughness").unwrap();
-        assert!(matches!(
-            qty,
-            QuantityExpr::Ref {
-                qty: QuantityRef::SelfToughness
-            }
-        ));
-    }
-
-    #[test]
-    fn cda_quantity_opponents() {
-        let qty = parse_cda_quantity("the number of opponents you have").unwrap();
-        assert!(matches!(
-            qty,
-            QuantityExpr::Ref {
-                qty: QuantityRef::PlayerCount {
-                    filter: PlayerFilter::Opponent
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn cda_quantity_counters_on_self() {
-        let qty = parse_cda_quantity("the number of +1/+1 counters on ~").unwrap();
-        match qty {
-            QuantityExpr::Ref {
-                qty: QuantityRef::CountersOnSelf { counter_type },
-            } => assert_eq!(counter_type, "plus1/plus1"),
-            other => panic!("Expected CountersOnSelf, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cda_quantity_greatest_power() {
-        let qty = parse_cda_quantity("the greatest power among creatures you control").unwrap();
-        assert!(matches!(
-            qty,
-            QuantityExpr::Ref {
-                qty: QuantityRef::Aggregate {
-                    function: AggregateFunction::Max,
-                    property: ObjectProperty::Power,
-                    ..
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn cda_quantity_greatest_toughness() {
-        let qty = parse_cda_quantity("the greatest toughness among creatures you control").unwrap();
-        assert!(matches!(
-            qty,
-            QuantityExpr::Ref {
-                qty: QuantityRef::Aggregate {
-                    function: AggregateFunction::Max,
-                    property: ObjectProperty::Toughness,
-                    ..
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn cda_quantity_greatest_mana_value() {
-        let qty =
-            parse_cda_quantity("the greatest mana value among creatures you control").unwrap();
-        assert!(matches!(
-            qty,
-            QuantityExpr::Ref {
-                qty: QuantityRef::Aggregate {
-                    function: AggregateFunction::Max,
-                    property: ObjectProperty::ManaValue,
-                    ..
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn cda_quantity_total_power() {
-        let qty = parse_cda_quantity("the total power of creatures you control").unwrap();
-        assert!(matches!(
-            qty,
-            QuantityExpr::Ref {
-                qty: QuantityRef::Aggregate {
-                    function: AggregateFunction::Sum,
-                    property: ObjectProperty::Power,
-                    ..
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn cda_quantity_twice() {
-        let qty = parse_cda_quantity("twice the number of creatures you control").unwrap();
-        match qty {
-            QuantityExpr::Multiply { factor, inner } => {
-                assert_eq!(factor, 2);
-                assert!(matches!(
-                    *inner,
-                    QuantityExpr::Ref {
-                        qty: QuantityRef::ObjectCount { .. }
-                    }
-                ));
-            }
-            other => panic!("Expected Multiply, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cda_quantity_n_plus_inner() {
-        let qty = parse_cda_quantity("1 plus the number of creatures you control").unwrap();
-        match qty {
-            QuantityExpr::Offset { inner, offset } => {
-                assert_eq!(offset, 1);
-                assert!(matches!(
-                    *inner,
-                    QuantityExpr::Ref {
-                        qty: QuantityRef::ObjectCount { .. }
-                    }
-                ));
-            }
-            other => panic!("Expected Offset, got {other:?}"),
-        }
     }
 
     // --- Graveyard cast permission tests ---
@@ -5048,7 +4570,7 @@ mod tests {
     fn static_parse_for_each_clause_other_creature() {
         // Verify parse_for_each_clause handles "other creature you control"
         let result =
-            crate::parser::oracle_effect::parse_for_each_clause("other creature you control");
+            crate::parser::oracle_quantity::parse_for_each_clause("other creature you control");
         assert!(
             result.is_some(),
             "parse_for_each_clause should handle 'other creature you control'"

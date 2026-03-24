@@ -58,6 +58,14 @@ pub(super) struct SearchLibraryDetails {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SeekDetails {
+    pub(super) filter: TargetFilter,
+    pub(super) count: QuantityExpr,
+    pub(super) destination: Zone,
+    pub(super) enter_tapped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClauseAst {
     Imperative {
         text: String,
@@ -277,6 +285,13 @@ pub(super) enum SearchCreationImperativeAst {
     },
     Token {
         token: Box<TokenDescription>,
+    },
+    /// Alchemy digital-only: seek card(s) from library matching filter.
+    Seek {
+        filter: TargetFilter,
+        count: QuantityExpr,
+        destination: Zone,
+        enter_tapped: bool,
     },
 }
 

@@ -116,7 +116,7 @@ pub(super) fn try_parse_remove_counter(lower: &str) -> Option<Effect> {
 }
 
 /// Normalize oracle-text counter type strings to canonical engine names.
-pub(super) fn normalize_counter_type(raw: &str) -> String {
+pub(crate) fn normalize_counter_type(raw: &str) -> String {
     match raw {
         "+1/+1" => "P1P1".to_string(),
         "-1/-1" => "M1M1".to_string(),

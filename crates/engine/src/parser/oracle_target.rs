@@ -7,6 +7,7 @@ use crate::types::identifiers::TrackedSetId;
 use crate::types::keywords::Keyword;
 use crate::types::zones::Zone;
 
+use super::oracle_quantity::capitalize_first;
 use super::oracle_util::{merge_or_filters, parse_subtype, starts_with_possessive};
 
 /// Parse an event-context possessive reference from Oracle text.
@@ -180,6 +181,11 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         }
 
         _ => {}
+    }
+
+    // "you" — the controller (not a targeted player)
+    if lower.starts_with("you") && (lower.len() == 3 || lower[3..].starts_with([',', '.', ' '])) {
+        return (TargetFilter::Controller, &text[3..]);
     }
 
     // Bare type phrase fallback: try parse_type_phrase before giving up.
@@ -633,13 +639,6 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     (filter, &text[pos..])
 }
 
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-    }
-}
 
 /// Result of classifying a negated word — routes to `type_filters` or `properties`.
 enum NegationResult {

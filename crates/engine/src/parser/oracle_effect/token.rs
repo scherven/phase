@@ -118,7 +118,7 @@ pub(super) fn parse_token_description(text: &str) -> Option<TokenDescription> {
     if let Some(where_expression) = extract_token_where_x_expression(suffix) {
         if matches!(&count, QuantityExpr::Ref { qty: QuantityRef::Variable { ref name } } if name == "X")
         {
-            count = crate::parser::oracle_static::parse_cda_quantity(&where_expression)
+            count = crate::parser::oracle_quantity::parse_cda_quantity(&where_expression)
                 .unwrap_or_else(|| QuantityExpr::Ref {
                     qty: QuantityRef::Variable {
                         name: where_expression.clone(),
@@ -127,14 +127,14 @@ pub(super) fn parse_token_description(text: &str) -> Option<TokenDescription> {
         }
         if matches!(&power, Some(PtValue::Variable(alias)) if alias == "X") {
             power = Some(
-                crate::parser::oracle_static::parse_cda_quantity(&where_expression)
+                crate::parser::oracle_quantity::parse_cda_quantity(&where_expression)
                     .map(PtValue::Quantity)
                     .unwrap_or_else(|| PtValue::Variable(where_expression.clone())),
             );
         }
         if matches!(&toughness, Some(PtValue::Variable(alias)) if alias == "X") {
             toughness = Some(
-                crate::parser::oracle_static::parse_cda_quantity(&where_expression)
+                crate::parser::oracle_quantity::parse_cda_quantity(&where_expression)
                     .map(PtValue::Quantity)
                     .unwrap_or_else(|| PtValue::Variable(where_expression)),
             );
@@ -144,7 +144,7 @@ pub(super) fn parse_token_description(text: &str) -> Option<TokenDescription> {
     if let Some(count_expression) = extract_token_count_expression(suffix) {
         if matches!(&count, QuantityExpr::Ref { qty: QuantityRef::Variable { ref name } } if name == "count")
         {
-            count = crate::parser::oracle_static::parse_cda_quantity(&count_expression).unwrap_or(
+            count = crate::parser::oracle_quantity::parse_cda_quantity(&count_expression).unwrap_or(
                 QuantityExpr::Ref {
                     qty: QuantityRef::Variable {
                         name: count_expression,
@@ -168,7 +168,7 @@ pub(super) fn parse_token_description(text: &str) -> Option<TokenDescription> {
 
     if power.is_none() || toughness.is_none() {
         if let Some(pt_expression) = extract_token_pt_expression(suffix) {
-            let parsed = crate::parser::oracle_static::parse_cda_quantity(&pt_expression);
+            let parsed = crate::parser::oracle_quantity::parse_cda_quantity(&pt_expression);
             power = Some(
                 parsed
                     .clone()

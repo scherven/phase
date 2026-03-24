@@ -11,6 +11,7 @@ pub(crate) mod oracle_saga;
 pub mod oracle_static;
 pub mod oracle_target;
 pub mod oracle_trigger;
+pub(crate) mod oracle_quantity;
 pub mod oracle_util;
 
 pub use oracle::parse_oracle_text;

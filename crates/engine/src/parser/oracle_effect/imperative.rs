@@ -212,6 +212,9 @@ fn strip_article(text: &str) -> &str {
     }
 }
 
+/// NOTE: Shares verb prefixes with `try_parse_verb_and_target` in `mod.rs`.
+/// When adding a new targeted verb here, check if it also needs to be added there
+/// (for compound action splitting like "tap target creature and put a counter on it").
 pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<TargetedImperativeAst> {
     if lower.starts_with("tap ") {
         let (target, _) = parse_target(strip_article(&text[4..]));

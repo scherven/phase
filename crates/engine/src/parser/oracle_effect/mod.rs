@@ -840,6 +840,9 @@ fn lower_imperative_clause(text: &str) -> ParsedEffectClause {
 ///
 /// CR 608.2c: The instructions in a spell or ability are followed in order; this helper
 /// identifies the boundary between the first instruction and any subsequent compound action.
+///
+/// NOTE: Shares verb prefixes with `parse_targeted_action_ast` in `imperative.rs`.
+/// When adding a new targeted verb here, check if it also needs to be added there.
 fn try_parse_verb_and_target<'a>(
     text: &'a str,
     lower: &str,

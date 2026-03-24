@@ -3,7 +3,7 @@ use crate::types::ability::{
 };
 use crate::types::mana::ManaColor;
 
-use super::super::oracle_static::parse_cda_quantity;
+use super::super::oracle_quantity::parse_cda_quantity;
 use super::super::oracle_util::{parse_mana_production, parse_number};
 
 pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
@@ -274,7 +274,7 @@ pub(super) fn apply_where_x_count_expression(
             },
             Some(expression),
         ) if name.eq_ignore_ascii_case("X") => {
-            crate::parser::oracle_static::parse_cda_quantity(expression).unwrap_or_else(|| {
+            crate::parser::oracle_quantity::parse_cda_quantity(expression).unwrap_or_else(|| {
                 QuantityExpr::Ref {
                     qty: QuantityRef::Variable {
                         name: expression.to_string(),
