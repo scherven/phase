@@ -2,24 +2,12 @@ import { useState } from "react";
 
 import type { FormatConfig, GameFormat, MatchType } from "../../adapter/types";
 import { FORMAT_DEFAULTS, useMultiplayerStore } from "../../stores/multiplayerStore";
+import type { AiSeatConfig, HostingSettings } from "../../stores/multiplayerStore";
 import { MenuPanel } from "../menu/MenuShell";
 import { menuButtonClass } from "../menu/buttonStyles";
 
-export interface HostSettings {
-  displayName: string;
-  public: boolean;
-  password: string;
-  timerSeconds: number | null;
-  formatConfig: FormatConfig;
-  matchType: MatchType;
-  aiSeats: AiSeatConfig[];
-}
-
-export interface AiSeatConfig {
-  seatIndex: number;
-  difficulty: string;
-  deckName: string | null;
-}
+export type { AiSeatConfig };
+export type HostSettings = HostingSettings;
 
 interface HostSetupProps {
   onHost: (settings: HostSettings) => void;

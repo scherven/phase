@@ -12,7 +12,7 @@ interface LobbyGame {
 
 interface GameListItemProps {
   game: LobbyGame;
-  onJoin: (code: string) => void;
+  onJoin: (code: string, format?: GameFormat) => void;
 }
 
 const FORMAT_BADGE_CLASSES: Record<GameFormat, string> = {
@@ -56,7 +56,7 @@ export function GameListItem({ game, onJoin }: GameListItemProps) {
 
   return (
     <button
-      onClick={() => onJoin(game.game_code)}
+      onClick={() => onJoin(game.game_code, game.format)}
       className="flex w-full items-center gap-3 rounded-[18px] border border-white/10 bg-black/18 px-4 py-3 text-left transition-colors hover:border-white/18 hover:bg-white/6"
     >
       {/* Format badge */}

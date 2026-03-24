@@ -2,8 +2,10 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, useLocation } from "react-router";
 
 import { BuildBadge } from "./components/chrome/BuildBadge";
+import { HostingBanner } from "./components/chrome/HostingBanner";
 import { SplashScreen } from "./components/splash/SplashScreen";
 import { useFeedInitialization } from "./hooks/useFeedInitialization";
+import { useHostingSession } from "./hooks/useHostingSession";
 import { ensurePreload, subscribePreload } from "./startup/preloadAssets";
 import { MenuPage } from "./pages/MenuPage";
 import { PlayPage } from "./pages/PlayPage";
@@ -25,6 +27,7 @@ export function App() {
 
 function AppContent() {
   useFeedInitialization();
+  useHostingSession();
 
   const [showSplash, setShowSplash] = useState(true);
   const [progress, setProgress] = useState(0);
@@ -67,6 +70,7 @@ function AppContent() {
         </Routes>
       </Suspense>
       {!location.pathname.startsWith("/game/") && <BuildBadge />}
+      <HostingBanner />
     </div>
   );
 }

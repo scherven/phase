@@ -75,6 +75,37 @@ export function WaitingScreen({
           LAN: {window.location.hostname || "localhost"}
         </p>
 
+        {/* Player count */}
+        {playerSlots && playerSlots.length > 0 && (
+          <div className="flex flex-col items-center gap-2">
+            <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
+              Players
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {playerSlots.map((slot, i) => {
+                const claimed = slot.isAi || slot.name;
+                return (
+                  <div
+                    key={slot.playerId}
+                    className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/18 px-3 py-1.5"
+                  >
+                    <div className={`h-2 w-2 rounded-full ${claimed ? "bg-emerald-400" : "bg-gray-600"}`} />
+                    <span className="text-xs text-gray-500">{i + 1}</span>
+                    <span className="min-w-[6rem] text-sm text-gray-200">
+                      {slot.isAi
+                        ? `AI (${slot.aiDifficulty})`
+                        : slot.name || "Waiting..."}
+                    </span>
+                    {slot.playerId === currentPlayerId && (
+                      <span className="text-xs text-cyan-400">(you)</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Public badge */}
         {isPublic && (
           <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-medium text-emerald-300">

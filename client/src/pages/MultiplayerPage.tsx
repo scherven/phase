@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
+import type { GameFormat } from "../adapter/types";
 import { useAudioContext } from "../audio/useAudioContext";
 import { ScreenChrome } from "../components/chrome/ScreenChrome";
 import { HostSetup } from "../components/lobby/HostSetup";
@@ -16,145 +17,92 @@ import { useGameStore, saveActiveGame } from "../stores/gameStore";
 import type { HostSettings } from "../components/lobby/HostSetup";
 
 type ConnectionMode = "server" | "p2p";
-type MultiplayerView = "deck-select" | "lobby" | "host-setup" | "waiting";
+type MultiplayerView = "lobby" | "host-setup" | "deck-select" | "waiting";
 
-const BACK_TARGETS: Record<MultiplayerView, string> = {
-  "deck-select": "/",
-  "lobby": "deck-select",
-  "host-setup": "lobby",
-  "waiting": "lobby",
-};
+type PendingAction =
+  | { type: "host"; settings: HostSettings; connectionMode: ConnectionMode }
+  | { type: "join"; code: string; password?: string; format?: GameFormat };
 
 export function MultiplayerPage() {
   useAudioContext("lobby");
   const navigate = useNavigate();
-  const [view, setView] = useState<MultiplayerView>("deck-select");
-  const [activeDeckName, setActiveDeckName] = useState<string | null>(null);
 
-  const [hostGameCode, setHostGameCode] = useState<string | null>(null);
-  const [hostIsPublic, setHostIsPublic] = useState(true);
+  const hostingStatus = useMultiplayerStore((s) => s.hostingStatus);
+  const hostGameCode = useMultiplayerStore((s) => s.hostGameCode);
+  const hostIsPublic = useMultiplayerStore((s) => s.hostIsPublic);
+  const startHosting = useMultiplayerStore((s) => s.startHosting);
+  const cancelHosting = useMultiplayerStore((s) => s.cancelHosting);
+  const playerSlots = useMultiplayerStore((s) => s.playerSlots);
+
+  // If returning to this page while hosting, show waiting view immediately
+  const [view, setView] = useState<MultiplayerView>(
+    hostingStatus !== "idle" ? "waiting" : "lobby",
+  );
+  const [activeDeckName, setActiveDeckName] = useState<string | null>(null);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("server");
   const [showSettings, setShowSettings] = useState(false);
-  const hostWsRef = useRef<WebSocket | null>(null);
-
-  const serverAddress = useMultiplayerStore((s) => s.serverAddress);
-
-  const fallbackToP2PMode = useCallback(() => {
-    setConnectionMode("p2p");
-    setView("lobby");
-  }, []);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
 
   useEffect(() => {
     setActiveDeckName(localStorage.getItem(ACTIVE_DECK_KEY));
   }, []);
+
+  // Reset view to lobby if hosting ends while we're on the waiting screen
+  // (e.g. WebSocket error/disconnect)
+  useEffect(() => {
+    if (hostingStatus === "idle" && view === "waiting") {
+      setView("lobby");
+    }
+  }, [hostingStatus, view]);
 
   const handleSelectDeck = (name: string) => {
     setActiveDeckName(name);
     localStorage.setItem(ACTIVE_DECK_KEY, name);
   };
 
-  const handleHostWithSettings = useCallback(
-    (settings: HostSettings) => {
-      if (!activeDeckName) {
-        setView("deck-select");
-        return;
+  // Expand a ParsedDeck into flat name arrays for the server
+  const expandDeck = useCallback(() => {
+    const deck = loadActiveDeck();
+    if (!deck) return null;
+    const mainDeck: string[] = [];
+    for (const entry of deck.main) {
+      for (let i = 0; i < entry.count; i++) {
+        mainDeck.push(entry.name);
       }
-
-      sessionStorage.removeItem("phase-ws-session");
-      setHostIsPublic(settings.public);
-
-      const deck = loadActiveDeck();
-      if (!deck) {
-        setView("deck-select");
-        return;
-      }
-
-      const mainDeck: string[] = [];
-      for (const entry of deck.main) {
-        for (let i = 0; i < entry.count; i++) {
-          mainDeck.push(entry.name);
-        }
-      }
-      const sideboard: string[] = [];
-      for (const entry of deck.sideboard) {
-        for (let i = 0; i < entry.count; i++) {
-          sideboard.push(entry.name);
-        }
-      }
-
-      const ws = new WebSocket(serverAddress);
-      hostWsRef.current = ws;
-
-      ws.onopen = () => {
-        ws.send(
-          JSON.stringify({
-            type: "CreateGameWithSettings",
-            data: {
-              deck: { main_deck: mainDeck, sideboard },
-              display_name: settings.displayName,
-              public: settings.public,
-              password: settings.password || null,
-              timer_seconds: settings.timerSeconds,
-              player_count: settings.formatConfig.max_players,
-              match_config: { match_type: settings.matchType },
-              format_config: settings.formatConfig,
-              ai_seats: settings.aiSeats,
-            },
-          }),
-        );
-      };
-
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data as string) as { type: string; data?: unknown };
-
-        if (msg.type === "GameCreated") {
-          const data = msg.data as { game_code: string; player_token: string };
-          setHostGameCode(data.game_code);
-          sessionStorage.setItem(
-            "phase-ws-session",
-            JSON.stringify({ gameCode: data.game_code, playerToken: data.player_token }),
-          );
-          setView("waiting");
-        } else if (msg.type === "GameStarted") {
-          // Close this pre-game WS before navigating — GameProvider will
-          // reconnect using the saved session token.
-          ws.close();
-          hostWsRef.current = null;
-          const gameId = crypto.randomUUID();
-          saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
-          useGameStore.setState({ gameId });
-          navigate(`/game/${gameId}?mode=host`);
-        } else if (msg.type === "Error") {
-          const data = msg.data as { message: string };
-          console.error("Host error:", data.message);
-        }
-      };
-
-      ws.onerror = () => {
-        ws.close();
-        hostWsRef.current = null;
-        fallbackToP2PMode();
-      };
-    },
-    [activeDeckName, serverAddress, navigate, fallbackToP2PMode],
-  );
-
-  const handleHostP2P = useCallback((settings: HostSettings) => {
-    if (!activeDeckName) {
-      setView("deck-select");
-      return;
     }
-    const gameId = crypto.randomUUID();
-    useGameStore.setState({ gameId });
-    navigate(`/game/${gameId}?mode=p2p-host&match=${settings.matchType.toLowerCase()}`);
-  }, [activeDeckName, navigate]);
-
-  const handleJoinWithPassword = useCallback(
-    (code: string, password?: string) => {
-      if (!activeDeckName) {
-        setView("deck-select");
-        return;
+    const sideboard: string[] = [];
+    for (const entry of deck.sideboard) {
+      for (let i = 0; i < entry.count; i++) {
+        sideboard.push(entry.name);
       }
+    }
+    return { main_deck: mainDeck, sideboard };
+  }, []);
+
+  // Execute pending action after deck is selected
+  const handleDeckConfirm = useCallback(() => {
+    if (!pendingAction || !activeDeckName) return;
+
+    if (pendingAction.type === "host") {
+      const deck = expandDeck();
+      if (!deck) return;
+
+      if (pendingAction.connectionMode === "p2p") {
+        const gameId = crypto.randomUUID();
+        useGameStore.setState({ gameId });
+        navigate(
+          `/game/${gameId}?mode=p2p-host&match=${pendingAction.settings.matchType.toLowerCase()}`,
+        );
+      } else {
+        startHosting(pendingAction.settings, deck);
+        // Navigate to main menu — the HostingBanner takes over as the
+        // hosting indicator. User can browse freely while waiting.
+        // Clicking the banner returns them to /multiplayer → WaitingScreen.
+        navigate("/");
+      }
+    } else {
+      // Join flow
+      const { code, password } = pendingAction;
 
       const p2pCode = parseRoomCode(code);
       if (p2pCode && code.trim().length === 5) {
@@ -173,48 +121,73 @@ export function MultiplayerPage() {
         params.set("password", password);
       }
       navigate(`/game/${gameId}?${params.toString()}`);
+    }
+
+    setPendingAction(null);
+  }, [pendingAction, activeDeckName, expandDeck, startHosting, navigate]);
+
+  // Host setup complete → save settings, go to deck-select
+  const handleHostSetupComplete = useCallback(
+    (settings: HostSettings) => {
+      setPendingAction({ type: "host", settings, connectionMode });
+      setView("deck-select");
     },
-    [activeDeckName, navigate],
+    [connectionMode],
   );
 
-  const handleCancelHost = useCallback(() => {
-    if (hostWsRef.current) {
-      hostWsRef.current.close();
-      hostWsRef.current = null;
-    }
-    setHostGameCode(null);
-    sessionStorage.removeItem("phase-ws-session");
-    setView("lobby");
-  }, []);
+  // Join from lobby (list or code) → save join info, go to deck-select
+  const handleJoinGame = useCallback(
+    (code: string, password?: string, format?: GameFormat) => {
+      setPendingAction({ type: "join", code, password, format });
+      setView("deck-select");
+    },
+    [],
+  );
 
   const handleBack = () => {
     if (view === "waiting") {
-      handleCancelHost();
+      // Don't cancel hosting — just navigate away. The banner persists.
+      navigate("/");
       return;
     }
-    const target = BACK_TARGETS[view];
-    if (target === "/") {
-      navigate("/");
-    } else {
-      setView(target as MultiplayerView);
+    if (view === "deck-select") {
+      setView(pendingAction?.type === "host" ? "host-setup" : "lobby");
+      return;
     }
+    if (view === "host-setup") {
+      setView("lobby");
+      return;
+    }
+    navigate("/");
   };
 
-  const title = view === "deck-select"
-    ? "Choose a deck for multiplayer."
-    : view === "lobby"
+  // Derive selected format for deck filtering
+  const selectedFormat: GameFormat | undefined =
+    pendingAction?.type === "host"
+      ? pendingAction.settings.formatConfig.format
+      : pendingAction?.type === "join"
+        ? pendingAction.format
+        : undefined;
+
+  const title =
+    view === "lobby"
       ? "Join or host a table."
       : view === "host-setup"
         ? "Set up your table."
-        : "Waiting for players.";
+        : view === "deck-select"
+          ? "Choose a deck."
+          : "Waiting for players.";
 
-  const description = view === "deck-select"
-    ? "Pick the deck you want to bring online."
-    : view === "lobby"
+  const description =
+    view === "lobby"
       ? "Browse available tables, join by code, or host a new match."
       : view === "host-setup"
         ? "Adjust format, privacy, and timing before opening the room."
-        : "Share the code and wait for the room to fill.";
+        : view === "deck-select"
+          ? selectedFormat
+            ? `Pick a deck for ${selectedFormat}.`
+            : "Pick the deck you want to bring online."
+          : "Share the code and wait for the room to fill.";
 
   return (
     <div className="menu-scene relative flex min-h-screen flex-col overflow-hidden">
@@ -230,33 +203,32 @@ export function MultiplayerPage() {
       <div className="menu-scene__haze" />
 
       <MenuShell eyebrow="Multiplayer" title={title} description={description} layout="stacked">
-        {view === "deck-select" && (
-          <MyDecks
-            mode="select"
-            onSelectDeck={handleSelectDeck}
-            activeDeckName={activeDeckName}
-            onConfirmSelection={() => setView("lobby")}
-            confirmLabel="Continue"
-          />
-        )}
-
         {view === "lobby" && (
           <LobbyView
             onHostGame={() => { setConnectionMode("server"); setView("host-setup"); }}
             onHostP2P={() => { setConnectionMode("p2p"); setView("host-setup"); }}
-            onJoinGame={handleJoinWithPassword}
-            activeDeckName={activeDeckName}
-            onChangeDeck={() => setView("deck-select")}
+            onJoinGame={handleJoinGame}
             connectionMode={connectionMode}
-            onServerOffline={fallbackToP2PMode}
+            onServerOffline={() => setConnectionMode("p2p")}
           />
         )}
 
         {view === "host-setup" && (
           <HostSetup
-            onHost={connectionMode === "p2p" ? handleHostP2P : handleHostWithSettings}
+            onHost={handleHostSetupComplete}
             onBack={() => setView("lobby")}
             connectionMode={connectionMode}
+          />
+        )}
+
+        {view === "deck-select" && (
+          <MyDecks
+            mode="select"
+            selectedFormat={selectedFormat}
+            onSelectDeck={handleSelectDeck}
+            activeDeckName={activeDeckName}
+            onConfirmSelection={handleDeckConfirm}
+            confirmLabel={pendingAction?.type === "host" ? "Host Game" : "Join Game"}
           />
         )}
 
@@ -264,11 +236,13 @@ export function MultiplayerPage() {
           <WaitingScreen
             gameCode={hostGameCode}
             isPublic={hostIsPublic}
-            onCancel={handleCancelHost}
+            onCancel={cancelHosting}
+            playerSlots={playerSlots.length > 0 ? playerSlots : undefined}
+            currentPlayerId="0"
+            isHost
           />
         )}
       </MenuShell>
-
     </div>
   );
 }

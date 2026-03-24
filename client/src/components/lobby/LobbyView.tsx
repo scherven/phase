@@ -11,9 +11,7 @@ import type { LobbyGame } from "./GameListItem";
 interface LobbyViewProps {
   onHostGame: () => void;
   onHostP2P: () => void;
-  onJoinGame: (code: string, password?: string) => void;
-  activeDeckName: string | null;
-  onChangeDeck: () => void;
+  onJoinGame: (code: string, password?: string, format?: GameFormat) => void;
   connectionMode?: "server" | "p2p";
   onServerOffline?: () => void;
 }
@@ -34,8 +32,6 @@ export function LobbyView({
   onHostGame,
   onHostP2P,
   onJoinGame,
-  activeDeckName,
-  onChangeDeck,
   connectionMode,
   onServerOffline,
 }: LobbyViewProps) {
@@ -43,9 +39,10 @@ export function LobbyView({
   const isP2P = connectionMode === "p2p";
   const serverAddress = useMultiplayerStore((s) => s.serverAddress);
   const [games, setGames] = useState<LobbyGame[]>([]);
+  const gamesRef = useRef<LobbyGame[]>([]);
   const [playerCount, setPlayerCount] = useState(0);
   const [joinCode, setJoinCode] = useState("");
-  const [passwordModal, setPasswordModal] = useState<{ gameCode: string } | null>(null);
+  const [passwordModal, setPasswordModal] = useState<{ gameCode: string; format?: GameFormat } | null>(null);
   const [passwordInput, setPasswordInput] = useState("");
   const [formatFilter, setFormatFilter] = useState<GameFormat | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -80,17 +77,26 @@ export function LobbyView({
       switch (msg.type) {
         case "LobbyUpdate": {
           const data = msg.data as { games: LobbyGame[] };
+          gamesRef.current = data.games;
           setGames(data.games);
           break;
         }
         case "LobbyGameAdded": {
           const data = msg.data as { game: LobbyGame };
-          setGames((prev) => [...prev, data.game]);
+          setGames((prev) => {
+            const next = [...prev, data.game];
+            gamesRef.current = next;
+            return next;
+          });
           break;
         }
         case "LobbyGameRemoved": {
           const data = msg.data as { game_code: string };
-          setGames((prev) => prev.filter((g) => g.game_code !== data.game_code));
+          setGames((prev) => {
+            const next = prev.filter((g) => g.game_code !== data.game_code);
+            gamesRef.current = next;
+            return next;
+          });
           break;
         }
         case "PlayerCount": {
@@ -100,7 +106,8 @@ export function LobbyView({
         }
         case "PasswordRequired": {
           const data = msg.data as { game_code: string };
-          setPasswordModal({ gameCode: data.game_code });
+          const game = gamesRef.current.find((g) => g.game_code === data.game_code);
+          setPasswordModal({ gameCode: data.game_code, format: game?.format });
           setPasswordInput("");
           break;
         }
@@ -126,8 +133,8 @@ export function LobbyView({
   }, [serverAddress, isP2P, onServerOffline]);
 
   const handleJoinFromList = useCallback(
-    (code: string) => {
-      onJoinGame(code);
+    (code: string, format?: GameFormat) => {
+      onJoinGame(code, undefined, format);
     },
     [onJoinGame],
   );
@@ -147,7 +154,7 @@ export function LobbyView({
   const handlePasswordSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (passwordModal && passwordInput) {
-      onJoinGame(passwordModal.gameCode, passwordInput);
+      onJoinGame(passwordModal.gameCode, passwordInput, passwordModal.format);
       setPasswordModal(null);
       setPasswordInput("");
     }
@@ -168,21 +175,6 @@ export function LobbyView({
             {playerCount} online
           </span>
         )}
-      </div>
-
-      <div className="flex w-full items-center justify-between gap-4 rounded-[18px] border border-white/10 bg-black/14 px-4 py-3">
-        <div className="min-w-0">
-          <div className="text-[0.68rem] uppercase tracking-[0.22em] text-slate-500">Selected Deck</div>
-          <div className="mt-1 truncate text-sm font-medium text-white">
-            {activeDeckName ?? "Choose a deck"}
-          </div>
-        </div>
-        <button
-          onClick={onChangeDeck}
-          className={menuButtonClass({ tone: "neutral", size: "sm" })}
-        >
-          Change
-        </button>
       </div>
 
       {isServer && (

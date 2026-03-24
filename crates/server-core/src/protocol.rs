@@ -30,6 +30,18 @@ pub struct LobbyGame {
     pub has_password: bool,
 }
 
+/// Info about a single player slot in a waiting room, sent to all connected players.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerSlotInfo {
+    pub player_id: String,
+    pub name: String,
+    pub is_ready: bool,
+    pub is_ai: bool,
+    pub ai_difficulty: String,
+    pub deck_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
@@ -140,6 +152,9 @@ pub enum ServerMessage {
     },
     PasswordRequired {
         game_code: String,
+    },
+    PlayerSlotsUpdate {
+        slots: Vec<PlayerSlotInfo>,
     },
     Conceded {
         player: PlayerId,

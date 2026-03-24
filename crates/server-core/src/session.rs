@@ -15,6 +15,7 @@ use phase_ai::config::{AiConfig, AiDifficulty, Platform};
 use rand::Rng;
 
 use crate::filter::filter_state_for_player;
+use crate::protocol::PlayerSlotInfo;
 use crate::reconnect::ReconnectManager;
 
 /// Result of handling a game action: per-player filtered states, events, legal actions, and log entries.
@@ -71,6 +72,35 @@ impl GameSession {
             .iter()
             .enumerate()
             .all(|(i, t)| !t.is_empty() || self.ai_seats.contains(&PlayerId(i as u8)))
+    }
+
+    /// Build slot info for all seats in this game session.
+    pub fn player_slot_info(&self) -> Vec<PlayerSlotInfo> {
+        (0..self.player_count as usize)
+            .map(|i| {
+                let pid = PlayerId(i as u8);
+                let is_ai = self.ai_seats.contains(&pid);
+                let claimed = !self.player_tokens[i].is_empty() || is_ai;
+                let ai_difficulty = self
+                    .ai_configs
+                    .get(&pid)
+                    .map(|c| format!("{:?}", c.difficulty))
+                    .unwrap_or_default();
+
+                PlayerSlotInfo {
+                    player_id: format!("{}", pid.0),
+                    name: if claimed {
+                        self.display_names[i].clone()
+                    } else {
+                        String::new()
+                    },
+                    is_ready: claimed,
+                    is_ai,
+                    ai_difficulty,
+                    deck_name: None, // deck names not exposed to other players
+                }
+            })
+            .collect()
     }
 
     /// Run AI actions and return per-action broadcast data.

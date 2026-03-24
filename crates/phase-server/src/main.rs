@@ -334,6 +334,28 @@ async fn broadcast_player_count(lobby_subscribers: &SharedLobbySubscribers, coun
     }
 }
 
+/// Send PlayerSlotsUpdate to all connected players in a game.
+async fn broadcast_player_slots(
+    state: &SharedState,
+    connections: &SharedConnections,
+    game_code: &str,
+) {
+    let slots = {
+        let mgr = state.lock().await;
+        match mgr.sessions.get(game_code) {
+            Some(session) => session.player_slot_info(),
+            None => return,
+        }
+    };
+    let msg = ServerMessage::PlayerSlotsUpdate { slots };
+    let conns = connections.lock().await;
+    if let Some(players) = conns.get(game_code) {
+        for sender in players.values() {
+            let _ = sender.send(msg.clone());
+        }
+    }
+}
+
 async fn broadcast_to_lobby_subscribers(
     lobby_subscribers: &SharedLobbySubscribers,
     msg: ServerMessage,
@@ -604,54 +626,132 @@ async fn handle_client_message(
         } => {
             info!(game = %game_code, "Reconnect attempt");
 
-            // Extract all data while holding the lock, then send messages after
-            let reconnect_result = {
+            // Determine game phase and handle reconnect in a single lock
+            // to avoid TOCTOU races (game could fill between check and action).
+            enum ReconnectOutcome {
+                HostingOk {
+                    player: PlayerId,
+                    slot_info: Vec<server_core::PlayerSlotInfo>,
+                },
+                InGame {
+                    player: PlayerId,
+                    game_started_msg: Box<ServerMessage>,
+                    ai_results: Vec<server_core::session::ActionResult>,
+                },
+                Err(String),
+            }
+
+            let outcome = {
                 let mut mgr = state.lock().await;
-                match mgr.handle_reconnect(&game_code, &player_token) {
-                    Ok(filtered_state) => {
-                        let session = mgr.sessions.get_mut(&game_code).unwrap();
-                        let player = session.player_for_token(&player_token).unwrap();
-                        let player_names = session.display_names.clone();
+                let is_waiting = mgr
+                    .sessions
+                    .get(&game_code)
+                    .map(|s| !s.is_full())
+                    .unwrap_or(false);
 
-                        let opponent_name =
-                            engine::game::players::opponents(&session.state, player)
-                                .first()
-                                .and_then(|&opp| {
-                                    let name = &session.display_names[opp.0 as usize];
-                                    if name.is_empty() {
-                                        None
-                                    } else {
-                                        Some(name.clone())
-                                    }
-                                });
-
-                        let legal_actions_all = engine_legal_actions(&session.state);
-                        let actor = server_core::acting_player(&session.state.waiting_for);
-                        let player_legals = if actor == Some(player) {
-                            legal_actions_all
+                if is_waiting {
+                    // Hosting reconnect: game exists but hasn't started yet.
+                    // Scope session borrow to avoid conflicting with reconnect manager.
+                    let session_result = mgr.sessions.get_mut(&game_code).map(|session| {
+                        let player = session.player_for_token(&player_token);
+                        if let Some(p) = player {
+                            session.connected[p.0 as usize] = true;
+                            let slot_info = session.player_slot_info();
+                            Ok((p, slot_info))
                         } else {
-                            vec![]
-                        };
-
-                        let game_started_msg = ServerMessage::GameStarted {
-                            state: filtered_state,
-                            your_player: player,
-                            opponent_name,
-                            player_names,
-                            legal_actions: player_legals,
-                        };
-
-                        // Run AI follow-up if AI is next to act after reconnect
-                        let ai_results = session.run_ai_and_filter();
-
-                        Ok((player, game_started_msg, ai_results))
+                            Err("Invalid player token".to_string())
+                        }
+                    });
+                    match session_result {
+                        Some(Ok((player, slot_info))) => {
+                            mgr.reconnect.remove_disconnect(&game_code, player);
+                            ReconnectOutcome::HostingOk { player, slot_info }
+                        }
+                        Some(Err(e)) => ReconnectOutcome::Err(e),
+                        None => ReconnectOutcome::Err(format!("Game not found: {}", game_code)),
                     }
-                    Err(e) => Err(e),
+                } else {
+                    // In-game reconnect: game is full and started
+                    match mgr.handle_reconnect(&game_code, &player_token) {
+                        Ok(filtered_state) => {
+                            let session = mgr.sessions.get_mut(&game_code).unwrap();
+                            let player = session.player_for_token(&player_token).unwrap();
+                            let player_names = session.display_names.clone();
+
+                            let opponent_name =
+                                engine::game::players::opponents(&session.state, player)
+                                    .first()
+                                    .and_then(|&opp| {
+                                        let name = &session.display_names[opp.0 as usize];
+                                        if name.is_empty() {
+                                            None
+                                        } else {
+                                            Some(name.clone())
+                                        }
+                                    });
+
+                            let legal_actions_all = engine_legal_actions(&session.state);
+                            let actor = server_core::acting_player(&session.state.waiting_for);
+                            let player_legals = if actor == Some(player) {
+                                legal_actions_all
+                            } else {
+                                vec![]
+                            };
+
+                            let game_started_msg = ServerMessage::GameStarted {
+                                state: filtered_state,
+                                your_player: player,
+                                opponent_name,
+                                player_names,
+                                legal_actions: player_legals,
+                            };
+
+                            let ai_results = session.run_ai_and_filter();
+                            ReconnectOutcome::InGame {
+                                player,
+                                game_started_msg: Box::new(game_started_msg),
+                                ai_results,
+                            }
+                        }
+                        Err(e) => ReconnectOutcome::Err(e),
+                    }
                 }
             }; // lock dropped
 
-            match reconnect_result {
-                Ok((player, game_started_msg, ai_results)) => {
+            match outcome {
+                ReconnectOutcome::HostingOk { player, slot_info } => {
+                    info!(game = %game_code, player = ?player, "hosting reconnect succeeded");
+                    identity.game_code = Some(game_code.clone());
+                    identity.player_id = Some(player);
+                    identity.player_token = Some(player_token.clone());
+
+                    {
+                        let mut conns = connections.lock().await;
+                        conns
+                            .entry(game_code.clone())
+                            .or_default()
+                            .insert(player, tx.clone());
+                    }
+
+                    // Re-send GameCreated so the client resumes hosting state
+                    let msg = ServerMessage::GameCreated {
+                        game_code,
+                        player_token,
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = socket.send(Message::text(json)).await;
+                    }
+
+                    // Send current room state
+                    let slots_msg = ServerMessage::PlayerSlotsUpdate { slots: slot_info };
+                    let _ = tx.send(slots_msg);
+                }
+
+                ReconnectOutcome::InGame {
+                    player,
+                    game_started_msg,
+                    ai_results,
+                } => {
                     info!(game = %game_code, player = ?player, "reconnect succeeded");
                     identity.game_code = Some(game_code.clone());
                     identity.player_id = Some(player);
@@ -708,7 +808,8 @@ async fn handle_client_message(
                         }
                     }
                 }
-                Err(e) => {
+
+                ReconnectOutcome::Err(e) => {
                     error!(game = %game_code, error = %e, "reconnect failed");
                     let msg = ServerMessage::Error { message: e };
                     if let Ok(json) = serde_json::to_string(&msg) {
@@ -921,6 +1022,9 @@ async fn handle_client_message(
                     let _ = socket.send(Message::text(json)).await;
                 }
 
+                // Send initial slot state so host sees themselves in the room
+                broadcast_player_slots(state, connections, &game_code).await;
+
                 if public {
                     let games = lob.public_games();
                     if let Some(game) = games.into_iter().find(|g| g.game_code == game_code) {
@@ -994,14 +1098,26 @@ async fn handle_client_message(
 
                     let player_names = session.display_names.clone();
 
+                    // Build slot info before releasing session borrow
+                    let slot_info = session.player_slot_info();
+                    let is_full = session.is_full();
+
                     let mut conns = connections.lock().await;
                     conns
                         .entry(game_code.clone())
                         .or_default()
                         .insert(joiner, tx.clone());
 
+                    // Notify all connected players about the updated room state
+                    let slots_msg = ServerMessage::PlayerSlotsUpdate { slots: slot_info };
+                    if let Some(players) = conns.get(&game_code) {
+                        for sender in players.values() {
+                            let _ = sender.send(slots_msg.clone());
+                        }
+                    }
+
                     // Only send GameStarted when the game is full
-                    if session.is_full() {
+                    if is_full {
                         let legal_actions = engine_legal_actions(&session.state);
                         let actor = server_core::acting_player(&session.state.waiting_for);
 

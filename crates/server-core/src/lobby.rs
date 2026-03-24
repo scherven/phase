@@ -86,6 +86,10 @@ impl LobbyManager {
             .collect()
     }
 
+    pub fn has_game(&self, game_code: &str) -> bool {
+        self.games.contains_key(game_code)
+    }
+
     pub fn timer_seconds(&self, game_code: &str) -> Option<u32> {
         self.games
             .get(game_code)
