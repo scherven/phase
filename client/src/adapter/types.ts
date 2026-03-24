@@ -381,7 +381,7 @@ export type WaitingFor =
   | { type: "SurveilChoice"; data: { player: PlayerId; cards: ObjectId[] } }
   | { type: "RevealChoice"; data: { player: PlayerId; cards: ObjectId[]; filter: unknown } }
   | { type: "SearchChoice"; data: { player: PlayerId; cards: ObjectId[]; count: number } }
-  | { type: "TriggerTargetSelection"; data: { player: PlayerId; target_slots: TargetSelectionSlot[]; target_constraints?: TargetSelectionConstraint[]; selection: TargetSelectionProgress } }
+  | { type: "TriggerTargetSelection"; data: { player: PlayerId; target_slots: TargetSelectionSlot[]; target_constraints?: TargetSelectionConstraint[]; selection: TargetSelectionProgress; source_id?: ObjectId; description?: string } }
   | { type: "BetweenGamesSideboard"; data: { player: PlayerId; game_number: number; score: MatchScore } }
   | { type: "BetweenGamesChoosePlayDraw"; data: { player: PlayerId; game_number: number; score: MatchScore } }
   | { type: "NamedChoice"; data: { player: PlayerId; choice_type: string | Record<string, unknown>; options: string[]; source_id?: ObjectId } }

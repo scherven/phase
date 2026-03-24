@@ -57,9 +57,7 @@ mod tuple_key_map {
         ser_map.end()
     }
 
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<HashMap<(ObjectId, usize), u32>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<(ObjectId, usize), u32>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -78,9 +76,9 @@ mod tuple_key_map {
             {
                 let mut map = HashMap::new();
                 while let Some((key, val)) = access.next_entry::<String, u32>()? {
-                    let (oid_str, idx_str) = key.split_once('_').ok_or_else(|| {
-                        de::Error::custom(format!("invalid tuple key: {key}"))
-                    })?;
+                    let (oid_str, idx_str) = key
+                        .split_once('_')
+                        .ok_or_else(|| de::Error::custom(format!("invalid tuple key: {key}")))?;
                     let oid = oid_str
                         .parse::<u64>()
                         .map(ObjectId)
@@ -358,6 +356,12 @@ pub enum WaitingFor {
         target_constraints: Vec<TargetSelectionConstraint>,
         #[serde(default)]
         selection: TargetSelectionProgress,
+        /// Source permanent that owns this trigger (for UI context).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_id: Option<ObjectId>,
+        /// Human-readable description of the trigger (from Oracle text).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
     BetweenGamesSideboard {
         player: PlayerId,
@@ -1568,6 +1572,8 @@ mod tests {
             }],
             target_constraints: vec![],
             selection: TargetSelectionProgress::default(),
+            source_id: None,
+            description: None,
         }));
         variants.push(Box::new(WaitingFor::ModeChoice {
             player: PlayerId(0),
@@ -1731,6 +1737,8 @@ mod tests {
             }],
             target_constraints: vec![],
             selection: TargetSelectionProgress::default(),
+            source_id: Some(ObjectId(10)),
+            description: Some("test trigger description".to_string()),
         };
         let json = serde_json::to_string(&wf).unwrap();
         let deserialized: WaitingFor = serde_json::from_str(&json).unwrap();

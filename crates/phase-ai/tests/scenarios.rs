@@ -26,6 +26,8 @@ fn scenario_prefers_opponent_target_over_self() {
             selected_slots: Vec::new(),
             current_legal_targets: vec![TargetRef::Player(P0), TargetRef::Player(P1)],
         },
+        source_id: None,
+        description: None,
     };
 
     let config = create_config(AiDifficulty::VeryHard, Platform::Native);
@@ -51,6 +53,8 @@ fn scenario_skips_optional_target_with_no_legal_choices() {
         }],
         target_constraints: Vec::new(),
         selection: Default::default(),
+        source_id: None,
+        description: None,
     };
 
     let config = create_config(AiDifficulty::VeryHard, Platform::Native);

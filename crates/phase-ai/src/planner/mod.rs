@@ -769,6 +769,8 @@ mod tests {
                 target_slots: Vec::new(),
                 target_constraints: Vec::new(),
                 selection: Default::default(),
+                source_id: None,
+                description: None,
             },
             candidates: Vec::new(),
         };

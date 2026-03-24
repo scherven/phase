@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import type { ModalChoice } from "../../adapter/types.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
@@ -14,10 +14,13 @@ export function ModeChoiceModal() {
   const isModeChoice = waitingFor?.type === "ModeChoice" || waitingFor?.type === "AbilityModeChoice";
   const isAbilityMode = waitingFor?.type === "AbilityModeChoice";
   const modal: ModalChoice | null = isModeChoice ? waitingFor.data.modal : null;
-  const unavailableModes: number[] =
-    isAbilityMode && "unavailable_modes" in waitingFor.data
-      ? (waitingFor.data.unavailable_modes ?? [])
-      : [];
+  const unavailableModes: number[] = useMemo(
+    () =>
+      isAbilityMode && "unavailable_modes" in waitingFor.data
+        ? (waitingFor.data.unavailable_modes ?? [])
+        : [],
+    [isAbilityMode, waitingFor],
+  );
   const isMyChoice = isModeChoice && waitingFor.data.player === playerId;
 
   const toggleMode = useCallback(

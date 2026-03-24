@@ -8,6 +8,7 @@ export function TargetingOverlay() {
   const playerId = usePlayerId();
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
+  const objects = useGameStore((s) => s.gameState?.objects);
 
   const isTargetSelection = waitingFor?.type === "TargetSelection" || waitingFor?.type === "TriggerTargetSelection";
   const isCopyTargetChoice = waitingFor?.type === "CopyTargetChoice";
@@ -16,6 +17,17 @@ export function TargetingOverlay() {
   const currentTargetSlot = selection?.current_slot ?? 0;
   const activeSlot = targetSlots[currentTargetSlot];
   const isOptionalCurrentSlot = activeSlot?.optional === true;
+
+  // Derive context for the targeting prompt
+  const sourceId = waitingFor?.type === "TriggerTargetSelection"
+    ? waitingFor.data.source_id
+    : waitingFor?.type === "TargetSelection"
+      ? waitingFor.data.pending_cast?.object_id
+      : undefined;
+  const sourceName = sourceId != null ? objects?.[sourceId]?.name : undefined;
+  const triggerDescription = waitingFor?.type === "TriggerTargetSelection"
+    ? waitingFor.data.description
+    : undefined;
 
   const handleCancel = useCallback(() => {
     dispatch({ type: "CancelCast" });
@@ -43,7 +55,12 @@ export function TargetingOverlay() {
         <div className="absolute inset-0 bg-black/30" />
 
         {/* Instruction text */}
-        <div className="absolute left-0 right-0 top-4 flex justify-center">
+        <div className="absolute left-0 right-0 top-4 flex flex-col items-center gap-1">
+          {sourceName && (
+            <div className="rounded-md bg-gray-800/90 px-4 py-1 text-sm font-medium text-amber-300 shadow">
+              {sourceName}
+            </div>
+          )}
           <div className="rounded-lg bg-gray-900/90 px-6 py-2 text-lg font-semibold text-cyan-400 shadow-lg">
             {isCopyTargetChoice
               ? "Choose a permanent to copy"
@@ -51,6 +68,11 @@ export function TargetingOverlay() {
                 ? `Choose target ${Math.min(currentTargetSlot + 1, targetSlots.length)} of ${targetSlots.length}`
                 : "Choose a target"}
           </div>
+          {triggerDescription && (
+            <div className="max-w-md rounded-md bg-gray-800/90 px-4 py-1 text-center text-xs text-gray-300 shadow">
+              {triggerDescription}
+            </div>
+          )}
         </div>
 
         {/* Player targets are handled by PlayerHud/OpponentHud glow + click */}

@@ -2199,6 +2199,8 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 target_slots,
                 target_constraints,
                 selection,
+                source_id: wf_source_id,
+                description: wf_description,
             },
             GameAction::ChooseTarget { target },
         ) => {
@@ -2213,6 +2215,8 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                         target_slots: target_slots.clone(),
                         target_constraints: target_constraints.clone(),
                         selection,
+                        source_id: *wf_source_id,
+                        description: wf_description.clone(),
                     }
                 }
                 TargetSelectionAdvance::Complete(selected_slots) => {
@@ -2422,6 +2426,10 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                             mode_abilities: vec![],
                             description: None,
                         });
+                        let trigger_description = state
+                            .pending_trigger
+                            .as_ref()
+                            .and_then(|t| t.description.clone());
                         let selection = begin_target_selection(&target_slots, &target_constraints)?;
                         return Ok(ActionResult {
                             events,
@@ -2430,6 +2438,8 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                                 target_slots,
                                 target_constraints,
                                 selection,
+                                source_id: Some(sid),
+                                description: trigger_description,
                             },
                             log_entries: vec![],
                         });
@@ -2986,6 +2996,8 @@ fn begin_pending_trigger_target_selection(
         target_slots,
         target_constraints,
         selection,
+        source_id: Some(trigger.source_id),
+        description: trigger.description.clone(),
     }))
 }
 
@@ -5878,6 +5890,8 @@ mod trigger_target_tests {
                 &[],
             )
             .unwrap(),
+            source_id: None,
+            description: None,
         };
 
         // Player selects target1
@@ -5954,6 +5968,8 @@ mod trigger_target_tests {
             }],
             target_constraints: Vec::new(),
             selection: crate::types::game_state::TargetSelectionProgress::default(),
+            source_id: None,
+            description: None,
         };
 
         // Try to select an illegal target
@@ -6081,6 +6097,8 @@ mod trigger_target_tests {
             ],
             target_constraints: vec![TargetSelectionConstraint::DifferentTargetPlayers],
             selection: crate::types::game_state::TargetSelectionProgress::default(),
+            source_id: None,
+            description: None,
         };
 
         let invalid = apply(
@@ -6184,6 +6202,8 @@ mod trigger_target_tests {
                 &target_constraints,
             )
             .unwrap(),
+            source_id: None,
+            description: None,
         };
 
         let intermediate = apply(

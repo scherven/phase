@@ -1318,6 +1318,8 @@ mod tests {
             }],
             target_constraints: Vec::new(),
             selection: Default::default(),
+            source_id: None,
+            description: None,
         };
 
         let actions = candidate_actions(&state);

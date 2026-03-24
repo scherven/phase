@@ -711,6 +711,8 @@ mod tests {
                 target_slots: Vec::new(),
                 target_constraints: Vec::new(),
                 selection: Default::default(),
+                source_id: None,
+                description: None,
             },
             candidates: Vec::new(),
         };
@@ -773,6 +775,8 @@ mod tests {
                     TargetRef::Player(PlayerId(1)),
                 ],
             },
+            source_id: None,
+            description: None,
         };
 
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
@@ -798,6 +802,8 @@ mod tests {
             }],
             target_constraints: Vec::new(),
             selection: Default::default(),
+            source_id: None,
+            description: None,
         };
 
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
