@@ -259,7 +259,12 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
             const data = msg.data as { game_code: string; player_token: string };
             localStorage.setItem(
               "phase-ws-session",
-              JSON.stringify({ gameCode: data.game_code, playerToken: data.player_token }),
+              JSON.stringify({
+                gameCode: data.game_code,
+                playerToken: data.player_token,
+                serverUrl: get().serverAddress,
+                timestamp: Date.now(),
+              }),
             );
             // Reset reconnect counter on successful (re)connection
             hostReconnectAttempt = 0;

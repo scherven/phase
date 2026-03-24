@@ -257,7 +257,7 @@ export function GameSetupPage() {
           setHostGameCode(data.game_code);
           localStorage.setItem(
             "phase-ws-session",
-            JSON.stringify({ gameCode: data.game_code, playerToken: data.player_token, timestamp: Date.now() }),
+            JSON.stringify({ gameCode: data.game_code, playerToken: data.player_token, serverUrl: serverAddress, timestamp: Date.now() }),
           );
           // AI games get GameStarted immediately — skip the waiting step
           if (!settings.aiSeats.length) {

@@ -51,9 +51,23 @@ export function MenuPage() {
 
     const saved = loadActiveGame();
     if (saved) {
-      const hasState = saved.mode === "online"
-        ? localStorage.getItem("phase-ws-session") !== null
-        : loadGame(saved.id) !== null;
+      let hasState: boolean;
+      if (saved.mode === "online") {
+        const raw = localStorage.getItem("phase-ws-session");
+        if (raw) {
+          try {
+            const session = JSON.parse(raw) as { timestamp?: number };
+            const TWO_HOURS = 2 * 60 * 60 * 1000;
+            hasState = Date.now() - (session.timestamp ?? 0) < TWO_HOURS;
+          } catch {
+            hasState = false;
+          }
+        } else {
+          hasState = false;
+        }
+      } else {
+        hasState = loadGame(saved.id) !== null;
+      }
       if (hasState) {
         setActiveGame(saved);
       } else {

@@ -174,21 +174,30 @@ async fn main() {
                 let mut mgr = bg_state.lock().await;
                 mgr.reconnect.check_expired()
             };
-            for game_code in &expired {
-                info!(game = %game_code, "grace period expired, ending game");
-                let conns = bg_connections.lock().await;
-                if let Some(players) = conns.get(game_code) {
-                    let msg = ServerMessage::GameOver {
-                        winner: None,
-                        reason: "Opponent disconnected (grace period expired)".to_string(),
-                    };
-                    for sender in players.values() {
-                        let _ = sender.send(msg.clone());
+            if !expired.is_empty() {
+                // Remove in-memory sessions first (state lock → connections lock order)
+                {
+                    let mut mgr = bg_state.lock().await;
+                    for game_code in &expired {
+                        mgr.sessions.remove(game_code);
                     }
                 }
-                // Clean up persisted session
-                if let Err(e) = bg_game_db.delete_session(game_code) {
-                    error!(game = %game_code, error = %e, "failed to delete persisted session");
+                // Notify connected players and clean up persistence
+                let conns = bg_connections.lock().await;
+                for game_code in &expired {
+                    info!(game = %game_code, "grace period expired, ending game");
+                    if let Some(players) = conns.get(game_code) {
+                        let msg = ServerMessage::GameOver {
+                            winner: None,
+                            reason: "Opponent disconnected (grace period expired)".to_string(),
+                        };
+                        for sender in players.values() {
+                            let _ = sender.send(msg.clone());
+                        }
+                    }
+                    if let Err(e) = bg_game_db.delete_session(game_code) {
+                        error!(game = %game_code, error = %e, "failed to delete persisted session");
+                    }
                 }
             }
 
