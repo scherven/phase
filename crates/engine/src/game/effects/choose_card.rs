@@ -19,7 +19,7 @@ pub fn resolve(
         _ => ("Graveyard", 1),
     };
 
-    // Collect cards from the specified zone belonging to the controller
+    // Collect cards from the specified zone belonging to the controller.
     let cards: Vec<_> = match origin_zone {
         "Graveyard" => state
             .players

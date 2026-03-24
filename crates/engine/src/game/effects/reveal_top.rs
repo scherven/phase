@@ -40,7 +40,7 @@ pub fn resolve(
     let start = library.len().saturating_sub(count);
     let revealed_ids = library[start..].to_vec();
 
-    // Mark as revealed
+    // CR 701.20b: Revealing a card doesn't cause it to leave the zone it's in.
     for &card_id in &revealed_ids {
         state.revealed_cards.insert(card_id);
     }

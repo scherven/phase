@@ -28,19 +28,26 @@ impl FromStr for Supertype {
     }
 }
 
-/// CR 205.3: Card types.
+/// CR 205.2a: Card types — the seven main types plus additional types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum CoreType {
+    /// CR 301: Artifacts — permanents cast at sorcery speed, with subtypes Equipment, Vehicle, etc.
     Artifact,
     Creature,
     Enchantment,
+    /// CR 304: Instants — spells castable any time a player has priority.
     Instant,
     Land,
+    /// CR 306: Planeswalkers — permanents with loyalty counters and loyalty abilities.
     Planeswalker,
     Sorcery,
+    /// CR 308.3: Legacy "tribal" type — errata'd to Kindred in current rules.
     Tribal,
+    /// CR 310: Battles — permanents with defense counters that can be attacked.
     Battle,
+    /// CR 308: Kindreds — cards that share creature subtypes with another card type.
     Kindred,
+    /// CR 309: Dungeons — nontraditional cards that exist in the command zone.
     Dungeon,
 }
 

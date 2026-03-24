@@ -4,42 +4,77 @@ use std::str::FromStr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// All replacement event types from Forge's replacement effect registry.
+/// All replacement event types from Forge's replacement effect registry (CR 614).
+///
+/// Replacement effects watch for a particular event and completely or partially
+/// replace it with a different event (CR 614.1). Effects using "instead" (CR 614.1a),
+/// "skip" (CR 614.1b), or "enters with/as" (CR 614.1c/d) are replacement effects.
+/// A replacement effect doesn't invoke itself repeatedly (CR 614.5), and if the
+/// original event never happens, the replacement has no effect (CR 614.7).
+///
 /// Matched case-sensitively against Forge event strings.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum ReplacementEvent {
     // --- First-class variants with active matchers/appliers ---
+
+    /// CR 614.1a + CR 614.2: Replaces damage being dealt from a source.
     DamageDone,
+    /// CR 614.8: Destruction-replacement (regeneration uses implicit "instead").
     Destroy,
+    /// CR 614.1a: Replaces a discard event with an alternative action.
     Discard,
+    /// CR 614.11: Replaces a card draw. Applies even if library is empty.
     Draw,
+    /// CR 614.1a: Replaces life loss with an alternative.
     LoseLife,
+    /// CR 614.1a: Replaces life gain with an alternative.
     GainLife,
+    /// CR 614.1e: Replaces a permanent being turned face up.
     TurnFaceUp,
+    /// CR 614.1a: Replaces a spell or ability being countered.
     Counter,
+    /// CR 614.12: Replaces how a permanent enters the battlefield or changes zones.
     ChangeZone,
+    /// CR 614.1a: Replaces an object moving zones (post-move replacement).
     Moved,
+    /// CR 614.1a: Replaces one or more counters being placed on an object.
     AddCounter,
+    /// CR 614.1a: Replaces one or more counters being removed from an object.
     RemoveCounter,
+    /// CR 614.1a: Replaces token creation with a modified event.
     CreateToken,
+    /// CR 614.1a: Replaces a permanent becoming tapped.
     Tap,
+    /// CR 614.1a: Replaces a permanent becoming untapped.
     Untap,
+    /// CR 614.2: Replaces damage being dealt to an object or player (receiver perspective).
     DealtDamage,
+    /// CR 614.1a: Replaces milling (putting cards from library into graveyard).
     Mill,
+    /// CR 614.1a: Replaces paying life as a cost or effect.
     PayLife,
+    /// CR 614.1a: Replaces a player's life total being reduced.
     LifeReduced,
+    /// CR 614.1a: Replaces attaching an Aura, Equipment, or Fortification.
     Attached,
 
     // --- Placeholder variants (recognized, no active logic yet) ---
+    /// CR 614.11: Replaces drawing multiple cards at once.
     DrawCards,
+    /// CR 106.6a: Replaces mana production (increases or changes mana produced).
     ProduceMana,
+    /// CR 614.1a: Replaces a scry event.
     Scry,
+    /// CR 614.1a: Replaces a transform event.
     Transform,
+    /// CR 614.1a: Replaces an explore event.
     Explore,
 
     // --- Stub-only Forge types (recognized but no-op) ---
     AssembleContraption,
+    /// CR 614.1b: Replaces the beginning of a phase (skip effects).
     BeginPhase,
+    /// CR 614.1b: Replaces the beginning of a turn (skip effects, CR 614.10).
     BeginTurn,
     Cascade,
     CopySpell,

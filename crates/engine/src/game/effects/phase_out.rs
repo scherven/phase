@@ -6,6 +6,8 @@ use crate::types::game_state::GameState;
 /// exist until its controller's next untap step.
 ///
 /// Stub: emits EffectResolved event. Full game logic is a follow-up.
+// CR 702.26b: A phased-out permanent is treated as though it does not exist.
+// CR 702.26d: The phasing event doesn't actually cause a zone change.
 // TODO(CR 702.26): Phase out is unimplemented — should remove permanent from game temporarily, preserving all state.
 pub fn resolve(
     state: &mut GameState,

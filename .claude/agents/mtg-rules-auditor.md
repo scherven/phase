@@ -75,9 +75,9 @@ Module-to-CR mapping reference (use as a starting point, not exhaustive):
 - `effects/deal_damage.rs` → CR 120 (Damage)
 - `effects/draw.rs` → CR 121 (Drawing)
 - `effects/token.rs` → CR 111 (Tokens)
-- `effects/counter.rs` → CR 701.5, `effects/destroy.rs` → CR 701.7
-- `effects/sacrifice.rs` → CR 701.17, `effects/discard.rs` → CR 701.8
-- `effects/search_library.rs` → CR 701.19
+- `effects/counter.rs` → CR 701.6, `effects/destroy.rs` → CR 701.8
+- `effects/sacrifice.rs` → CR 701.21, `effects/discard.rs` → CR 701.9
+- `effects/search_library.rs` → CR 701.23
 - Other `effects/` modules → relevant CR 7xx keyword action rules
 
 ### 3. Rule Verification — Use the Authoritative Source
@@ -98,8 +98,9 @@ Module-to-CR mapping reference (use as a starting point, not exhaustive):
 - Set `PROJECT_ROOT` at the start of each bash call, or use the Read tool with the absolute path instead
 
 **Verification rules:**
-- **ALWAYS verify rule numbers** against this file before citing them.
-- NEVER guess or hallucinate rule numbers. If you cannot find the rule in the file, flag it as "needs manual verification."
+- **ALWAYS verify rule numbers** against this file before citing them. Run `grep -n "^701.21" "$PROJECT_ROOT/docs/MagicCompRules.txt"` (or equivalent) for EVERY CR number you produce. No exceptions.
+- NEVER guess or hallucinate rule numbers. The 701.x keyword action numbers and 702.x keyword ability numbers are sequential with no mnemonic pattern — your training data WILL give you wrong numbers. The only reliable source is `docs/MagicCompRules.txt`.
+- If you cannot find the rule in the file, flag it as "needs manual verification." A wrong CR number is worse than a missing one.
 - Cross-reference existing annotations in the codebase against the rules file to catch incorrect citations.
 - When suggesting a CR annotation, quote the relevant rule text from the file to confirm accuracy.
 

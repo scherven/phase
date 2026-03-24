@@ -456,6 +456,8 @@ fn prepare_spell_cast(
             .or(warp_cost)
             .unwrap_or_else(|| obj.mana_cost.clone())
     };
+    // CR 304.1: Instants can be cast any time a player has priority.
+    // CR 301.1 / CR 306.1: Artifacts and planeswalkers are cast at sorcery speed.
     if let Err(base_timing_error) =
         restrictions::check_spell_timing(state, player, obj, &ability_def, false)
     {
@@ -476,6 +478,7 @@ fn prepare_spell_cast(
         ));
     }
 
+    // CR 408.3 + CR 903.8: Commanders cast from the command zone incur a tax.
     if obj.zone == Zone::Command {
         let tax = super::commander::commander_tax(state, object_id);
         if tax > 0 {
@@ -1534,6 +1537,9 @@ pub fn can_activate_ability_now(
     }
 }
 
+/// CR 602.2: To activate an ability is to put it onto the stack and pay its costs.
+/// CR 602.2a: Only an object's controller can activate its activated ability unless
+/// the object specifically says otherwise.
 pub fn handle_activate_ability(
     state: &mut GameState,
     player: PlayerId,
@@ -1546,6 +1552,7 @@ pub fn handle_activate_ability(
         .get(&source_id)
         .ok_or_else(|| EngineError::InvalidAction("Object not found".to_string()))?;
 
+    // CR 602.2: Only an object's controller can activate its activated ability.
     if obj.controller != player {
         return Err(EngineError::NotYourPriority);
     }

@@ -250,7 +250,18 @@ These patterns must be used on first write, not fixed after clippy complains:
 
 **Any code that implements, enforces, or directly references an MTG game rule MUST be annotated with the corresponding Comprehensive Rules (CR) number.** This is not optional — it is a required part of every rules-related change, same as `cargo fmt`.
 
-**Lookup:** The full Comprehensive Rules text is available at `docs/MagicCompRules.txt`. Always verify CR numbers against this file before annotating — do not guess rule numbers.
+**Lookup:** The full Comprehensive Rules text is available at `docs/MagicCompRules.txt`.
+
+**CRITICAL — Verification is mandatory, not optional:**
+Every CR number you write MUST be verified by grepping `docs/MagicCompRules.txt` BEFORE adding it to code. This is non-negotiable. Do NOT rely on memory or training data for CR numbers — the 701.x keyword action numbers and 702.x keyword ability numbers are especially prone to hallucination because they are arbitrary sequential assignments with no mnemonic pattern. A wrong CR number is worse than no CR number: it creates false confidence that code was verified against the wrong rule.
+
+```bash
+# REQUIRED before writing any CR annotation:
+grep -n "^701.21" docs/MagicCompRules.txt   # Verify: is 701.21 really Sacrifice?
+grep -n "^702.122" docs/MagicCompRules.txt  # Verify: is 702.122 really Crew?
+```
+
+If you cannot find the rule number in `docs/MagicCompRules.txt`, do NOT write the annotation. Flag it as "needs manual verification" instead.
 
 **Format — inline comments:**
 ```rust

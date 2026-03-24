@@ -22,7 +22,7 @@ pub fn shuffle_library(state: &mut GameState, player: PlayerId) {
 }
 
 /// Result of a single zone-move attempt through the replacement pipeline.
-enum ZoneMoveResult {
+pub(crate) enum ZoneMoveResult {
     /// Object was moved (or prevented). Continue processing.
     Done,
     /// A replacement effect needs a player choice before continuing.
@@ -35,7 +35,7 @@ enum ZoneMoveResult {
 /// Shared by both `resolve()` (targeted) and `resolve_all()` (mass) to ensure
 /// identical behavior for replacement effects, exile tracking, and auto-shuffle.
 #[allow(clippy::too_many_arguments)]
-fn execute_zone_move(
+pub(crate) fn execute_zone_move(
     state: &mut GameState,
     obj_id: ObjectId,
     from_zone: Zone,
@@ -867,7 +867,7 @@ mod tests {
             return_zone: Zone::Battlefield,
         });
 
-        // CR 610.3: ChangeZoneAll with ExiledBySource moves linked cards to graveyard.
+        // CR 607.2a + CR 406.6: ChangeZoneAll with ExiledBySource moves linked cards to graveyard.
         let ability = ResolvedAbility::new(
             Effect::ChangeZoneAll {
                 origin: Some(Zone::Exile),

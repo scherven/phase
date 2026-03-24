@@ -252,6 +252,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             }
             casting::handle_cast_spell(state, *player, object_id, card_id, &mut events)?
         }
+        // CR 602.1: Activated abilities have a cost and an effect, written as "[Cost]: [Effect.]"
         (
             WaitingFor::Priority { player },
             GameAction::ActivateAbility {
@@ -3428,8 +3429,8 @@ pub fn start_game_skip_mulligan(state: &mut GameState) -> ActionResult {
     }
 }
 
-/// Check if any exile-return sources have left the battlefield.
-/// If so, move the exiled cards back to the battlefield.
+/// CR 607.2a + CR 406.6: Check if any exile-return sources have left the battlefield.
+/// If so, move the exiled cards back — linked abilities track which cards were exiled by the source.
 fn check_exile_returns(state: &mut GameState, events: &mut Vec<GameEvent>) {
     let mut to_return: Vec<crate::types::game_state::ExileLink> = Vec::new();
 

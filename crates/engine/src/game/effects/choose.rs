@@ -5,6 +5,8 @@ use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::player::PlayerId;
 
 /// Choose: present the player with a named set of options (creature type, color, etc.).
+/// CR 700.2: Modal and choice-based spells/abilities require the controller to choose
+/// from available options as part of casting or resolution.
 /// Sets WaitingFor::NamedChoice so the player can select one.
 /// The engine processes the ChooseOption response in engine.rs,
 /// storing the result in GameState::last_named_choice for continuations.
@@ -104,12 +106,15 @@ const LAND_TYPES: &[&str] = &[
 ];
 
 /// Compute the valid options for a given choice type.
+/// CR 700.2: The controller of a modal spell or ability chooses options as part of
+/// casting or resolution. If an option would be illegal, it can't be chosen.
 fn compute_options(
     state: &GameState,
     choice_type: &ChoiceType,
     controller: PlayerId,
 ) -> Vec<String> {
     match choice_type {
+        // CR 205.3m: Creature types are shared between creature and kindred cards.
         ChoiceType::CreatureType => {
             if state.all_creature_types.is_empty() {
                 to_strings(FALLBACK_CREATURE_TYPES)
@@ -120,21 +125,28 @@ fn compute_options(
                 types
             }
         }
+        // CR 105.1: There are five colors: white, blue, black, red, and green.
         ChoiceType::Color => to_strings(COLORS),
         ChoiceType::OddOrEven => to_strings(ODD_OR_EVEN),
+        // CR 305.6: The basic land types are Plains, Island, Swamp, Mountain, and Forest.
         ChoiceType::BasicLandType => to_strings(BASIC_LAND_TYPES),
+        // CR 205.2a: The card types are artifact, battle, conspiracy, creature,
+        // dungeon, enchantment, instant, land, phenomenon, plane, planeswalker,
+        // scheme, sorcery, kindred, and vanguard.
         ChoiceType::CardType => to_strings(CARD_TYPES),
         // CardName options are provided by the frontend from its local card database.
         // The engine sends an empty list to avoid serializing 30k+ names every state update.
         ChoiceType::CardName => Vec::new(),
         ChoiceType::NumberRange { min, max } => (*min..=*max).map(|n| n.to_string()).collect(),
         ChoiceType::Labeled { options } => options.clone(),
+        // CR 205.3i: Land types include the basic land types plus Cave, Desert, Gate, etc.
         ChoiceType::LandType => to_strings(LAND_TYPES),
         // CR 800.4a: An opponent is any other player in the game.
         ChoiceType::Opponent => players::opponents(state, controller)
             .iter()
             .map(|id| id.0.to_string())
             .collect(),
+        // CR 102.1: A player is one of the people in the game.
         ChoiceType::Player => state.seat_order.iter().map(|id| id.0.to_string()).collect(),
         ChoiceType::TwoColors => two_color_options(),
     }

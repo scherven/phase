@@ -28,6 +28,7 @@ pub fn resolve(
         .find(|p| p.id == target_player)
         .ok_or(EffectError::PlayerNotFound)?;
 
+    // CR 701.24a: Randomize cards so that no player knows their order.
     player.library.shuffle(&mut state.rng);
 
     events.push(GameEvent::EffectResolved {

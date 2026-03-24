@@ -108,7 +108,7 @@ pub fn check_state_based_actions(state: &mut GameState, events: &mut Vec<GameEve
         // CR 704.5n: If an Equipment is attached to an illegal permanent, it becomes unattached.
         check_unattached_equipment(state, &mut any_performed);
 
-        // CR 704.5i: If a planeswalker has loyalty 0, it is put into its owner's graveyard.
+        // CR 704.5i + CR 306.9: If a planeswalker has loyalty 0, it is put into its owner's graveyard.
         check_zero_loyalty(state, events, &mut any_performed);
 
         // CR 704.5s + CR 714.4: If a Saga has lore counters >= its final chapter number,
@@ -405,7 +405,7 @@ fn check_unattached_auras(
     }
 }
 
-/// CR 704.5n: Equipment attached to an illegal permanent becomes unattached.
+/// CR 704.5n + CR 301.5c: Equipment attached to an illegal permanent becomes unattached.
 fn check_unattached_equipment(state: &mut GameState, any_performed: &mut bool) {
     let to_unattach: Vec<_> = state
         .battlefield
@@ -443,7 +443,7 @@ fn check_unattached_equipment(state: &mut GameState, any_performed: &mut bool) {
     }
 }
 
-/// CR 704.5i: A planeswalker with loyalty 0 is put into its owner's graveyard.
+/// CR 704.5i + CR 306.9: A planeswalker with loyalty 0 is put into its owner's graveyard.
 fn check_zero_loyalty(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,

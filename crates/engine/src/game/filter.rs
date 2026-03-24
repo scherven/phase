@@ -126,7 +126,8 @@ fn filter_inner(
             .tracked_object_sets
             .get(id)
             .is_some_and(|set| set.contains(&object_id)),
-        // CR 610.3: Match cards exiled by source via exile-until-leaves links.
+        // CR 607.2a + CR 406.6: Match cards exiled by source via exile-until-leaves links.
+        // CR 610.3: Linked abilities track which cards were exiled by the first ability.
         TargetFilter::ExiledBySource => state
             .exile_links
             .iter()
@@ -145,16 +146,21 @@ fn filter_inner(
 
 /// Check if an object matches a TypeFilter variant.
 /// Check if an object's card types match a `TypeFilter`.
+/// CR 205.2a: Each card type has its own rules for how it behaves.
 /// Public for use by trigger_matchers and other modules that need type checking.
 pub fn type_filter_matches(tf: &TypeFilter, obj: &GameObject) -> bool {
     match tf {
         TypeFilter::Creature => obj.card_types.core_types.contains(&CoreType::Creature),
         TypeFilter::Land => obj.card_types.core_types.contains(&CoreType::Land),
+        // CR 301: Artifact type check.
         TypeFilter::Artifact => obj.card_types.core_types.contains(&CoreType::Artifact),
         TypeFilter::Enchantment => obj.card_types.core_types.contains(&CoreType::Enchantment),
+        // CR 304: Instant type check.
         TypeFilter::Instant => obj.card_types.core_types.contains(&CoreType::Instant),
         TypeFilter::Sorcery => obj.card_types.core_types.contains(&CoreType::Sorcery),
+        // CR 306: Planeswalker type check.
         TypeFilter::Planeswalker => obj.card_types.core_types.contains(&CoreType::Planeswalker),
+        // CR 403.3: Permanents exist only on the battlefield — creatures, artifacts, enchantments, lands, planeswalkers.
         TypeFilter::Permanent => {
             obj.card_types.core_types.contains(&CoreType::Creature)
                 || obj.card_types.core_types.contains(&CoreType::Artifact)

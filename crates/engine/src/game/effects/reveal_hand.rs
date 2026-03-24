@@ -6,7 +6,7 @@ use crate::types::ability::{
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 
-/// RevealHand: reveal target player's hand, then let the caster choose a card.
+/// CR 701.20a: RevealHand — reveal target player's hand, then let the caster choose a card.
 ///
 /// Marks all cards in the target player's hand as revealed in `GameState.revealed_cards`
 /// (so `filter_state_for_player` doesn't hide them), emits `CardsRevealed`, and sets
@@ -58,7 +58,7 @@ pub fn resolve(
         return Ok(());
     }
 
-    // Mark all hand cards as revealed
+    // CR 701.20b: Revealing a card doesn't cause it to leave the zone it's in.
     for &card_id in &hand {
         state.revealed_cards.insert(card_id);
     }

@@ -17,6 +17,7 @@ pub fn resolve_gain(
     let player = &mut state.players[ability.controller.0 as usize];
     player.energy += amount;
 
+    // CR 122.1 + CR 107.14: Energy counters are counters placed on a player.
     events.push(GameEvent::EnergyChanged {
         player: ability.controller,
         delta: amount as i32,

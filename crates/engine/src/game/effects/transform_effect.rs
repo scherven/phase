@@ -18,6 +18,8 @@ pub fn resolve(
         }
     }
 
+    // CR 701.27c: If a spell or ability instructs a player to transform a permanent
+    // that isn't represented by a double-faced card, nothing happens.
     let object_id = match ability.targets.as_slice() {
         [TargetRef::Object(object_id)] => *object_id,
         [] => ability.source_id,

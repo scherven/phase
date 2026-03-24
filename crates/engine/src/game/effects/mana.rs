@@ -6,7 +6,7 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::mana::{ManaColor, ManaRestriction, ManaType, ManaUnit};
 
-/// Mana effect: adds mana to the controller's mana pool.
+/// Mana effect: adds mana to the controller's mana pool (CR 106.4).
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -20,7 +20,8 @@ pub fn resolve(
         } => (produced, restrictions, *expiry),
         _ => return Err(EffectError::MissingParam("Produced".to_string())),
     };
-    // ChosenColor needs to read from the source object's chosen_attributes
+    // CR 106.3: Mana is produced by the effects of mana abilities. The source
+    // of produced mana is the source of the ability.
     let mana_types = match produced {
         ManaProduction::ChosenColor { count } => {
             let amount = resolve_quantity(&*state, count, ability.controller, ability.source_id)
@@ -44,6 +45,8 @@ pub fn resolve(
         .find(|p| p.id == ability.controller)
         .ok_or(EffectError::PlayerNotFound)?;
 
+    // CR 106.4: When an effect instructs a player to add mana, that mana goes
+    // into that player's mana pool.
     for mana_type in mana_types {
         let unit = ManaUnit {
             color: mana_type,
@@ -70,6 +73,7 @@ pub fn resolve(
 }
 
 /// Resolve parse-time restriction templates into concrete `ManaRestriction` values.
+/// CR 106.6: Some spells or abilities that produce mana restrict how that mana can be spent.
 fn resolve_restrictions(
     templates: &[ManaSpendRestriction],
     state: &GameState,
@@ -108,13 +112,17 @@ pub(crate) fn resolve_mana_types(
     source_id: crate::types::identifiers::ObjectId,
 ) -> Vec<ManaType> {
     match produced {
+        // CR 106.1a: Colored mana is produced in the five standard colors.
         ManaProduction::Fixed { colors } => colors.iter().map(mana_color_to_type).collect(),
+        // CR 106.1b: Colorless mana is a type of mana distinct from colored mana.
         ManaProduction::Colorless { count } => {
             vec![
                 ManaType::Colorless;
                 resolve_quantity(state, count, controller, source_id).max(0) as usize
             ]
         }
+        // CR 106.5: If an ability would produce one or more mana of an undefined type,
+        // it produces no mana instead.
         ManaProduction::AnyOneColor {
             count,
             color_options,
@@ -142,6 +150,8 @@ pub(crate) fn resolve_mana_types(
 }
 
 /// Convert a ManaColor to the runtime ManaType.
+/// CR 106.1a: There are five colors of mana: white, blue, black, red, and green.
+/// CR 106.1b: There are six types of mana: white, blue, black, red, green, and colorless.
 fn mana_color_to_type(color: &ManaColor) -> ManaType {
     match color {
         ManaColor::White => ManaType::White,

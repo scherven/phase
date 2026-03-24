@@ -22,7 +22,7 @@ pub fn resolve(
                 continue;
             }
 
-            // Only sacrifice things on the battlefield
+            // CR 701.21a: A player can't sacrifice something that isn't a permanent.
             if obj.zone != Zone::Battlefield {
                 continue;
             }

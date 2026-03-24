@@ -31,6 +31,7 @@ pub fn resolve(
     Ok(())
 }
 
+/// CR 701.3c: Attaching to a different object gives the attachment a new timestamp.
 /// Core attachment logic: attach `attachment_id` to `target_id`.
 /// Handles detaching from a previous target if already attached.
 pub fn attach_to(state: &mut GameState, attachment_id: ObjectId, target_id: ObjectId) {

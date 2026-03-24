@@ -5,28 +5,41 @@ use std::str::FromStr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// All trigger modes from Forge's TriggerType enum.
+/// All trigger modes from Forge's TriggerType enum (CR 603).
+///
+/// Triggered abilities have a trigger condition and an effect, written as
+/// "[When/Whenever/At] [trigger condition], [effect]" (CR 603.1). When a game event
+/// matches a trigger condition, the ability automatically triggers (CR 603.2) and is
+/// placed on the stack the next time a player would receive priority (CR 603.3).
+///
 /// Matched case-sensitively against Forge trigger mode strings.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum TriggerMode {
-    // Zone changes
+    // Zone changes — CR 603.6: zone-change triggers look for objects in their new zone.
+    /// CR 603.6a: Enters-the-battlefield and other zone-change triggers.
     ChangesZone,
+    /// CR 603.6: Zone change affecting all objects matching a filter.
     ChangesZoneAll,
+    /// CR 603.2e: "Becomes" trigger — fires when control changes, not while state persists.
     ChangesController,
+    /// CR 603.6c: Leaves-the-battlefield trigger — fires when a permanent moves from battlefield.
     LeavesBattlefield,
 
-    // Damage
+    // Damage — CR 120 (Damage)
+    /// CR 120.2: Trigger when a source deals damage.
     DamageDone,
     DamageDoneOnce,
     DamageAll,
     DamageDealtOnce,
     DamageDoneOnceByController,
+    /// CR 120.2: Trigger when an object or player is dealt damage.
     DamageReceived,
     DamagePreventedOnce,
     ExcessDamage,
     ExcessDamageAll,
 
-    // Spells and abilities
+    // Spells and abilities — CR 601.2i: triggers when a spell is cast or put on the stack.
+    /// CR 601.2i: Triggers when a spell becomes cast.
     SpellCast,
     SpellCopy,
     SpellCastOrCopy,
@@ -35,25 +48,35 @@ pub enum TriggerMode {
     AbilityTriggered,
     SpellAbilityCast,
     SpellAbilityCopy,
+    /// CR 603.2g: Triggers when a spell or ability is countered (event must actually occur).
     Countered,
 
-    // Combat -- attackers
+    // Combat -- attackers (CR 508.3: trigger conditions for attackers being declared)
+    /// CR 508.3a: "Whenever [a creature] attacks" — triggers when declared as attacker.
     Attacks,
+    /// CR 508.3d: "Whenever [a player] attacks" — triggers when one or more creatures attack.
     AttackersDeclared,
+    /// CR 508.3d: "Whenever you attack" — triggers for the attacking player.
     YouAttack,
     AttackersDeclaredOneTarget,
+    /// CR 509.1h: Triggers when an attacking creature becomes blocked.
     AttackerBlocked,
     AttackerBlockedOnce,
+    /// CR 509.1h: Triggers when a specific creature blocks the attacker.
     AttackerBlockedByCreature,
     AttackerUnblocked,
     AttackerUnblockedOnce,
 
-    // Combat -- blockers
+    // Combat -- blockers (CR 509)
+    /// CR 509.1h: "Whenever [a creature] blocks" — triggers when declared as blocker.
     Blocks,
+    /// CR 509.4: Triggers after all blockers are declared.
     BlockersDeclared,
+    /// CR 509.1h + CR 603.2e: "Becomes blocked" trigger.
     BecomesBlocked,
 
-    // Counters
+    // Counters — CR 122 (Counters)
+    /// CR 122.6: Triggers when one or more counters are placed on a permanent or player.
     CounterAdded,
     CounterAddedOnce,
     CounterAddedAll,
@@ -63,86 +86,126 @@ pub enum TriggerMode {
     CounterRemovedOnce,
 
     // Permanents
+    /// CR 701.21: Triggers when a permanent is sacrificed.
     Sacrificed,
     SacrificedOnce,
+    /// CR 701.8: Triggers when a permanent is destroyed.
     Destroyed,
+    /// CR 701.26: Triggers when a permanent becomes tapped.
     Taps,
+    /// CR 106.12a: Triggers when a permanent is tapped for mana.
     TapsForMana,
     TapAll,
+    /// CR 701.26: Triggers when a permanent becomes untapped.
     Untaps,
     UntapAll,
 
-    // Targeting
+    // Targeting — CR 115 (Targets)
+    /// CR 603.2e: "Becomes the target" trigger — fires when a spell/ability targets an object.
     BecomesTarget,
     BecomesTargetOnce,
 
     // Cards
+    /// CR 121.1: Triggers when a player draws a card.
     Drawn,
+    /// CR 701.9: Triggers when a player discards a card.
     Discarded,
     DiscardedAll,
+    /// CR 701.17: Triggers when cards are milled (put from library into graveyard).
     Milled,
     MilledOnce,
     MilledAll,
     Exiled,
     Revealed,
+    /// CR 701.24: Triggers when a library is shuffled.
     Shuffled,
 
-    // Life
+    // Life — CR 119 (Life)
+    /// CR 119.4: Triggers when a player gains life.
     LifeGained,
+    /// CR 119.3: Triggers when a player loses life.
     LifeLost,
     LifeLostAll,
     PayLife,
+    /// CR 702.24: Cumulative upkeep trigger.
     PayCumulativeUpkeep,
+    /// CR 702.30: Echo trigger.
     PayEcho,
 
-    // Tokens
+    // Tokens — CR 111 (Tokens)
+    /// CR 111.1: Triggers when a token is created.
     TokenCreated,
     TokenCreatedOnce,
 
     // Face / transform
+    /// CR 702.37e: Triggers when a face-down permanent is turned face up (morph/manifest/cloak).
     TurnFaceUp,
+    /// CR 701.27: Triggers when a permanent transforms.
     Transformed,
 
-    // Phase / turn
+    // Phase / turn — CR 603.2b: "at the beginning of" phase/step triggers.
+    /// CR 603.2b: "At the beginning of [phase/step]" — triggers at phase start.
     Phase,
+    /// CR 702.26: Triggers when a phased-out permanent phases in.
     PhaseIn,
+    /// CR 702.26: Triggers when a permanent phases out.
     PhaseOut,
     PhaseOutAll,
+    /// CR 603.2b: "At the beginning of [a player's] turn" trigger.
     TurnBegin,
     NewGame,
 
     // Monarch / initiative
+    /// CR 724: Triggers when a player becomes the monarch.
     BecomeMonarch,
+    /// CR 725: Triggers when a player takes the initiative.
     TakesInitiative,
 
     // Game state
+    /// CR 104.3a: Triggers when a player loses the game.
     LosesGame,
 
     // Triggered mechanics
+    /// CR 702.72: Champion trigger.
     Championed,
+    /// CR 701.43: Triggers when a creature is exerted.
     Exerted,
+    /// CR 702.122: Triggers when a Vehicle becomes crewed.
     Crewed,
+    /// CR 702.174: Triggers when a creature becomes saddled.
     Saddled,
+    /// CR 702.29: Triggers when a card is cycled.
     Cycled,
+    /// CR 702.100: Evolve trigger — when a creature enters with greater power/toughness.
     Evolved,
+    /// CR 701.44: Triggers when a creature explores.
     Explored,
+    /// CR 702.110: Exploit trigger — when a creature exploits another creature.
     Exploited,
+    /// CR 702.154: Triggers when a creature becomes enlisted.
     Enlisted,
 
     // Mana
+    /// CR 106.4: Triggers when mana is added to a player's mana pool.
     ManaAdded,
     ManaExpend,
 
     // Land
+    /// CR 305.1 + CR 505.6b: Triggers when a land is played.
     LandPlayed,
 
-    // Equipment / aura
+    // Equipment / aura — CR 701.3 (Attach)
+    /// CR 701.3: Triggers when an Aura, Equipment, or Fortification becomes attached.
     Attached,
+    /// CR 701.3: Triggers when an Equipment or Aura becomes unattached.
     Unattach,
 
     // Adapt / amass / learn / venture
+    /// CR 701.46: Triggers when a creature adapts.
     Adapt,
+    /// CR 702.143: Triggers when a card is foretold.
     Foretell,
+    /// CR 701.16: Triggers when a player investigates.
     Investigated,
 
     // Dungeon
@@ -161,7 +224,8 @@ pub enum TriggerMode {
     FlippedCoin,
     Clashed,
 
-    // Day/night
+    // Day/night — CR 730 (Day and Night)
+    /// CR 730: Triggers when it becomes day or night.
     DayTimeChanges,
 
     // Class
@@ -175,18 +239,24 @@ pub enum TriggerMode {
     Vote,
 
     // Renown / monstrous
+    /// CR 702.112: Triggers when a creature becomes renowned.
     BecomeRenowned,
+    /// CR 702.99: Triggers when a creature becomes monstrous.
     BecomeMonstrous,
 
     // Prowl / misc mechanics
+    /// CR 701.34: Triggers when a player proliferates.
     Proliferate,
     RingTemptsYou,
 
     // Surveil / scry
+    /// CR 701.25: Triggers when a player surveils.
     Surveil,
+    /// CR 701.22: Triggers when a player scries.
     Scry,
 
     // Combat events
+    /// CR 701.14: Triggers when creatures fight.
     Fight,
     FightOnce,
 
@@ -217,12 +287,13 @@ pub enum TriggerMode {
     BecomesPlotted,
     BecomesSaddled,
     Immediate,
+    /// CR 603.1: "Always" — a special trigger mode representing a continuous trigger condition.
     Always,
 
     // Compound triggers
-    /// "Whenever ~ enters or attacks" — fires on both ETB and attack events.
+    /// "Whenever ~ enters or attacks" — fires on both ETB (CR 603.6a) and attack (CR 508.3a) events.
     EntersOrAttacks,
-    /// "Whenever ~ attacks or blocks" — fires on both attack and block events.
+    /// "Whenever ~ attacks or blocks" — fires on both attack (CR 508.3a) and block (CR 509.1h) events.
     AttacksOrBlocks,
 
     // Elemental bending

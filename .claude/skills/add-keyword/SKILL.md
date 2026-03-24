@@ -9,6 +9,8 @@ Keywords are strongly-typed abilities stored on GameObjects and evaluated across
 
 **Before you start:** Trace how `Ward` works end-to-end — it's a parameterized keyword with targeting interaction: `Keyword::Ward(ManaCost)` in `keywords.rs` → `FromStr` parsing → `targeting.rs` check → layer grant via `AddKeyword`.
 
+> **CR Verification Rule:** Every CR number in annotations MUST be verified by grepping `docs/MagicCompRules.txt` before writing. Do NOT rely on memory — 702.x keyword ability numbers are arbitrary sequential assignments that LLMs consistently hallucinate (e.g., Crew is 702.122, not 702.148). Run `grep -n "^702.122" docs/MagicCompRules.txt` for every number. If you cannot find it, do not write the annotation.
+
 ---
 
 ## MTG Rules Reference

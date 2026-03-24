@@ -9,6 +9,8 @@ The Oracle parser converts MTGJSON Oracle text into typed `AbilityDefinition` st
 
 **Before you start:** Read `docs/parser-instructions.md` for the official contribution guide. This skill supplements that document with architectural detail and the full parsing priority system.
 
+> **CR Verification Rule:** Every CR number in annotations MUST be verified by grepping `docs/MagicCompRules.txt` before writing. Do NOT rely on memory — 701.x and 702.x numbers are arbitrary sequential assignments that LLMs consistently hallucinate. Run `grep -n "^701.21" docs/MagicCompRules.txt` (etc.) for every number. If you cannot find it, do not write the annotation.
+
 ---
 
 ## Architecture Overview

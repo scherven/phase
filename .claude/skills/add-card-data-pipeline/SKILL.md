@@ -14,6 +14,8 @@ The card data pipeline converts raw MTGJSON card data into the typed `card-data.
 
 **Before you start:** Run the pipeline end-to-end once to see what it produces: `cargo run --release --bin oracle-gen -- data --stats > /tmp/test-export.json 2>/tmp/stats.txt && head -1 /tmp/stats.txt`
 
+> **CR Verification Rule:** Every CR number in annotations MUST be verified by grepping `docs/MagicCompRules.txt` before writing. Do NOT rely on memory — 701.x and 702.x numbers are arbitrary sequential assignments that LLMs consistently hallucinate. Run `grep -n "^701.21" docs/MagicCompRules.txt` (etc.) for every number. If you cannot find it, do not write the annotation.
+
 ---
 
 ## Pipeline Flow

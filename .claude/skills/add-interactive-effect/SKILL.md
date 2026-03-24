@@ -16,6 +16,8 @@ The core mechanism is the **continuation pattern**: `resolve_ability_chain()` de
 - AI: `legal_actions.rs` — generates legal card selections
 - Frontend: `CardChoiceModal` → `ScryModal`
 
+> **CR Verification Rule:** Every CR number in annotations MUST be verified by grepping `docs/MagicCompRules.txt` before writing. Do NOT rely on memory — 701.x and 702.x numbers are arbitrary sequential assignments that LLMs consistently hallucinate. Run `grep -n "^701.22" docs/MagicCompRules.txt` (etc.) for every number. If you cannot find it, do not write the annotation.
+
 ---
 
 ## The Continuation Pattern

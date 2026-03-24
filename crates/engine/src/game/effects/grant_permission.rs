@@ -2,8 +2,12 @@ use crate::types::ability::{CastingPermission, Effect, EffectError, EffectKind, 
 use crate::types::events::{BendingType, GameEvent};
 use crate::types::game_state::GameState;
 
-/// Grant a CastingPermission to the target object.
-/// Building block for Airbending, Foretell, Suspend, and similar "cast from exile" mechanics.
+/// Grant a CastingPermission to the target object (CR 604.6).
+///
+/// Implements static abilities that modify where/how a card can be cast, such as
+/// "You may cast this card from exile" (CR 604.6: static abilities that apply while
+/// a card is in a zone you could cast it from). Building block for Airbending,
+/// Foretell, Suspend, and similar "cast from exile" mechanics.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,

@@ -11,7 +11,9 @@ use super::stack;
 
 use crate::types::ability::ResolvedAbility;
 
-/// CR 306.5d / CR 606.3: Loyalty abilities may only be activated once per turn, during the controller's main phase with empty stack.
+/// CR 306.5d + CR 606.3: Loyalty abilities may only be activated once per turn,
+/// during the controller's main phase with empty stack.
+/// CR 606.1: Loyalty abilities are activated abilities with a loyalty symbol in their cost.
 pub fn can_activate_loyalty(
     state: &GameState,
     planeswalker_id: ObjectId,
@@ -22,7 +24,7 @@ pub fn can_activate_loyalty(
         None => return false,
     };
 
-    // Must be a planeswalker on the battlefield controlled by player
+    // CR 306.5d: Must be a planeswalker on the battlefield controlled by player.
     if !obj.card_types.core_types.contains(&CoreType::Planeswalker) {
         return false;
     }
@@ -33,12 +35,12 @@ pub fn can_activate_loyalty(
         return false;
     }
 
-    // Once per turn
+    // CR 606.3: Only if no player has previously activated a loyalty ability of that permanent that turn.
     if obj.loyalty_activated_this_turn {
         return false;
     }
 
-    // Sorcery speed: main phase, empty stack, active player
+    // CR 606.3: Sorcery speed — main phase, empty stack, active player has priority.
     if !matches!(state.phase, Phase::PreCombatMain | Phase::PostCombatMain) {
         return false;
     }
@@ -52,11 +54,11 @@ pub fn can_activate_loyalty(
     true
 }
 
-/// Activate a planeswalker loyalty ability.
+/// CR 606.2: Activate a planeswalker loyalty ability.
 ///
-/// Parses the loyalty cost from the ability text (e.g. "+1", "-3", "0"),
+/// CR 606.4: Parses the loyalty cost from the ability definition (e.g. "+1", "-3", "0"),
 /// adjusts loyalty counters, marks activated this turn, and pushes
-/// the ability onto the stack.
+/// the ability onto the stack (CR 602.2a).
 pub fn handle_activate_loyalty(
     state: &mut GameState,
     player: PlayerId,
@@ -85,7 +87,8 @@ pub fn handle_activate_loyalty(
     let loyalty_cost = parse_loyalty_cost(ability_def);
     let current_loyalty = obj.loyalty.unwrap_or(0) as i32;
 
-    // For minus abilities, must have enough loyalty
+    // CR 606.6: A loyalty ability with a negative loyalty cost can't be activated unless the
+    // permanent has at least that many loyalty counters on it.
     if loyalty_cost < 0 && current_loyalty + loyalty_cost < 0 {
         return Err(EngineError::ActionNotAllowed(
             "Not enough loyalty to activate ability".to_string(),
@@ -95,8 +98,7 @@ pub fn handle_activate_loyalty(
     // Build a ResolvedAbility for the stack from the typed definition
     let resolved = build_pw_resolved(ability_def, pw_id, player);
 
-    // Adjust loyalty
-    // CR 306.5d: Loyalty abilities add/remove loyalty counters as a cost.
+    // CR 606.4: The cost to activate a loyalty ability is to put on or remove loyalty counters.
     // Sync both obj.loyalty (display) and obj.counters[Loyalty] (used by HasCounters condition).
     let new_loyalty = (current_loyalty + loyalty_cost).max(0) as u32;
     let obj = state.objects.get_mut(&pw_id).unwrap();

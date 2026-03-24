@@ -51,7 +51,7 @@ pub fn resolve_tap(
     Ok(())
 }
 
-/// Untap target permanents.
+/// CR 701.26b: Untap target permanents — rotate back to upright position.
 pub fn resolve_untap(
     state: &mut GameState,
     ability: &ResolvedAbility,

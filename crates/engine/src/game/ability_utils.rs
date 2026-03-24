@@ -12,6 +12,8 @@ use super::engine::EngineError;
 use super::targeting;
 use super::triggers;
 
+/// CR 113.1a: Build a resolved ability from its definition, preserving sub-ability chains,
+/// conditions, durations, and targeting configuration.
 pub fn build_resolved_from_def(
     def: &AbilityDefinition,
     source_id: ObjectId,
@@ -42,6 +44,8 @@ pub fn build_resolved_from_def(
     resolved
 }
 
+/// CR 700.2: For modal spells/abilities, build a chained resolved ability from the
+/// selected mode indices, linking them via the sub_ability chain.
 pub fn build_chained_resolved(
     abilities: &[AbilityDefinition],
     indices: &[usize],
@@ -75,6 +79,8 @@ pub fn find_first_target_filter_in_chain(ability: &ResolvedAbility) -> Option<&T
         .and_then(find_first_target_filter_in_chain)
 }
 
+/// CR 601.2c / CR 602.2b: Collect all target slots for an ability chain. Each targeting
+/// effect in the chain produces a slot whose legal targets are computed from the game state.
 pub fn build_target_slots(
     state: &GameState,
     ability: &ResolvedAbility,
@@ -166,6 +172,7 @@ pub enum TargetSelectionAdvance {
     Complete(Vec<Option<TargetRef>>),
 }
 
+/// CR 601.2c: Begin target selection by computing legal targets for the first slot.
 pub fn begin_target_selection(
     target_slots: &[TargetSelectionSlot],
     constraints: &[TargetSelectionConstraint],
@@ -173,6 +180,8 @@ pub fn begin_target_selection(
     build_target_selection_progress(target_slots, constraints, 0, Vec::new())
 }
 
+/// CR 115.1: Targets are declared as part of putting a spell or ability on the stack.
+/// CR 115.3: The same target can't be chosen multiple times for one instance of "target".
 pub fn choose_target(
     target_slots: &[TargetSelectionSlot],
     constraints: &[TargetSelectionConstraint],
@@ -236,6 +245,8 @@ pub fn auto_select_targets(
     }
 }
 
+/// CR 608.2b: When resolving, check that targets are still legal. If all targets are illegal,
+/// the spell or ability doesn't resolve.
 pub fn validate_selected_targets(
     target_slots: &[TargetSelectionSlot],
     targets: &[TargetRef],
@@ -290,6 +301,7 @@ pub fn generate_target_assignments(
     out
 }
 
+/// CR 601.2c: Assign chosen targets to the correct effects in the ability chain.
 pub fn assign_targets_in_chain(
     ability: &mut ResolvedAbility,
     targets: &[TargetRef],
@@ -337,6 +349,7 @@ pub fn flatten_targets_in_chain(ability: &ResolvedAbility) -> Vec<TargetRef> {
     targets
 }
 
+/// CR 608.2b: Re-validate targets on resolution — remove any that are no longer legal.
 pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -> ResolvedAbility {
     let mut validated = ability.clone();
     validated.targets = match triggers::extract_target_filter_from_effect(&validated.effect) {
@@ -640,6 +653,7 @@ fn assign_selected_slots_recursive(
     Ok(())
 }
 
+/// CR 115.3: Validate targeting constraints — e.g., different target players must be distinct.
 fn validate_target_constraints(
     targets: &[TargetRef],
     constraints: &[TargetSelectionConstraint],
@@ -683,6 +697,9 @@ fn chain_has_target_sink(ability: &ResolvedAbility) -> bool {
         .is_some_and(chain_has_target_sink)
 }
 
+/// CR 700.2a: The controller of a modal spell or activated ability chooses the mode(s)
+/// as part of casting. If a mode would be illegal, it can't be chosen.
+/// CR 700.2d: A player normally can't choose the same mode more than once.
 pub fn validate_modal_indices(
     modal: &ModalChoice,
     indices: &[usize],
@@ -721,6 +738,7 @@ pub fn validate_modal_indices(
     Ok(())
 }
 
+/// CR 700.2d: Generate all valid mode selection sequences for a modal spell/ability.
 pub fn generate_modal_index_sequences(modal: &ModalChoice) -> Vec<Vec<usize>> {
     let mut actions = Vec::new();
     for count in modal.min_choices..=modal.max_choices {

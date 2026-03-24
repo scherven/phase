@@ -16,12 +16,13 @@ pub fn commander_tax(state: &GameState, commander_id: ObjectId) -> u32 {
         * 2
 }
 
-/// Record that a commander was cast from the command zone, incrementing its cast count.
+/// CR 408.3 + CR 903.8: Record that a commander was cast from the command zone, incrementing its cast count.
 pub fn record_commander_cast(state: &mut GameState, commander_id: ObjectId) {
     *state.commander_cast_count.entry(commander_id).or_insert(0) += 1;
 }
 
-/// CR 903.9a: Commander owner may put it into the command zone instead of graveyard or exile.
+/// CR 903.9a + CR 408.1: Commander owner may put it into the command zone instead of graveyard or exile.
+/// CR 408.1: The command zone is reserved for specialized objects that have an overarching effect on the game.
 ///
 /// Returns true if an object is a commander and its destination is Graveyard or Exile,
 /// meaning it should be redirected to the command zone instead.
@@ -95,6 +96,7 @@ pub fn can_cast_in_color_identity(
 }
 
 /// CR 903.5a: Commander deck must have exactly 100 cards. CR 903.5b: Singleton except basic lands.
+/// CR 408.3: In Commander, the commander card starts the game in the command zone.
 ///
 /// Validate a Commander deck: 100 cards, singleton (except basics), all cards within
 /// commander's color identity.

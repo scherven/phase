@@ -1,20 +1,46 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Represents the phases and steps of a turn (CR 500.1).
+///
+/// A turn consists of five phases: beginning, precombat main, combat,
+/// postcombat main, and ending. The beginning, combat, and ending phases
+/// are further broken down into steps.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum Phase {
+    // --- Beginning phase (CR 501.1): untap, upkeep, draw ---
+    /// CR 502: Untap step. No player receives priority (CR 502.4).
     #[default]
     Untap,
+    /// CR 503: Upkeep step. Active player gets priority after triggered abilities are put on stack.
     Upkeep,
+    /// CR 504: Draw step. Active player draws a card as a turn-based action (CR 504.1).
     Draw,
+
+    // --- Main phase (CR 505) ---
+    /// CR 505.1: Precombat main phase. Players may cast non-instant spells (CR 505.6a).
     PreCombatMain,
+
+    // --- Combat phase (CR 506): five steps ---
+    /// CR 507: Beginning of combat step.
     BeginCombat,
+    /// CR 508: Declare attackers step. Active player declares attackers (CR 508.1).
     DeclareAttackers,
+    /// CR 509: Declare blockers step. Defending player declares blockers (CR 509.1).
     DeclareBlockers,
+    /// CR 510: Combat damage step. Attacking/blocking creatures assign and deal damage.
     CombatDamage,
+    /// CR 511: End of combat step. "At end of combat" triggered abilities trigger.
     EndCombat,
+
+    // --- Postcombat main phase (CR 505.1) ---
+    /// CR 505.1: Postcombat main phase. Follows the combat phase.
     PostCombatMain,
+
+    // --- Ending phase (CR 512): end step + cleanup step ---
+    /// CR 513: End step. "At the beginning of the end step" abilities trigger.
     End,
+    /// CR 514: Cleanup step. Active player discards to hand size, damage is removed (CR 514.1).
     Cleanup,
 }
 

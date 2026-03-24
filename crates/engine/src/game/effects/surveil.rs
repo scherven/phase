@@ -20,6 +20,7 @@ pub fn resolve(
         .ok_or(EffectError::PlayerNotFound)?;
 
     let count = surveil_num.min(player.library.len());
+    // CR 701.25c: If a player is instructed to surveil 0, no surveil event occurs.
     if count == 0 {
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),

@@ -7,6 +7,7 @@ use crate::types::mana::{ManaCost, ManaCostShard, ManaPool, ManaType, ManaUnit, 
 use crate::types::player::PlayerId;
 
 /// Color demand array indexed by WUBRG (White=0, Blue=1, Black=2, Red=3, Green=4).
+/// CR 107.4a: The five colors are white ({W}), blue ({U}), black ({B}), red ({R}), green ({G}).
 pub type ColorDemand = [u32; 5];
 
 fn mana_type_to_demand_index(mt: ManaType) -> Option<usize> {
@@ -79,13 +80,21 @@ pub enum PaymentError {
     InvalidCost,
 }
 
-/// Result of a phyrexian mana payment that used life instead of mana.
+/// Result of a Phyrexian mana payment that used life instead of mana (CR 107.4f).
+///
+/// CR 107.4f: A Phyrexian mana symbol represents a cost that can be paid either
+/// with one mana of its color or by paying 2 life.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LifePayment {
     pub player_id: PlayerId,
     pub amount: i32,
 }
 
+/// Produce mana and add it to a player's mana pool (CR 106.3 + CR 106.4).
+///
+/// CR 106.3: Mana is produced by mana abilities. The source of the mana is the
+/// source of the ability that produced it (CR 113.7).
+/// CR 106.4: When an effect instructs a player to add mana, it goes into their mana pool.
 pub fn produce_mana(
     state: &mut GameState,
     source_id: ObjectId,
@@ -115,12 +124,17 @@ pub fn produce_mana(
     });
 }
 
+/// Check if the mana pool can pay the given cost (CR 202.1a).
+///
+/// CR 202.1a: Paying a mana cost requires matching the type of any colored or colorless
+/// mana symbols as well as paying the generic mana indicated in the cost.
 pub fn can_pay(pool: &ManaPool, cost: &ManaCost) -> bool {
     can_pay_for_spell(pool, cost, None)
 }
 
 /// Check if the pool can pay the cost, respecting mana restrictions when `spell` is provided.
 ///
+/// CR 106.6: Some abilities that produce mana restrict how that mana can be spent.
 /// When `spell` is `Some`, restricted mana (e.g., "only for creature spells") is only
 /// counted if the restriction permits the given spell. When `None`, all mana is eligible.
 pub fn can_pay_for_spell(pool: &ManaPool, cost: &ManaCost, spell: Option<&SpellMeta>) -> bool {
@@ -137,6 +151,7 @@ pub fn can_pay_for_spell(pool: &ManaPool, cost: &ManaCost, spell: Option<&SpellM
                             return false;
                         }
                     }
+                    // CR 107.4e: Hybrid mana — can be paid with either color.
                     ShardRequirement::Hybrid(a, b) => {
                         if spend_eligible(&mut sim, a, spell).is_none()
                             && spend_eligible(&mut sim, b, spell).is_none()
@@ -144,28 +159,27 @@ pub fn can_pay_for_spell(pool: &ManaPool, cost: &ManaCost, spell: Option<&SpellM
                             return false;
                         }
                     }
-                    ShardRequirement::Phyrexian(_) => {
-                        // Phyrexian can always be paid (with life as fallback)
-                    }
+                    // CR 107.4f: Phyrexian mana — can always be paid (2 life as fallback).
+                    ShardRequirement::Phyrexian(_) => {}
+                    // CR 107.4e: Monocolored hybrid {2/C} — pay 1 colored or 2 generic.
                     ShardRequirement::TwoGenericHybrid(color) => {
-                        // Pay 1 colored or 2 generic
                         if spend_eligible(&mut sim, color, spell).is_none() {
                             if sim.total() < 2 {
                                 return false;
                             }
-                            // Spend any 2
                             spend_any(&mut sim);
                             spend_any(&mut sim);
                         }
                     }
+                    // CR 107.4h: Snow mana {S} — paid with mana from a snow source.
                     ShardRequirement::Snow => {
                         if !spend_snow(&mut sim) {
                             return false;
                         }
                     }
-                    ShardRequirement::X => {
-                        // X can be 0, so always satisfiable
-                    }
+                    // CR 107.3: {X} — can be 0, so always satisfiable in a can-pay check.
+                    ShardRequirement::X => {}
+                    // CR 107.4e: Colorless hybrid {C/color} — pay colorless or colored.
                     ShardRequirement::ColorlessHybrid(color) => {
                         if spend_eligible(&mut sim, ManaType::Colorless, spell).is_none()
                             && spend_eligible(&mut sim, color, spell).is_none()
@@ -173,9 +187,8 @@ pub fn can_pay_for_spell(pool: &ManaPool, cost: &ManaCost, spell: Option<&SpellM
                             return false;
                         }
                     }
-                    ShardRequirement::HybridPhyrexian(_, _) => {
-                        // Phyrexian hybrid can always be paid (life fallback)
-                    }
+                    // CR 107.4f: Hybrid Phyrexian — can always be paid (2 life fallback).
+                    ShardRequirement::HybridPhyrexian(_, _) => {}
                 }
             }
             // Pay generic
@@ -189,6 +202,10 @@ pub fn can_pay_for_spell(pool: &ManaPool, cost: &ManaCost, spell: Option<&SpellM
     }
 }
 
+/// Pay a mana cost from the pool (CR 601.2h).
+///
+/// CR 601.2h: The player pays the total cost. Partial payments are not allowed.
+/// Unpayable costs can't be paid.
 pub fn pay_cost(
     pool: &mut ManaPool,
     cost: &ManaCost,
@@ -196,6 +213,11 @@ pub fn pay_cost(
     pay_cost_with_demand(pool, cost, None, None)
 }
 
+/// Pay a mana cost with hand-demand-aware hybrid resolution (CR 601.2f + CR 601.2h).
+///
+/// CR 601.2f: If a cost includes hybrid mana symbols, the player announces the nonhybrid
+/// equivalent cost they intend to pay. If it includes Phyrexian mana symbols, the player
+/// announces whether to pay 2 life or the corresponding colored mana for each.
 pub fn pay_cost_with_demand(
     pool: &mut ManaPool,
     cost: &ManaCost,
@@ -208,7 +230,7 @@ pub fn pay_cost_with_demand(
             let mut spent = Vec::new();
             let mut life_payments = Vec::new();
 
-            // (a) Pay colored shards first (exact color match)
+            // CR 107.4a: Pay colored shards first (exact color match required).
             for shard in shards {
                 match shard_to_mana_type(*shard) {
                     ShardRequirement::Single(mt) => {
@@ -216,12 +238,14 @@ pub fn pay_cost_with_demand(
                             .ok_or(PaymentError::InsufficientMana)?;
                         spent.push(unit);
                     }
+                    // CR 107.4e: Hybrid mana — pay with either half.
                     ShardRequirement::Hybrid(a, b) => {
                         let color = auto_pay_hybrid(pool, a, b, hand_demand);
                         let unit = spend_eligible(pool, color, spell)
                             .ok_or(PaymentError::InsufficientMana)?;
                         spent.push(unit);
                     }
+                    // CR 107.4f: Phyrexian mana — pay color or 2 life.
                     ShardRequirement::Phyrexian(color) => {
                         if let Some(unit) = spend_eligible(pool, color, spell) {
                             spent.push(unit);
@@ -232,11 +256,11 @@ pub fn pay_cost_with_demand(
                             });
                         }
                     }
+                    // CR 107.4e: Monocolored hybrid {2/C} — pay 1 colored or 2 generic.
                     ShardRequirement::TwoGenericHybrid(color) => {
                         if let Some(unit) = spend_eligible(pool, color, spell) {
                             spent.push(unit);
                         } else {
-                            // Pay 2 generic
                             for _ in 0..2 {
                                 let unit =
                                     spend_any_unit(pool).ok_or(PaymentError::InsufficientMana)?;
@@ -244,13 +268,14 @@ pub fn pay_cost_with_demand(
                             }
                         }
                     }
+                    // CR 107.4h: Snow mana {S} — paid with mana from a snow source.
                     ShardRequirement::Snow => {
                         let unit = spend_snow_unit(pool).ok_or(PaymentError::InsufficientMana)?;
                         spent.push(unit);
                     }
-                    ShardRequirement::X => {
-                        // X=0 by default; caller specifies X value separately
-                    }
+                    // CR 107.3: {X} defaults to 0; caller specifies X value separately.
+                    ShardRequirement::X => {}
+                    // CR 107.4e: Colorless hybrid {C/color} — prefer colorless, then colored.
                     ShardRequirement::ColorlessHybrid(color) => {
                         if let Some(unit) = spend_eligible(pool, ManaType::Colorless, spell) {
                             spent.push(unit);
@@ -260,8 +285,8 @@ pub fn pay_cost_with_demand(
                             spent.push(unit);
                         }
                     }
+                    // CR 107.4f: Hybrid Phyrexian — pay either color or 2 life.
                     ShardRequirement::HybridPhyrexian(a, b) => {
-                        // Try to pay with mana first (prefer the more available color)
                         let color = auto_pay_hybrid(pool, a, b, hand_demand);
                         if let Some(unit) = spend_eligible(pool, color, spell) {
                             spent.push(unit);
@@ -275,7 +300,8 @@ pub fn pay_cost_with_demand(
                 }
             }
 
-            // (d) Pay generic from any remaining mana (prefer colorless first, then least-available color)
+            // CR 107.4b: Generic mana can be paid with any type of mana.
+            // Prefer colorless first, then least-available color to preserve flexibility.
             for _ in 0..*generic {
                 let unit = spend_any_unit(pool).ok_or(PaymentError::InsufficientMana)?;
                 spent.push(unit);
@@ -324,7 +350,11 @@ fn auto_pay_hybrid(
     }
 }
 
-/// Determine mana type for a basic land subtype.
+/// Determine mana type for a basic land subtype (CR 305.6).
+///
+/// CR 305.6: The basic land types are Plains, Island, Swamp, Mountain, and Forest.
+/// A land with a basic land type has the intrinsic ability "{T}: Add [mana]" — Plains
+/// adds {W}, Islands {U}, Swamps {B}, Mountains {R}, Forests {G}.
 pub fn land_subtype_to_mana_type(subtype: &str) -> Option<ManaType> {
     match subtype {
         "Plains" => Some(ManaType::White),
@@ -338,6 +368,7 @@ pub fn land_subtype_to_mana_type(subtype: &str) -> Option<ManaType> {
 
 /// Spend one mana of the given color, respecting restrictions if a spell context is provided.
 ///
+/// CR 106.6: Restricted mana can only be spent on spells/abilities that match the restriction.
 /// When `spell` is `Some`, delegates to `ManaPool::spend_for` (restriction-aware).
 /// When `spell` is `None`, delegates to `ManaPool::spend` (unrestricted).
 fn spend_eligible(
@@ -353,6 +384,11 @@ fn spend_eligible(
 
 // --- Internal helpers ---
 
+/// Decomposed mana cost shard into its payment requirement (CR 107.4).
+///
+/// Maps each `ManaCostShard` to the type of payment it requires, per
+/// CR 107.4a (colored), CR 107.4b (generic/X), CR 107.4c (colorless),
+/// CR 107.4e (hybrid), CR 107.4f (Phyrexian), CR 107.4h (snow).
 pub(crate) enum ShardRequirement {
     Single(ManaType),
     Hybrid(ManaType, ManaType),
@@ -364,6 +400,7 @@ pub(crate) enum ShardRequirement {
     HybridPhyrexian(ManaType, ManaType),
 }
 
+/// Map a `ManaCostShard` to its payment requirement (CR 107.4).
 pub(crate) fn shard_to_mana_type(shard: ManaCostShard) -> ShardRequirement {
     match shard {
         ManaCostShard::White => ShardRequirement::Single(ManaType::White),
@@ -474,6 +511,7 @@ fn spend_snow(pool: &mut ManaPool) -> bool {
     spend_snow_unit(pool).is_some()
 }
 
+/// CR 107.4h: Snow mana {S} — paid with one mana of any type from a snow source.
 fn spend_snow_unit(pool: &mut ManaPool) -> Option<ManaUnit> {
     if let Some(pos) = pool.mana.iter().position(|m| m.snow) {
         Some(pool.mana.swap_remove(pos))

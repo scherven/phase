@@ -20,6 +20,7 @@ pub fn resolve(
         .ok_or(EffectError::PlayerNotFound)?;
 
     let count = scry_num.min(player.library.len());
+    // CR 701.22b: If a player is instructed to scry 0, no scry event occurs.
     if count == 0 {
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),

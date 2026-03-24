@@ -48,6 +48,7 @@ pub fn resolve(
         source_id: ability.source_id,
     });
 
+    // CR 400.7: An object that moves from one zone to another becomes a new object.
     // If a hit was found and there is a sub_ability, resolve it with the hit card as target.
     if let (Some(hit), Some(ref sub)) = (hit_id, &ability.sub_ability) {
         let mut sub_clone = sub.as_ref().clone();

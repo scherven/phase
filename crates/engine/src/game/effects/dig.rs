@@ -22,6 +22,7 @@ pub fn resolve(
         .find(|p| p.id == ability.controller)
         .ok_or(EffectError::PlayerNotFound)?;
 
+    // CR 401.5: If a library has fewer cards than required, use as many as available.
     let count = dig_num.min(player.library.len());
     if count == 0 {
         return Ok(());

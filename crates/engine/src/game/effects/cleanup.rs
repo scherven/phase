@@ -8,6 +8,7 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
+    // CR 514.3a: "Until end of turn" and "this turn" effects end during cleanup.
     // Read typed fields for future implementation
     if let Effect::Cleanup {
         clear_remembered: _,

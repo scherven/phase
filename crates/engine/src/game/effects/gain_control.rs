@@ -16,6 +16,7 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
+    // CR 613.1b: Layer 2 — control-changing effects are applied.
     let duration = ability.duration.clone().unwrap_or(Duration::Permanent);
 
     for target in &ability.targets {

@@ -9,6 +9,8 @@ Static abilities produce continuous effects that modify game objects through the
 
 **Before you start:** Trace how Changeling's `AddAllCreatureTypes` works from parser to layers. It's the best reference for type-changing effects: `synthesize_changeling_cda()` in `oracle_loader.rs` → `StaticDefinition` with `ContinuousModification::AddAllCreatureTypes` → `gather_active_continuous_effects()` → `apply_continuous_effect()` in `layers.rs`.
 
+> **CR Verification Rule:** Every CR number in annotations MUST be verified by grepping `docs/MagicCompRules.txt` before writing. Do NOT rely on memory — 701.x and 702.x numbers are arbitrary sequential assignments that LLMs consistently hallucinate. Run `grep -n "^613.1" docs/MagicCompRules.txt` (etc.) for every number. If you cannot find it, do not write the annotation.
+
 ---
 
 ## MTG Rules Reference

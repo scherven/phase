@@ -50,12 +50,12 @@ pub fn move_to_zone(
             if is_blocked_from_entering_battlefield(state, obj) {
                 return;
             }
-            // CR 400.4a: Instants and sorceries can't enter the battlefield.
+            // CR 304.4 / CR 307.4: Instants and sorceries can't enter the battlefield.
             if !obj.face_down
                 && (obj.card_types.core_types.contains(&CoreType::Instant)
                     || obj.card_types.core_types.contains(&CoreType::Sorcery))
             {
-                return; // Remain in previous zone per CR 400.4a
+                return; // CR 304.4: Remain in previous zone
             }
         }
     }
@@ -112,7 +112,8 @@ pub fn move_to_zone(
         });
     }
 
-    // CR 302.6: Track when objects enter the battlefield (for summoning sickness).
+    // CR 302.6 + CR 403.4: Track when objects enter the battlefield (for summoning sickness).
+    // CR 403.4: A permanent entering the battlefield becomes a new object with no relationship to its previous existence.
     if to == Zone::Battlefield {
         obj_mut.entered_battlefield_turn = Some(state.turn_number);
 
@@ -275,7 +276,7 @@ pub fn move_to_library_at_index(
     });
 }
 
-/// Remove an ObjectId from the appropriate zone collection.
+/// Remove an ObjectId from the appropriate zone collection (CR 400.1).
 pub fn remove_from_zone(state: &mut GameState, object_id: ObjectId, zone: Zone, owner: PlayerId) {
     match zone {
         Zone::Library | Zone::Hand | Zone::Graveyard => {

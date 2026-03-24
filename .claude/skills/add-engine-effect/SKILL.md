@@ -9,6 +9,8 @@ This is the authoritative checklist for adding a new effect (mechanic, keyword a
 
 **Before you start:** Read the existing effect most similar to yours. Trace it through every file below. This is how you learn the patterns — not by guessing.
 
+> **CR Verification Rule:** Every CR number in annotations MUST be verified by grepping `docs/MagicCompRules.txt` before writing. Do NOT rely on memory — 701.x and 702.x numbers are arbitrary sequential assignments that LLMs consistently hallucinate. Run `grep -n "^701.21" docs/MagicCompRules.txt` (etc.) for every number. If you cannot find it, do not write the annotation.
+
 ---
 
 ## Design Philosophy — Composability Over Completeness

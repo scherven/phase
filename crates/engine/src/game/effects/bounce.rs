@@ -40,7 +40,8 @@ pub fn resolve(
             continue;
         }
 
-        // Only bounce permanents on the battlefield
+        // CR 400.3: If an object would go to any hand other than its owner's,
+        // it goes to its owner's hand. Only bounce permanents on the battlefield.
         let is_on_battlefield = state
             .objects
             .get(&obj_id)

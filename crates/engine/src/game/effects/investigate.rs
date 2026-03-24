@@ -12,8 +12,9 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    // Build a synthetic Token effect for a Clue token and resolve it
-    // through the standard token pipeline.
+    // CR 111.10f: A Clue token is a colorless Clue artifact token with
+    // "{2}, Sacrifice this artifact: Draw a card."
+    // Build a synthetic Token effect and resolve through the standard token pipeline.
     let clue_ability = ResolvedAbility::new(
         crate::types::ability::Effect::Token {
             name: "Clue".to_string(),

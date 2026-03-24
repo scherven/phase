@@ -35,6 +35,7 @@ pub fn resolve(
         source_id: ability.source_id,
     });
 
+    // CR 400.5: The order of objects in a library can't be changed except when effects allow it.
     state.waiting_for = WaitingFor::TopOrBottomChoice {
         player: owner,
         object_id,

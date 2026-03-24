@@ -21,6 +21,8 @@ pub fn resolve(
 ) -> Result<(), EffectError> {
     for target in &ability.targets {
         if let TargetRef::Object(obj_id) = target {
+            // CR 509.1c: Requirements that creatures must block are checked during
+            // the declare blockers step.
             if !state.objects.contains_key(obj_id) {
                 continue;
             }

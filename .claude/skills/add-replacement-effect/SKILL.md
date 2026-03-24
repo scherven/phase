@@ -9,6 +9,8 @@ Replacement effects modify or prevent game events before they happen (MTG Rule 6
 
 **Before you start:** Trace how shock lands work end-to-end. They're the most complete example: `parse_shock_land()` in `oracle_replacement.rs` → `ReplacementDefinition` with `Optional` mode → replacement pipeline → `post_replacement_effect` → `apply_post_replacement_effect` in `engine.rs`.
 
+> **CR Verification Rule:** Every CR number in annotations MUST be verified by grepping `docs/MagicCompRules.txt` before writing. Do NOT rely on memory — 701.x and 702.x numbers are arbitrary sequential assignments that LLMs consistently hallucinate. Run `grep -n "^614.1" docs/MagicCompRules.txt` (etc.) for every number. If you cannot find it, do not write the annotation.
+
 ---
 
 ## MTG Rules Reference

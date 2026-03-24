@@ -16,6 +16,8 @@ use crate::types::zones::Zone;
 use super::engine::EngineError;
 use crate::types::identifiers::ObjectId;
 
+/// CR 601.3: A player can begin to cast a spell only if a rule or effect allows that player
+/// to cast it and no rule or effect prohibits that player from casting it.
 pub fn check_spell_timing(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
@@ -23,6 +25,9 @@ pub fn check_spell_timing(
     ability_def: &AbilityDefinition,
     allow_flash_timing: bool,
 ) -> Result<(), EngineError> {
+    // CR 601.3b: If an effect allows a player to cast a spell as though it had flash,
+    // that player may begin to cast it at instant speed.
+    // CR 702.8a: Flash allows the spell to be cast any time the player could cast an instant.
     let is_instant_speed = allow_flash_timing
         || obj.card_types.core_types.contains(&CoreType::Instant)
         || obj.has_keyword(&Keyword::Flash);
@@ -52,6 +57,8 @@ pub fn check_spell_timing(
     Ok(())
 }
 
+/// CR 601.3c: If an effect allows a player to cast a spell as though it had flash only if
+/// an alternative or additional cost is paid, that player may begin to cast that spell.
 pub fn flash_timing_cost(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
@@ -100,6 +107,8 @@ pub fn add_mana_cost(base: &ManaCost, extra: &ManaCost) -> ManaCost {
     }
 }
 
+/// CR 601.2i: Once the steps of casting a spell are complete, the spell becomes cast.
+/// Records per-player and per-turn spell casting history for restriction checking.
 pub fn record_spell_cast(
     state: &mut crate::types::game_state::GameState,
     player: PlayerId,
@@ -115,6 +124,8 @@ pub fn record_spell_cast(
         .push(obj.card_types.core_types.clone());
 }
 
+/// CR 508.1m: Any abilities that trigger on attackers being declared trigger.
+/// Records per-turn attack history for restriction checking.
 pub fn record_attackers_declared(
     state: &mut crate::types::game_state::GameState,
     attacker_count: usize,
@@ -196,6 +207,7 @@ pub fn record_battlefield_entry(
     }
 }
 
+/// CR 400.7: Track zone transitions for game-state history used by restriction conditions.
 pub fn record_zone_change(
     state: &mut crate::types::game_state::GameState,
     object_id: ObjectId,
@@ -226,6 +238,7 @@ pub fn record_zone_change(
     }
 }
 
+/// CR 601.3: Verify casting restrictions are satisfied before allowing a spell to be cast.
 pub fn check_casting_restrictions(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
@@ -243,6 +256,7 @@ pub fn check_casting_restrictions(
     Ok(())
 }
 
+/// CR 602.5: A player can't begin to activate an ability that's prohibited from being activated.
 pub fn check_activation_restrictions(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
@@ -261,6 +275,8 @@ pub fn check_activation_restrictions(
     Ok(())
 }
 
+/// CR 602.5b: If an activated ability has a restriction on its use (e.g., "Activate only once
+/// each turn"), the restriction continues to apply even if its controller changes.
 pub fn record_ability_activation(
     state: &mut crate::types::game_state::GameState,
     source_id: ObjectId,
@@ -281,15 +297,18 @@ fn activation_restriction_applies(
     let key = (source_id, ability_index);
 
     match restriction {
+        // CR 602.5d: "Activate only as a sorcery" means the player must follow sorcery timing rules.
         ActivationRestriction::AsSorcery => is_sorcery_speed_window(state, player),
         ActivationRestriction::AsInstant => true,
         ActivationRestriction::DuringYourTurn => state.active_player == player,
         ActivationRestriction::DuringYourUpkeep => {
             state.active_player == player && state.phase == Phase::Upkeep
         }
+        // CR 508.1c / CR 509.1b: Combat-phase restrictions on activation timing.
         ActivationRestriction::DuringCombat => is_combat_phase(state.phase),
         ActivationRestriction::BeforeAttackersDeclared => is_before_attackers_declared(state),
         ActivationRestriction::BeforeCombatDamage => is_before_combat_damage(state.phase),
+        // CR 602.5b: Per-turn activation limit tracked via ability activation counter.
         ActivationRestriction::OnlyOnceEachTurn => {
             state
                 .activated_abilities_this_turn
@@ -298,6 +317,7 @@ fn activation_restriction_applies(
                 .unwrap_or(0)
                 == 0
         }
+        // CR 602.5b: Per-game activation limit.
         ActivationRestriction::OnlyOnce => {
             state
                 .activated_abilities_this_game
@@ -306,6 +326,7 @@ fn activation_restriction_applies(
                 .unwrap_or(0)
                 == 0
         }
+        // CR 602.5b: Per-turn activation count limit (e.g. "Activate only twice each turn").
         ActivationRestriction::MaxTimesEachTurn { count } => {
             state
                 .activated_abilities_this_turn
@@ -332,6 +353,7 @@ fn activation_restriction_applies(
     }
 }
 
+/// CR 601.3: Evaluate individual casting restrictions against the current game state.
 fn casting_restriction_applies(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
@@ -339,6 +361,7 @@ fn casting_restriction_applies(
     restriction: &CastingRestriction,
 ) -> bool {
     match restriction {
+        // CR 307.1: A player may cast a sorcery during a main phase of their turn when the stack is empty.
         CastingRestriction::AsSorcery => is_sorcery_speed_window(state, player),
         CastingRestriction::DuringCombat => is_combat_phase(state.phase),
         CastingRestriction::DuringOpponentsTurn => state.active_player != player,
@@ -356,7 +379,9 @@ fn casting_restriction_applies(
         CastingRestriction::DuringOpponentsEndStep => {
             state.active_player != player && state.phase == Phase::End
         }
+        // CR 508.1: Declare attackers step.
         CastingRestriction::DeclareAttackersStep => state.phase == Phase::DeclareAttackers,
+        // CR 509.1: Declare blockers step.
         CastingRestriction::DeclareBlockersStep => state.phase == Phase::DeclareBlockers,
         CastingRestriction::BeforeAttackersDeclared => is_before_attackers_declared(state),
         CastingRestriction::BeforeBlockersDeclared => {
@@ -373,6 +398,8 @@ fn casting_restriction_applies(
     }
 }
 
+/// CR 601.3 / CR 602.5: Evaluate a textual condition to determine whether a casting or
+/// activation restriction is currently satisfied.
 pub fn evaluate_condition_text(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
@@ -545,6 +572,8 @@ fn parse_condition_text(text: &str) -> Option<RestrictionCondition> {
     }
 }
 
+/// Evaluate a parsed restriction condition against the current game state.
+/// CR 601.3 / CR 602.5: These conditions gate whether a spell can be cast or ability activated.
 fn evaluate_condition(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
@@ -587,6 +616,8 @@ fn evaluate_condition(
                 .unwrap_or(0)
                 == 0
         }
+        // CR 302.6: "Summoning sickness" — a creature can't attack or use {T} abilities
+        // unless controlled since start of turn. This condition checks ETB timing.
         RestrictionCondition::SourceEnteredThisTurn => state
             .objects
             .get(&source_id)
@@ -807,6 +838,7 @@ fn evaluate_condition(
     }
 }
 
+/// CR 307.1: Sorcery-speed timing — main phase, stack empty, active player has priority.
 fn is_sorcery_speed_window(state: &crate::types::game_state::GameState, player: PlayerId) -> bool {
     matches!(state.phase, Phase::PreCombatMain | Phase::PostCombatMain)
         && state.stack.is_empty()
@@ -818,6 +850,8 @@ fn is_before_attackers_declared(state: &crate::types::game_state::GameState) -> 
         && matches!(state.phase, Phase::PreCombatMain | Phase::BeginCombat)
 }
 
+/// CR 506.1: The combat phase has five steps: beginning of combat, declare attackers,
+/// declare blockers, combat damage, and end of combat.
 fn is_combat_phase(phase: Phase) -> bool {
     matches!(
         phase,
@@ -1021,6 +1055,7 @@ fn graveyard_has_subtype_card(
     })
 }
 
+/// CR 508.1k: A chosen creature becomes an attacking creature until removed from combat.
 fn is_source_attacking(state: &crate::types::game_state::GameState, source_id: ObjectId) -> bool {
     state.combat.as_ref().is_some_and(|combat| {
         combat
@@ -1030,6 +1065,7 @@ fn is_source_attacking(state: &crate::types::game_state::GameState, source_id: O
     })
 }
 
+/// CR 509.1g: A chosen creature becomes a blocking creature until removed from combat.
 fn is_source_blocking(state: &crate::types::game_state::GameState, source_id: ObjectId) -> bool {
     state
         .combat
@@ -1037,6 +1073,7 @@ fn is_source_blocking(state: &crate::types::game_state::GameState, source_id: Ob
         .is_some_and(|combat| combat.blocker_to_attacker.contains_key(&source_id))
 }
 
+/// CR 509.1h: An attacking creature with blockers declared for it becomes a blocked creature.
 fn is_source_blocked(state: &crate::types::game_state::GameState, source_id: ObjectId) -> bool {
     state
         .combat

@@ -37,7 +37,8 @@ pub fn resolve(
         .find(|p| p.id == target_player)
         .ok_or(EffectError::PlayerNotFound)?;
 
-    // Collect the top N card IDs (or fewer if library is smaller)
+    // CR 701.17b: A player can't mill more cards than are in their library;
+    // if instructed to, they mill as many as possible.
     let count = num_cards.min(player.library.len());
     let cards_to_mill: Vec<_> = player.library[..count].to_vec();
 

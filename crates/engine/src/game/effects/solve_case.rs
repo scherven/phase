@@ -11,6 +11,8 @@ pub fn resolve(
     let source_id = ability.source_id;
     if let Some(obj) = state.objects.get_mut(&source_id) {
         if let Some(ref mut cs) = obj.case_state {
+            // CR 719.3b: Solved is a designation a permanent can have. Once a
+            // permanent becomes solved, it stays solved until it leaves the battlefield.
             if !cs.is_solved {
                 cs.is_solved = true;
                 events.push(GameEvent::CaseSolved {

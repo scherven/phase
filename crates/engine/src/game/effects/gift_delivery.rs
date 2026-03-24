@@ -13,7 +13,7 @@ use crate::types::player::PlayerId;
 use crate::types::proposed_event::ProposedEvent;
 use crate::types::zones::Zone;
 
-/// CR 702.147: Deliver a gift to the opponent of the ability's controller.
+/// CR 702.174: Deliver a gift to the opponent of the ability's controller.
 /// Gift delivery is a no-op when the gift wasn't promised (`additional_cost_paid == false`).
 /// When promised, the opponent receives the gift before the spell's other effects resolve.
 pub fn resolve(
@@ -40,10 +40,14 @@ pub fn resolve(
     // In 2-player, the opponent is the next player after the controller.
     let opponent = players::next_player(state, ability.controller);
 
+    // CR 702.174b: On a permanent, the gift ability triggers when the permanent enters.
+    // CR 702.174j: For instants/sorceries, the gift effect always happens first.
     match kind {
+        // CR 702.174e: "Gift a card" means the chosen player draws a card.
         GiftKind::Card => {
             deliver_card_draw(state, events, opponent)?;
         }
+        // CR 702.174h: "Gift a Treasure" means the chosen player creates a Treasure token.
         GiftKind::Treasure => {
             create_gift_token(state, events, opponent, "Treasure", |ct| {
                 ct.core_types.push(CoreType::Artifact);

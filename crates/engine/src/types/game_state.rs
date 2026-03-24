@@ -66,6 +66,8 @@ pub struct LKISnapshot {
     pub card_types: Vec<CoreType>,
 }
 
+/// CR 607.2a + CR 406.6: Tracks the link between an exiling source and the exiled card.
+/// When the source leaves the battlefield, the exiled card returns (CR 610.3a).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExileLink {
     pub exiled_id: ObjectId,
@@ -809,7 +811,7 @@ pub struct GameState {
     #[serde(default)]
     pub pending_trigger: Option<crate::game::triggers::PendingTrigger>,
 
-    // Exile tracking for "until leaves" effects
+    // CR 607.2a + CR 406.5: Exile tracking for "until leaves" linked abilities.
     #[serde(default)]
     pub exile_links: Vec<ExileLink>,
 

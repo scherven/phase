@@ -42,6 +42,9 @@ pub fn resolve(
             .collect()
     };
 
+    // CR 614.8: Regeneration is a destruction-replacement effect. The word "instead"
+    // is implicit: "The next time [permanent] would be destroyed this turn, instead
+    // remove all damage, tap it, and remove from combat."
     for obj_id in targets {
         let on_battlefield = state
             .objects

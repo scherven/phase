@@ -3,7 +3,8 @@ use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, Ta
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 
-/// CR 701.23a: Search a library — look through it, find card(s) matching criteria, then shuffle.
+/// CR 701.23a + CR 401.2: Search a library — look through it, find card(s) matching criteria, then shuffle.
+/// CR 401.2: Libraries are normally face-down; searching is an exception that lets a player look through cards.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -40,7 +41,8 @@ pub fn resolve(
         .collect();
 
     if matching.is_empty() {
-        // MTG "fail to find" — resolve immediately
+        // CR 701.23b: A player searching a hidden zone isn't required to find
+        // cards even if they're present ("fail to find"). Resolve immediately.
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::SearchLibrary,
             source_id: ability.source_id,
