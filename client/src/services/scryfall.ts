@@ -2,6 +2,10 @@ import { get } from "idb-keyval";
 import { cacheImage } from "./imageCache.ts";
 
 const SCRYFALL_DELAY_MS = 75;
+const NOT_FOUND_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Cards that returned 404 from both exact and fuzzy lookup. */
+const notFoundCache = new Map<string, number>();
 
 export type ImageSize = "small" | "normal" | "large" | "art_crop";
 
@@ -43,21 +47,34 @@ async function rateLimitedFetch(url: string): Promise<Response> {
   return fetch(url);
 }
 
+/** Strip set code brackets (e.g. "Goblin Lackey [UZ]" → "Goblin Lackey"). */
+function normalizeCardName(name: string): string {
+  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+}
+
 export async function fetchCardData(cardName: string): Promise<ScryfallCard> {
-  const exactUrl = `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(cardName)}`;
+  const name = normalizeCardName(cardName);
+
+  const cachedAt = notFoundCache.get(name);
+  if (cachedAt !== undefined && Date.now() - cachedAt < NOT_FOUND_TTL_MS) {
+    throw new Error(`Card not found (cached): "${name}"`);
+  }
+
+  const exactUrl = `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}`;
   const exactResponse = await rateLimitedFetch(exactUrl);
   if (exactResponse.ok) {
     return exactResponse.json() as Promise<ScryfallCard>;
   }
 
   if (exactResponse.status !== 404) {
-    throw new Error(`Scryfall API error: ${exactResponse.status} for "${cardName}"`);
+    throw new Error(`Scryfall API error: ${exactResponse.status} for "${name}"`);
   }
 
-  const fuzzyUrl = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(cardName)}`;
+  const fuzzyUrl = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(name)}`;
   const fuzzyResponse = await rateLimitedFetch(fuzzyUrl);
   if (!fuzzyResponse.ok) {
-    throw new Error(`Scryfall API error: ${fuzzyResponse.status} for "${cardName}"`);
+    notFoundCache.set(name, Date.now());
+    throw new Error(`Scryfall API error: ${fuzzyResponse.status} for "${name}"`);
   }
   return fuzzyResponse.json() as Promise<ScryfallCard>;
 }
