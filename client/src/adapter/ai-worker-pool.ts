@@ -22,7 +22,7 @@ export class AiWorkerPool {
   // worker cannot interleave when a new request arrives mid-computation.
   private scoringLock: Promise<void> = Promise.resolve();
 
-  constructor(private workerCount: number) {
+  constructor(workerCount: number) {
     for (let i = 0; i < workerCount; i++) {
       this.workers.push(new EngineWorkerClient());
     }
