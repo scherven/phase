@@ -96,6 +96,7 @@ jobs:
           CARD_DATA_URL: "https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev/staging/card-data.json"
           COVERAGE_DATA_URL: "https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev/staging/coverage-data.json"
           COVERAGE_SUMMARY_URL: "https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev/staging/coverage-summary.json"
+          AUDIO_BASE_URL: "https://pub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev/audio"
         run: |
           cd client
           pnpm install --frozen-lockfile
