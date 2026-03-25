@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -13,6 +14,16 @@ function gitHash(): string {
     return execSync("git rev-parse --short HEAD").toString().trim();
   } catch {
     return "dev";
+  }
+}
+
+function workspaceVersion(): string {
+  try {
+    const toml = readFileSync(path.resolve(__dirname, "../Cargo.toml"), "utf-8");
+    const match = toml.match(/^version\s*=\s*"([^"]+)"/m);
+    return match?.[1] ?? "0.0.0";
+  } catch {
+    return "0.0.0";
   }
 }
 
@@ -56,7 +67,7 @@ export default defineConfig({
     compression({ algorithms: ["brotliCompress"] }),
   ],
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? "0.1.0"),
+    __APP_VERSION__: JSON.stringify(workspaceVersion()),
     __BUILD_HASH__: JSON.stringify(gitHash()),
     __CARD_DATA_URL__: JSON.stringify(
       process.env.CARD_DATA_URL || "/card-data.json",

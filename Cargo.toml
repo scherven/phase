@@ -6,11 +6,23 @@ members = ["crates/*"]
 exclude = ["client/src-tauri"]
 
 [workspace.package]
+version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
+
+[workspace.metadata.release]
+shared-version = true
+tag-name = "v{{version}}"
+tag-message = "v{{version}}"
+pre-release-commit-message = "release: v{{version}}"
+pre-release-replacements = [
+  { file = "client/src-tauri/tauri.conf.json", search = '"version": "[^"]*"', replace = '"version": "{{version}}"' },
+  { file = "client/src-tauri/Cargo.toml", search = '^version = "[^"]*"', replace = 'version = "{{version}}"' },
+]
+publish = false
 
 [profile.dev]
 opt-level = 0
