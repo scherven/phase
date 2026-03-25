@@ -225,6 +225,7 @@ State is filtered per-player (`filter_state_for_player`) to hide opponent's hand
 - `PORT` — phase-server listen port (default `9374`)
 - `PHASE_DATA_DIR` — Card data root for phase-server (default `"data"`)
 - `PHASE_CARDS_PATH` — Override card data directory for binaries (`coverage-report`, `card-data-export`)
+- `PHASE_LOG_DIR` — Log directory for phase-server. When set, logs to files instead of stdout (main log: `<dir>/phase-server.log`, per-game logs: `<dir>/games/<code>.log`)
 
 ## Documentation (`docs/`)
 

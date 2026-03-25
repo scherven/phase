@@ -1,3 +1,4 @@
+mod logging;
 mod persistence;
 
 use std::collections::HashMap;
@@ -90,6 +91,11 @@ struct Cli {
     /// Emit logs as JSON (for production log aggregation)
     #[arg(long, env = "PHASE_LOG_JSON")]
     log_json: bool,
+
+    /// Directory for log files. When set, logs to files instead of stdout.
+    /// Main log: <dir>/phase-server.log, per-game logs: <dir>/games/<code>.log
+    #[arg(long, env = "PHASE_LOG_DIR")]
+    log_dir: Option<String>,
 }
 
 /// Per-socket state tracking which game/player this connection belongs to.
@@ -120,17 +126,7 @@ impl SocketIdentity {
 async fn main() {
     let cli = Cli::parse();
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "phase_server=info,server_core=info".parse().unwrap());
-    if cli.log_json {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(env_filter)
-            .with_target(true)
-            .init();
-    } else {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    }
+    let _log_guard = logging::init_logging(cli.log_dir.as_deref(), cli.log_json);
     let data_path = Path::new(&cli.data_dir);
     let export_path = data_path.join("card-data.json");
     let card_db = if export_path.exists() {

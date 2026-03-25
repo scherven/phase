@@ -11,6 +11,8 @@ ExecStart=/opt/phase-server/phase-server --port 9374 --data-dir /opt/phase-serve
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
+LogsDirectory=phase-rs
+Environment=PHASE_LOG_DIR=/var/log/phase-rs
 Environment=RUST_LOG=info
 
 # Hardening
