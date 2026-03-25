@@ -51,7 +51,7 @@ When creating or participating in an agent team (whether triggered by `/batch-me
 1. **Use existing skills.** Every implementation must follow the relevant skill checklist (`/add-engine-effect`, `/add-keyword`, `/add-trigger`, etc.). No ad-hoc approaches.
 2. **Teammates cannot spawn subagents.** All review subagents must be spawned by the lead. The lead receives the plan/implementation from the teammate, spawns a review subagent (model: opus), and sends feedback back to the teammate. This review loop repeats until clean (max 3 rounds).
 3. **Sequential execution by default.** Multiple teammates must not implement concurrently unless their file sets are completely disjoint. Shared files like `types/ability.rs`, `effects/mod.rs`, and `parser/oracle.rs` are frequent collision points.
-4. **Verify before committing.** Run `cargo fmt`, `cargo clippy`, `cargo test -p engine`, and `cargo coverage` before any commit.
+4. **Verify before committing.** Run `cargo fmt`, `cargo clippy`, `cargo test -p engine`, and `cargo coverage` before any commit. For frontend changes, also run `pnpm run type-check` and `pnpm lint` in `client/` — TypeScript errors must not be committed.
 
 ### CRITICAL: Building Blocks and Architecture Purity
 
