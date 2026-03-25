@@ -73,15 +73,13 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/staging/card-data.json --file client/public/card-data.json --content-type application/json --remote
-
+          command: r2 object put phase-rs-data/staging/card-data.json --file client/public/card-data.json --content-type application/json
       - name: Upload coverage data to R2 (staging)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/staging/coverage-data.json --file client/public/coverage-data.json --content-type application/json --remote
-
+          command: r2 object put phase-rs-data/staging/coverage-data.json --file client/public/coverage-data.json --content-type application/json
       - name: Generate and upload coverage summary to R2 (staging)
         uses: cloudflare/wrangler-action@v3
         with:
@@ -89,8 +87,7 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           preCommands: |
             jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' client/public/coverage-data.json > client/public/coverage-summary.json
-          command: r2 object put phase-rs-data/staging/coverage-summary.json --file client/public/coverage-summary.json --content-type application/json --remote
-
+          command: r2 object put phase-rs-data/staging/coverage-summary.json --file client/public/coverage-summary.json --content-type application/json
       - name: Build WASM
         run: ./scripts/build-wasm.sh release
 

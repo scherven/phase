@@ -7,7 +7,7 @@ If you discover a security vulnerability in phase.rs, please report it responsib
 **Do not open a public issue.** Instead, please use one of the following:
 
 - **GitHub Security Advisories**: [Report a vulnerability](https://github.com/phase-rs/phase/security/advisories/new) (preferred)
-- **Email**: Send details to the maintainers via the contact information on the [GitHub org profile](https://github.com/phase-rs)
+- **Email**: [matt@phase-rs.dev](mailto:matt@phase-rs.dev)
 
 ### What to include
 

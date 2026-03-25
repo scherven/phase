@@ -155,6 +155,11 @@ client/               React frontend
 scripts/              Build and setup scripts
 ```
 
+## Contact
+
+- **Email**: [matt@phase-rs.dev](mailto:matt@phase-rs.dev)
+- **Discord**: [discord.gg/dUZwhYHUyk](https://discord.gg/dUZwhYHUyk)
+
 ## Acknowledgments
 
 - [MTGJSON](https://mtgjson.com/) — Card data (MIT licensed)
