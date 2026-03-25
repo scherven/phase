@@ -596,7 +596,10 @@ export function MyDecks({
           </button>
         )}
         {isEvaluating && (
-          <span className="text-xs text-gray-500">Evaluating compatibility…</span>
+          <span className="flex items-center gap-2 rounded bg-indigo-500/15 px-2.5 py-1 text-xs font-medium text-indigo-300 ring-1 ring-indigo-400/30">
+            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-indigo-400" />
+            Evaluating compatibility…
+          </span>
         )}
 
         <div className="ml-auto flex items-center gap-1">
