@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 
 import type { AttackTarget, ObjectId, WaitingFor } from "../../adapter/types.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
@@ -240,170 +239,160 @@ export function ActionButton() {
   const autoPass = gameState?.auto_pass?.[playerId];
   const isEndingTurn = autoPass?.type === "UntilEndOfTurn";
 
-  const visible = mode !== "hidden" || isEndingTurn;
+  const idle = mode === "hidden" && !isEndingTurn;
   const panelClassName =
-    "fixed z-30 flex max-w-[min(25rem,calc(100vw-1.25rem))] flex-col items-stretch gap-1.5 rounded-[14px] border border-white/10 bg-[#0b1020]/88 p-1.5 shadow-[0_20px_48px_rgba(0,0,0,0.44)] backdrop-blur-md sm:max-w-none sm:flex-row sm:items-center";
-  const primaryButtonClass = "w-full sm:w-auto sm:min-w-[10rem]";
-  const secondaryButtonClass = "w-full sm:w-auto";
+    "flex max-w-[min(25rem,calc(100vw-1.25rem))] flex-row items-center gap-1 rounded-[10px] border border-white/10 bg-[#0b1020]/88 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.44)] backdrop-blur-md lg:gap-1.5 lg:rounded-[14px] lg:p-1.5 lg:max-w-none";
+  const primaryButtonClass = "lg:min-w-[10rem]";
+  const secondaryButtonClass = "";
 
   return (
-    <AnimatePresence>
-      {visible && (
-        <motion.div
-          key={mode}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 20 }}
-          transition={{ duration: 0.15 }}
-          className={panelClassName}
-          style={{
-            bottom: "calc(env(safe-area-inset-bottom) + 7rem)",
-            right: "calc(env(safe-area-inset-right) + 1rem + var(--game-right-rail-offset, 0px))",
-          }}
-        >
-          {mode === "combat-attackers" && !isEndingTurn && (
-            <>
+    <>
+      <div className={panelClassName}>
+        {mode === "combat-attackers" && !isEndingTurn && (
+          <>
+            <button
+              onClick={() => {
+                if (selectedAttackers.length > 0) {
+                  handleClearAttackers();
+                } else {
+                  selectAllAttackers(validAttackerIds);
+                }
+              }}
+              className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
+            >
+              {selectedAttackers.length > 0 ? "Clear Attackers" : "All Attack"}
+            </button>
+            {selectedAttackers.length > 0 ? (
               <button
-                onClick={() => {
-                  if (selectedAttackers.length > 0) {
-                    handleClearAttackers();
-                  } else {
-                    selectAllAttackers(validAttackerIds);
-                  }
-                }}
-                className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
+                onClick={handleConfirmAttackers}
+                className={gameButtonClass({ tone: "emerald", size: "md", className: primaryButtonClass })}
               >
-                {selectedAttackers.length > 0 ? "Clear Attackers" : "All Attack"}
+                Confirm Attackers ({selectedAttackers.length})
               </button>
-              {selectedAttackers.length > 0 ? (
+            ) : (
+              <button
+                onClick={() => handleSkipConfirm("attackers")}
+                className={gameButtonClass({ tone: "slate", size: "md", className: primaryButtonClass })}
+              >
+                {skipArmed === "attackers"
+                  ? "Tap again: No Attacks"
+                  : "No Attacks"}
+              </button>
+            )}
+          </>
+        )}
+
+        {mode === "combat-blockers" && !isEndingTurn && (
+          <>
+            {blockerAssignments.size > 0 ? (
+              <>
                 <button
-                  onClick={handleConfirmAttackers}
+                  onClick={handleConfirmBlockers}
                   className={gameButtonClass({ tone: "emerald", size: "md", className: primaryButtonClass })}
                 >
-                  Confirm Attackers ({selectedAttackers.length})
+                  Confirm Blockers ({blockerAssignments.size})
                 </button>
-              ) : (
                 <button
-                  onClick={() => handleSkipConfirm("attackers")}
-                  className={gameButtonClass({ tone: "slate", size: "md", className: primaryButtonClass })}
+                  onClick={handleClearBlockers}
+                  className={gameButtonClass({ tone: "neutral", size: "md", className: secondaryButtonClass })}
                 >
-                  {skipArmed === "attackers"
-                    ? "Tap again: No Attacks"
-                    : "No Attacks"}
+                  Clear Blocks
                 </button>
-              )}
-            </>
-          )}
-
-          {mode === "combat-blockers" && !isEndingTurn && (
-            <>
-              {blockerAssignments.size > 0 ? (
-                <>
-                  <button
-                    onClick={handleConfirmBlockers}
-                    className={gameButtonClass({ tone: "emerald", size: "md", className: primaryButtonClass })}
-                  >
-                    Confirm Blockers ({blockerAssignments.size})
-                  </button>
-                  <button
-                    onClick={handleClearBlockers}
-                    className={gameButtonClass({ tone: "neutral", size: "md", className: secondaryButtonClass })}
-                  >
-                    Clear Blocks
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => handleSkipConfirm("blockers")}
-                  className={gameButtonClass({ tone: "slate", size: "md", className: primaryButtonClass })}
-                >
-                  {skipArmed === "blockers"
-                    ? "Tap again: No Blocks"
-                    : "No Blocks"}
-                </button>
-              )}
-              {pendingBlocker !== null && (
-                <div className="absolute bottom-full mb-3 right-0 rounded-lg bg-blue-900/80 px-4 py-2 text-sm font-medium text-blue-200 shadow-lg whitespace-nowrap">
-                  Click an attacker to assign blocker
-                </div>
-              )}
-            </>
-          )}
-
-          {mode === "priority-stack" && !isEndingTurn && (
-            <>
-              {canCompanionToHand && (
-                <button
-                  onClick={() => dispatchAction({ type: "CompanionToHand" })}
-                  className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
-                >
-                  Companion to Hand
-                </button>
-              )}
+              </>
+            ) : (
               <button
-                onClick={() => dispatchAction({ type: "PassPriority" })}
-                className={gameButtonClass({ tone: "blue", size: "md", className: primaryButtonClass })}
+                onClick={() => handleSkipConfirm("blockers")}
+                className={gameButtonClass({ tone: "slate", size: "md", className: primaryButtonClass })}
               >
-                Resolve
+                {skipArmed === "blockers"
+                  ? "Tap again: No Blocks"
+                  : "No Blocks"}
               </button>
-              <button
-                onClick={() => dispatchAction({ type: "SetAutoPass", data: { mode: { type: "UntilStackEmpty" } } })}
-                className={gameButtonClass({ tone: "slate", size: "md", className: secondaryButtonClass })}
-              >
-                Resolve All
-              </button>
-            </>
-          )}
+            )}
+            {pendingBlocker !== null && (
+              <div className="absolute bottom-full mb-3 right-0 rounded-lg bg-blue-900/80 px-4 py-2 text-sm font-medium text-blue-200 shadow-lg whitespace-nowrap">
+                Click an attacker to assign blocker
+              </div>
+            )}
+          </>
+        )}
 
-          {mode === "priority-empty" && !isEndingTurn && (
-            <>
-              {canCompanionToHand && (
-                <button
-                  onClick={() => dispatchAction({ type: "CompanionToHand" })}
-                  className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
-                >
-                  Companion to Hand
-                </button>
-              )}
+        {mode === "priority-stack" && !isEndingTurn && (
+          <>
+            {canCompanionToHand && (
               <button
-                onClick={() => dispatchAction({ type: "PassPriority" })}
-                className={gameButtonClass({
-                  tone: "emerald",
-                  size: "md",
-                  className: primaryButtonClass,
-                })}
+                onClick={() => dispatchAction({ type: "CompanionToHand" })}
+                className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
               >
-                {advanceLabel}
+                Companion to Hand
               </button>
-              <button
-                onClick={() => dispatchAction({ type: "SetAutoPass", data: { mode: { type: "UntilEndOfTurn" } } })}
-                className={gameButtonClass({ tone: "slate", size: "md", className: secondaryButtonClass })}
-              >
-                <span className="flex items-center gap-1">
-                  End Turn
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                    <path fillRule="evenodd" d="M2 10a.75.75 0 0 1 .75-.75h12.59l-2.1-1.95a.75.75 0 1 1 1.02-1.1l3.5 3.25a.75.75 0 0 1 0 1.1l-3.5 3.25a.75.75 0 1 1-1.02-1.1l2.1-1.95H2.75A.75.75 0 0 1 2 10Z" clipRule="evenodd" />
-                  </svg>
-                </span>
-              </button>
-            </>
-          )}
-
-          {isEndingTurn && (
+            )}
             <button
-              onClick={() => dispatchAction({ type: "CancelAutoPass" })}
-              className={gameButtonClass({ tone: "amber", size: "md", className: `${primaryButtonClass} animate-pulse` })}
+              onClick={() => dispatchAction({ type: "PassPriority" })}
+              className={gameButtonClass({ tone: "blue", size: "md", className: primaryButtonClass })}
             >
-              <span className="flex items-center gap-1.5">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 animate-spin">
-                  <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.451a.75.75 0 0 0 0-1.5H4.5a.75.75 0 0 0-.75.75v3.75a.75.75 0 0 0 1.5 0v-2.033l.364.363a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.624-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.75a.75.75 0 0 0 0 1.5h3.75a.75.75 0 0 0 .75-.75V3.42a.75.75 0 0 0-1.5 0v2.033l-.364-.364A7 7 0 0 0 3.074 8.227a.75.75 0 0 0 1.449.39l.165-.044Z" clipRule="evenodd" />
+              Resolve
+            </button>
+            <button
+              onClick={() => dispatchAction({ type: "SetAutoPass", data: { mode: { type: "UntilStackEmpty" } } })}
+              className={gameButtonClass({ tone: "slate", size: "md", className: secondaryButtonClass })}
+            >
+              Resolve All
+            </button>
+          </>
+        )}
+
+        {(mode === "priority-empty" || idle) && !isEndingTurn && (
+          <>
+            {canCompanionToHand && !idle && (
+              <button
+                onClick={() => dispatchAction({ type: "CompanionToHand" })}
+                className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
+              >
+                Companion to Hand
+              </button>
+            )}
+            <button
+              disabled={idle}
+              onClick={() => dispatchAction({ type: "PassPriority" })}
+              className={gameButtonClass({
+                tone: "emerald",
+                size: "md",
+                disabled: idle,
+                className: primaryButtonClass,
+              })}
+            >
+              {idle ? "Waiting" : advanceLabel}
+            </button>
+            <button
+              disabled={idle}
+              onClick={() => dispatchAction({ type: "SetAutoPass", data: { mode: { type: "UntilEndOfTurn" } } })}
+              className={gameButtonClass({ tone: "slate", size: "md", disabled: idle, className: secondaryButtonClass })}
+            >
+              <span className="flex items-center gap-1">
+                End Turn
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                  <path fillRule="evenodd" d="M2 10a.75.75 0 0 1 .75-.75h12.59l-2.1-1.95a.75.75 0 1 1 1.02-1.1l3.5 3.25a.75.75 0 0 1 0 1.1l-3.5 3.25a.75.75 0 1 1-1.02-1.1l2.1-1.95H2.75A.75.75 0 0 1 2 10Z" clipRule="evenodd" />
                 </svg>
-                Ending Turn...
               </span>
             </button>
-          )}
-        </motion.div>
-      )}
+          </>
+        )}
+
+        {isEndingTurn && (
+          <button
+            onClick={() => dispatchAction({ type: "CancelAutoPass" })}
+            className={gameButtonClass({ tone: "amber", size: "md", className: `${primaryButtonClass} animate-pulse` })}
+          >
+            <span className="flex items-center gap-1.5">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 animate-spin">
+                <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.451a.75.75 0 0 0 0-1.5H4.5a.75.75 0 0 0-.75.75v3.75a.75.75 0 0 0 1.5 0v-2.033l.364.363a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.624-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.75a.75.75 0 0 0 0 1.5h3.75a.75.75 0 0 0 .75-.75V3.42a.75.75 0 0 0-1.5 0v2.033l-.364-.364A7 7 0 0 0 3.074 8.227a.75.75 0 0 0 1.449.39l.165-.044Z" clipRule="evenodd" />
+              </svg>
+              Ending Turn...
+            </span>
+          </button>
+        )}
+      </div>
 
       {showTargetPicker && (
         <AttackTargetPicker
@@ -413,6 +402,6 @@ export function ActionButton() {
           onCancel={() => setShowTargetPicker(false)}
         />
       )}
-    </AnimatePresence>
+    </>
   );
 }

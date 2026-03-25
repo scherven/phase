@@ -513,6 +513,7 @@ function GamePageContent({
       ref={containerRef}
       className={`relative h-[100dvh] w-full overflow-hidden bg-gray-950${showDebugBounds ? " debug-bounds" : ""}`}
       style={gamePageStyle}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <BattlefieldBackground />
       <StackDisplay />
@@ -573,7 +574,7 @@ function GamePageContent({
         </div>
 
         {/* Opponent avatar centered below their hand */}
-        <div className="relative z-20 shrink-0" data-debug-label="Opp HUD">
+        <div className="relative z-20 shrink-0 -mt-10 -mb-4 lg:mt-0 lg:mb-0" data-debug-label="Opp HUD">
           <OpponentHud
             opponentName={isOnlineMode ? opponentDisplayName : undefined}
           />
@@ -585,17 +586,17 @@ function GamePageContent({
         </div>
 
         {/* Player avatar centered with flanking phase indicators */}
-        <div data-debug-label="Player HUD">
+        <div className="-mt-5 -mb-5 lg:mt-0 lg:mb-0" data-debug-label="Player HUD">
           <PlayerHud />
         </div>
 
         {/* Player hand + zones at bottom — negative margin pushes hand content
              below viewport edge so cards peek from the bottom (clipped by page root overflow-hidden).
              Zones are anchored to top-0 so they stay in the visible area. */}
-        <div className="relative shrink-0 mb-[calc(var(--card-h)*-0.15)] sm:mb-[calc(var(--card-h)*-0.25)] md:mb-[calc(var(--card-h)*-0.35)]" data-debug-label="Player Bottom">
+        <div className="relative shrink-0 mb-[calc(var(--card-h)*-0.25)] sm:mb-[calc(var(--card-h)*-0.25)] md:mb-[calc(var(--card-h)*-0.35)]" data-debug-label="Player Bottom">
           <PlayerHand />
           <div
-            className="pointer-events-none absolute left-0 top-0 bottom-[calc(var(--card-h)*0.15)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-start justify-end gap-1 p-3 [&>*]:pointer-events-auto [&>div>*]:pointer-events-auto"
+            className="pointer-events-none absolute left-0 top-0 bottom-[calc(var(--card-h)*0.25)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-start justify-end gap-0.5 p-1 lg:gap-1 lg:p-3 [&>*]:pointer-events-auto [&>div>*]:pointer-events-auto"
             style={playerZoneRailStyle}
             data-debug-label="Player Zones"
           >
@@ -617,7 +618,7 @@ function GamePageContent({
           </div>
           {/* Companion + graveyard castable zone — right side of hand, Arena-style */}
           <div
-            className="pointer-events-none absolute right-0 top-0 bottom-[calc(var(--card-h)*0.15)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-end justify-end gap-1 p-3 [&>*]:pointer-events-auto"
+            className="pointer-events-none absolute right-0 top-0 bottom-[calc(var(--card-h)*0.15)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-end justify-end gap-0.5 p-1 lg:gap-1 lg:p-3 [&>*]:pointer-events-auto"
             style={playerZoneRailStyle}
           >
             <ZoneHand zone="graveyard" />
@@ -628,15 +629,20 @@ function GamePageContent({
 
       {/* Opponent zones are now inline in the Opp Top row above */}
 
-      {/* Combat phase indicator — above action buttons to avoid overlap */}
+      {/* Right-side fixed UI stack: combat phases → full control → action buttons → log */}
       <div
-        className="fixed z-30 bottom-[calc(env(safe-area-inset-bottom)+14rem)] sm:bottom-[calc(env(safe-area-inset-bottom)+11rem)]"
+        className="fixed z-30 flex flex-col items-end gap-1.5"
         style={{
-          right:
-            "calc(env(safe-area-inset-right) + 1rem + var(--game-right-rail-offset, 0px))",
+          bottom: "calc(env(safe-area-inset-bottom) + var(--action-btn-bottom))",
+          right: "calc(env(safe-area-inset-right) + var(--game-edge-right) + var(--game-right-rail-offset, 0px))",
         }}
       >
         <CombatPhaseIndicator />
+        <FullControlToggle />
+        <div className="flex items-center gap-1.5">
+          <ActionButton />
+          <GameLogPanel />
+        </div>
       </div>
 
       {/* Game menu — top-left hamburger */}
@@ -739,7 +745,6 @@ function GamePageContent({
 
       {/* Overlay layers */}
       {import.meta.env.DEV && <DebugPanel />}
-      <GameLogPanel />
 
       {viewingZone && (
         <ZoneViewer
@@ -760,21 +765,11 @@ function GamePageContent({
       {/* Block assignment lines (animated SVG overlay for combat) */}
       <BlockAssignmentLines />
 
-      {/* Unified action button (combat + priority controls) */}
-      <ActionButton />
-      <div
-        className="fixed z-30"
-        style={{
-          bottom: "calc(env(safe-area-inset-bottom) + 5rem)",
-          right:
-            "calc(env(safe-area-inset-right) + 1rem + var(--game-right-rail-offset, 0px))",
-        }}
-      >
-        <FullControlToggle />
-      </div>
 
-      {/* Card preview overlay */}
-      <CardPreview cardName={inspectedCardName} />
+      {/* Card preview overlay — hidden on compact viewports (phones) */}
+      <div className="hidden lg:block">
+        <CardPreview cardName={inspectedCardName} />
+      </div>
 
       {/* WaitingFor-driven prompt overlays (only for human player) */}
       {(waitingFor?.type === "TargetSelection" ||
@@ -966,31 +961,31 @@ function MulliganPanel({
   footer,
 }: MulliganPanelProps) {
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
+    <div className="fixed inset-0 z-50 overflow-y-auto px-2 py-2 lg:px-4 lg:py-6">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(31,41,55,0.55),rgba(2,6,23,0.92)_58%,rgba(2,6,23,0.98))]" />
       <div className="relative flex min-h-full items-center justify-center pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]">
         <motion.div
-          className="relative z-10 flex w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#0b1020]/94 shadow-[0_32px_90px_rgba(0,0,0,0.48)] backdrop-blur-md"
+          className="card-scale-reset relative z-10 flex w-full max-w-6xl flex-col overflow-hidden rounded-[14px] lg:rounded-[28px] border border-white/10 bg-[#0b1020]/94 shadow-[0_32px_90px_rgba(0,0,0,0.48)] backdrop-blur-md"
           initial={{ opacity: 0, y: 18, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           transition={{ duration: 0.24, ease: "easeOut" }}
         >
-          <div className="border-b border-white/10 px-5 py-5 sm:px-7 sm:py-6">
-            <div className="text-[0.68rem] uppercase tracking-[0.24em] text-slate-500">
+          <div className="modal-header-compact border-b border-white/10">
+            <div className="modal-eyebrow uppercase tracking-[0.24em] text-slate-500">
               {eyebrow}
             </div>
-            <h2 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">
+            <h2 className="font-semibold text-white">
               {title}
             </h2>
-            <p className="mt-2 max-w-2xl text-sm text-slate-400 sm:text-[0.95rem]">
+            <p className="modal-subtitle max-w-2xl text-slate-400">
               {subtitle}
             </p>
           </div>
 
-          <div className="flex-1 px-3 py-4 sm:px-5 sm:py-5">{children}</div>
+          <div className="flex flex-1 flex-col px-2 py-2 lg:px-5 lg:py-5">{children}</div>
 
           {footer && (
-            <div className="border-t border-white/10 bg-black/15 px-4 py-4 sm:px-6">
+            <div className="border-t border-white/10 bg-black/15 px-3 py-2 lg:px-6 lg:py-4">
               {footer}
             </div>
           )}
@@ -1042,20 +1037,20 @@ function MulliganDecisionPrompt({
         <AnimatePresence>
           {buttonsVisible && (
             <motion.div
-              className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-end"
+              className="flex w-full flex-row items-center justify-end gap-2 lg:gap-3"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.22 }}
             >
               <button
                 onClick={() => onChoose("mulligan")}
-                className="min-h-11 rounded-[16px] border border-white/12 bg-white/5 px-5 py-3 text-sm font-semibold text-slate-200 transition hover:bg-white/8 hover:text-white sm:text-base"
+                className="rounded-[10px] border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/8 hover:text-white lg:min-h-11 lg:rounded-[16px] lg:px-5 lg:py-3 lg:text-base"
               >
                 Mulligan to {nextHandSize}
               </button>
               <button
                 onClick={() => onChoose("keep")}
-                className="min-h-11 rounded-[16px] bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 shadow-[0_14px_34px_rgba(6,182,212,0.28)] transition hover:bg-cyan-400 sm:text-base"
+                className="rounded-[10px] bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-slate-950 shadow-[0_14px_34px_rgba(6,182,212,0.28)] transition hover:bg-cyan-400 lg:min-h-11 lg:rounded-[16px] lg:px-5 lg:py-3 lg:text-base"
               >
                 Keep Hand
               </button>
@@ -1065,7 +1060,7 @@ function MulliganDecisionPrompt({
       }
     >
       <div
-        className="rounded-[22px] border border-white/8 bg-black/18 px-2 py-4 sm:px-4"
+        className="modal-card-area flex min-h-0 flex-1 items-center justify-center"
         style={
           {
             "--card-w": "clamp(100px, 14vw, 180px)",
@@ -1073,7 +1068,7 @@ function MulliganDecisionPrompt({
           } as React.CSSProperties
         }
       >
-        <div className="overflow-x-auto pb-3">
+        <div className="w-full overflow-x-auto">
           <div className="mx-auto flex w-max min-w-full items-center justify-center px-2 sm:px-4">
             {handObjects.map((obj, index) => (
               <motion.div
@@ -1132,14 +1127,14 @@ function CompanionRevealPrompt({
         <AnimatePresence>
           {buttonsVisible && (
             <motion.div
-              className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-end"
+              className="flex w-full flex-row items-center justify-end gap-2 lg:gap-3"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.22 }}
             >
               <button
                 onClick={() => onChoose(null)}
-                className="min-h-11 rounded-[16px] border border-white/12 bg-white/5 px-5 py-3 text-sm font-semibold text-slate-200 transition hover:bg-white/8 hover:text-white sm:text-base"
+                className="rounded-[10px] border border-white/12 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/8 hover:text-white lg:min-h-11 lg:rounded-[16px] lg:px-5 lg:py-3 lg:text-base"
               >
                 Decline
               </button>
@@ -1158,7 +1153,7 @@ function CompanionRevealPrompt({
       }
     >
       <div
-        className="rounded-[22px] border border-white/8 bg-black/18 px-2 py-4 sm:px-4"
+        className="modal-card-area flex min-h-0 flex-1 items-center justify-center"
         style={
           {
             "--card-w": "clamp(100px, 14vw, 180px)",
@@ -1166,7 +1161,7 @@ function CompanionRevealPrompt({
           } as React.CSSProperties
         }
       >
-        <div className="overflow-x-auto pb-3">
+        <div className="w-full overflow-x-auto">
           <div className="mx-auto flex w-max min-w-full items-center justify-center px-2 sm:px-4">
             {eligibleCompanions.map(([name], index) => (
               <motion.div
@@ -1252,7 +1247,7 @@ function MulliganBottomCardsPrompt({
       }
     >
       <div
-        className="rounded-[22px] border border-white/8 bg-black/18 px-2 py-4 sm:px-4"
+        className="modal-card-area flex min-h-0 flex-1 items-center justify-center"
         style={
           {
             "--card-w": "clamp(100px, 14vw, 180px)",
@@ -1260,7 +1255,7 @@ function MulliganBottomCardsPrompt({
           } as React.CSSProperties
         }
       >
-        <div className="overflow-x-auto pb-3">
+        <div className="w-full overflow-x-auto">
           <div className="mx-auto flex w-max min-w-full items-center justify-center px-2 sm:px-4">
             {handObjects.map((obj, index) => {
               const isSelected = selectedCardIds.includes(obj.id);
