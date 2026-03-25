@@ -155,15 +155,26 @@ export function MenuPage() {
       <div className="menu-scene__sigil menu-scene__sigil--right" />
       <div className="menu-scene__haze" />
 
-      <a
-        href="https://discord.gg/dUZwhYHUyk"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="fixed left-4 top-[calc(env(safe-area-inset-top)+1rem)] z-20 flex items-center gap-1.5 rounded-full border border-white/8 bg-black/20 px-3 py-1.5 text-xs font-medium text-slate-400 backdrop-blur-sm transition-colors hover:border-[#5865F2]/30 hover:text-[#5865F2]"
-      >
-        <DiscordIcon />
-        Join Discord
-      </a>
+      <div className="fixed left-4 top-[calc(env(safe-area-inset-top)+1rem)] z-20 flex items-center gap-2">
+        <a
+          href="https://discord.gg/dUZwhYHUyk"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 rounded-full border border-white/8 bg-black/20 px-3 py-1.5 text-xs font-medium text-slate-400 backdrop-blur-sm transition-colors hover:border-[#5865F2]/30 hover:text-[#5865F2]"
+        >
+          <DiscordIcon />
+          Discord
+        </a>
+        <a
+          href="https://github.com/phase-rs/phase"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 rounded-full border border-white/8 bg-black/20 px-3 py-1.5 text-xs font-medium text-slate-400 backdrop-blur-sm transition-colors hover:border-white/20 hover:text-white"
+        >
+          <GitHubIcon />
+          GitHub
+        </a>
+      </div>
 
       <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col justify-center px-6 py-16 lg:px-10">
         <div className="mx-auto flex w-full max-w-3xl flex-col items-center text-center">
@@ -250,6 +261,14 @@ function CrownIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" className="h-7 w-7 fill-current">
       <path d="m3 18 1.9-9 4.35 3.76L12 6l2.75 6.76L19.1 9 21 18H3Zm1 2h16v2H4v-2Z" />
+    </svg>
+  );
+}
+
+function GitHubIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-current">
+      <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z" />
     </svg>
   );
 }
