@@ -1,14 +1,17 @@
-use engine::types::ability::{
-    ContinuousModification, Effect, PtValue, QuantityExpr, TargetFilter, TargetRef, TypeFilter,
-};
+use engine::types::ability::{Effect, QuantityExpr, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::identifiers::ObjectId;
-use engine::types::statics::StaticMode;
+use engine::types::keywords::{Keyword, WardCost};
+use engine::types::zones::Zone;
 
 use crate::eval::{evaluate_creature, threat_level};
 
 use super::context::PolicyContext;
+use super::effect_classify::{
+    aura_polarity, effect_polarity, is_spell_beneficial, targets_creatures, targets_creatures_only,
+    EffectPolarity,
+};
 use super::registry::TacticalPolicy;
 
 pub struct AntiSelfHarmPolicy;
@@ -90,208 +93,6 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
     penalty
 }
 
-/// Returns true if the effect exclusively targets creatures (not "any target").
-/// Used for harmful spells: burn with TargetFilter::Any can still go face.
-fn targets_creatures_only(effect: &Effect) -> bool {
-    let filter = extract_target_filter(effect);
-    matches!(
-        filter,
-        Some(TargetFilter::Typed(typed))
-            if typed.type_filters.iter().any(|t| matches!(t, TypeFilter::Creature))
-    )
-}
-
-/// Returns true if an effect's target filter is creature-typed (or Any).
-fn targets_creatures(effect: &Effect) -> bool {
-    let Some(filter) = extract_target_filter(effect) else {
-        return false;
-    };
-    match filter {
-        TargetFilter::Any => true,
-        TargetFilter::Typed(typed) => typed
-            .type_filters
-            .iter()
-            .any(|t| matches!(t, TypeFilter::Creature)),
-        _ => false,
-    }
-}
-
-/// Extract the target filter from an effect, if present.
-fn extract_target_filter(effect: &Effect) -> Option<&TargetFilter> {
-    match effect {
-        // Beneficial effects
-        Effect::Pump { target, .. }
-        | Effect::AddCounter { target, .. }
-        | Effect::Animate { target, .. }
-        | Effect::DoublePT { target, .. }
-        | Effect::Regenerate { target, .. }
-        | Effect::Untap { target }
-        | Effect::PreventDamage { target, .. }
-        // Harmful effects
-        | Effect::Destroy { target, .. }
-        | Effect::DealDamage { target, .. }
-        | Effect::Tap { target }
-        | Effect::RemoveCounter { target, .. } => Some(target),
-        _ => None,
-    }
-}
-
-/// Three-valued polarity: whether an effect benefits or harms its target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EffectPolarity {
-    /// Target benefits (pump, regenerate, +1/+1 counters, untap, animate)
-    Beneficial,
-    /// Target is harmed (destroy, damage, -1/-1 counters, sacrifice)
-    Harmful,
-    /// Depends on context — fall through to default "assume harmful" behavior
-    Contextual,
-}
-
-fn effect_polarity(effect: &Effect) -> EffectPolarity {
-    match effect {
-        // Pump: beneficial only if both values are non-negative
-        Effect::Pump {
-            power, toughness, ..
-        } => {
-            let p_ok = matches!(power, PtValue::Fixed(v) if *v >= 0)
-                || matches!(power, PtValue::Variable(_) | PtValue::Quantity(_));
-            let t_ok = matches!(toughness, PtValue::Fixed(v) if *v >= 0)
-                || matches!(toughness, PtValue::Variable(_) | PtValue::Quantity(_));
-            if p_ok && t_ok {
-                EffectPolarity::Beneficial
-            } else {
-                EffectPolarity::Harmful
-            }
-        }
-        // Counters: +1/+1 is beneficial, -1/-1 is harmful
-        Effect::AddCounter { counter_type, .. } => {
-            if counter_type.starts_with('+') {
-                EffectPolarity::Beneficial
-            } else if counter_type.starts_with('-') {
-                EffectPolarity::Harmful
-            } else {
-                EffectPolarity::Contextual
-            }
-        }
-        Effect::Regenerate { .. }
-        | Effect::PreventDamage { .. }
-        | Effect::Animate { .. }
-        | Effect::DoublePT { .. } => EffectPolarity::Beneficial,
-        Effect::Untap { .. } => EffectPolarity::Beneficial,
-        Effect::Destroy { .. }
-        | Effect::DealDamage { .. }
-        | Effect::Sacrifice { .. }
-        | Effect::DiscardCard { .. }
-        | Effect::Mill { .. }
-        | Effect::LoseLife { .. }
-        | Effect::RemoveCounter { .. }
-        | Effect::Tap { .. } => EffectPolarity::Harmful,
-        _ => EffectPolarity::Contextual,
-    }
-}
-
-/// Returns true if the pending spell's dominant effect is beneficial to its target.
-/// Defaults to false (assume harmful) when uncertain — safe fallback since most
-/// targeted spells in MTG are removal/damage.
-fn is_spell_beneficial(ctx: &PolicyContext<'_>) -> bool {
-    let effects = ctx.effects();
-
-    // Check active effects for a clear polarity signal.
-    let dominant_polarity = effects.first().map(|e| effect_polarity(e));
-    match dominant_polarity {
-        Some(EffectPolarity::Beneficial) => return true,
-        Some(EffectPolarity::Harmful) => return false,
-        _ => {}
-    }
-
-    // No clear polarity from active effects (empty or Contextual).
-    // Auras carry their beneficial/harmful nature in static definitions.
-    if let Some(source) = ctx.source_object() {
-        if source.card_types.subtypes.iter().any(|s| s == "Aura") {
-            return matches!(aura_polarity(source), EffectPolarity::Beneficial);
-        }
-    }
-
-    false
-}
-
-/// Determines whether an Aura is beneficial or harmful to its target by inspecting
-/// both static modes (CantAttack, CantBeBlocked, etc.) and continuous modifications.
-fn aura_polarity(source: &engine::game::game_object::GameObject) -> EffectPolarity {
-    // First check static modes — these carry clear polarity independent of modifications.
-    for sd in &source.static_definitions {
-        match static_mode_polarity(&sd.mode) {
-            EffectPolarity::Contextual => continue,
-            polarity => return polarity,
-        }
-    }
-
-    // Then check continuous modifications (AddPower, AddKeyword, etc.).
-    for sd in &source.static_definitions {
-        for m in &sd.modifications {
-            match modification_polarity(m) {
-                EffectPolarity::Contextual => continue,
-                polarity => return polarity,
-            }
-        }
-    }
-
-    EffectPolarity::Contextual
-}
-
-/// Classify a static mode as beneficial/harmful to the enchanted permanent.
-fn static_mode_polarity(mode: &StaticMode) -> EffectPolarity {
-    match mode {
-        // Harmful: restricts the enchanted permanent
-        StaticMode::CantAttack
-        | StaticMode::CantBlock
-        | StaticMode::CantUntap
-        | StaticMode::MustAttack
-        | StaticMode::MustBlock
-        | StaticMode::CantGainLife
-        | StaticMode::CantBeActivated => EffectPolarity::Harmful,
-        // Beneficial: enhances the enchanted permanent
-        StaticMode::CantBeBlocked
-        | StaticMode::CantBeBlockedExceptBy { .. }
-        | StaticMode::CantBeTargeted
-        | StaticMode::CantBeCountered
-        | StaticMode::Protection
-        | StaticMode::CastWithFlash => EffectPolarity::Beneficial,
-        // Continuous, cost changes, and others depend on modifications/context
-        _ => EffectPolarity::Contextual,
-    }
-}
-
-/// Classify a continuous modification as beneficial/harmful to its target.
-fn modification_polarity(m: &ContinuousModification) -> EffectPolarity {
-    match m {
-        ContinuousModification::AddPower { value }
-        | ContinuousModification::AddToughness { value } => {
-            if *value > 0 {
-                EffectPolarity::Beneficial
-            } else if *value < 0 {
-                EffectPolarity::Harmful
-            } else {
-                EffectPolarity::Contextual
-            }
-        }
-        ContinuousModification::AddDynamicPower { .. }
-        | ContinuousModification::AddDynamicToughness { .. } => EffectPolarity::Beneficial,
-        ContinuousModification::AddKeyword { .. }
-        | ContinuousModification::GrantAbility { .. }
-        | ContinuousModification::AddAllCreatureTypes
-        | ContinuousModification::AddColor { .. }
-        | ContinuousModification::AddType { .. }
-        | ContinuousModification::AddSubtype { .. } => EffectPolarity::Beneficial,
-        ContinuousModification::RemoveKeyword { .. }
-        | ContinuousModification::RemoveAllAbilities
-        | ContinuousModification::RemoveType { .. }
-        | ContinuousModification::RemoveSubtype { .. } => EffectPolarity::Harmful,
-        // SetPower/SetToughness, SetColor, etc. are contextual — could go either way.
-        _ => EffectPolarity::Contextual,
-    }
-}
-
 fn score_target_ref(ctx: &PolicyContext<'_>, target: &TargetRef) -> f64 {
     let beneficial = is_spell_beneficial(ctx);
     match target {
@@ -329,14 +130,76 @@ fn score_target_object(ctx: &PolicyContext<'_>, object_id: ObjectId, beneficial:
     if object.card_types.core_types.contains(&CoreType::Creature) {
         score += controller_delta * evaluate_creature(ctx.state, object_id);
 
-        // Penalize targeting creatures that won't die to this damage.
-        // Wasting burn on a creature that survives is worse than going face.
+        // Cache effects once — used by damage check, indestructible check, and bounce check
+        let effects = ctx.effects();
+
         if !beneficial {
-            if let Some(damage) = get_spell_damage_amount(ctx) {
+            if let Some(damage) = extract_damage_amount(&effects) {
                 if let Some(toughness) = object.toughness {
                     let remaining = toughness - object.damage_marked as i32;
+                    // Penalize targeting creatures that won't die to this damage.
+                    // Wasting burn on a creature that survives is worse than going face.
                     if damage < remaining {
                         score -= 4.0;
+                    }
+                    // Penalize massive overkill (wasting damage capacity)
+                    if remaining > 0 && damage >= remaining && damage > remaining * 2 {
+                        let wasted = damage - remaining;
+                        let waste_ratio = wasted as f64 / damage as f64;
+                        score += ctx.penalties().overkill_base_penalty * waste_ratio.sqrt();
+                    }
+                }
+            }
+
+            // Penalize casting Destroy at indestructible creatures (does nothing)
+            let is_destroy = effects.iter().any(|e| matches!(e, Effect::Destroy { .. }));
+            if is_destroy && object.has_keyword(&Keyword::Indestructible) {
+                score += ctx.penalties().indestructible_destroy_penalty;
+            }
+
+            // Penalize targeting creatures with ward (must pay additional cost)
+            for keyword in &object.keywords {
+                if let Keyword::Ward(ward_cost) = keyword {
+                    let severity = match ward_cost {
+                        WardCost::Mana(cost) => (cost.mana_value() as f64 / 2.0).min(2.0),
+                        WardCost::PayLife(amount) => (*amount as f64 / 3.0).min(2.0),
+                        WardCost::DiscardCard => 1.5,
+                        WardCost::SacrificeAPermanent => 2.0,
+                        WardCost::Waterbend(cost) => (cost.mana_value() as f64 / 2.0).min(2.0),
+                    };
+                    score += ctx.penalties().ward_cost_penalty_base * severity;
+                    break;
+                }
+            }
+
+            // Removal quality mismatch: penalize premium removal on cheap targets
+            if let Some(source) = ctx.source_object() {
+                let spell_mv = source.mana_cost.mana_value();
+                let target_value = evaluate_creature(ctx.state, object_id);
+                if spell_mv >= 4 && target_value < 4.0 {
+                    score += ctx.penalties().removal_quality_mismatch
+                        * (1.0 - target_value / 4.0).max(0.0);
+                }
+            }
+        }
+
+        // Bounce-specific valuation: tokens are great targets, cheap permanents are bad
+        let bounce_destination = effects.iter().find_map(|e| match e {
+            Effect::Bounce { destination, .. } => Some(*destination),
+            _ => None,
+        });
+        if let Some(destination) = bounce_destination {
+            if !beneficial {
+                let is_tuck = matches!(destination, Some(Zone::Library));
+                if object.is_token || is_tuck {
+                    // Tokens cease to exist when bounced; tuck is permanent removal
+                    score += ctx.penalties().bounce_token_bonus;
+                } else {
+                    let mv = object.mana_cost.mana_value();
+                    if mv <= 2 {
+                        score += ctx.penalties().bounce_cheap_discount;
+                    } else {
+                        score += mv as f64 * ctx.penalties().bounce_expensive_bonus_per_mv;
                     }
                 }
             }
@@ -348,8 +211,8 @@ fn score_target_object(ctx: &PolicyContext<'_>, object_id: ObjectId, beneficial:
 
 /// Extract the fixed damage amount from the pending spell's DealDamage effect.
 /// Returns None for variable damage or non-damage spells.
-fn get_spell_damage_amount(ctx: &PolicyContext<'_>) -> Option<i32> {
-    ctx.effects().into_iter().find_map(|effect| match effect {
+fn extract_damage_amount(effects: &[&Effect]) -> Option<i32> {
+    effects.iter().find_map(|effect| match effect {
         Effect::DealDamage {
             amount: QuantityExpr::Fixed { value },
             ..
@@ -365,13 +228,15 @@ mod tests {
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
     use engine::game::zones::create_object;
     use engine::types::ability::{
-        FilterProp, ResolvedAbility, StaticDefinition, TargetFilter, TypedFilter,
+        ContinuousModification, FilterProp, PtValue, ResolvedAbility, StaticDefinition,
+        TargetFilter, TypeFilter, TypedFilter,
     };
     use engine::types::game_state::{GameState, PendingCast, TargetSelectionSlot, WaitingFor};
     use engine::types::identifiers::{CardId, ObjectId};
     use engine::types::keywords::Keyword;
     use engine::types::mana::ManaCost;
     use engine::types::player::PlayerId;
+    use engine::types::statics::StaticMode;
     use engine::types::zones::Zone;
 
     fn make_state() -> GameState {

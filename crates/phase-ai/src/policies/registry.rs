@@ -22,6 +22,8 @@ impl Default for PolicyRegistry {
                 Box::new(AntiSelfHarmPolicy),
                 Box::new(EffectTimingPolicy),
                 Box::new(super::mana_efficiency::ManaEfficiencyPolicy),
+                Box::new(super::stack_awareness::StackAwarenessPolicy),
+                Box::new(super::downside_awareness::DownsideAwarenessPolicy),
             ],
         }
     }

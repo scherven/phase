@@ -104,6 +104,65 @@ impl Default for SearchConfig {
     }
 }
 
+/// Tunable penalty values for AI tactical policies.
+/// All values are `f64` for compatibility with the CMA-ES training pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyPenalties {
+    /// Penalty for targeting a creature already doomed by pending stack effects.
+    pub redundant_removal_penalty: f64,
+    /// Penalty for targeting a creature with pending (but non-lethal) damage.
+    pub redundant_damage_penalty: f64,
+
+    /// Penalty for casting a spell that gifts the opponent a card draw.
+    pub gift_card_penalty: f64,
+    /// Penalty for gifting opponent a Treasure token.
+    pub gift_treasure_penalty: f64,
+    /// Penalty for gifting opponent a Food token.
+    pub gift_food_penalty: f64,
+    /// Penalty for gifting opponent a tapped 1/1 Fish token.
+    pub gift_fish_penalty: f64,
+    /// Minimum creature value (from evaluate_creature) to justify gift removal.
+    pub worthy_target_threshold: f64,
+
+    /// Base penalty for massive overkill (damage > 2x remaining toughness).
+    pub overkill_base_penalty: f64,
+    /// Penalty for using premium removal on cheap targets.
+    pub removal_quality_mismatch: f64,
+
+    /// Bonus for bouncing a token (ceases to exist) or tucking to library.
+    pub bounce_token_bonus: f64,
+    /// Discount for bouncing a cheap permanent (easily replayed).
+    pub bounce_cheap_discount: f64,
+    /// Per-mana-value bonus for bouncing expensive permanents.
+    pub bounce_expensive_bonus_per_mv: f64,
+
+    /// Penalty for casting Destroy at an indestructible creature.
+    pub indestructible_destroy_penalty: f64,
+    /// Base penalty for targeting a creature with ward (scaled by cost severity).
+    pub ward_cost_penalty_base: f64,
+}
+
+impl Default for PolicyPenalties {
+    fn default() -> Self {
+        Self {
+            redundant_removal_penalty: -6.0,
+            redundant_damage_penalty: -4.0,
+            gift_card_penalty: -3.0,
+            gift_treasure_penalty: -1.5,
+            gift_food_penalty: -1.0,
+            gift_fish_penalty: -0.5,
+            worthy_target_threshold: 3.0,
+            overkill_base_penalty: -2.0,
+            removal_quality_mismatch: -1.5,
+            bounce_token_bonus: 3.0,
+            bounce_cheap_discount: -2.0,
+            bounce_expensive_bonus_per_mv: 0.3,
+            indestructible_destroy_penalty: -8.0,
+            ward_cost_penalty_base: -2.0,
+        }
+    }
+}
+
 /// Full AI configuration combining difficulty, search, and evaluation settings.
 #[derive(Debug, Clone)]
 pub struct AiConfig {
@@ -116,6 +175,7 @@ pub struct AiConfig {
     pub weights: EvalWeightSet,
     pub keyword_bonuses: KeywordBonuses,
     pub archetype_multipliers: ArchetypeMultipliers,
+    pub policy_penalties: PolicyPenalties,
     /// Number of players in the game (used for search budget scaling).
     pub player_count: u8,
 }
@@ -265,6 +325,7 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
         weights: EvalWeightSet::learned(),
         keyword_bonuses: KeywordBonuses::default(),
         archetype_multipliers: ArchetypeMultipliers::default(),
+        policy_penalties: PolicyPenalties::default(),
         player_count: 2,
     };
 

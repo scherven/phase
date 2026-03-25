@@ -5,7 +5,7 @@ use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
 
-use crate::config::AiConfig;
+use crate::config::{AiConfig, PolicyPenalties};
 use crate::eval::{strategic_intent, StrategicIntent};
 
 pub struct PolicyContext<'a> {
@@ -20,6 +20,10 @@ pub struct PolicyContext<'a> {
 impl<'a> PolicyContext<'a> {
     pub fn strategic_intent(&self) -> StrategicIntent {
         strategic_intent(self.state, self.ai_player)
+    }
+
+    pub fn penalties(&self) -> &PolicyPenalties {
+        &self.config.policy_penalties
     }
 
     pub fn source_object(&self) -> Option<&'a GameObject> {
@@ -85,7 +89,7 @@ impl<'a> PolicyContext<'a> {
 }
 
 /// Walk a ResolvedAbility's sub_ability chain, collecting all effects.
-fn collect_ability_effects(ability: &ResolvedAbility) -> Vec<&Effect> {
+pub(crate) fn collect_ability_effects(ability: &ResolvedAbility) -> Vec<&Effect> {
     let mut effects = vec![&ability.effect];
     let mut current = &ability.sub_ability;
     while let Some(sub) = current {
