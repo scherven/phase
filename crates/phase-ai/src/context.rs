@@ -1,0 +1,37 @@
+use engine::game::DeckEntry;
+
+use crate::deck_profile::DeckProfile;
+use crate::eval::EvalWeights;
+
+/// Pre-computed deck analysis, built once per game from the deck pool.
+/// Threaded through `PlannerServices` into eval, policies, and search.
+///
+/// When no deck data is available (e.g., tests, non-deck games), use
+/// `AiContext::empty()` which provides neutral defaults that produce
+/// identical behavior to the pre-context-aware AI.
+#[derive(Debug, Clone)]
+pub struct AiContext {
+    pub deck_profile: DeckProfile,
+    pub adjusted_weights: EvalWeights,
+}
+
+impl AiContext {
+    /// Analyze a deck list to build the context.
+    pub fn analyze(deck: &[DeckEntry], base_weights: &EvalWeights) -> Self {
+        let deck_profile = DeckProfile::analyze(deck);
+        let adjusted_weights = deck_profile.adjust_weights(base_weights);
+        Self {
+            deck_profile,
+            adjusted_weights,
+        }
+    }
+
+    /// Neutral context for when no deck data is available.
+    /// Strategic dimensions contribute 0.0, weights are unchanged from base.
+    pub fn empty(base_weights: &EvalWeights) -> Self {
+        Self {
+            deck_profile: DeckProfile::default(),
+            adjusted_weights: base_weights.clone(),
+        }
+    }
+}

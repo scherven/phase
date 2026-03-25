@@ -2,6 +2,8 @@ pub mod auto_play;
 pub mod card_hints;
 pub mod combat_ai;
 pub mod config;
+pub mod context;
+pub mod deck_profile;
 pub mod eval;
 pub mod planner;
 pub mod policies;

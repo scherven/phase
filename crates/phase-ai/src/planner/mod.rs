@@ -177,12 +177,18 @@ pub struct PlannerServices<'a> {
     pub ai_player: PlayerId,
     pub config: &'a AiConfig,
     pub policies: &'a PolicyRegistry,
+    pub context: crate::context::AiContext,
     pub information_set_sampler: Box<dyn InformationSetSampler + 'a>,
     pub utility_reducer: Box<dyn UtilityReducer + 'a>,
 }
 
 impl<'a> PlannerServices<'a> {
-    pub fn new(ai_player: PlayerId, config: &'a AiConfig, policies: &'a PolicyRegistry) -> Self {
+    pub fn new(
+        ai_player: PlayerId,
+        config: &'a AiConfig,
+        policies: &'a PolicyRegistry,
+        context: crate::context::AiContext,
+    ) -> Self {
         let information_set_sampler: Box<dyn InformationSetSampler + 'a> =
             match config.search.hidden_info_mode {
                 HiddenInfoMode::PerfectInfo
@@ -203,9 +209,24 @@ impl<'a> PlannerServices<'a> {
             ai_player,
             config,
             policies,
+            context,
             information_set_sampler,
             utility_reducer,
         }
+    }
+
+    /// Convenience constructor without deck analysis — for tests and non-deck-aware paths.
+    pub fn new_default(
+        ai_player: PlayerId,
+        config: &'a AiConfig,
+        policies: &'a PolicyRegistry,
+    ) -> Self {
+        Self::new(
+            ai_player,
+            config,
+            policies,
+            crate::context::AiContext::empty(&config.weights),
+        )
     }
 
     pub fn build_decision_context(&self, state: &GameState) -> AiDecisionContext {
@@ -239,7 +260,7 @@ impl<'a> PlannerServices<'a> {
     }
 
     pub fn evaluate_state(&self, state: &GameState) -> f64 {
-        evaluate_state(state, self.ai_player, &self.config.weights)
+        evaluate_state(state, self.ai_player, &self.context.adjusted_weights)
     }
 
     pub fn evaluate_for_planner(&self, state: &GameState) -> ValueEstimate {
@@ -790,7 +811,7 @@ mod tests {
         let state = make_state();
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
         let policies = PolicyRegistry::default();
-        let services = PlannerServices::new(PlayerId(0), &config, &policies);
+        let services = PlannerServices::new_default(PlayerId(0), &config, &policies);
         let decision = AiDecisionContext {
             waiting_for: WaitingFor::TriggerTargetSelection {
                 player: PlayerId(0),
@@ -889,7 +910,7 @@ mod tests {
         let state = make_state();
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
         let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new(PlayerId(0), &config, &policies);
+        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
         let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
         let key = SearchNodeKey::new(&state, Some(PlayerId(0)));
         planner.expand_node(key, &state, &mut services);
@@ -922,7 +943,7 @@ mod tests {
 
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
         let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new(PlayerId(0), &config, &policies);
+        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
         let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
         let mut budget = SearchBudget::new(32);
         let _ = planner.evaluate_after_action(&state, &mut services, &mut budget);
@@ -937,7 +958,7 @@ mod tests {
         let state = make_state();
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
         let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new(PlayerId(0), &config, &policies);
+        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
         let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
         let mut budget = SearchBudget::new(2);
         let _ = planner.evaluate_after_action(&state, &mut services, &mut budget);
@@ -949,7 +970,7 @@ mod tests {
         let state = make_state();
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
         let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new(PlayerId(0), &config, &policies);
+        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
         let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
         let mut budget = SearchBudget::new(256);
         let _ = planner.evaluate_after_action(&state, &mut services, &mut budget);

@@ -8,6 +8,7 @@ use engine::types::player::PlayerId;
 
 use crate::combat_ai::{choose_attackers_with_targets_with_profile, choose_blockers_with_profile};
 use crate::config::AiConfig;
+use crate::context::AiContext;
 use crate::planner::{
     apply_candidate, build_continuation_planner, rank_candidates, PlannerServices, SearchBudget,
 };
@@ -46,7 +47,8 @@ pub fn score_candidates(
 ) -> Vec<(GameAction, f64)> {
     let ctx = build_decision_context(state);
     let policies = PolicyRegistry::default();
-    let mut services = PlannerServices::new(ai_player, config, &policies);
+    let context = build_ai_context(state, ai_player, config);
+    let mut services = PlannerServices::new(ai_player, config, &policies, context);
     let candidates = services.validate_candidates(state, ctx.candidates.clone());
     let actions: Vec<GameAction> = candidates
         .iter()
@@ -115,6 +117,20 @@ pub fn score_candidates(
             })
             .collect()
     }
+}
+
+/// Build AI context from the player's deck pool, or a neutral default if unavailable.
+fn build_ai_context(state: &GameState, player: PlayerId, config: &AiConfig) -> AiContext {
+    let deck = state
+        .deck_pools
+        .iter()
+        .find(|p| p.player == player)
+        .map(|p| p.current_main.as_slice())
+        .unwrap_or(&[]);
+    if deck.is_empty() {
+        return AiContext::empty(&config.weights);
+    }
+    AiContext::analyze(deck, &config.weights)
 }
 
 /// Handle deterministic decisions that don't benefit from search or parallelism.
