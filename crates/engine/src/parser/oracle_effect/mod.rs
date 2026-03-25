@@ -4028,7 +4028,9 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                         },
                         "",
                     ));
-                } else if let Some(target) = parse_event_context_ref(target_phrase) {
+                } else if let Some((target, _ecr_rem)) = parse_event_context_ref(target_phrase) {
+                    #[cfg(debug_assertions)]
+                    types::assert_no_compound_remainder(_ecr_rem, target_phrase);
                     return Some((
                         Effect::DealDamage {
                             amount: qty,
@@ -4089,15 +4091,15 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
         ));
     }
 
-    // CR 603.7c: Check for event-context references before standard target parsing.
-    if let Some(target) = parse_event_context_ref(after_to) {
+    // CR 608.2k: Check for event-context references before standard target parsing.
+    if let Some((target, ecr_rem)) = parse_event_context_ref(after_to) {
         return Some((
             Effect::DealDamage {
                 amount: amount.clone(),
                 target,
                 damage_source: None,
             },
-            "",
+            ecr_rem,
         ));
     }
 
@@ -4725,6 +4727,80 @@ mod tests {
             "full pipeline: sub_ability should be GainLife(3), got: {:?}",
             sub.effect
         );
+    }
+
+    #[test]
+    fn try_split_damage_compound_event_context_oath_of_kaya() {
+        // CR 608.2k: "that player" event-context ref with compound remainder
+        let ctx = ParseContext::default();
+        let clause =
+            try_split_damage_compound("~ deals 2 damage to that player and you gain 2 life", &ctx)
+                .expect("should split event-context compound");
+        assert!(
+            matches!(
+                clause.effect,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::TriggeringPlayer,
+                    ..
+                }
+            ),
+            "primary: {:?}",
+            clause.effect
+        );
+        let sub = clause
+            .sub_ability
+            .as_ref()
+            .expect("should chain sub_ability");
+        assert!(
+            matches!(
+                *sub.effect,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                    ..
+                }
+            ),
+            "sub_ability: {:?}",
+            sub.effect
+        );
+    }
+
+    #[test]
+    fn try_split_damage_compound_event_context_torch_the_tower() {
+        // CR 608.2k: "that permanent" event-context ref with compound remainder
+        let ctx = ParseContext::default();
+        let clause =
+            try_split_damage_compound("~ deals 3 damage to that permanent and you scry 1", &ctx)
+                .expect("should split event-context compound");
+        assert!(
+            matches!(
+                clause.effect,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 3 },
+                    target: TargetFilter::TriggeringSource,
+                    ..
+                }
+            ),
+            "primary: {:?}",
+            clause.effect
+        );
+        let sub = clause
+            .sub_ability
+            .as_ref()
+            .expect("should chain sub_ability");
+        assert!(
+            matches!(*sub.effect, Effect::Scry { count: 1 }),
+            "sub_ability: {:?}",
+            sub.effect
+        );
+    }
+
+    #[test]
+    fn try_split_damage_compound_event_context_no_compound() {
+        // No compound — should return None and fall through to normal path
+        let ctx = ParseContext::default();
+        let result = try_split_damage_compound("~ deals 2 damage to that player", &ctx);
+        assert!(result.is_none(), "no compound should return None");
     }
 
     #[test]

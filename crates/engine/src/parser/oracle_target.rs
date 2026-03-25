@@ -13,28 +13,57 @@ use super::oracle_util::{merge_or_filters, parse_subtype, starts_with_possessive
 /// Parse an event-context possessive reference from Oracle text.
 /// These resolve from the triggering event, not from player targeting.
 /// Must be checked BEFORE standard `parse_target` for trigger-based effects.
-pub fn parse_event_context_ref(text: &str) -> Option<TargetFilter> {
+/// CR 608.2k: Parse event-context references ("that player", "that permanent", etc.)
+/// that refer back to objects/players mentioned in a trigger condition or cost.
+/// Returns the matched filter and unconsumed remainder text.
+pub fn parse_event_context_ref(text: &str) -> Option<(TargetFilter, &str)> {
+    let text = text.trim();
     let lower = text.to_lowercase();
-    let lower = lower.trim();
 
-    if lower == "that spell's controller" || lower.starts_with("that spell's controller") {
-        return Some(TargetFilter::TriggeringSpellController);
+    // Longest-match-first ordering within shared prefixes.
+    if let Some(rest) = lower.strip_prefix("that spell's controller") {
+        return Some((
+            TargetFilter::TriggeringSpellController,
+            &text[text.len() - rest.len()..],
+        ));
     }
-    if lower == "that spell's owner" || lower.starts_with("that spell's owner") {
-        return Some(TargetFilter::TriggeringSpellOwner);
+    if let Some(rest) = lower.strip_prefix("that spell's owner") {
+        return Some((
+            TargetFilter::TriggeringSpellOwner,
+            &text[text.len() - rest.len()..],
+        ));
     }
-    if lower == "that player" || lower.starts_with("that player") {
-        return Some(TargetFilter::TriggeringPlayer);
+    if let Some(rest) = lower.strip_prefix("that player") {
+        return Some((
+            TargetFilter::TriggeringPlayer,
+            &text[text.len() - rest.len()..],
+        ));
     }
-    if lower == "that source" || lower.starts_with("that source") {
-        return Some(TargetFilter::TriggeringSource);
+    if let Some(rest) = lower.strip_prefix("that source") {
+        return Some((
+            TargetFilter::TriggeringSource,
+            &text[text.len() - rest.len()..],
+        ));
     }
-    if lower == "that permanent" || lower.starts_with("that permanent") {
-        return Some(TargetFilter::TriggeringSource);
+    // "that permanent or player" before "that permanent" — longest match first.
+    if let Some(rest) = lower.strip_prefix("that permanent or player") {
+        return Some((
+            TargetFilter::TriggeringSource,
+            &text[text.len() - rest.len()..],
+        ));
+    }
+    if let Some(rest) = lower.strip_prefix("that permanent") {
+        return Some((
+            TargetFilter::TriggeringSource,
+            &text[text.len() - rest.len()..],
+        ));
     }
     // CR 506.3d: "defending player" — the player being attacked by the source creature.
-    if lower == "defending player" || lower.starts_with("defending player") {
-        return Some(TargetFilter::DefendingPlayer);
+    if let Some(rest) = lower.strip_prefix("defending player") {
+        return Some((
+            TargetFilter::DefendingPlayer,
+            &text[text.len() - rest.len()..],
+        ));
     }
 
     None
@@ -1928,32 +1957,37 @@ mod tests {
 
     #[test]
     fn parse_event_context_that_spells_controller() {
-        let filter = parse_event_context_ref("that spell's controller");
-        assert_eq!(filter, Some(TargetFilter::TriggeringSpellController));
+        let (filter, rem) = parse_event_context_ref("that spell's controller").unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringSpellController);
+        assert_eq!(rem, "");
     }
 
     #[test]
     fn parse_event_context_that_spells_owner() {
-        let filter = parse_event_context_ref("that spell's owner");
-        assert_eq!(filter, Some(TargetFilter::TriggeringSpellOwner));
+        let (filter, rem) = parse_event_context_ref("that spell's owner").unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringSpellOwner);
+        assert_eq!(rem, "");
     }
 
     #[test]
     fn parse_event_context_that_player() {
-        let filter = parse_event_context_ref("that player");
-        assert_eq!(filter, Some(TargetFilter::TriggeringPlayer));
+        let (filter, rem) = parse_event_context_ref("that player").unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringPlayer);
+        assert_eq!(rem, "");
     }
 
     #[test]
     fn parse_event_context_that_source() {
-        let filter = parse_event_context_ref("that source");
-        assert_eq!(filter, Some(TargetFilter::TriggeringSource));
+        let (filter, rem) = parse_event_context_ref("that source").unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringSource);
+        assert_eq!(rem, "");
     }
 
     #[test]
     fn parse_event_context_that_permanent() {
-        let filter = parse_event_context_ref("that permanent");
-        assert_eq!(filter, Some(TargetFilter::TriggeringSource));
+        let (filter, rem) = parse_event_context_ref("that permanent").unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringSource);
+        assert_eq!(rem, "");
     }
 
     #[test]
@@ -1964,14 +1998,37 @@ mod tests {
 
     #[test]
     fn parse_event_context_defending_player() {
-        let filter = parse_event_context_ref("defending player");
-        assert_eq!(filter, Some(TargetFilter::DefendingPlayer));
+        let (filter, rem) = parse_event_context_ref("defending player").unwrap();
+        assert_eq!(filter, TargetFilter::DefendingPlayer);
+        assert_eq!(rem, "");
     }
 
     #[test]
     fn parse_event_context_defending_player_prefix() {
-        let filter = parse_event_context_ref("defending player reveals the top card");
-        assert_eq!(filter, Some(TargetFilter::DefendingPlayer));
+        let (filter, rem) =
+            parse_event_context_ref("defending player reveals the top card").unwrap();
+        assert_eq!(filter, TargetFilter::DefendingPlayer);
+        assert_eq!(rem, " reveals the top card");
+    }
+
+    #[test]
+    fn event_context_ref_preserves_remainder() {
+        // Compound remainder preserved with leading space
+        let (filter, rem) = parse_event_context_ref("that player and you gain 2 life").unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringPlayer);
+        assert_eq!(rem, " and you gain 2 life");
+
+        // "that permanent or player" — longest-match-first, no bogus " or player" remainder
+        let (filter, rem) =
+            parse_event_context_ref("that permanent or player and the damage can't be prevented")
+                .unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringSource);
+        assert_eq!(rem, " and the damage can't be prevented");
+
+        // "that source" with remainder
+        let (filter, rem) = parse_event_context_ref("that source and you draw a card").unwrap();
+        assert_eq!(filter, TargetFilter::TriggeringSource);
+        assert_eq!(rem, " and you draw a card");
     }
 
     #[test]
