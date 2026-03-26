@@ -4543,4 +4543,54 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn heroic_trigger_not_misrouted_to_replacement() {
+        // Favored Hoplite: "Heroic — Whenever you cast a spell that targets this creature,
+        // put a +1/+1 counter on this creature and prevent all damage that would be dealt
+        // to it this turn."
+        // Should produce a trigger, NOT a replacement.
+        let result = parse(
+            "Heroic — Whenever you cast a spell that targets this creature, put a +1/+1 counter on this creature and prevent all damage that would be dealt to it this turn.",
+            "Favored Hoplite",
+            &[],
+            &["Creature"],
+            &["Human", "Soldier"],
+        );
+        assert_eq!(
+            result.triggers.len(),
+            1,
+            "Should have 1 trigger, got {} triggers and {} replacements. triggers={:?} replacements={:?}",
+            result.triggers.len(),
+            result.replacements.len(),
+            result.triggers,
+            result.replacements,
+        );
+        assert_eq!(
+            result.replacements.len(),
+            0,
+            "Should have 0 replacements, got {}: {:?}",
+            result.replacements.len(),
+            result.replacements,
+        );
+    }
+
+    #[test]
+    fn ability_word_trigger_not_static_or_replacement() {
+        // "Constellation — Whenever an enchantment enters the battlefield under your control,
+        // you gain 1 life." — ability-word-prefixed trigger should route to triggers.
+        let result = parse(
+            "Constellation — Whenever an enchantment you control enters, you gain 1 life.",
+            "Test Card",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(
+            result.triggers.len(),
+            1,
+            "Ability-word trigger should produce 1 trigger, got: triggers={:?}",
+            result.triggers,
+        );
+    }
 }
