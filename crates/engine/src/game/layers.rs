@@ -86,7 +86,7 @@ pub fn prune_host_left_effects(state: &mut GameState, departed_id: ObjectId) {
 ///
 /// Used by both intrinsic (permanent-based) and transient (state-level) continuous
 /// effects so that condition evaluation is consistent regardless of effect origin.
-fn evaluate_condition(
+pub(crate) fn evaluate_condition(
     state: &GameState,
     condition: &StaticCondition,
     controller: PlayerId,

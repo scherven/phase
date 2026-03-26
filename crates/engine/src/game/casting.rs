@@ -619,6 +619,13 @@ fn apply_battlefield_cost_modifiers(
                 _ => continue,
             };
 
+            // CR 601.2f: Check static condition — "as long as" clauses gate cost modification.
+            if let Some(ref cond) = def.condition {
+                if !super::layers::evaluate_condition(state, cond, source_controller, bf_id) {
+                    continue;
+                }
+            }
+
             // CR 601.2f: Check player scope — does this modifier apply to spells the caster casts?
             if let Some(TargetFilter::Typed(ref tf)) = def.affected {
                 match tf.controller {
