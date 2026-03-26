@@ -1423,6 +1423,59 @@ mod tests {
     }
 
     #[test]
+    fn parse_count_expr_half_x() {
+        let (qty, rest) = parse_count_expr("half X cards").unwrap();
+        match qty {
+            QuantityExpr::HalfRounded { inner, rounding } => {
+                assert!(matches!(
+                    *inner,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::Variable { .. }
+                    }
+                ));
+                assert_eq!(
+                    rounding,
+                    crate::types::ability::RoundingMode::Down,
+                    "Default rounding should be Down per CR 107.1a"
+                );
+            }
+            other => panic!("Expected HalfRounded, got {other:?}"),
+        }
+        assert_eq!(rest, "cards");
+    }
+
+    #[test]
+    fn parse_count_expr_half_x_bare() {
+        let (qty, _rest) = parse_count_expr("half X").unwrap();
+        assert!(matches!(
+            qty,
+            QuantityExpr::HalfRounded {
+                rounding: crate::types::ability::RoundingMode::Down,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_count_expr_half_x_rounded_up() {
+        let (qty, _rest) = parse_count_expr("half X, rounded up").unwrap();
+        match qty {
+            QuantityExpr::HalfRounded { rounding, .. } => {
+                assert_eq!(rounding, crate::types::ability::RoundingMode::Up);
+            }
+            other => panic!("Expected HalfRounded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_count_expr_fixed_regression() {
+        // Ensure "3 cards" still returns Fixed, not HalfRounded
+        let (qty, rest) = parse_count_expr("3 cards").unwrap();
+        assert!(matches!(qty, QuantityExpr::Fixed { value: 3 }));
+        assert_eq!(rest, "cards");
+    }
+
+    #[test]
     fn strip_reminder_text_basic() {
         assert_eq!(
             strip_reminder_text(

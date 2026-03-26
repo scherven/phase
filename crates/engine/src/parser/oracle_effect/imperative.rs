@@ -2346,4 +2346,78 @@ mod tests {
         let result = parse_imperative_family_ast(text, &lower, &ParseContext::default());
         assert!(result.is_some(), "Should parse 'after this phase' variant");
     }
+
+    #[test]
+    fn parse_discard_your_hand() {
+        let text = "discard your hand";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower);
+        match result {
+            Some(TargetedImperativeAst::Discard { count }) => {
+                assert!(
+                    matches!(
+                        count,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::HandSize
+                        }
+                    ),
+                    "Expected HandSize ref, got {count:?}"
+                );
+            }
+            other => panic!("Expected Discard with HandSize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_discard_their_hand() {
+        let text = "discard their hand";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower);
+        match result {
+            Some(TargetedImperativeAst::Discard { count }) => {
+                assert!(
+                    matches!(
+                        count,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::HandSize
+                        }
+                    ),
+                    "Expected HandSize ref, got {count:?}"
+                );
+            }
+            other => panic!("Expected Discard with HandSize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_discard_a_card_regression() {
+        let text = "discard a card";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower);
+        match result {
+            Some(TargetedImperativeAst::Discard { count }) => {
+                assert!(
+                    matches!(count, QuantityExpr::Fixed { value: 1 }),
+                    "Expected Fixed(1), got {count:?}"
+                );
+            }
+            other => panic!("Expected Discard with Fixed(1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_discard_two_cards_regression() {
+        let text = "discard two cards";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower);
+        match result {
+            Some(TargetedImperativeAst::Discard { count }) => {
+                assert!(
+                    matches!(count, QuantityExpr::Fixed { value: 2 }),
+                    "Expected Fixed(2), got {count:?}"
+                );
+            }
+            other => panic!("Expected Discard with Fixed(2), got {other:?}"),
+        }
+    }
 }
