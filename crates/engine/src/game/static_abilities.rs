@@ -479,10 +479,10 @@ pub fn additional_land_drops(state: &GameState, player: PlayerId) -> u8 {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
+    use crate::types::ability::StaticCondition;
     use crate::types::ability::{ControllerRef, StaticDefinition, TargetFilter};
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
-    use crate::types::ability::StaticCondition;
     use crate::types::statics::StaticMode;
     use crate::types::zones::Zone;
 
@@ -966,8 +966,7 @@ mod tests {
         // CantUntap with condition "as long as you control a creature"
         let condition = StaticCondition::IsPresent {
             filter: Some(TargetFilter::Typed(
-                crate::types::ability::TypedFilter::creature()
-                    .controller(ControllerRef::You),
+                crate::types::ability::TypedFilter::creature().controller(ControllerRef::You),
             )),
         };
         state
@@ -1003,8 +1002,7 @@ mod tests {
         // CantUntap with condition "as long as you control a creature" — but no creature exists
         let condition = StaticCondition::IsPresent {
             filter: Some(TargetFilter::Typed(
-                crate::types::ability::TypedFilter::creature()
-                    .controller(ControllerRef::You),
+                crate::types::ability::TypedFilter::creature().controller(ControllerRef::You),
             )),
         };
         state

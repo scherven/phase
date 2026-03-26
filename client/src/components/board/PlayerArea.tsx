@@ -15,18 +15,18 @@ import { CommandZone } from "../zone/CommandZone.tsx";
 const LAND_SCALE = 0.56;
 
 const LAND_COL_STYLE = {
-  "--art-crop-w": `calc(var(--art-crop-base) * var(--card-size-scale) * var(--art-crop-viewport-scale) * ${LAND_SCALE})`,
-  "--art-crop-h": `calc(var(--art-crop-base) * var(--card-size-scale) * var(--art-crop-viewport-scale) * ${LAND_SCALE} * 0.85)`,
-  "--card-w": `calc(var(--card-base) * var(--card-size-scale) * var(--card-viewport-scale) * ${LAND_SCALE})`,
-  "--card-h": `calc(var(--card-base) * var(--card-size-scale) * var(--card-viewport-scale) * ${LAND_SCALE} * 1.4)`,
+  "--art-crop-w": `calc(var(--art-crop-base) * var(--card-size-scale) * ${LAND_SCALE})`,
+  "--art-crop-h": `calc(var(--art-crop-base) * var(--card-size-scale) * ${LAND_SCALE} * 0.85)`,
+  "--card-w": `calc(var(--card-base) * var(--card-size-scale) * ${LAND_SCALE})`,
+  "--card-h": `calc(var(--card-base) * var(--card-size-scale) * ${LAND_SCALE} * 1.4)`,
 } as React.CSSProperties;
 
-/** Scale for enchantment/artifact column (right) */
-const OTHER_SCALE = 0.95;
+/** Scale for enchantment/artifact column (right) — larger than lands for readability */
+const OTHER_SCALE = 0.75;
 
 const OTHER_COL_STYLE = {
   "--art-crop-w": `calc(var(--art-crop-base) * var(--card-size-scale) * ${OTHER_SCALE})`,
-  "--art-crop-h": `calc(var(--art-crop-base) * var(--card-size-scale) * ${OTHER_SCALE} * 0.75)`,
+  "--art-crop-h": `calc(var(--art-crop-base) * var(--card-size-scale) * ${OTHER_SCALE} * 0.85)`,
   "--card-w": `calc(var(--card-base) * var(--card-size-scale) * ${OTHER_SCALE})`,
   "--card-h": `calc(var(--card-base) * var(--card-size-scale) * ${OTHER_SCALE} * 1.4)`,
 } as React.CSSProperties;
@@ -115,7 +115,7 @@ export function PlayerArea({ playerId, mode, onFocus, isActive, landColumnExtra,
     : "flex-wrap content-end items-end justify-start";
 
   const middleRow = (
-    <div className="flex h-full min-h-0 items-stretch justify-between gap-4" data-debug-label="Middle Row">
+    <div className="flex min-h-0 items-stretch justify-between gap-4" data-debug-label="Middle Row">
       <div
         className={`z-10 flex min-w-0 basis-0 flex-1 gap-2 pl-2 ${landAlignClass}`}
         style={LAND_COL_STYLE}
@@ -155,7 +155,7 @@ export function PlayerArea({ playerId, mode, onFocus, isActive, landColumnExtra,
         {isMirrored ? (
           <>
             <BattlefieldRow groups={partitioned?.other ?? []} rowType="other" />
-            <div className="min-h-0 flex-1 overflow-y-visible">
+            <div className="shrink-0">
               {middleRow}
             </div>
             <div className="flex min-h-0 flex-1 items-end px-2" data-debug-label="Opp Creatures">

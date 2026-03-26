@@ -607,6 +607,14 @@ function GamePageContent({
         {/* Opponent hand + zones at top */}
         <div className="relative z-20 w-full shrink-0" data-debug-label="Opp Top">
           <OpponentHand showCards={showAiHand} />
+          {/* Opponent HUD — bottom-center of opp container */}
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-20 flex justify-center" data-debug-label="Opp HUD">
+            <div className="pointer-events-auto">
+              <OpponentHud
+                opponentName={isOnlineMode ? opponentDisplayName : undefined}
+              />
+            </div>
+          </div>
           <div
             className="pointer-events-none absolute right-0 top-0 z-10 flex w-fit flex-col items-end gap-2 px-2 py-1 [&>*]:pointer-events-auto [&>div>*]:pointer-events-auto"
             style={playerZoneRailStyle}
@@ -633,27 +641,21 @@ function GamePageContent({
           </div>
         </div>
 
-        {/* Opponent avatar centered below their hand */}
-        <div className="relative z-20 shrink-0 -mt-10 -mb-4 lg:mt-0 lg:mb-0" data-debug-label="Opp HUD">
-          <OpponentHud
-            opponentName={isOnlineMode ? opponentDisplayName : undefined}
-          />
-        </div>
-
         {/* Battlefield */}
         <div className="relative z-10 flex min-h-0 flex-1 flex-col" data-debug-label="Battlefield">
           <GameBoard />
         </div>
 
-        {/* Player avatar centered with flanking phase indicators */}
-        <div className="-mt-5 -mb-5 lg:mt-0 lg:mb-0" data-debug-label="Player HUD">
-          <PlayerHud />
-        </div>
-
         {/* Player hand + zones at bottom — negative margin pushes hand content
              below viewport edge so cards peek from the bottom (clipped by page root overflow-hidden).
              Zones are anchored to top-0 so they stay in the visible area. */}
-        <div className="relative shrink-0 mb-[calc(var(--card-h)*-0.25)] sm:mb-[calc(var(--card-h)*-0.25)] md:mb-[calc(var(--card-h)*-0.35)]" data-debug-label="Player Bottom">
+        <div className="relative shrink-0 pt-4 mb-[calc(var(--card-h)*-0.25)] sm:mb-[calc(var(--card-h)*-0.25)] md:mb-[calc(var(--card-h)*-0.35)]" data-debug-label="Player Bottom">
+          {/* Player HUD — top-center of player bottom container */}
+          <div className="pointer-events-none absolute top-0 left-0 right-0 z-20 flex justify-center" data-debug-label="Player HUD">
+            <div className="pointer-events-auto">
+              <PlayerHud />
+            </div>
+          </div>
           <PlayerHand />
           <div
             className="pointer-events-none absolute left-0 top-0 bottom-[calc(var(--card-h)*0.25)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-start justify-end gap-0.5 p-1 lg:gap-1 lg:p-3 [&>*]:pointer-events-auto [&>div>*]:pointer-events-auto"

@@ -50,8 +50,11 @@ export function BattlefieldRow({ groups, rowType, className }: BattlefieldRowPro
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(null);
 
+  // groups.length in deps ensures the observer is set up after the first
+  // non-empty render (the early return below means the ref is null when empty).
+  const hasGroups = groups.length > 0;
   useEffect(() => {
-    if (rowType !== "creatures") return;
+    if (rowType !== "creatures" || !hasGroups) return;
     const el = containerRef.current?.parentElement;
     if (!el) return;
     const observer = new ResizeObserver(([entry]) => {
@@ -62,9 +65,9 @@ export function BattlefieldRow({ groups, rowType, className }: BattlefieldRowPro
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [rowType]);
+  }, [rowType, hasGroups]);
 
-  if (groups.length === 0) return null;
+  if (!hasGroups) return null;
 
   const isArtCrop = battlefieldCardDisplay === "art_crop";
 
@@ -83,8 +86,13 @@ export function BattlefieldRow({ groups, rowType, className }: BattlefieldRowPro
       const n = groups.length;
       const activeAr = isArtCrop ? ART_CROP_AR : FULL_CARD_AR;
 
-      // Width per group if all fit in one row
-      const widthPerGroup = n > 0 ? (cw - (n - 1) * gap) / n : cw;
+      // Account for stagger width on stacked groups (each extra copy adds 20px)
+      const staggerPx = 20;
+      const totalStagger = groups.reduce((sum, g) => sum + Math.max(0, g.count - 1) * staggerPx, 0);
+
+      // Width per card if all groups fit in one row
+      const availableForCards = cw - (n - 1) * gap - totalStagger;
+      const widthPerGroup = n > 0 ? availableForCards / n : cw;
       // Max card height from width constraint (all groups fit in one row)
       const fromWidth = widthPerGroup / activeAr;
       // Max card height from container height
@@ -114,7 +122,7 @@ export function BattlefieldRow({ groups, rowType, className }: BattlefieldRowPro
   return (
     <div
       ref={containerRef}
-      className={`flex ${minH} flex-wrap items-center gap-2 ${ROW_JUSTIFY[rowType]} ${className ?? ""}`}
+      className={`flex ${minH} ${rowType === "creatures" ? "flex-nowrap items-end" : "flex-wrap items-center"} gap-2 ${ROW_JUSTIFY[rowType]} ${className ?? ""}`}
       style={rowStyle}
     >
       {groups.map((group) => (
