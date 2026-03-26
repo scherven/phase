@@ -1591,10 +1591,13 @@ fn try_parse_phase_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinitio
     } else if phase_text.contains("end step") {
         // CR 513.1: End step triggers fire at the beginning of the end step.
         def.phase = Some(Phase::End);
-    } else if phase_text.contains("postcombat main phase") {
+    } else if phase_text.contains("postcombat main phase")
+        || phase_text.contains("second main phase")
+    {
         // CR 505.1: Postcombat main phase follows the combat phase.
         def.phase = Some(Phase::PostCombatMain);
-    } else if phase_text.contains("precombat main phase") {
+    } else if phase_text.contains("precombat main phase") || phase_text.contains("first main phase")
+    {
         // CR 505.1: Precombat main phase precedes the combat phase.
         def.phase = Some(Phase::PreCombatMain);
     } else if phase_text.contains("combat") {
@@ -4521,6 +4524,30 @@ mod tests {
         assert_eq!(def.mode, TriggerMode::Phase);
         assert_eq!(def.phase, Some(Phase::PostCombatMain));
         // "each player's" has no "your" or "opponent" → no constraint
+        assert_eq!(def.constraint, None);
+    }
+
+    #[test]
+    fn trigger_first_main_phase() {
+        // CR 505.1: "first main phase" is an alias for precombat main phase.
+        let def = parse_trigger_line(
+            "At the beginning of your first main phase, add one mana of any color.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::Phase);
+        assert_eq!(def.phase, Some(Phase::PreCombatMain));
+        assert_eq!(def.constraint, Some(TriggerConstraint::OnlyDuringYourTurn));
+    }
+
+    #[test]
+    fn trigger_second_main_phase() {
+        // CR 505.1: "second main phase" is an alias for postcombat main phase.
+        let def = parse_trigger_line(
+            "At the beginning of each player's second main phase, that player draws a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::Phase);
+        assert_eq!(def.phase, Some(Phase::PostCombatMain));
         assert_eq!(def.constraint, None);
     }
 
