@@ -124,41 +124,49 @@ export function ScrollableCardStrip({
         {children}
       </div>
 
-      {/* Left scroll button */}
+      {/* Left scroll button — gradient is pointer-events-none so cards beneath remain clickable */}
       <AnimatePresence>
         {canScrollLeft && (
-          <motion.button
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            onClick={() => scroll(-1)}
-            className="absolute left-0 top-0 z-10 flex h-[calc(100%-8px)] w-10 items-center justify-center bg-gradient-to-r from-black/60 to-transparent lg:w-12"
-            aria-label="Scroll left"
+            className="pointer-events-none absolute left-0 top-0 z-10 flex h-[calc(100%-8px)] w-10 items-center justify-center bg-gradient-to-r from-black/60 to-transparent lg:w-12"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6 text-white/80 drop-shadow-lg">
-              <path fillRule="evenodd" d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" clipRule="evenodd" />
-            </svg>
-          </motion.button>
+            <button
+              onClick={() => scroll(-1)}
+              className="pointer-events-auto rounded-full bg-black/40 p-1 backdrop-blur-sm transition hover:bg-black/60"
+              aria-label="Scroll left"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5 text-white/90">
+                <path fillRule="evenodd" d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" clipRule="evenodd" />
+              </svg>
+            </button>
+          </motion.div>
         )}
       </AnimatePresence>
 
       {/* Right scroll button */}
       <AnimatePresence>
         {canScrollRight && (
-          <motion.button
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            onClick={() => scroll(1)}
-            className="absolute right-0 top-0 z-10 flex h-[calc(100%-8px)] w-10 items-center justify-center bg-gradient-to-l from-black/60 to-transparent lg:w-12"
-            aria-label="Scroll right"
+            className="pointer-events-none absolute right-0 top-0 z-10 flex h-[calc(100%-8px)] w-10 items-center justify-center bg-gradient-to-l from-black/60 to-transparent lg:w-12"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-6 w-6 text-white/80 drop-shadow-lg">
-              <path fillRule="evenodd" d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 1 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-            </svg>
-          </motion.button>
+            <button
+              onClick={() => scroll(1)}
+              className="pointer-events-auto rounded-full bg-black/40 p-1 backdrop-blur-sm transition hover:bg-black/60"
+              aria-label="Scroll right"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5 text-white/90">
+                <path fillRule="evenodd" d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 1 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+            </button>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
@@ -177,7 +185,7 @@ export function ConfirmButton({
   return (
     <AnimatePresence>
       <motion.div
-        className="mx-auto w-full max-w-xs shrink-0 px-4 py-1 lg:px-0 lg:py-2"
+        className="mx-auto w-full max-w-xs shrink-0"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.5, duration: 0.3 }}
