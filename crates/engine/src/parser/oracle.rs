@@ -399,13 +399,19 @@ pub fn parse_oracle_text(
         }
 
         // Priority 7: Static/continuous patterns
-        // For spells, defer to the effect parser (Priority 9) when the line also
-        // contains a damage verb — parse_effect_chain handles embedded statics
-        // via split_clause_sequence + try_parse_subject_restriction_clause.
+        // CR 611.2a + CR 611.3a: On permanents, "creatures you control get +1/+1"
+        // is a static ability (CR 611.3a). On instants/sorceries, lines with an
+        // explicit duration ("until end of turn", "this turn") are one-shot
+        // continuous effects from spell resolution (CR 611.2a) and must reach the
+        // effect parser at Priority 9. Damage-verb lines are also deferred because
+        // parse_effect_chain handles embedded statics via split_clause_sequence.
         if is_static_pattern(&lower) {
             let defer_to_effect_parser = is_spell
-                && (lower.contains(" deals ") || lower.contains(" deal "))
-                && lower.contains(" damage");
+                && (((lower.contains(" deals ") || lower.contains(" deal "))
+                    && lower.contains(" damage"))
+                    || lower.contains("until end of turn")
+                    || lower.contains("until your next turn")
+                    || lower.contains("this turn"));
             if !defer_to_effect_parser {
                 if let Some(static_def) = parse_static_line(&static_line) {
                     result.statics.push(static_def);
@@ -4357,6 +4363,71 @@ mod tests {
             !r.statics.is_empty(),
             "creature restriction should still produce static"
         );
+    }
+
+    #[test]
+    fn spell_pump_all_with_duration_not_static() {
+        // CR 611.2a: Spell lines with subject + pump + duration are one-shot
+        // continuous effects, not permanent static abilities.
+        let r = parse(
+            "Creatures you control get +2/+0 until end of turn.",
+            "Test Spell",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert!(
+            r.statics.is_empty(),
+            "spell pump-all with duration should not produce static, got {:?}",
+            r.statics,
+        );
+        assert_eq!(r.abilities.len(), 1, "should produce one spell ability");
+        assert!(
+            matches!(*r.abilities[0].effect, Effect::PumpAll { .. }),
+            "effect should be PumpAll, got {:?}",
+            r.abilities[0].effect,
+        );
+    }
+
+    #[test]
+    fn permanent_pump_all_without_duration_stays_static() {
+        // CR 611.3a: Same pattern on a permanent is a static ability.
+        let r = parse(
+            "Creatures you control get +1/+1.",
+            "Test Enchantment",
+            &[],
+            &["Enchantment"],
+            &[],
+        );
+        assert!(
+            !r.statics.is_empty(),
+            "permanent pump-all should produce static ability",
+        );
+        assert!(
+            r.abilities.is_empty(),
+            "permanent pump-all should not produce spell ability, got {:?}",
+            r.abilities,
+        );
+    }
+
+    #[test]
+    fn spell_restriction_with_duration_not_static() {
+        // CR 611.2a: Spell lines with a restriction + duration are one-shot
+        // continuous effects, not permanent statics. Tests a non-pump
+        // `is_static_pattern` variant ("can't block") with a duration marker.
+        let r = parse(
+            "Creatures your opponents control can't block this turn.",
+            "Test Spell",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+        assert!(
+            r.statics.is_empty(),
+            "spell restriction with duration should not produce static, got {:?}",
+            r.statics,
+        );
+        assert_eq!(r.abilities.len(), 1, "should produce one spell ability");
     }
 
     #[test]
