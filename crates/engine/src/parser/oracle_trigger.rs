@@ -412,6 +412,22 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         }
     }
 
+    // CR 603.4: "if you have N or more life" — life-total threshold condition.
+    if let Some(pos) = tp.find("if you have ") {
+        let after = &lower[pos + "if you have ".len()..];
+        if let Some(life_text) = after.strip_suffix(" or more life") {
+            if let Some((n, remainder)) = parse_number(life_text) {
+                if remainder.trim().is_empty() {
+                    let clause_len = "if you have ".len() + life_text.len() + " or more life".len();
+                    return (
+                        strip_condition_clause(text, pos, clause_len),
+                        Some(TriggerCondition::LifeTotalGE { minimum: n as i32 }),
+                    );
+                }
+            }
+        }
+    }
+
     // CR 400.7 + CR 603.10: "if it was a [type]" / "if it was an [type]"
     for prefix in &["if it was a ", "if it was an "] {
         if let Some(pos) = tp.find(prefix) {
@@ -4842,5 +4858,35 @@ mod tests {
         } else {
             panic!("expected Typed filter, got {valid_card:?}");
         }
+    }
+
+    #[test]
+    fn extract_if_you_have_n_or_more_life() {
+        let (cleaned, cond) = extract_if_condition("draw a card if you have 40 or more life");
+        assert!(
+            matches!(cond, Some(TriggerCondition::LifeTotalGE { minimum: 40 })),
+            "Expected LifeTotalGE {{ minimum: 40 }}, got: {cond:?}"
+        );
+        assert_eq!(cleaned.trim(), "draw a card");
+    }
+
+    #[test]
+    fn extract_if_you_have_n_or_more_life_win() {
+        let (cleaned, cond) = extract_if_condition("you win the game if you have 40 or more life");
+        assert!(
+            matches!(cond, Some(TriggerCondition::LifeTotalGE { .. })),
+            "Expected LifeTotalGE, got: {cond:?}"
+        );
+        assert_eq!(cleaned.trim(), "you win the game");
+    }
+
+    #[test]
+    fn extract_if_gained_life_regression() {
+        // Existing pattern must still work
+        let (_, cond) = extract_if_condition("draw a card if you've gained life this turn");
+        assert!(
+            matches!(cond, Some(TriggerCondition::GainedLife { minimum: 1 })),
+            "Expected GainedLife, got: {cond:?}"
+        );
     }
 }
