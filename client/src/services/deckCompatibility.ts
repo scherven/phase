@@ -23,6 +23,7 @@ export interface ParsedItem {
 export interface UnsupportedCard {
   name: string;
   gaps: string[];
+  copies?: number;
   oracle_text?: string;
   parse_details?: ParsedItem[];
 }

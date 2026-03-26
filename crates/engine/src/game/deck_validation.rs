@@ -64,12 +64,19 @@ pub struct DeckCompatibilityResult {
 pub struct UnsupportedCard {
     pub name: String,
     pub gaps: Vec<String>,
+    /// Number of copies of this card in the deck (main + sideboard + commander).
+    #[serde(default = "default_one")]
+    pub copies: usize,
     /// Original Oracle text for the card face.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oracle_text: Option<String>,
     /// Hierarchical parse tree — same structure used by the coverage dashboard.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub parse_details: Vec<crate::game::coverage::ParsedItem>,
+}
+
+fn default_one() -> usize {
+    1
 }
 
 /// Engine coverage summary for a deck: how many unique cards are fully supported.
@@ -633,6 +640,13 @@ fn evaluate_selected_format(
 }
 
 fn evaluate_deck_coverage(db: &CardDatabase, request: &DeckCompatibilityRequest) -> DeckCoverage {
+    // Count copies per card name for the tooltip severity indicator
+    let mut copy_counts: HashMap<String, usize> = HashMap::new();
+    for name in all_deck_cards(request) {
+        let resolved = resolve_card_name(db, name);
+        *copy_counts.entry(resolved.to_lowercase()).or_insert(0) += 1;
+    }
+
     let unique_names: HashSet<&str> = all_deck_cards(request).collect();
     let mut unsupported_cards = Vec::new();
     let mut supported_count = 0usize;
@@ -644,12 +658,17 @@ fn evaluate_deck_coverage(db: &CardDatabase, request: &DeckCompatibilityRequest)
             if gaps.is_empty() {
                 supported_count += 1;
             } else {
+                let copies = copy_counts
+                    .get(&face.name.to_lowercase())
+                    .copied()
+                    .unwrap_or(1);
                 let parse_details = crate::game::coverage::build_parse_details_for_face(face);
                 unsupported_cards.push(UnsupportedCard {
                     name: face.name.clone(),
                     gaps,
                     oracle_text: face.oracle_text.clone(),
                     parse_details,
+                    copies,
                 });
             }
         }
