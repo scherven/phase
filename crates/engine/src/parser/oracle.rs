@@ -406,12 +406,19 @@ pub fn parse_oracle_text(
         // effect parser at Priority 9. Damage-verb lines are also deferred because
         // parse_effect_chain handles embedded statics via split_clause_sequence.
         if is_static_pattern(&lower) {
-            let defer_to_effect_parser = is_spell
-                && (((lower.contains(" deals ") || lower.contains(" deal "))
-                    && lower.contains(" damage"))
-                    || lower.contains("until end of turn")
-                    || lower.contains("until your next turn")
-                    || lower.contains("this turn"));
+            // Guard: ability-word-prefixed trigger lines (e.g., "Flurry — Whenever...")
+            // must fall through to Priority 14 which strips the prefix first.
+            let is_ability_word_trigger = strip_ability_word(&line).is_some_and(|stripped| {
+                let sl = stripped.to_lowercase();
+                sl.starts_with("when ") || sl.starts_with("whenever ") || sl.starts_with("at ")
+            });
+            let defer_to_effect_parser = is_ability_word_trigger
+                || (is_spell
+                    && (((lower.contains(" deals ") || lower.contains(" deal "))
+                        && lower.contains(" damage"))
+                        || lower.contains("until end of turn")
+                        || lower.contains("until your next turn")
+                        || lower.contains("this turn")));
             if !defer_to_effect_parser {
                 if let Some(static_def) = parse_static_line(&static_line) {
                     result.statics.push(static_def);

@@ -512,7 +512,7 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
         return Some(HandRevealImperativeAst::LookAtHand { target });
     }
 
-    if !lower.starts_with("reveal ") {
+    if !lower.starts_with("reveal ") && !lower.starts_with("reveals ") {
         return None;
     }
 

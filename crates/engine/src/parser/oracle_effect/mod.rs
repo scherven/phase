@@ -773,8 +773,21 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
     if (base_tp.starts_with("you gain ") || base_tp.starts_with("gain "))
         && base_tp.contains("life")
     {
+        // Extract multiplier: "gain 3 life" → factor=3, "gain life" → factor=1
+        let after_gain = base_tp
+            .lower
+            .strip_prefix("you gain ")
+            .or_else(|| base_tp.lower.strip_prefix("gain "))
+            .unwrap_or(base_tp.lower);
+        let amount = match parse_number(after_gain) {
+            Some((n, _)) if n > 1 => QuantityExpr::Multiply {
+                factor: n as i32,
+                inner: Box::new(quantity),
+            },
+            _ => quantity,
+        };
         return Some(parsed_clause(Effect::GainLife {
-            amount: quantity,
+            amount,
             player: GainLifePlayer::Controller,
         }));
     }
@@ -782,7 +795,20 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
     if (base_tp.starts_with("you lose ") || base_tp.starts_with("lose "))
         && base_tp.contains("life")
     {
-        return Some(parsed_clause(Effect::LoseLife { amount: quantity }));
+        // Extract multiplier: "lose 3 life" → factor=3
+        let after_lose = base_tp
+            .lower
+            .strip_prefix("you lose ")
+            .or_else(|| base_tp.lower.strip_prefix("lose "))
+            .unwrap_or(base_tp.lower);
+        let amount = match parse_number(after_lose) {
+            Some((n, _)) if n > 1 => QuantityExpr::Multiply {
+                factor: n as i32,
+                inner: Box::new(quantity),
+            },
+            _ => quantity,
+        };
+        return Some(parsed_clause(Effect::LoseLife { amount }));
     }
 
     None
@@ -1462,7 +1488,7 @@ fn lower_subject_predicate_ast(
                 });
             }
             // CR 701.20a: "<player> reveals the top [N] card(s) of their library"
-            if pred_lower.starts_with("reveal ")
+            if (pred_lower.starts_with("reveal ") || pred_lower.starts_with("reveals "))
                 && pred_lower.contains("top")
                 && pred_lower.contains("library")
             {
@@ -2752,13 +2778,17 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
         let offset = text.len() - rest.len();
         Some(text[offset..].to_string())
     }
-    // Unified kicker pattern: "if <subject> was kicked, ..."
-    // Covers "if this spell was kicked", "if it was kicked", "if ~ was kicked"
+    // Unified kicker/bargain pattern: "if <subject> was kicked/bargained, ..."
+    // Covers "if this spell was kicked", "if it was kicked", "if ~ was kicked",
+    // "if this spell was bargained", etc.
     else if lower.starts_with("if ") {
-        lower.split_once(" was kicked, ").map(|(_, rest)| {
-            let offset = text.len() - rest.len();
-            text[offset..].to_string()
-        })
+        lower
+            .split_once(" was kicked, ")
+            .or_else(|| lower.split_once(" was bargained, "))
+            .map(|(_, rest)| {
+                let offset = text.len() - rest.len();
+                text[offset..].to_string()
+            })
     } else {
         None
     };

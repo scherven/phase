@@ -2304,6 +2304,16 @@ fn parse_continuous_gets_has(
                     modifications.push(ContinuousModification::AddDynamicToughness { value });
                 }
                 if !modifications.is_empty() {
+                    // Check for trailing "and has [keyword]" after the for-each clause
+                    // e.g., "gets +1/+0 for each Mountain you control and has first strike"
+                    if let Some(keyword_text) = extract_keyword_clause(description) {
+                        for part in split_keyword_list(keyword_text.trim().trim_end_matches('.')) {
+                            if let Some(kw) = map_keyword(part.trim().trim_end_matches('.')) {
+                                modifications
+                                    .push(ContinuousModification::AddKeyword { keyword: kw });
+                            }
+                        }
+                    }
                     return Some(
                         StaticDefinition::continuous()
                             .affected(affected)
