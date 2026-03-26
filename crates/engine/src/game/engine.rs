@@ -2081,6 +2081,71 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             }
             state.waiting_for.clone()
         }
+        // CR 701.9b: Player chose card(s) to discard during effect resolution.
+        (
+            WaitingFor::DiscardChoice {
+                player,
+                count,
+                cards: legal_cards,
+                source_id,
+                effect_kind,
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => {
+            let p = *player;
+            let expected = *count;
+            let legal = legal_cards.clone();
+            let src = *source_id;
+            let kind = effect_kind.clone();
+
+            if chosen.len() != expected {
+                return Err(EngineError::InvalidAction(format!(
+                    "Must discard exactly {} card(s), got {}",
+                    expected,
+                    chosen.len()
+                )));
+            }
+
+            let current_hand: std::collections::HashSet<ObjectId> = state
+                .players
+                .iter()
+                .find(|pl| pl.id == p)
+                .map(|pl| pl.hand.iter().copied().collect())
+                .unwrap_or_default();
+
+            for card_id in &chosen {
+                if !legal.contains(card_id) {
+                    return Err(EngineError::InvalidAction(
+                        "Selected card not in eligible set".to_string(),
+                    ));
+                }
+                if !current_hand.contains(card_id) {
+                    return Err(EngineError::InvalidAction(
+                        "Card no longer in hand".to_string(),
+                    ));
+                }
+            }
+
+            // TODO: discard_as_cost silently drops ReplacementResult::NeedsChoice.
+            // When a replacement effect requires a player choice (e.g., competing
+            // replacements on discard), that choice is lost. This is a pre-existing
+            // limitation shared with ConniveDiscard/DiscardToHandSize handlers.
+            for &card_id in &chosen {
+                super::effects::discard::discard_as_cost(state, card_id, p, &mut events);
+            }
+
+            events.push(GameEvent::EffectResolved {
+                kind,
+                source_id: src,
+            });
+
+            state.waiting_for = WaitingFor::Priority { player: p };
+            state.priority_player = p;
+            if let Some(cont) = state.pending_continuation.take() {
+                let _ = effects::resolve_ability_chain(state, &cont, &mut events, 0);
+            }
+            state.waiting_for.clone()
+        }
         // NamedChoice: player selects from a set of named options (creature type, color, etc.).
         // Stores the chosen value in last_named_choice and resumes any pending continuation.
         (

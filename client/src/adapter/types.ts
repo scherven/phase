@@ -413,6 +413,7 @@ export type WaitingFor =
   | { type: "ChooseFromZoneChoice"; data: { player: PlayerId; cards: ObjectId[]; count: number; source_id: ObjectId } }
   | { type: "RetargetChoice"; data: { player: PlayerId; stack_entry_index: number; scope: RetargetScope; current_targets: TargetRef[]; legal_new_targets: TargetRef[] } }
   | { type: "ConniveDiscard"; data: { player: PlayerId; conniver_id: ObjectId; source_id: ObjectId; cards: ObjectId[]; count: number } }
+  | { type: "DiscardChoice"; data: { player: PlayerId; count: number; cards: ObjectId[]; source_id: ObjectId; effect_kind: string } }
   | { type: "ManifestDreadChoice"; data: { player: PlayerId; cards: ObjectId[] } };
 
 // ── Distribution ─────────────────────────────────────────────────────────

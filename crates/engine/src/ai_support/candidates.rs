@@ -43,7 +43,7 @@ pub struct CandidateAction {
 }
 
 pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
-    match &state.waiting_for {
+    let mut actions = match &state.waiting_for {
         WaitingFor::Priority { player } => priority_actions(state, *player),
         WaitingFor::MulliganDecision { .. } => vec![
             candidate(
@@ -326,6 +326,12 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             player,
             count,
             cards,
+        }
+        | WaitingFor::DiscardChoice {
+            player,
+            count,
+            cards,
+            ..
         } => combinations(cards, *count)
             .into_iter()
             .map(|combo| {
@@ -400,14 +406,11 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             eligible_creatures,
             ..
         } => {
-            let mut actions = vec![
-                candidate(
-                    GameAction::HarmonizeTap { creature_id: None },
-                    TacticalClass::Pass,
-                    Some(*player),
-                ),
-                candidate(GameAction::CancelCast, TacticalClass::Pass, Some(*player)),
-            ];
+            let mut actions = vec![candidate(
+                GameAction::HarmonizeTap { creature_id: None },
+                TacticalClass::Pass,
+                Some(*player),
+            )];
             for &cid in eligible_creatures {
                 actions.push(candidate(
                     GameAction::HarmonizeTap {
@@ -696,7 +699,21 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             })
             .collect(),
         WaitingFor::GameOver { .. } => Vec::new(),
+    };
+
+    // Any WaitingFor state with a pending_cast supports CancelCast to back out.
+    // Injected here so every casting-flow state gets it automatically.
+    if state.waiting_for.has_pending_cast() {
+        if let Some(player) = state.waiting_for.acting_player() {
+            actions.push(candidate(
+                GameAction::CancelCast,
+                TacticalClass::Pass,
+                Some(player),
+            ));
+        }
     }
+
+    actions
 }
 
 fn candidate(
@@ -1207,14 +1224,9 @@ fn mana_payment_actions(
     convoke_mode: Option<ConvokeMode>,
 ) -> Vec<CandidateAction> {
     let mut actions = mana_tap_actions(state, player);
-    // Always include PassPriority to finalize payment and CancelCast to back out
+    // Always include PassPriority to finalize payment
     actions.push(candidate(
         GameAction::PassPriority,
-        TacticalClass::Pass,
-        Some(player),
-    ));
-    actions.push(candidate(
-        GameAction::CancelCast,
         TacticalClass::Pass,
         Some(player),
     ));

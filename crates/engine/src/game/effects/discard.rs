@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
-use rand::seq::IndexedRandom;
-
+use crate::game::quantity::resolve_quantity;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetRef};
@@ -20,7 +19,10 @@ pub fn resolve(
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
     let num_cards: u32 = match &ability.effect {
-        Effect::DiscardCard { count, .. } | Effect::Discard { count, .. } => *count,
+        Effect::DiscardCard { count, .. } => *count,
+        Effect::Discard { count, .. } => {
+            resolve_quantity(state, count, ability.controller, ability.source_id) as u32
+        }
         _ => 1,
     };
 
@@ -95,7 +97,7 @@ pub fn resolve(
             }
         }
     } else {
-        // CR 701.9b: Random discard — select cards at random from the player's hand.
+        // CR 701.9b: Player chooses which card(s) to discard (not "at random").
         let hand_cards: Vec<ObjectId> = state
             .players
             .iter()
@@ -104,52 +106,25 @@ pub fn resolve(
             .hand
             .to_vec();
 
-        let cards_to_discard: Vec<ObjectId> = hand_cards
-            .choose_multiple(&mut state.rng, num_cards as usize)
-            .copied()
-            .collect();
-
-        for obj_id in cards_to_discard {
-            let proposed = ProposedEvent::Discard {
-                player_id: ability.controller,
-                object_id: obj_id,
-                applied: HashSet::new(),
-            };
-
-            match replacement::replace_event(state, proposed, events) {
-                ReplacementResult::Execute(event) => match event {
-                    ProposedEvent::Discard {
-                        player_id,
-                        object_id,
-                        ..
-                    } => {
-                        zones::move_to_zone(state, object_id, Zone::Graveyard, events);
-                        crate::game::restrictions::record_discard(state, player_id);
-                        events.push(GameEvent::Discarded {
-                            player_id,
-                            object_id,
-                        });
-                    }
-                    ProposedEvent::ZoneChange { object_id, to, .. } => {
-                        // Replacement redirected (e.g., Madness → exile instead of graveyard).
-                        zones::move_to_zone(state, object_id, to, events);
-                        // CR 702.35: The card was still discarded — record and emit event
-                        // so "whenever you discard" triggers fire.
-                        crate::game::restrictions::record_discard(state, ability.controller);
-                        events.push(GameEvent::Discarded {
-                            player_id: ability.controller,
-                            object_id,
-                        });
-                    }
-                    _ => {}
-                },
-                ReplacementResult::Prevented => {}
-                ReplacementResult::NeedsChoice(player) => {
-                    state.waiting_for =
-                        crate::game::replacement::replacement_choice_waiting_for(player, state);
-                    return Ok(());
-                }
+        let count = (num_cards as usize).min(hand_cards.len());
+        if count == 0 {
+            // Nothing to discard — skip.
+        } else if hand_cards.len() <= count {
+            // Forced discard — no choice needed, discard all eligible cards.
+            for obj_id in &hand_cards {
+                super::discard::discard_as_cost(state, *obj_id, ability.controller, events);
             }
+        } else {
+            // CR 701.9b: Player chooses — present interactive selection.
+            state.waiting_for = crate::types::game_state::WaitingFor::DiscardChoice {
+                player: ability.controller,
+                count,
+                cards: hand_cards,
+                source_id: ability.source_id,
+                effect_kind: EffectKind::from(&ability.effect),
+            };
+            // EffectResolved is emitted by the engine handler after the player chooses.
+            return Ok(());
         }
     }
 
@@ -339,23 +314,121 @@ mod tests {
     }
 
     #[test]
-    fn random_discard_correct_count() {
+    fn non_targeted_discard_creates_waiting_for() {
+        use crate::types::ability::QuantityExpr;
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        let c1 = create_object(&mut state, CardId(1), PlayerId(0), "A".into(), Zone::Hand);
+        let c2 = create_object(&mut state, CardId(2), PlayerId(0), "B".into(), Zone::Hand);
+        let c3 = create_object(&mut state, CardId(3), PlayerId(0), "C".into(), Zone::Hand);
+
+        let ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Any,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        match &state.waiting_for {
+            WaitingFor::DiscardChoice {
+                player,
+                count,
+                cards,
+                ..
+            } => {
+                assert_eq!(*player, PlayerId(0));
+                assert_eq!(*count, 1);
+                assert!(cards.contains(&c1));
+                assert!(cards.contains(&c2));
+                assert!(cards.contains(&c3));
+            }
+            other => panic!("Expected DiscardChoice, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn non_targeted_discard_auto_when_hand_equals_count() {
+        use crate::types::ability::QuantityExpr;
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        let c1 = create_object(&mut state, CardId(1), PlayerId(0), "A".into(), Zone::Hand);
+        let c2 = create_object(&mut state, CardId(2), PlayerId(0), "B".into(), Zone::Hand);
+
+        let ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Any,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // Should auto-discard without WaitingFor
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::DiscardChoice { .. }),
+            "Should not create DiscardChoice when hand == count"
+        );
+        assert!(!state.players[0].hand.contains(&c1));
+        assert!(!state.players[0].hand.contains(&c2));
+    }
+
+    #[test]
+    fn non_targeted_discard_noop_when_hand_empty() {
+        use crate::types::ability::QuantityExpr;
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        // No cards in hand
+
+        let ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Any,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::DiscardChoice { .. }),
+            "Should not create DiscardChoice when hand is empty"
+        );
+    }
+
+    #[test]
+    fn non_targeted_discard_multiple_creates_waiting_for() {
+        use crate::types::game_state::WaitingFor;
+
         let mut state = GameState::new_two_player(42);
         // Create 5 cards in hand
-        let mut hand_ids = Vec::new();
         for i in 0..5 {
-            let id = create_object(
+            create_object(
                 &mut state,
                 CardId(i),
                 PlayerId(0),
                 format!("Card {}", i),
                 Zone::Hand,
             );
-            hand_ids.push(id);
         }
         assert_eq!(state.players[0].hand.len(), 5);
 
-        // Non-targeted discard of 2 (random path)
+        // Non-targeted discard of 2 → interactive choice
         let ability = ResolvedAbility::new(
             Effect::DiscardCard {
                 count: 2,
@@ -368,18 +441,20 @@ mod tests {
         let mut events = Vec::new();
         resolve(&mut state, &ability, &mut events).unwrap();
 
-        assert_eq!(state.players[0].hand.len(), 3, "Should have 3 cards left");
-        assert_eq!(
-            state.players[0].graveyard.len(),
-            2,
-            "Should have 2 cards in graveyard"
-        );
-        // All discarded cards were originally in hand
-        for &gid in &state.players[0].graveyard {
-            assert!(
-                hand_ids.contains(&gid),
-                "Discarded card should be from original hand"
-            );
+        match &state.waiting_for {
+            WaitingFor::DiscardChoice {
+                player,
+                count,
+                cards,
+                ..
+            } => {
+                assert_eq!(*player, PlayerId(0));
+                assert_eq!(*count, 2);
+                assert_eq!(cards.len(), 5);
+            }
+            other => panic!("Expected DiscardChoice, got {:?}", other),
         }
+        // Hand unchanged until player selects
+        assert_eq!(state.players[0].hand.len(), 5);
     }
 }

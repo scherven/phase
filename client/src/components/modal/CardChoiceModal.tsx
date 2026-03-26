@@ -83,6 +83,9 @@ export function CardChoiceModal() {
     case "ConniveDiscard":
       if (waitingFor.data.player !== playerId) return null;
       return <DiscardModal data={waitingFor.data} title={`Connive \u2014 Discard ${waitingFor.data.count === 1 ? "a card" : `${waitingFor.data.count} cards`}`} />;
+    case "DiscardChoice":
+      if (waitingFor.data.player !== playerId) return null;
+      return <DiscardModal data={waitingFor.data} title={`Discard ${waitingFor.data.count === 1 ? "a card" : `${waitingFor.data.count} cards`}`} />;
     case "WardDiscardChoice":
       if (waitingFor.data.player !== playerId) return null;
       return <DiscardModal data={{ ...waitingFor.data, count: 1 }} title="Ward \u2014 Discard a card" />;
