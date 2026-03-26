@@ -93,6 +93,9 @@ pub enum ClientMessage {
     SpectatorJoin {
         game_code: String,
     },
+    Ping {
+        timestamp: u64,
+    },
 }
 
 fn default_player_count() -> u8 {
@@ -176,6 +179,9 @@ pub enum ServerMessage {
     TimerUpdate {
         player: PlayerId,
         remaining_seconds: u32,
+    },
+    Pong {
+        timestamp: u64,
     },
 }
 
@@ -660,6 +666,28 @@ mod tests {
                 assert_eq!(ai_seats[0].seat_index, 1);
                 assert_eq!(ai_seats[0].difficulty, AiDifficulty::VeryHard);
             }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn client_message_ping_roundtrips() {
+        let msg = ClientMessage::Ping { timestamp: 1700000000123 };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientMessage::Ping { timestamp } => assert_eq!(timestamp, 1700000000123),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn server_message_pong_roundtrips() {
+        let msg = ServerMessage::Pong { timestamp: 1700000000123 };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ServerMessage::Pong { timestamp } => assert_eq!(timestamp, 1700000000123),
             _ => panic!("wrong variant"),
         }
     }

@@ -16,16 +16,27 @@ const STATUS_LABELS = {
 
 export function ConnectionDot() {
   const connectionStatus = useMultiplayerStore((s) => s.connectionStatus);
+  const latencyMs = useMultiplayerStore((s) => s.latencyMs);
   const color = STATUS_COLORS[connectionStatus];
   const label = STATUS_LABELS[connectionStatus];
 
+  const latencyLabel =
+    connectionStatus === "connected" && latencyMs != null
+      ? `${latencyMs}ms`
+      : null;
+
+  const latencyColor =
+    latencyMs != null
+      ? latencyMs < 100
+        ? "text-green-400"
+        : latencyMs < 250
+          ? "text-yellow-400"
+          : "text-red-400"
+      : "";
+
   return (
     <div
-      className="fixed z-40 flex items-center gap-1.5"
-      style={{
-        right: "calc(env(safe-area-inset-right) + 3.5rem)",
-        top: "calc(env(safe-area-inset-top) + var(--game-top-overlay-offset, 0px) + 0.75rem)",
-      }}
+      className="flex h-9 items-center gap-1.5 rounded-lg bg-gray-800/80 px-2"
       title={label}
     >
       {connectionStatus === "connecting" ? (
@@ -42,6 +53,11 @@ export function ConnectionDot() {
         />
       )}
       <span className="text-[10px] font-medium text-gray-500">{label}</span>
+      {latencyLabel && (
+        <span className={`text-[10px] font-medium ${latencyColor}`}>
+          {latencyLabel}
+        </span>
+      )}
     </div>
   );
 }

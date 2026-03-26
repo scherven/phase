@@ -59,6 +59,11 @@ interface MultiplayerState {
   playerSlots: PlayerSlot[];
   spectators: string[];
   isSpectator: boolean;
+  // Per-player connection tracking (ephemeral — not persisted)
+  disconnectedPlayers: Set<number>;
+  // Action round-trip tracking (ephemeral — not persisted)
+  actionPending: boolean;
+  latencyMs: number | null;
   // Hosting session (ephemeral — not persisted)
   hostGameCode: string | null;
   hostIsPublic: boolean;
@@ -79,6 +84,10 @@ interface MultiplayerActions {
   toggleReady: (playerId: string) => void;
   setSpectators: (names: string[]) => void;
   setIsSpectator: (value: boolean) => void;
+  setPlayerDisconnected: (playerId: number) => void;
+  setPlayerReconnected: (playerId: number) => void;
+  setActionPending: (pending: boolean) => void;
+  setLatency: (ms: number | null) => void;
   // Hosting session actions
   startHosting: (settings: HostingSettings, deck: HostingDeck) => void;
   cancelHosting: () => void;
@@ -210,6 +219,9 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
       playerSlots: [],
       spectators: [],
       isSpectator: false,
+      disconnectedPlayers: new Set(),
+      actionPending: false,
+      latencyMs: null,
       hostGameCode: null,
       hostIsPublic: false,
       hostingStatus: "idle" as HostingStatus,
@@ -232,6 +244,20 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         })),
       setSpectators: (names) => set({ spectators: names }),
       setIsSpectator: (value) => set({ isSpectator: value }),
+      setPlayerDisconnected: (pid) =>
+        set((state) => {
+          const next = new Set(state.disconnectedPlayers);
+          next.add(pid);
+          return { disconnectedPlayers: next };
+        }),
+      setPlayerReconnected: (pid) =>
+        set((state) => {
+          const next = new Set(state.disconnectedPlayers);
+          next.delete(pid);
+          return { disconnectedPlayers: next };
+        }),
+      setActionPending: (pending) => set({ actionPending: pending }),
+      setLatency: (ms) => set({ latencyMs: ms }),
 
       startHosting: (settings, deck) => {
         // Clean up any existing hosting session

@@ -47,7 +47,6 @@ import { PreferencesModal } from "../components/settings/PreferencesModal.tsx";
 import { DebugPanel } from "../components/chrome/DebugPanel.tsx";
 import { GameMenu } from "../components/chrome/GameMenu.tsx";
 import { ConcedeDialog } from "../components/multiplayer/ConcedeDialog.tsx";
-import { ConnectionDot } from "../components/multiplayer/ConnectionDot.tsx";
 import { ConnectionToast } from "../components/multiplayer/ConnectionToast.tsx";
 import { EmoteOverlay } from "../components/multiplayer/EmoteOverlay.tsx";
 import type { P2PAdapterEvent } from "../adapter/p2p-adapter.ts";
@@ -56,7 +55,7 @@ import type { WsAdapterEvent } from "../adapter/ws-adapter.ts";
 import { useGameDispatch } from "../hooks/useGameDispatch.ts";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts.ts";
 import { usePreviewDismiss } from "../hooks/usePreviewDismiss.ts";
-import { useGameStore } from "../stores/gameStore.ts";
+import { clearGame, useGameStore } from "../stores/gameStore.ts";
 import { useUiStore } from "../stores/uiStore.ts";
 import { usePreferencesStore } from "../stores/preferencesStore.ts";
 import {
@@ -127,6 +126,7 @@ export function GamePage() {
     {},
   );
   const [gameStartedAt, setGameStartedAt] = useState<number | null>(null);
+  const hasConcededRef = useRef(false);
 
   const handleWsEvent = useCallback((event: WsAdapterEvent) => {
     switch (event.type) {
@@ -139,9 +139,19 @@ export function GamePage() {
       case "opponentDisconnected":
         setOpponentDisconnected(true);
         setDisconnectGrace(event.graceSeconds);
+        // 2-player: mark the single opponent as disconnected
+        {
+          const myId = useMultiplayerStore.getState().activePlayerId ?? 0;
+          useMultiplayerStore.getState().setPlayerDisconnected(myId === 0 ? 1 : 0);
+        }
         break;
       case "opponentReconnected":
         setOpponentDisconnected(false);
+        // 2-player: clear disconnected status
+        {
+          const myId = useMultiplayerStore.getState().activePlayerId ?? 0;
+          useMultiplayerStore.getState().setPlayerReconnected(myId === 0 ? 1 : 0);
+        }
         break;
       case "reconnecting":
         setReconnectState({
@@ -161,7 +171,23 @@ export function GamePage() {
         setGameStartedAt((prev) => prev ?? Date.now());
         break;
       case "conceded":
-        // Server will follow up with GameOver; nothing extra needed here
+        // If WE conceded, navigate to menu immediately
+        if (event.player === useMultiplayerStore.getState().activePlayerId) {
+          hasConcededRef.current = true;
+          if (gameId) clearGame(gameId);
+          navigate("/");
+        }
+        break;
+      case "gameOver":
+        // Skip if we already navigated away from a self-concede — the server sends
+        // both Conceded and GameOver to all players, so this would race with navigate.
+        if (hasConcededRef.current) break;
+        // Server-initiated game end (concede, disconnect timeout, etc.)
+        // Map the server's authoritative winner into the store so GameOverScreen renders.
+        if (gameId) clearGame(gameId);
+        useGameStore.setState({
+          waitingFor: { type: "GameOver", data: { winner: event.winner } },
+        });
         break;
       case "emoteReceived":
         setReceivedEmote(event.emote);
@@ -178,8 +204,38 @@ export function GamePage() {
           [event.player]: event.remainingSeconds,
         }));
         break;
+      case "playerDisconnected":
+        // Multiplayer (3+ players): a specific player disconnected
+        setOpponentDisconnected(true);
+        setDisconnectGrace(event.graceSeconds);
+        useMultiplayerStore.getState().setPlayerDisconnected(event.playerId);
+        break;
+      case "playerReconnected":
+        useMultiplayerStore.getState().setPlayerReconnected(event.playerId);
+        // Clear overlay only if no players remain disconnected
+        if (useMultiplayerStore.getState().disconnectedPlayers.size === 0) {
+          setOpponentDisconnected(false);
+        }
+        break;
+      case "gamePaused":
+        setOpponentDisconnected(true);
+        setDisconnectGrace(event.timeoutSeconds);
+        useMultiplayerStore.getState().setPlayerDisconnected(event.disconnectedPlayer);
+        break;
+      case "gameResumed":
+        setOpponentDisconnected(false);
+        break;
+      case "playerEliminated":
+        // Store-level side effects (isSpectator, toast) already handled in ws-adapter
+        break;
+      case "spectatorJoined":
+        // Could show a toast, but not critical — no UI for this yet
+        break;
+      case "error":
+        useMultiplayerStore.getState().showToast(event.message);
+        break;
     }
-  }, []);
+  }, [gameId, navigate]);
 
   const handleP2PEvent = useCallback((event: P2PAdapterEvent) => {
     switch (event.type) {
@@ -659,9 +715,6 @@ function GamePageContent({
         onSettingsClick={() => setShowPreferences(true)}
         onConcede={onShowConcedeDialog}
       />
-
-      {/* Connection status dot — top-right, visible during multiplayer */}
-      {isOnlineMode && <ConnectionDot />}
 
       {/* Connection failure toast */}
       {isOnlineMode && (

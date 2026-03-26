@@ -20,9 +20,10 @@ use crate::persist::{PersistedLobbyMeta, PersistedSession};
 use crate::protocol::PlayerSlotInfo;
 use crate::reconnect::ReconnectManager;
 
-/// Result of handling a game action: per-player filtered states, events, legal actions, and log entries.
+/// Result of handling a game action: raw state snapshot, events, legal actions, and log entries.
+/// The caller is responsible for filtering the state per-player before sending.
 pub type ActionResult = (
-    Vec<(PlayerId, GameState)>,
+    GameState,
     Vec<GameEvent>,
     Vec<GameAction>,
     Vec<GameLogEntry>,
@@ -110,9 +111,10 @@ impl GameSession {
 
     /// Run AI actions and return per-action broadcast data.
     ///
-    /// Each entry contains: per-player filtered states, events, and legal actions.
+    /// Each entry contains: raw state snapshot, events, legal actions, and log entries.
+    /// The caller is responsible for filtering the state per-player before sending.
     /// Returns an empty vec if the session has no AI seats.
-    pub fn run_ai_and_filter(&mut self) -> Vec<ActionResult> {
+    pub fn run_ai(&mut self) -> Vec<ActionResult> {
         if self.ai_seats.is_empty() {
             return vec![];
         }
@@ -127,14 +129,8 @@ impl GameSession {
         ai_results
             .into_iter()
             .map(|r| {
-                let filtered: Vec<(PlayerId, GameState)> = (0..self.player_count)
-                    .map(|i| {
-                        let pid = PlayerId(i);
-                        (pid, filter_state_for_player(&self.state, pid))
-                    })
-                    .collect();
                 let legal = engine_legal_actions(&self.state);
-                (filtered, r.events, legal, r.log_entries)
+                (self.state.clone(), r.events, legal, r.log_entries)
             })
             .collect()
     }
@@ -482,14 +478,8 @@ impl SessionManager {
         // This allows canceling UntilEndOfTurn while the opponent has priority.
         if matches!(action, GameAction::CancelAutoPass) {
             session.state.auto_pass.remove(&player);
-            let filtered_states: Vec<(PlayerId, GameState)> = (0..session.player_count)
-                .map(|i| {
-                    let pid = PlayerId(i);
-                    (pid, filter_state_for_player(&session.state, pid))
-                })
-                .collect();
             let new_legal_actions = engine_legal_actions(&session.state);
-            return Ok((filtered_states, vec![], new_legal_actions, vec![]));
+            return Ok((session.state.clone(), vec![], new_legal_actions, vec![]));
         }
 
         // Validate it's this player's turn to act
@@ -537,17 +527,10 @@ impl SessionManager {
             "action applied"
         );
 
-        // Filter state for each player
-        let filtered_states: Vec<(PlayerId, GameState)> = (0..session.player_count)
-            .map(|i| {
-                let pid = PlayerId(i);
-                (pid, filter_state_for_player(&session.state, pid))
-            })
-            .collect();
         let new_legal_actions = engine_legal_actions(&session.state);
 
         Ok((
-            filtered_states,
+            session.state.clone(),
             result.events,
             new_legal_actions,
             result.log_entries,

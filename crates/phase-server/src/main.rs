@@ -16,6 +16,7 @@ use clap::Parser;
 use engine::ai_support::legal_actions as engine_legal_actions;
 use engine::database::CardDatabase;
 use engine::game::{validate_deck_for_format, DeckCompatibilityRequest};
+use engine::types::game_state::GameState;
 use engine::types::player::PlayerId;
 use http::HeaderValue;
 use server_core::lobby::LobbyManager;
@@ -780,19 +781,22 @@ async fn handle_client_message(
 
             debug!(game = %game_code, player = ?identity.player_id, action = ?action, "Action");
 
-            // Apply human action and collect AI follow-up results while holding the lock
+            // Apply human action and collect AI follow-up results while holding the lock.
+            // Filtering is deferred until after the lock is dropped to reduce contention.
             let action_result = {
+                let lock_start = std::time::Instant::now();
                 let mut mgr = state.lock().await;
                 match mgr.handle_action(&game_code, &player_token, action) {
                     Ok(human_result) => {
-                        // Run AI follow-up actions
+                        // Run AI follow-up actions (still inside lock — needs &mut state)
                         let ai_results = match mgr.sessions.get_mut(&game_code) {
-                            Some(session) => session.run_ai_and_filter(),
+                            Some(session) => session.run_ai(),
                             None => vec![],
                         };
                         let session = mgr.sessions.get(&game_code).unwrap();
                         let actor = server_core::acting_player(&session.state.waiting_for);
                         let eliminated = session.state.eliminated_players.clone();
+                        let player_count = session.player_count;
                         let game_over_winner = match &session.state.waiting_for {
                             engine::types::game_state::WaitingFor::GameOver { winner } => {
                                 Some(*winner)
@@ -808,19 +812,36 @@ async fn handle_client_message(
                             persist_session_async(game_db, &game_code, session);
                         }
 
-                        Ok((human_result, ai_results, actor, eliminated))
+                        let lock_ms = lock_start.elapsed().as_millis();
+                        info!(
+                            game = %game_code,
+                            lock_ms,
+                            ai_actions = ai_results.len(),
+                            "action processed (lock held)"
+                        );
+
+                        Ok((human_result, ai_results, actor, eliminated, player_count))
                     }
                     Err(e) => Err(e),
                 }
-            }; // lock dropped
+            }; // lock dropped — filtering happens below without blocking other games
 
             match action_result {
                 Ok((
-                    (filtered_states, events, legal_actions, log_entries),
+                    (raw_state, events, legal_actions, log_entries),
                     ai_results,
                     actor,
                     eliminated,
+                    player_count,
                 )) => {
+                    // Filter state per-player outside the lock
+                    let filtered_states: Vec<(PlayerId, GameState)> = (0..player_count)
+                        .map(|i| {
+                            let pid = PlayerId(i);
+                            (pid, server_core::filter_state_for_player(&raw_state, pid))
+                        })
+                        .collect();
+
                     // Broadcast human action result
                     {
                         let conns = connections.lock().await;
@@ -849,11 +870,20 @@ async fn handle_client_message(
                     // Broadcast AI follow-up results with delays
                     for (i, result) in ai_results.iter().enumerate() {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        let (ai_filtered, ai_events, ai_legal, ai_log_entries) = result;
+                        let (ai_raw_state, ai_events, ai_legal, ai_log_entries) = result;
                         let is_last = i == ai_results.len() - 1;
+
+                        // Filter AI state per-player outside the lock
+                        let ai_filtered: Vec<(PlayerId, GameState)> = (0..player_count)
+                            .map(|j| {
+                                let pid = PlayerId(j);
+                                (pid, server_core::filter_state_for_player(ai_raw_state, pid))
+                            })
+                            .collect();
+
                         let conns = connections.lock().await;
                         if let Some(players) = conns.get(&game_code) {
-                            for (pid, pstate) in ai_filtered {
+                            for (pid, pstate) in &ai_filtered {
                                 if let Some(s) = players.get(pid) {
                                     let player_legals = if is_last && actor == Some(*pid) {
                                         ai_legal.clone()
@@ -968,7 +998,7 @@ async fn handle_client_message(
                                 player_token: None,
                             };
 
-                            let ai_results = session.run_ai_and_filter();
+                            let ai_results = session.run_ai();
                             ReconnectOutcome::InGame {
                                 player,
                                 game_started_msg: Box::new(game_started_msg),
@@ -1039,31 +1069,28 @@ async fn handle_client_message(
                         let _ = socket.send(Message::text(json)).await;
                     }
 
-                    // Broadcast AI follow-up results with delays
+                    // Broadcast AI follow-up results with delays (filter outside lock)
                     for result in ai_results {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        let (filtered_states, events, legal_actions, log_entries) = result;
+                        let (raw_state, events, legal_actions, log_entries) = result;
                         let actor = {
                             let mgr = state.lock().await;
                             let session = mgr.sessions.get(&game_code).unwrap();
                             server_core::acting_player(&session.state.waiting_for)
                         };
-                        for (pid, pstate) in &filtered_states {
-                            if *pid == player {
-                                let player_legals = if actor == Some(*pid) {
-                                    legal_actions.clone()
-                                } else {
-                                    vec![]
-                                };
-                                let _ = tx.send(ServerMessage::StateUpdate {
-                                    state: pstate.clone(),
-                                    events: events.clone(),
-                                    legal_actions: player_legals,
-                                    eliminated_players: vec![],
-                                    log_entries: log_entries.clone(),
-                                });
-                            }
-                        }
+                        let filtered = server_core::filter_state_for_player(&raw_state, player);
+                        let player_legals = if actor == Some(player) {
+                            legal_actions
+                        } else {
+                            vec![]
+                        };
+                        let _ = tx.send(ServerMessage::StateUpdate {
+                            state: filtered,
+                            events,
+                            legal_actions: player_legals,
+                            eliminated_players: vec![],
+                            log_entries,
+                        });
                     }
                 }
 
@@ -1233,7 +1260,7 @@ async fn handle_client_message(
                         player_token: None,
                     };
 
-                    let ai_results = session.run_ai_and_filter();
+                    let ai_results = session.run_ai();
 
                     // Persist the AI game session
                     persist_session_async(game_db, &game_code, session);
@@ -1264,29 +1291,29 @@ async fn handle_client_message(
                 }
 
                 // Broadcast initial AI actions (e.g. mulligan decisions) with delays
+                // Filter outside the lock for each AI result
                 for result in ai_results {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    let (filtered_states, events, legal_actions, log_entries) = result;
+                    let (raw_state, events, legal_actions, log_entries) = result;
                     let actor = {
                         let mgr = state.lock().await;
                         let session = mgr.sessions.get(&game_code).unwrap();
                         server_core::acting_player(&session.state.waiting_for)
                     };
-                    for (pid, pstate) in &filtered_states {
-                        if *pid == PlayerId(0) {
-                            let player_legals = if actor == Some(*pid) {
-                                legal_actions.clone()
-                            } else {
-                                vec![]
-                            };
-                            let _ = tx.send(ServerMessage::StateUpdate {
-                                state: pstate.clone(),
-                                events: events.clone(),
-                                legal_actions: player_legals,
-                                eliminated_players: vec![],
-                                log_entries: log_entries.clone(),
-                            });
-                        }
+                    let filtered = server_core::filter_state_for_player(&raw_state, PlayerId(0));
+                    {
+                        let player_legals = if actor == Some(PlayerId(0)) {
+                            legal_actions
+                        } else {
+                            vec![]
+                        };
+                        let _ = tx.send(ServerMessage::StateUpdate {
+                            state: filtered,
+                            events,
+                            legal_actions: player_legals,
+                            eliminated_players: vec![],
+                            log_entries,
+                        });
                     }
                 }
 
@@ -1625,6 +1652,13 @@ async fn handle_client_message(
                         let _ = sender.send(msg.clone());
                     }
                 }
+            }
+        }
+
+        ClientMessage::Ping { timestamp } => {
+            let msg = ServerMessage::Pong { timestamp };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = socket.send(Message::text(json)).await;
             }
         }
     }

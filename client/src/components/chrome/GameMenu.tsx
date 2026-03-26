@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
+import { ConnectionDot } from "../multiplayer/ConnectionDot.tsx";
 import { clearGame } from "../../stores/gameStore.ts";
 import { BuildBadge } from "./BuildBadge.tsx";
 
@@ -85,6 +86,7 @@ export function GameMenu({
             />
           </svg>
         </button>
+        {isOnlineMode && <ConnectionDot />}
       </div>
       <BuildBadge inline className="z-0 mt-1 hidden lg:block" />
 

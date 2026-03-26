@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import type { PlayerId } from "../../adapter/types.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
+import { useMultiplayerStore } from "../../stores/multiplayerStore.ts";
 import { usePreferencesStore } from "../../stores/preferencesStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { partitionByType } from "../../viewmodel/battlefieldProps.ts";
@@ -70,12 +71,17 @@ export function OpponentHud({ opponentName }: OpponentHudProps) {
     [dispatch],
   );
 
+  const disconnectedPlayers = useMultiplayerStore((s) => s.disconnectedPlayers);
+  const connectionStatus = useMultiplayerStore((s) => s.connectionStatus);
+  const isOnline = connectionStatus !== "disconnected";
+
   if (!isMultiplayer) {
     // 1v1: single opponent pill (existing design)
     const opponentId = allOpponents[0] ?? (playerId === 0 ? 1 : 0);
     const isOpponentTurn = gameState?.active_player === opponentId;
     const isValidTarget = validPlayerTargetIds.includes(opponentId);
     const opponentCompanion = gameState?.players[opponentId]?.companion;
+    const isDisconnected = isOnline && disconnectedPlayers.has(opponentId);
     const label = opponentName ?? `Opp ${opponentId + 1}`;
 
     const pillClass = isValidTarget
@@ -91,6 +97,7 @@ export function OpponentHud({ opponentName }: OpponentHudProps) {
           className={`flex items-center gap-0.5 rounded-full px-1.5 py-px transition-all duration-300 lg:gap-2 lg:px-3 lg:py-1 ${pillClass}`}
         >
           <span className="text-[10px] font-medium text-gray-400 lg:text-xs">{label}</span>
+          {isOnline && <ConnectionDotInline disconnected={isDisconnected} />}
           <LifeTotal playerId={opponentId} size="lg" hideLabel />
           <ManaPoolSummary playerId={opponentId} />
           {opponentCompanion && (
@@ -155,6 +162,8 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
   const gameState = useGameStore((s) => s.gameState);
   const isTheirTurn = gameState?.active_player === playerId;
   const player = gameState?.players[playerId];
+  const isDisconnected = useMultiplayerStore((s) => s.disconnectedPlayers.has(playerId));
+  const isOnline = useMultiplayerStore((s) => s.connectionStatus) !== "disconnected";
 
   const counts = useMemo(() => {
     if (!gameState) return { creatures: 0, lands: 0, other: 0 };
@@ -195,12 +204,13 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
       disabled={isEliminated}
       className={`flex items-center gap-2.5 rounded-lg border-2 px-2.5 py-1 transition-all duration-300 ${borderClass} ${isEliminated ? "opacity-40 grayscale" : ""}`}
     >
-      {/* Name + turn indicator */}
+      {/* Name + turn indicator + connection status */}
       <div className="flex items-center gap-1">
         {isTheirTurn && <span className="h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse" />}
         <span className={`text-xs font-medium ${isTheirTurn ? "text-red-300" : ally ? "text-emerald-300" : isFocused ? "text-amber-300" : "text-gray-400"}`}>
           {label}
         </span>
+        {isOnline && <ConnectionDotInline disconnected={isDisconnected} />}
       </div>
 
       {/* Life */}
@@ -229,6 +239,15 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
         <span className="rounded bg-red-900/60 px-1.5 py-0.5 text-[10px] font-bold text-red-300">OUT</span>
       )}
     </button>
+  );
+}
+
+function ConnectionDotInline({ disconnected }: { disconnected: boolean }) {
+  return (
+    <span
+      className={`inline-block h-1.5 w-1.5 rounded-full ${disconnected ? "bg-red-500 animate-pulse" : "bg-green-500"}`}
+      title={disconnected ? "Disconnected" : "Connected"}
+    />
   );
 }
 

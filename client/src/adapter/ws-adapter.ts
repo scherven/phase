@@ -75,6 +75,7 @@ export class WebSocketAdapter implements EngineAdapter {
   private reconnectAttempt = 0;
   private readonly maxReconnectAttempts = 8;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   private gameEnded = false;
 
@@ -125,6 +126,7 @@ export class WebSocketAdapter implements EngineAdapter {
       this.ws = new WebSocket(this.serverUrl);
 
       this.ws.onopen = () => {
+        this.startPing();
         if (this.mode === "host") {
           this.send({
             type: "CreateGame",
@@ -162,6 +164,20 @@ export class WebSocketAdapter implements EngineAdapter {
       };
 
       this.ws.onclose = () => {
+        if (this.pingInterval) {
+          clearInterval(this.pingInterval);
+          this.pingInterval = null;
+        }
+        // Clear any pending action state — the server may have already processed
+        // the action but the response was lost with the connection.
+        if (this.pendingReject) {
+          useMultiplayerStore.getState().setActionPending(false);
+          this.pendingReject(
+            new AdapterError("WS_CLOSED", "Connection closed during action", true),
+          );
+          this.pendingResolve = null;
+          this.pendingReject = null;
+        }
         if (this.initReject) {
           this.initReject(
             new AdapterError("WS_CLOSED", "Connection closed before game started", true),
@@ -180,6 +196,7 @@ export class WebSocketAdapter implements EngineAdapter {
       throw new AdapterError("WS_ERROR", "WebSocket not connected", false);
     }
 
+    useMultiplayerStore.getState().setActionPending(true);
     return new Promise<SubmitResult>((resolve, reject) => {
       this.pendingResolve = resolve;
       this.pendingReject = reject;
@@ -236,6 +253,10 @@ export class WebSocketAdapter implements EngineAdapter {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -249,6 +270,8 @@ export class WebSocketAdapter implements EngineAdapter {
     this.initResolve = null;
     this.initReject = null;
     this.listeners = [];
+    useMultiplayerStore.getState().setActionPending(false);
+    useMultiplayerStore.getState().setLatency(null);
     if (this.gameEnded) {
       localStorage.removeItem(WS_STORAGE_KEY);
     }
@@ -269,6 +292,7 @@ export class WebSocketAdapter implements EngineAdapter {
 
     this.ws = new WebSocket(this.serverUrl);
     this.ws.onopen = () => {
+      this.startPing();
       this.send({
         type: "Reconnect",
         data: {
@@ -314,6 +338,15 @@ export class WebSocketAdapter implements EngineAdapter {
     this.reconnectTimer = setTimeout(() => {
       this.tryReconnect();
     }, delay);
+  }
+
+  private startPing(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+    }
+    this.pingInterval = setInterval(() => {
+      this.send({ type: "Ping", data: { timestamp: Date.now() } });
+    }, 5000);
   }
 
   private send(msg: unknown): void {
@@ -365,6 +398,7 @@ export class WebSocketAdapter implements EngineAdapter {
         this.gameState = data.state;
         this._legalActions = data.legal_actions ?? [];
         if (this.pendingResolve) {
+          useMultiplayerStore.getState().setActionPending(false);
           this.pendingResolve({ events: data.events, log_entries: data.log_entries });
           this.pendingResolve = null;
           this.pendingReject = null;
@@ -376,6 +410,7 @@ export class WebSocketAdapter implements EngineAdapter {
 
       case "ActionRejected": {
         const data = msg.data as { reason: string };
+        useMultiplayerStore.getState().setActionPending(false);
         if (this.pendingReject) {
           this.pendingReject(
             new AdapterError("ACTION_REJECTED", data.reason, true),
@@ -403,6 +438,7 @@ export class WebSocketAdapter implements EngineAdapter {
       case "GameOver": {
         const data = msg.data as { winner: PlayerId | null; reason: string };
         this.gameEnded = true;
+        useMultiplayerStore.getState().setActionPending(false);
         localStorage.removeItem(WS_STORAGE_KEY);
         this.emit({
           type: "gameOver",
@@ -483,6 +519,13 @@ export class WebSocketAdapter implements EngineAdapter {
       case "SpectatorJoined": {
         const data = msg.data as { name: string };
         this.emit({ type: "spectatorJoined", name: data.name });
+        break;
+      }
+
+      case "Pong": {
+        const data = msg.data as { timestamp: number };
+        const rtt = Date.now() - data.timestamp;
+        useMultiplayerStore.getState().setLatency(rtt);
         break;
       }
 

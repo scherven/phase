@@ -5,6 +5,7 @@ import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { dispatchAction } from "../../game/dispatch.ts";
 import { usePhaseInfo } from "../../hooks/usePhaseInfo.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
+import { useMultiplayerStore } from "../../stores/multiplayerStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { buildAttacks, hasMultipleAttackTargets, getValidAttackTargets } from "../../utils/combat.ts";
 import { gameButtonClass } from "../ui/buttonStyles.ts";
@@ -239,7 +240,9 @@ export function ActionButton() {
   const autoPass = gameState?.auto_pass?.[playerId];
   const isEndingTurn = autoPass?.type === "UntilEndOfTurn";
 
+  const actionPending = useMultiplayerStore((s) => s.actionPending);
   const idle = mode === "hidden" && !isEndingTurn;
+  const blocked = idle || actionPending;
   const panelClassName =
     "flex max-w-[min(25rem,calc(100vw-1.25rem))] flex-row items-center gap-1 rounded-[10px] border border-white/10 bg-[#0b1020]/88 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.44)] backdrop-blur-md lg:gap-1.5 lg:rounded-[14px] lg:p-1.5 lg:max-w-none";
   const primaryButtonClass = "lg:min-w-[10rem]";
@@ -251,6 +254,7 @@ export function ActionButton() {
         {mode === "combat-attackers" && !isEndingTurn && (
           <>
             <button
+              disabled={actionPending}
               onClick={() => {
                 if (selectedAttackers.length > 0) {
                   handleClearAttackers();
@@ -258,21 +262,23 @@ export function ActionButton() {
                   selectAllAttackers(validAttackerIds);
                 }
               }}
-              className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
+              className={gameButtonClass({ tone: "amber", size: "md", disabled: actionPending, className: secondaryButtonClass })}
             >
               {selectedAttackers.length > 0 ? "Clear Attackers" : "All Attack"}
             </button>
             {selectedAttackers.length > 0 ? (
               <button
+                disabled={actionPending}
                 onClick={handleConfirmAttackers}
-                className={gameButtonClass({ tone: "emerald", size: "md", className: primaryButtonClass })}
+                className={gameButtonClass({ tone: "emerald", size: "md", disabled: actionPending, className: primaryButtonClass })}
               >
                 Confirm Attackers ({selectedAttackers.length})
               </button>
             ) : (
               <button
+                disabled={actionPending}
                 onClick={() => handleSkipConfirm("attackers")}
-                className={gameButtonClass({ tone: "slate", size: "md", className: primaryButtonClass })}
+                className={gameButtonClass({ tone: "slate", size: "md", disabled: actionPending, className: primaryButtonClass })}
               >
                 {skipArmed === "attackers"
                   ? "Tap again: No Attacks"
@@ -287,22 +293,25 @@ export function ActionButton() {
             {blockerAssignments.size > 0 ? (
               <>
                 <button
+                  disabled={actionPending}
                   onClick={handleConfirmBlockers}
-                  className={gameButtonClass({ tone: "emerald", size: "md", className: primaryButtonClass })}
+                  className={gameButtonClass({ tone: "emerald", size: "md", disabled: actionPending, className: primaryButtonClass })}
                 >
                   Confirm Blockers ({blockerAssignments.size})
                 </button>
                 <button
+                  disabled={actionPending}
                   onClick={handleClearBlockers}
-                  className={gameButtonClass({ tone: "neutral", size: "md", className: secondaryButtonClass })}
+                  className={gameButtonClass({ tone: "neutral", size: "md", disabled: actionPending, className: secondaryButtonClass })}
                 >
                   Clear Blocks
                 </button>
               </>
             ) : (
               <button
+                disabled={actionPending}
                 onClick={() => handleSkipConfirm("blockers")}
-                className={gameButtonClass({ tone: "slate", size: "md", className: primaryButtonClass })}
+                className={gameButtonClass({ tone: "slate", size: "md", disabled: actionPending, className: primaryButtonClass })}
               >
                 {skipArmed === "blockers"
                   ? "Tap again: No Blocks"
@@ -321,21 +330,24 @@ export function ActionButton() {
           <>
             {canCompanionToHand && (
               <button
+                disabled={actionPending}
                 onClick={() => dispatchAction({ type: "CompanionToHand" })}
-                className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
+                className={gameButtonClass({ tone: "amber", size: "md", disabled: actionPending, className: secondaryButtonClass })}
               >
                 Companion to Hand
               </button>
             )}
             <button
+              disabled={actionPending}
               onClick={() => dispatchAction({ type: "PassPriority" })}
-              className={gameButtonClass({ tone: "blue", size: "md", className: primaryButtonClass })}
+              className={gameButtonClass({ tone: "blue", size: "md", disabled: actionPending, className: primaryButtonClass })}
             >
               Resolve
             </button>
             <button
+              disabled={actionPending}
               onClick={() => dispatchAction({ type: "SetAutoPass", data: { mode: { type: "UntilStackEmpty" } } })}
-              className={gameButtonClass({ tone: "slate", size: "md", className: secondaryButtonClass })}
+              className={gameButtonClass({ tone: "slate", size: "md", disabled: actionPending, className: secondaryButtonClass })}
             >
               Resolve All
             </button>
@@ -346,28 +358,29 @@ export function ActionButton() {
           <>
             {canCompanionToHand && !idle && (
               <button
+                disabled={actionPending}
                 onClick={() => dispatchAction({ type: "CompanionToHand" })}
-                className={gameButtonClass({ tone: "amber", size: "md", className: secondaryButtonClass })}
+                className={gameButtonClass({ tone: "amber", size: "md", disabled: actionPending, className: secondaryButtonClass })}
               >
                 Companion to Hand
               </button>
             )}
             <button
-              disabled={idle}
+              disabled={blocked}
               onClick={() => dispatchAction({ type: "PassPriority" })}
               className={gameButtonClass({
                 tone: "emerald",
                 size: "md",
-                disabled: idle,
+                disabled: blocked,
                 className: primaryButtonClass,
               })}
             >
               {idle ? "Waiting" : advanceLabel}
             </button>
             <button
-              disabled={idle}
+              disabled={blocked}
               onClick={() => dispatchAction({ type: "SetAutoPass", data: { mode: { type: "UntilEndOfTurn" } } })}
-              className={gameButtonClass({ tone: "slate", size: "md", disabled: idle, className: secondaryButtonClass })}
+              className={gameButtonClass({ tone: "slate", size: "md", disabled: blocked, className: secondaryButtonClass })}
             >
               <span className="flex items-center gap-1">
                 End Turn
@@ -381,8 +394,9 @@ export function ActionButton() {
 
         {isEndingTurn && (
           <button
+            disabled={actionPending}
             onClick={() => dispatchAction({ type: "CancelAutoPass" })}
-            className={gameButtonClass({ tone: "amber", size: "md", className: `${primaryButtonClass} animate-pulse` })}
+            className={gameButtonClass({ tone: "amber", size: "md", disabled: actionPending, className: `${primaryButtonClass} animate-pulse` })}
           >
             <span className="flex items-center gap-1.5">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 animate-spin">
