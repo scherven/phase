@@ -619,19 +619,21 @@ fn apply_battlefield_cost_modifiers(
                 _ => continue,
             };
 
-            // CR 601.2f: Check static condition — "as long as" clauses gate cost modification.
-            if let Some(ref cond) = def.condition {
-                if !super::layers::evaluate_condition(state, cond, source_controller, bf_id) {
-                    continue;
-                }
-            }
-
             // CR 601.2f: Check player scope — does this modifier apply to spells the caster casts?
+            // Must run before condition check so QuantityComparison resolves against the caster.
             if let Some(TargetFilter::Typed(ref tf)) = def.affected {
                 match tf.controller {
                     Some(ControllerRef::You) if caster != source_controller => continue,
                     Some(ControllerRef::Opponent) if caster == source_controller => continue,
                     _ => {} // No controller restriction or matches
+                }
+            }
+
+            // CR 601.2f: Check static condition — "as long as" clauses gate cost modification.
+            // Uses `caster` so SpellsCastThisTurn resolves against the casting player's history.
+            if let Some(ref cond) = def.condition {
+                if !super::layers::evaluate_condition(state, cond, caster, bf_id) {
+                    continue;
                 }
             }
 
@@ -675,7 +677,9 @@ fn spell_matches_cost_filter(
         TargetFilter::Or { filters } => filters
             .iter()
             .any(|f| super::filter::matches_target_filter(state, spell_id, f, source_id)),
-        _ => true,
+        // CR 601.2e: Cost modifications only apply when the filter explicitly matches.
+        // Fail-closed: unrecognized filter shapes do not universally reduce costs.
+        _ => false,
     }
 }
 
@@ -1960,11 +1964,13 @@ mod tests {
     use super::*;
     use crate::game::zones;
     use crate::game::zones::create_object;
+    use crate::parser::oracle_static::parse_static_line;
     use crate::types::ability::{
         BasicLandType, ChosenAttribute, ChosenSubtypeKind, ContinuousModification, QuantityExpr,
         StaticDefinition,
     };
     use crate::types::card_type::CoreType;
+    use crate::types::keywords::Keyword;
     use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
     use crate::types::phase::Phase;
 
@@ -2672,7 +2678,6 @@ mod tests {
     // --- Aura casting tests ---
 
     use crate::types::ability::{ControllerRef, TargetFilter, TypedFilter};
-    use crate::types::keywords::Keyword;
 
     /// Create an Aura enchantment in hand with Enchant creature keyword.
     fn create_aura_in_hand(state: &mut GameState, player: PlayerId) -> ObjectId {
@@ -4086,5 +4091,160 @@ mod tests {
             )),
             "CastSpell for Craterhoof should appear in legal_actions"
         );
+    }
+
+    #[test]
+    fn first_qualified_spell_reducer_does_not_make_unrelated_artifact_castable() {
+        let mut state = setup_game_at_main_phase();
+
+        let reducer = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Reducer".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&reducer).unwrap().static_definitions.push(
+            parse_static_line(
+                "The first non-Lemur creature spell with flying you cast during each of your turns costs {1} less to cast.",
+            )
+            .unwrap(),
+        );
+
+        let drum = create_object(
+            &mut state,
+            CardId(301),
+            PlayerId(0),
+            "Springleaf Drum".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&drum).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.mana_cost = ManaCost::generic(1);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Unimplemented {
+                    name: "Artifact".to_string(),
+                    description: None,
+                },
+            ));
+        }
+
+        assert!(!can_cast_object_now(&state, PlayerId(0), drum));
+    }
+
+    #[test]
+    fn first_qualified_spell_reducer_only_applies_to_first_matching_spell() {
+        let mut state = setup_game_at_main_phase();
+
+        let reducer = create_object(
+            &mut state,
+            CardId(302),
+            PlayerId(0),
+            "Reducer".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&reducer).unwrap().static_definitions.push(
+            parse_static_line(
+                "The first non-Lemur creature spell with flying you cast during each of your turns costs {1} less to cast.",
+            )
+            .unwrap(),
+        );
+
+        let first_bird = create_object(
+            &mut state,
+            CardId(303),
+            PlayerId(0),
+            "Bird One".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&first_bird).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Bird".to_string());
+            obj.keywords.push(Keyword::Flying);
+            obj.mana_cost = ManaCost::generic(1);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Unimplemented {
+                    name: "Creature".to_string(),
+                    description: None,
+                },
+            ));
+        }
+
+        assert!(can_cast_object_now(&state, PlayerId(0), first_bird));
+
+        state.spells_cast_this_turn_by_player.insert(
+            PlayerId(0),
+            vec![crate::types::SpellCastRecord {
+                core_types: vec![CoreType::Creature],
+                supertypes: vec![],
+                subtypes: vec!["Bird".to_string()],
+                keywords: vec![Keyword::Flying],
+                colors: vec![],
+                mana_value: 1,
+            }],
+        );
+
+        let second_bird = create_object(
+            &mut state,
+            CardId(304),
+            PlayerId(0),
+            "Bird Two".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&second_bird).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Bird".to_string());
+            obj.keywords.push(Keyword::Flying);
+            obj.mana_cost = ManaCost::generic(1);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Unimplemented {
+                    name: "Creature".to_string(),
+                    description: None,
+                },
+            ));
+        }
+
+        assert!(!can_cast_object_now(&state, PlayerId(0), second_bird));
+    }
+
+    #[test]
+    fn spell_matches_cost_filter_fail_closed_for_unrecognized_variants() {
+        let state = GameState::default();
+        let spell_id = ObjectId(1);
+        let source_id = ObjectId(2);
+
+        // Recognized: Typed filter delegates to matches_target_filter
+        assert!(!spell_matches_cost_filter(
+            &state,
+            spell_id,
+            &TargetFilter::Typed(crate::types::ability::TypedFilter::creature()),
+            source_id,
+        ));
+
+        // Unrecognized: None, Player, SelfRef all return false (fail-closed)
+        assert!(!spell_matches_cost_filter(
+            &state,
+            spell_id,
+            &TargetFilter::None,
+            source_id,
+        ));
+        assert!(!spell_matches_cost_filter(
+            &state,
+            spell_id,
+            &TargetFilter::Player,
+            source_id,
+        ));
+        assert!(!spell_matches_cost_filter(
+            &state,
+            spell_id,
+            &TargetFilter::SelfRef,
+            source_id,
+        ));
     }
 }

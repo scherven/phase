@@ -1132,7 +1132,7 @@ fn evaluate_replacement_condition(
                 crate::game::quantity::resolve_quantity(state, lhs, controller, source_id);
             let rhs_val =
                 crate::game::quantity::resolve_quantity(state, rhs, controller, source_id);
-            !comparator.clone().evaluate(lhs_val, rhs_val)
+            !comparator.evaluate(lhs_val, rhs_val)
         }
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
@@ -1211,7 +1211,8 @@ pub fn find_applicable_replacements(
                     if let Some(ref dest_zone) = repl_def.destination_zone {
                         let matches_dest = match event {
                             ProposedEvent::ZoneChange { to, .. } => to == dest_zone,
-                            _ => true,
+                            // CR 614.6: Only zone-change events can match a destination zone scope.
+                            _ => false,
                         };
                         if !matches_dest {
                             continue;

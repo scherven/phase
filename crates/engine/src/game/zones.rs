@@ -9,6 +9,82 @@ use crate::types::zones::Zone;
 use super::game_object::GameObject;
 use super::printed_cards::{apply_back_face_to_object, snapshot_object_face};
 
+/// CR 400.7: Snapshot LKI and apply all cleanup side effects when an object
+/// leaves its current zone. Shared by `move_to_zone` and `move_to_library_at_index`.
+///
+/// Handles: LKI snapshot (CR 400.7), transform revert (CR 712.14),
+/// exile permission clearing (CR 113.6e), monstrous reset (CR 701.37b),
+/// counter clearing (CR 122.2), layer pruning, and mana-tap cleanup.
+fn apply_zone_exit_cleanup(
+    state: &mut GameState,
+    object_id: ObjectId,
+    from: Zone,
+) {
+    // CR 400.7: Snapshot LKI before zone change from battlefield or exile.
+    // Power/toughness reflect layer modifications on battlefield (Layer 7);
+    // from exile they will be None (no layer computation), which is correct.
+    if from == Zone::Battlefield || from == Zone::Exile {
+        if let Some(obj) = state.objects.get(&object_id) {
+            let lki = crate::types::game_state::LKISnapshot {
+                name: obj.name.clone(),
+                power: obj.power,
+                toughness: obj.toughness,
+                mana_value: obj.mana_cost.mana_value(),
+                controller: obj.controller,
+                owner: obj.owner,
+                // CR 400.7: Capture core types for "if it was a creature" patterns.
+                card_types: obj.card_types.core_types.clone(),
+            };
+            state.lki_cache.insert(object_id, lki);
+        }
+    }
+
+    if let Some(obj_mut) = state.objects.get_mut(&object_id) {
+        // CR 712.14 + CR 400.7: Transformed permanents revert to front face on zone change.
+        if obj_mut.transformed {
+            if let Some(back_face) = obj_mut.back_face.clone() {
+                let current_back = snapshot_object_face(obj_mut);
+                apply_back_face_to_object(obj_mut, back_face);
+                obj_mut.back_face = Some(current_back);
+                obj_mut.transformed = false;
+            }
+        }
+
+        // CR 400.7 + CR 113.6e: Clear exile-based casting permissions when leaving exile
+        // (prevents re-casting if the card returns to exile via a different effect).
+        if from == Zone::Exile {
+            obj_mut.casting_permissions.retain(|p| {
+                !matches!(
+                    p,
+                    crate::types::ability::CastingPermission::AdventureCreature
+                        | crate::types::ability::CastingPermission::ExileWithAltCost { .. }
+                        | crate::types::ability::CastingPermission::PlayFromExile { .. }
+                        | crate::types::ability::CastingPermission::ExileWithEnergyCost
+                        | crate::types::ability::CastingPermission::WarpExile { .. }
+                )
+            });
+        }
+
+        // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
+        if from == Zone::Battlefield {
+            obj_mut.monstrous = false;
+        }
+
+        // CR 122.2: Counters cease to exist when an object changes zones.
+        obj_mut.counters.clear();
+    }
+
+    // Prune host-bound transient effects and clean up mana-tap tracking
+    // when a permanent leaves the battlefield.
+    if from == Zone::Battlefield {
+        state.layers_dirty = true;
+        super::layers::prune_host_left_effects(state, object_id);
+        for tapped in state.lands_tapped_for_mana.values_mut() {
+            tapped.retain(|&id| id != object_id);
+        }
+    }
+}
+
 /// Allocate a new ObjectId, create a GameObject with defaults, insert into state.objects, and add to the specified zone.
 pub fn create_object(
     state: &mut GameState,
@@ -23,6 +99,13 @@ pub fn create_object(
     let obj = GameObject::new(id, card_id, owner, name, zone);
     state.objects.insert(id, obj);
     add_to_zone(state, id, zone, owner);
+
+    // CR 302.6 + CR 403.4: Track when objects enter the battlefield (for summoning sickness).
+    if zone == Zone::Battlefield {
+        if let Some(obj) = state.objects.get_mut(&id) {
+            obj.entered_battlefield_turn = Some(state.turn_number);
+        }
+    }
 
     id
 }
@@ -64,53 +147,13 @@ pub fn move_to_zone(
     let from = obj.zone;
     let owner = obj.owner;
 
-    // CR 400.7: Snapshot LKI before zone change from battlefield or exile.
-    // Power/toughness reflect layer modifications on battlefield (Layer 7);
-    // from exile they will be None (no layer computation), which is correct.
-    if from == Zone::Battlefield || from == Zone::Exile {
-        let lki = crate::types::game_state::LKISnapshot {
-            name: obj.name.clone(),
-            power: obj.power,
-            toughness: obj.toughness,
-            mana_value: obj.mana_cost.mana_value(),
-            controller: obj.controller,
-            owner: obj.owner,
-            // CR 400.7: Capture core types for "if it was a creature" patterns.
-            card_types: obj.card_types.core_types.clone(),
-        };
-        state.lki_cache.insert(object_id, lki);
-    }
+    apply_zone_exit_cleanup(state, object_id, from);
 
     remove_from_zone(state, object_id, from, owner);
     add_to_zone(state, object_id, to, owner);
 
     let obj_mut = state.objects.get_mut(&object_id).unwrap();
     obj_mut.zone = to;
-
-    // CR 712.14 + CR 400.7: Transformed permanents revert to front face on zone change.
-    if obj_mut.transformed {
-        if let Some(back_face) = obj_mut.back_face.clone() {
-            let current_back = snapshot_object_face(obj_mut);
-            apply_back_face_to_object(obj_mut, back_face);
-            obj_mut.back_face = Some(current_back);
-            obj_mut.transformed = false;
-        }
-    }
-
-    // CR 400.7 + CR 113.6e: Clear exile-based casting permissions when leaving exile
-    // (prevents re-casting if the card returns to exile via a different effect).
-    if from == crate::types::zones::Zone::Exile {
-        obj_mut.casting_permissions.retain(|p| {
-            !matches!(
-                p,
-                crate::types::ability::CastingPermission::AdventureCreature
-                    | crate::types::ability::CastingPermission::ExileWithAltCost { .. }
-                    | crate::types::ability::CastingPermission::PlayFromExile { .. }
-                    | crate::types::ability::CastingPermission::ExileWithEnergyCost
-                    | crate::types::ability::CastingPermission::WarpExile { .. }
-            )
-        });
-    }
 
     // CR 302.6 + CR 403.4: Track when objects enter the battlefield (for summoning sickness).
     // CR 403.4: A permanent entering the battlefield becomes a new object with no relationship to its previous existence.
@@ -122,14 +165,6 @@ pub fn move_to_zone(
             obj_mut.class_level = Some(1);
         }
     }
-
-    // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
-    if from == Zone::Battlefield {
-        obj_mut.monstrous = false;
-    }
-
-    // CR 122.2: Counters cease to exist when an object changes zones.
-    obj_mut.counters.clear();
 
     // Track descended: a permanent card was put into its owner's graveyard
     if to == Zone::Graveyard {
@@ -151,19 +186,10 @@ pub fn move_to_zone(
         }
     }
 
-    // Mark layers dirty when objects enter or leave the battlefield
-    if from == Zone::Battlefield || to == Zone::Battlefield {
+    // Mark layers dirty when objects enter the battlefield
+    // (exit-side dirty marking is handled by apply_zone_exit_cleanup)
+    if to == Zone::Battlefield {
         state.layers_dirty = true;
-    }
-
-    // Prune host-bound transient effects when a permanent leaves the battlefield
-    if from == Zone::Battlefield {
-        super::layers::prune_host_left_effects(state, object_id);
-
-        // Clean up manual mana-tap tracking for departing permanents
-        for tapped in state.lands_tapped_for_mana.values_mut() {
-            tapped.retain(|&id| id != object_id);
-        }
     }
 
     super::restrictions::record_zone_change(state, object_id, from, to);
@@ -201,20 +227,7 @@ pub fn move_to_library_at_index(
     let from = obj.zone;
     let owner = obj.owner;
 
-    // CR 400.7: Snapshot LKI before zone change from battlefield or exile.
-    if from == Zone::Battlefield || from == Zone::Exile {
-        let lki = crate::types::game_state::LKISnapshot {
-            name: obj.name.clone(),
-            power: obj.power,
-            toughness: obj.toughness,
-            mana_value: obj.mana_cost.mana_value(),
-            controller: obj.controller,
-            owner: obj.owner,
-            // CR 400.7: Capture core types for "if it was a creature" patterns.
-            card_types: obj.card_types.core_types.clone(),
-        };
-        state.lki_cache.insert(object_id, lki);
-    }
+    apply_zone_exit_cleanup(state, object_id, from);
 
     remove_from_zone(state, object_id, from, owner);
 
@@ -232,50 +245,8 @@ pub fn move_to_library_at_index(
         None => player.library.push(object_id),
     }
 
-    let obj_mut = state.objects.get_mut(&object_id).unwrap();
-    obj_mut.zone = Zone::Library;
-
-    // CR 712.14 + CR 400.7: Transformed permanents revert to front face on zone change.
-    if obj_mut.transformed {
-        if let Some(back_face) = obj_mut.back_face.clone() {
-            let current_back = snapshot_object_face(obj_mut);
-            apply_back_face_to_object(obj_mut, back_face);
-            obj_mut.back_face = Some(current_back);
-            obj_mut.transformed = false;
-        }
-    }
-
-    // CR 400.7 + CR 113.6e: Clear exile-based casting permissions when leaving exile.
-    if from == Zone::Exile {
-        obj_mut.casting_permissions.retain(|p| {
-            !matches!(
-                p,
-                crate::types::ability::CastingPermission::AdventureCreature
-                    | crate::types::ability::CastingPermission::ExileWithAltCost { .. }
-                    | crate::types::ability::CastingPermission::PlayFromExile { .. }
-                    | crate::types::ability::CastingPermission::ExileWithEnergyCost
-                    | crate::types::ability::CastingPermission::WarpExile { .. }
-            )
-        });
-    }
-
-    // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
-    if from == Zone::Battlefield {
-        obj_mut.monstrous = false;
-    }
-
-    // CR 122.2: Counters cease to exist when an object changes zones.
-    obj_mut.counters.clear();
-
-    // Mark layers dirty when objects leave the battlefield
-    if from == Zone::Battlefield {
-        state.layers_dirty = true;
-        // Prune host-bound transient effects (auras, pumps, etc.)
-        super::layers::prune_host_left_effects(state, object_id);
-        // Clean up manual mana-tap tracking for departing permanents
-        for tapped in state.lands_tapped_for_mana.values_mut() {
-            tapped.retain(|&id| id != object_id);
-        }
+    if let Some(obj_mut) = state.objects.get_mut(&object_id) {
+        obj_mut.zone = Zone::Library;
     }
 
     super::restrictions::record_zone_change(state, object_id, from, Zone::Library);
