@@ -1582,6 +1582,18 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         Effect::AdditionalCombatPhase { target, .. } if *target == TargetFilter::Controller => {
             *target = subject_filter;
         }
+        // CR 400.7: "shuffle [subject]'s graveyard into their library" — inject
+        // subject target for zone-wide changes and shuffles.
+        Effect::ChangeZoneAll { ref mut target, .. }
+            if *target == TargetFilter::Any || *target == TargetFilter::Controller =>
+        {
+            *target = subject_filter;
+        }
+        Effect::Shuffle { ref mut target }
+            if *target == TargetFilter::Any || *target == TargetFilter::Controller =>
+        {
+            *target = subject_filter;
+        }
         // CR 701.14a: "enchanted creature fights target creature" — the subject
         // of the fight is the enchanted/equipped creature, not the Aura/Equipment.
         Effect::Fight {

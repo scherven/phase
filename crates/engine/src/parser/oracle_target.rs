@@ -258,6 +258,18 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     let offset = lower.len() - lower_trimmed.len();
     pos += offset;
 
+    // Strip leading article ("a "/"an ") when followed by a recognized type word.
+    // Guard: "an opponent" → "opponent" fails type word check → no stripping.
+    if let Some(rest) = lower[pos..].strip_prefix("a ") {
+        if starts_with_type_word(rest) {
+            pos += "a ".len();
+        }
+    } else if let Some(rest) = lower[pos..].strip_prefix("an ") {
+        if starts_with_type_word(rest) {
+            pos += "an ".len();
+        }
+    }
+
     // Handle "other"/"another" prefix: "other creatures", "another creature",
     // "other nonland permanents", "another target creature"
     if lower_trimmed.starts_with("other ") {
@@ -402,7 +414,26 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     let rest_lower = lower[pos..].trim_start();
     let rest_offset = lower[pos..].len() - rest_lower.len();
 
-    // Check ", and " first (Oxford comma before final element) since it starts with ", "
+    // Check ", and/or " before ", and " — longest-match-first ordering to prevent
+    // ", and " from consuming the prefix and leaving "/or [type]" as remainder.
+    if let Some(after_comma_andor) = rest_lower.strip_prefix(", and/or ") {
+        let after_trimmed = after_comma_andor.trim_start();
+        if starts_with_type_word(after_trimmed) {
+            let comma_andor_text = &text[pos + rest_offset + ", and/or ".len()..];
+            let (other_filter, final_rest) = parse_type_phrase(comma_andor_text);
+            let left = typed(
+                card_type.unwrap_or(TypeFilter::Any),
+                subtype,
+                properties,
+                neg_type_filters.clone(),
+            );
+            let combined = merge_or_filters(left, other_filter);
+            let combined = distribute_controller_to_or(combined);
+            return (distribute_properties_to_or(combined), final_rest);
+        }
+    }
+
+    // Check ", and " (Oxford comma before final element) since it starts with ", "
     if let Some(after_comma_and) = rest_lower.strip_prefix(", and ") {
         let after_trimmed = after_comma_and.trim_start();
         if starts_with_type_word(after_trimmed) {

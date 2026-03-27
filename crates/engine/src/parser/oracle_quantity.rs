@@ -25,6 +25,15 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
         "your life total" => Some(QuantityRef::LifeTotal),
         "your starting life total" => Some(QuantityRef::StartingLifeTotal),
         "cards in your graveyard" => Some(QuantityRef::GraveyardSize),
+        // CR 118.4: Life change tracking — amount of life lost/gained this turn.
+        "life you lost this turn"
+        | "life you've lost this turn"
+        | "total life you lost this turn"
+        | "total life you've lost this turn" => Some(QuantityRef::LifeLostThisTurn),
+        "life you gained this turn"
+        | "life you've gained this turn"
+        | "total life you gained this turn"
+        | "total life you've gained this turn" => Some(QuantityRef::LifeGainedThisTurn),
         // CR 208.3: Self-referential P/T lookups.
         "~'s power" | "its power" | "this creature's power" => Some(QuantityRef::SelfPower),
         "~'s toughness" | "its toughness" | "this creature's toughness" => {

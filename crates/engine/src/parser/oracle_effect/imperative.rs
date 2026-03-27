@@ -252,6 +252,12 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         return Some(TargetedImperativeAst::Sacrifice { target });
     }
     if let Some(after_discard) = lower.strip_prefix("discard ") {
+        // Strip "all the cards in " / "all cards in " prefix compositionally for
+        // patterns like "discard all the cards in your hand" / "discards all cards in their hand".
+        let after_discard = after_discard
+            .strip_prefix("all the cards in ")
+            .or_else(|| after_discard.strip_prefix("all cards in "))
+            .unwrap_or(after_discard);
         // Detect whole-hand discard patterns before falling through to count parsing.
         // Uses starts_with (not contains) to avoid matching "discard a card from your hand".
         if after_discard.starts_with("your hand")
@@ -1394,8 +1400,19 @@ pub(super) fn parse_imperative_family_ast(
 
         // ── Exact-match keyword actions ──
         "explore" => Some(ImperativeFamilyAst::Explore),
-        // CR 702.162a: "connive" / "connives"
-        "connive" | "connives" => Some(ImperativeFamilyAst::Connive),
+        // CR 702.162a: "connive" / "connives" — extract target from remainder
+        "connive" | "connives" => {
+            let rest = lower[first_word.len()..].trim();
+            if !rest.is_empty() {
+                let (target, _) = parse_target(rest);
+                Some(ImperativeFamilyAst::GainKeyword(Effect::Connive {
+                    target,
+                    count: 1,
+                }))
+            } else {
+                Some(ImperativeFamilyAst::Connive)
+            }
+        }
         // CR 702.136: "investigate"
         "investigate" => Some(ImperativeFamilyAst::Investigate),
         // CR 701.62a: "manifest dread"
@@ -1408,9 +1425,16 @@ pub(super) fn parse_imperative_family_ast(
         }
         "proliferate" => Some(ImperativeFamilyAst::Proliferate),
         // CR 702.157a: "suspect it" / "suspect target creature"
-        "suspect" | "suspects" => Some(ImperativeFamilyAst::GainKeyword(Effect::Suspect {
-            target: crate::types::ability::TargetFilter::ParentTarget,
-        })),
+        "suspect" | "suspects" => {
+            let rest = lower[first_word.len()..].trim();
+            let target = if !rest.is_empty() {
+                let (t, _) = parse_target(rest);
+                t
+            } else {
+                crate::types::ability::TargetFilter::ParentTarget
+            };
+            Some(ImperativeFamilyAst::GainKeyword(Effect::Suspect { target }))
+        }
         // Blight N as an effect (e.g. trigger effect "blight 1")
         "blight" => {
             let rest = lower
@@ -1496,7 +1520,15 @@ pub(super) fn parse_imperative_family_ast(
         }
 
         // CR 701.15a: "goad target creature" / "goads target creature" / "goad it"
-        "goad" | "goads" => Some(ImperativeFamilyAst::Goad),
+        "goad" | "goads" => {
+            let rest = lower[first_word.len()..].trim();
+            if !rest.is_empty() {
+                let (target, _) = parse_target(rest);
+                Some(ImperativeFamilyAst::GainKeyword(Effect::Goad { target }))
+            } else {
+                Some(ImperativeFamilyAst::Goad)
+            }
+        }
 
         // CR 701.12a: "exchange control of target [type] and target [type]"
         "exchange" => {

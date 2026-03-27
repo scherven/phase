@@ -155,7 +155,7 @@ expression: result
           "origin": "Hand",
           "destination": "Library",
           "target": {
-            "type": "Controller"
+            "type": "Player"
           }
         },
         "cost": null,

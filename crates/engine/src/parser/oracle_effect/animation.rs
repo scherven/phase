@@ -276,7 +276,8 @@ fn split_animation_keyword_clause(text: &str) -> (&str, Vec<Keyword>) {
         .next()
         .unwrap_or("")
         .trim()
-        .trim_end_matches('.');
+        .trim_end_matches('.')
+        .trim_end_matches(" in addition to its other types");
     let keywords = split_token_keyword_list(keyword_text)
         .into_iter()
         .filter_map(map_token_keyword)
