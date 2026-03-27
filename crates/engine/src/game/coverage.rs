@@ -31,6 +31,7 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::AdditionalLandDrop { .. }
             | StaticMode::ReduceCost { .. }
             | StaticMode::RaiseCost { .. }
+            | StaticMode::DefilerCostReduction { .. }
             | StaticMode::CantCastDuring { .. }
             | StaticMode::GraveyardCastPermission { .. }
     )

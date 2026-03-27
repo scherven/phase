@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::ability::{CardPlayMode, QuantityRef, TargetFilter};
-use super::mana::ManaCost;
+use super::mana::{ManaColor, ManaCost};
 
 /// CR 101.2: Who is prohibited from casting spells.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -196,6 +196,18 @@ pub enum StaticMode {
     NoMaximumHandSize,
     MayPlayAdditionalLand,
 
+    /// CR 118.12a: Defiler cycle — "As an additional cost to cast [color] permanent
+    /// spells, you may pay [N] life. Those spells cost {C} less to cast."
+    /// Optional life payment during casting with conditional mana reduction.
+    DefilerCostReduction {
+        /// The color of permanent spells this applies to
+        color: ManaColor,
+        /// Life cost to pay (e.g., 2 for the Defiler cycle)
+        life_cost: u32,
+        /// Mana cost reduction if life is paid
+        mana_reduction: ManaCost,
+    },
+
     /// Fallback for unrecognized static mode strings.
     Other(String),
 }
@@ -226,7 +238,9 @@ impl Hash for StaticMode {
             }
             // Data-carrying variants with non-Hash fields: discriminant only.
             // These are never used as HashMap keys (handled by is_data_carrying_static).
-            StaticMode::ReduceCost { .. } | StaticMode::RaiseCost { .. } => {}
+            StaticMode::ReduceCost { .. }
+            | StaticMode::RaiseCost { .. }
+            | StaticMode::DefilerCostReduction { .. } => {}
             // All other variants are unit variants — discriminant suffices.
             _ => {}
         }
@@ -309,6 +323,9 @@ impl fmt::Display for StaticMode {
             StaticMode::BlockRestriction => write!(f, "BlockRestriction"),
             StaticMode::NoMaximumHandSize => write!(f, "NoMaximumHandSize"),
             StaticMode::MayPlayAdditionalLand => write!(f, "MayPlayAdditionalLand"),
+            StaticMode::DefilerCostReduction { color, .. } => {
+                write!(f, "DefilerCostReduction({color:?})")
+            }
             // Fallback
             StaticMode::Other(s) => write!(f, "{s}"),
         }

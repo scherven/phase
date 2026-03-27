@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction, AdditionalCost,
     CastingRestriction, Comparator, DieResultBranch, Effect, ModalChoice, ReplacementDefinition,
-    SolveCondition, SpellCastingOption, StaticDefinition, TriggerDefinition, TypedFilter,
+    SolveCondition, SpellCastingOption, StaticDefinition, TargetFilter, TriggerDefinition,
+    TypedFilter,
 };
 use crate::types::keywords::Keyword;
-use crate::types::mana::ManaCost;
+use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
+use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 use super::oracle_casting::{
@@ -557,6 +559,26 @@ pub fn parse_oracle_text(
             );
             i += 1;
             continue;
+        }
+
+        // Priority 8b-defiler: "As an additional cost to cast [color] permanent spells,
+        // you may pay N life." + next line "Those spells cost {C} less to cast."
+        // This is a static ability on the permanent, not a self-cost for this spell.
+        if lower.starts_with("as an additional cost to cast ")
+            && !lower.contains("this spell")
+            && lower.contains("you may pay")
+            && lower.contains(" life")
+        {
+            if let Some(static_def) =
+                parse_defiler_cost_reduction(&lower, i + 1 < lines.len(), || {
+                    lines.get(i + 1).map(|l| l.to_lowercase())
+                })
+            {
+                result.statics.push(static_def);
+                // Consume both lines (cost line + reduction line)
+                i += 2;
+                continue;
+            }
         }
 
         // Priority 8b: "As an additional cost to cast this spell"
@@ -1509,6 +1531,80 @@ fn parse_solve_condition(text: &str) -> SolveCondition {
     SolveCondition::Text {
         description: text.to_string(),
     }
+}
+
+/// Parse the Defiler cycle two-line pattern into a DefilerCostReduction static.
+///
+/// Line 1: "as an additional cost to cast [color] permanent spells, you may pay [N] life."
+/// Line 2: "those spells cost {C} less to cast."
+///
+/// Returns a StaticDefinition with DefilerCostReduction mode, or None if the pattern
+/// doesn't match.
+fn parse_defiler_cost_reduction(
+    lower: &str,
+    has_next_line: bool,
+    next_line_lower: impl FnOnce() -> Option<String>,
+) -> Option<StaticDefinition> {
+    // Extract color from "to cast [color] permanent spells"
+    let after_cast = lower.strip_prefix("as an additional cost to cast ")?;
+    let perm_pos = after_cast.find(" permanent spell")?;
+    let color_word = after_cast[..perm_pos].trim();
+    let color = match color_word {
+        "white" => ManaColor::White,
+        "blue" => ManaColor::Blue,
+        "black" => ManaColor::Black,
+        "red" => ManaColor::Red,
+        "green" => ManaColor::Green,
+        _ => return None,
+    };
+
+    // Extract life cost from "you may pay [N] life"
+    let pay_pos = lower.find("you may pay ")?;
+    let after_pay = &lower[pay_pos + "you may pay ".len()..];
+    let (life_cost, _) = super::oracle_util::parse_number(after_pay)?;
+
+    // Parse the second line for mana reduction
+    if !has_next_line {
+        return None;
+    }
+    let next_lower = next_line_lower()?;
+    let next_trimmed = next_lower.trim().trim_end_matches('.');
+
+    // "those spells cost {X} less to cast"
+    let cost_rest = next_trimmed.strip_prefix("those spells cost ")?;
+    let less_pos = cost_rest.find(" less to cast")?;
+    let mana_text = cost_rest[..less_pos].trim();
+
+    // Sanity check: the mana text should be a single color symbol like "{g}"
+    if !mana_text.starts_with('{') {
+        return None;
+    }
+
+    // Map color to corresponding ManaCostShard for the reduction
+    let shard = match color {
+        ManaColor::White => ManaCostShard::White,
+        ManaColor::Blue => ManaCostShard::Blue,
+        ManaColor::Black => ManaCostShard::Black,
+        ManaColor::Red => ManaCostShard::Red,
+        ManaColor::Green => ManaCostShard::Green,
+    };
+    let mana_reduction = ManaCost::Cost {
+        shards: vec![shard],
+        generic: 0,
+    };
+
+    Some(
+        StaticDefinition::new(StaticMode::DefilerCostReduction {
+            color,
+            life_cost,
+            mana_reduction,
+        })
+        .affected(TargetFilter::SelfRef)
+        .description(format!(
+            "As an additional cost to cast {} permanent spells, you may pay {} life. Those spells cost less to cast.",
+            color_word, life_cost
+        )),
+    )
 }
 
 /// Normalize self-references in a line for static ability parsing.
