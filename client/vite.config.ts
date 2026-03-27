@@ -67,7 +67,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern: /card-data\.json$/,
-            handler: "CacheFirst",
+            handler: "StaleWhileRevalidate",
             options: {
               cacheName: "card-database",
               expiration: { maxEntries: 1, maxAgeSeconds: 604800 },
