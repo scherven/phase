@@ -420,6 +420,13 @@ fn build_continuous_clause(
 ) -> Option<ParsedEffectClause> {
     let normalized = deconjugate_verb(predicate);
 
+    // B15: Guard against "becomes" predicates routing through continuous clause parsing.
+    // Creature-land animations ("becomes a 3/3 Dinosaur creature with trample") must
+    // fall through to try_parse_subject_become_clause for correct animation handling.
+    if normalized.starts_with("become ") || normalized.starts_with("become\n") {
+        return None;
+    }
+
     // Try the full predicate first (simple pump with no compound).
     if let Some((power, toughness, duration)) = super::parse_pump_clause(&normalized) {
         let effect = build_pump_effect(&application, power, toughness);

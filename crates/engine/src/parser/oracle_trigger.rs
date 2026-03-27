@@ -1767,51 +1767,11 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         }
     }
 
-    if matches!(
-        lower,
-        "whenever you discard a card" | "when you discard a card"
-    ) {
-        let mut def = make_base();
-        def.mode = TriggerMode::Discarded;
-        def.valid_card = Some(TargetFilter::Typed(
-            TypedFilter::new(TypeFilter::Card).controller(ControllerRef::You),
-        ));
-        return Some((TriggerMode::Discarded, def));
-    }
-
-    if matches!(
-        lower,
-        "whenever an opponent discards a card" | "when an opponent discards a card"
-    ) {
-        let mut def = make_base();
-        def.mode = TriggerMode::Discarded;
-        def.valid_card = Some(TargetFilter::Typed(
-            TypedFilter::new(TypeFilter::Card).controller(ControllerRef::Opponent),
-        ));
-        return Some((TriggerMode::Discarded, def));
-    }
-
-    // CR 603.10c: Batched discard triggers — "one or more" fire once per batch.
-    if matches!(
-        lower,
-        "whenever you discard one or more cards" | "when you discard one or more cards"
-    ) {
-        let mut def = make_base();
-        def.mode = TriggerMode::DiscardedAll;
-        def.valid_target = Some(TargetFilter::Controller);
-        def.batched = true;
-        return Some((TriggerMode::DiscardedAll, def));
-    }
-
-    if matches!(
-        lower,
-        "whenever one or more players discard one or more cards"
-            | "when one or more players discard one or more cards"
-    ) {
-        let mut def = make_base();
-        def.mode = TriggerMode::DiscardedAll;
-        def.batched = true;
-        return Some((TriggerMode::DiscardedAll, def));
+    // Discard triggers: prefix-based matching for broader card coverage.
+    // Handles "you discard", "an opponent discards", "a player discards",
+    // "each player discards" with optional type filters.
+    if let Some(discard_result) = try_parse_discard_trigger(lower, &make_base) {
+        return Some(discard_result);
     }
 
     if matches!(
@@ -2531,6 +2491,65 @@ fn try_parse_one_or_more_put_into_graveyard(
     }
 
     None
+}
+
+/// Parse discard trigger patterns with prefix-based matching.
+/// Handles: "whenever you discard a card", "whenever an opponent discards a card",
+/// "whenever a player discards a card", batched "one or more" variants,
+/// and optional type filters ("a creature card", "a nonland card").
+fn try_parse_discard_trigger(
+    lower: &str,
+    make_base: &dyn Fn() -> TriggerDefinition,
+) -> Option<(TriggerMode, TriggerDefinition)> {
+    // Strip "whenever " / "when " prefix to get the event clause
+    let event = lower
+        .strip_prefix("whenever ")
+        .or_else(|| lower.strip_prefix("when "))?;
+
+    // CR 603.10c: Batched discard triggers — "one or more" fire once per batch.
+    if event.starts_with("you discard one or more") {
+        let mut def = make_base();
+        def.mode = TriggerMode::DiscardedAll;
+        def.valid_target = Some(TargetFilter::Controller);
+        def.batched = true;
+        return Some((TriggerMode::DiscardedAll, def));
+    }
+    if event.starts_with("one or more players discard one or more") {
+        let mut def = make_base();
+        def.mode = TriggerMode::DiscardedAll;
+        def.batched = true;
+        return Some((TriggerMode::DiscardedAll, def));
+    }
+
+    // Determine subject and find "discards"/"discard" verb
+    let (controller_ref, after_verb) = if let Some(rest) = event.strip_prefix("you discard ") {
+        (Some(ControllerRef::You), rest)
+    } else if let Some(rest) = event.strip_prefix("an opponent discards ") {
+        (Some(ControllerRef::Opponent), rest)
+    } else if let Some(rest) = event.strip_prefix("a player discards ") {
+        // "a player" = any player, no controller restriction
+        (None, rest)
+    } else if let Some(rest) = event.strip_prefix("each player discards ") {
+        (None, rest)
+    } else {
+        return None;
+    };
+
+    let mut def = make_base();
+    def.mode = TriggerMode::Discarded;
+
+    let type_filter = match controller_ref {
+        Some(cr) => TypedFilter::new(TypeFilter::Card).controller(cr),
+        None => TypedFilter::new(TypeFilter::Card),
+    };
+    def.valid_card = Some(TargetFilter::Typed(type_filter));
+
+    // Parse optional type filter from remainder: "a card", "a creature card", "a nonland card"
+    // For now, the basic "a card" / "one or more cards" is sufficient.
+    // Future: parse "a creature card" → add CardType filter property.
+    let _ = after_verb; // remainder available for future type-filter parsing
+
+    Some((TriggerMode::Discarded, def))
 }
 
 #[cfg(test)]

@@ -919,6 +919,7 @@ pub(super) fn find_activated_colon(line: &str) -> Option<usize> {
         "exile",
         "tap",
         "untap",
+        "put",
     ];
     // Only lowercase when needed (skipped entirely if '{' was found above)
     let lower_prefix = trimmed.to_lowercase();
