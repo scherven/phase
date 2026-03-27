@@ -621,19 +621,20 @@ fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
 fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause> {
     if let Some(rest) = tp.strip_prefix("mill cards equal to ") {
         let rest = rest.lower.trim().trim_end_matches('.');
-        let qty = super::oracle_quantity::parse_quantity_ref(rest)?;
+        // CR 603.7c: Prefer event context quantity for triggered effects (e.g., "its power"
+        // refers to the triggering creature's power, not self). Falls back to parse_quantity_ref.
+        let qty = super::oracle_quantity::parse_event_context_quantity(rest)?;
         return Some(parsed_clause(Effect::Mill {
-            count: QuantityExpr::Ref { qty },
+            count: qty,
             // CR 701.17a: No subject → controller mills.
             target: TargetFilter::Controller,
         }));
     }
     if let Some(rest) = tp.strip_prefix("draw cards equal to ") {
         let rest = rest.lower.trim().trim_end_matches('.');
-        let qty = super::oracle_quantity::parse_quantity_ref(rest)?;
-        return Some(parsed_clause(Effect::Draw {
-            count: QuantityExpr::Ref { qty },
-        }));
+        // CR 603.7c: Prefer event context quantity for triggered effects.
+        let qty = super::oracle_quantity::parse_event_context_quantity(rest)?;
+        return Some(parsed_clause(Effect::Draw { count: qty }));
     }
     None
 }
@@ -809,6 +810,68 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
             _ => quantity,
         };
         return Some(parsed_clause(Effect::LoseLife { amount }));
+    }
+
+    // "gets +N/+M for each X" → Pump with dynamic PtValue::Quantity
+    // Handles: "~ gets +1/+1 for each creature you control",
+    //          "target creature gets +2/+2 for each..."
+    if let Some(gets_pos) = base_tp.find("gets ").or_else(|| base_tp.find("get ")) {
+        let offset = if base_tp.lower[gets_pos..].starts_with("gets ") {
+            5
+        } else {
+            4
+        };
+        let after_gets = base_tp.original[gets_pos + offset..].trim();
+        // Extract the P/T token
+        let token_end = after_gets
+            .find(|c: char| c.is_whitespace() || c == ',' || c == '.')
+            .unwrap_or(after_gets.len());
+        let token = &after_gets[..token_end];
+        if let Some((p, t)) = parse_pt_modifier(token) {
+            let make_quantity_pt = |pt: PtValue| -> PtValue {
+                match pt {
+                    PtValue::Fixed(n) if n == 1 || n == -1 => {
+                        let q = if n < 0 {
+                            QuantityExpr::Multiply {
+                                factor: -1,
+                                inner: Box::new(quantity.clone()),
+                            }
+                        } else {
+                            quantity.clone()
+                        };
+                        PtValue::Quantity(q)
+                    }
+                    PtValue::Fixed(n) if n != 0 => PtValue::Quantity(QuantityExpr::Multiply {
+                        factor: n,
+                        inner: Box::new(quantity.clone()),
+                    }),
+                    PtValue::Fixed(0) => PtValue::Fixed(0),
+                    other => other,
+                }
+            };
+            return Some(parsed_clause(Effect::Pump {
+                power: make_quantity_pt(p),
+                toughness: make_quantity_pt(t),
+                target: TargetFilter::Any,
+            }));
+        }
+    }
+
+    // "put a +1/+1 counter on ~ for each X" → PutCounter with dynamic count
+    // Handles: "put a +1/+1 counter on ~ for each creature card in your graveyard"
+    if base_tp.contains("counter on") {
+        let counter_type = if base_tp.contains("+1/+1") {
+            "+1/+1"
+        } else if base_tp.contains("-1/-1") {
+            "-1/-1"
+        } else {
+            return None;
+        };
+        return Some(parsed_clause(Effect::PutCounter {
+            counter_type: counter_type.to_string(),
+            count: quantity,
+            target: TargetFilter::Any,
+        }));
     }
 
     None
