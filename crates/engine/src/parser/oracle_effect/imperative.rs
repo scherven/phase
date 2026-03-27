@@ -476,7 +476,9 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             reveal,
         },
         SearchCreationImperativeAst::Dig { count } => Effect::Dig {
-            count,
+            count: QuantityExpr::Fixed {
+                value: count as i32,
+            },
             destination: None,
             keep_count: None,
             up_to: false,
@@ -983,10 +985,12 @@ fn try_parse_that_many_counters(lower: &str, ctx: &ParseContext) -> Option<Effec
         TargetFilter::SelfRef
     };
 
-    // count=0 signals "that many" — engine resolver reads from event context
+    // CR 603.7c: "that many" — resolve from trigger event context at runtime.
     Some(Effect::PutCounter {
         counter_type,
-        count: 0,
+        count: QuantityExpr::Ref {
+            qty: QuantityRef::EventContextAmount,
+        },
         target,
     })
 }

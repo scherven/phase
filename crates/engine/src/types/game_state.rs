@@ -1141,6 +1141,14 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restrictions: Vec<GameRestriction>,
 
+    /// CR 615.3: Game-state-level damage prevention shields from fog-like spells.
+    /// Instant/sorcery prevention effects (e.g., Fog: "prevent all combat damage") can't
+    /// attach shields to their source (it moves to graveyard on resolution). Instead,
+    /// shields are stored here and checked during damage application in `deal_damage.rs`.
+    /// Cleaned up at end of turn during cleanup step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_damage_prevention: Vec<crate::types::ability::ReplacementDefinition>,
+
     /// Transient: set by stack.rs before resolving a triggered ability, cleared after.
     /// Used by event-context TargetFilter variants to resolve trigger event data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1300,6 +1308,7 @@ impl GameState {
             last_revealed_ids: Vec::new(),
             monarch: None,
             restrictions: Vec::new(),
+            pending_damage_prevention: Vec::new(),
             current_trigger_event: None,
             lki_cache: HashMap::new(),
             cost_payment_failed_flag: false,

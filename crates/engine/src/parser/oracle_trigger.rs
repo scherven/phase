@@ -4804,7 +4804,7 @@ mod tests {
                     TargetFilter::TriggeringSource,
                     "else_ability 'it' should be TriggeringSource"
                 );
-                assert_eq!(*count, 2);
+                assert_eq!(*count, QuantityExpr::Fixed { value: 2 });
             }
             other => panic!("Expected PutCounter in else_ability, got {:?}", other),
         }

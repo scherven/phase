@@ -1097,7 +1097,7 @@ fn test_earthbender_ascension_etb_completes_with_landfall() {
             AbilityKind::Spell,
             Effect::PutCounter {
                 counter_type: "quest".to_string(),
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::SelfRef,
             },
         )
@@ -1106,7 +1106,7 @@ fn test_earthbender_ascension_etb_completes_with_landfall() {
                 AbilityKind::Spell,
                 Effect::PutCounter {
                     counter_type: "P1P1".to_string(),
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::Typed(
                         engine::types::ability::TypedFilter::creature()
                             .controller(engine::types::ability::ControllerRef::You),
@@ -1174,7 +1174,7 @@ fn test_earthbender_ascension_etb_completes_with_landfall() {
                 engine::types::ability::AbilityKind::Spell,
                 Effect::PutCounter {
                     counter_type: "P1P1".to_string(),
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::SelfRef,
                 },
             ));
@@ -1450,7 +1450,7 @@ fn test_earthbender_landfall_trigger_resolves_without_hang() {
             AbilityKind::Spell,
             Effect::PutCounter {
                 counter_type: "quest".to_string(),
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::SelfRef,
             },
         )
@@ -1459,7 +1459,7 @@ fn test_earthbender_landfall_trigger_resolves_without_hang() {
                 AbilityKind::Spell,
                 Effect::PutCounter {
                     counter_type: "P1P1".to_string(),
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::Typed(
                         engine::types::ability::TypedFilter::creature()
                             .controller(engine::types::ability::ControllerRef::You),
@@ -1654,7 +1654,7 @@ fn test_ai_passes_priority_on_earthbender_landfall() {
             AbilityKind::Spell,
             Effect::PutCounter {
                 counter_type: "quest".to_string(),
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::SelfRef,
             },
         )
@@ -1663,7 +1663,7 @@ fn test_ai_passes_priority_on_earthbender_landfall() {
                 AbilityKind::Spell,
                 Effect::PutCounter {
                     counter_type: "P1P1".to_string(),
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::Typed(
                         engine::types::ability::TypedFilter::creature()
                             .controller(engine::types::ability::ControllerRef::You),

@@ -7212,7 +7212,7 @@ mod phase_trigger_regression_tests {
                         AbilityKind::Database,
                         Effect::PutCounter {
                             counter_type: "P1P1".to_string(),
-                            count: 1,
+                            count: QuantityExpr::Fixed { value: 1 },
                             target: TargetFilter::SelfRef,
                         },
                     )),
@@ -7394,7 +7394,7 @@ mod phase_trigger_regression_tests {
                         AbilityKind::Database,
                         Effect::PutCounter {
                             counter_type: "P1P1".to_string(),
-                            count: 1,
+                            count: QuantityExpr::Fixed { value: 1 },
                             target: TargetFilter::SelfRef,
                         },
                     )),

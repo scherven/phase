@@ -440,7 +440,7 @@ pub(super) enum ZoneCounterImperativeAst {
     },
     PutCounter {
         counter_type: String,
-        count: i32,
+        count: QuantityExpr,
         target: TargetFilter,
     },
     RemoveCounter {

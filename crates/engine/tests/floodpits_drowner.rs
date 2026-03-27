@@ -13,8 +13,8 @@ use engine::game::effects;
 use engine::game::game_object::CounterType;
 use engine::game::zones::create_object;
 use engine::types::ability::{
-    ControllerRef, Effect, FilterProp, ResolvedAbility, TargetFilter, TargetRef, TypeFilter,
-    TypedFilter,
+    ControllerRef, Effect, FilterProp, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
+    TypeFilter, TypedFilter,
 };
 use engine::types::card_type::CoreType;
 use engine::types::events::GameEvent;
@@ -53,7 +53,7 @@ fn etb_tap_and_stun_counter() {
     let sub_resolved = ResolvedAbility::new(
         Effect::PutCounter {
             counter_type: "stun".to_string(),
-            count: 1,
+            count: QuantityExpr::Fixed { value: 1 },
             target: TargetFilter::ParentTarget,
         },
         vec![], // empty — ParentTarget inherits parent's targets

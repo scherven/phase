@@ -81,17 +81,14 @@ pub fn resolve_add(
             count,
             ..
         } => {
-            // CR 120.1: count=0 signals "that many" — resolve from event context
-            // (e.g., "whenever you're dealt damage, put that many counters on ~").
-            let resolved_count = if *count == 0 {
-                state
-                    .current_trigger_event
-                    .as_ref()
-                    .and_then(crate::game::targeting::extract_amount_from_event)
-                    .unwrap_or(0) as u32
-            } else {
-                *count as u32
-            };
+            // Resolve QuantityExpr to concrete count at runtime.
+            let resolved_count = crate::game::quantity::resolve_quantity(
+                state,
+                count,
+                ability.controller,
+                ability.source_id,
+            )
+            .max(0) as u32;
             (counter_type.clone(), resolved_count)
         }
         _ => ("P1P1".to_string(), 1),
@@ -345,7 +342,7 @@ pub fn resolve_remove(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::TargetFilter;
+    use crate::types::ability::{QuantityExpr, TargetFilter};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
@@ -376,7 +373,7 @@ mod tests {
             &make_counter_ability(
                 Effect::AddCounter {
                     counter_type: "P1P1".to_string(),
-                    count: 2,
+                    count: QuantityExpr::Fixed { value: 2 },
                     target: TargetFilter::Any,
                 },
                 obj_id,
@@ -440,7 +437,7 @@ mod tests {
             &make_counter_ability(
                 Effect::AddCounter {
                     counter_type: "charge".to_string(),
-                    count: 3,
+                    count: QuantityExpr::Fixed { value: 3 },
                     target: TargetFilter::Any,
                 },
                 obj_id,
@@ -472,7 +469,7 @@ mod tests {
             &make_counter_ability(
                 Effect::AddCounter {
                     counter_type: "P1P1".to_string(),
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::Any,
                 },
                 obj_id,
@@ -508,7 +505,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::PutCounter {
                 counter_type: "P1P1".to_string(),
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::SelfRef,
             },
             vec![], // empty targets — must resolve via SelfRef → source_id

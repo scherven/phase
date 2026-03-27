@@ -1,6 +1,5 @@
 ---
 source: crates/engine/tests/oracle_parser.rs
-assertion_line: 92
 expression: result
 ---
 {
@@ -9,7 +8,10 @@ expression: result
       "kind": "Activated",
       "effect": {
         "type": "Dig",
-        "count": 1,
+        "count": {
+          "type": "Fixed",
+          "value": 1
+        },
         "destination": null,
         "keep_count": null,
         "up_to": false,

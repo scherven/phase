@@ -516,7 +516,7 @@ mod tests {
     fn plus_counter_is_beneficial() {
         let effect = Effect::AddCounter {
             counter_type: "+1/+1".to_string(),
-            count: 1,
+            count: QuantityExpr::Fixed { value: 1 },
             target: TargetFilter::Any,
         };
         assert_eq!(effect_polarity(&effect), EffectPolarity::Beneficial);
@@ -526,7 +526,7 @@ mod tests {
     fn minus_counter_is_harmful() {
         let effect = Effect::AddCounter {
             counter_type: "-1/-1".to_string(),
-            count: 1,
+            count: QuantityExpr::Fixed { value: 1 },
             target: TargetFilter::Any,
         };
         assert_eq!(effect_polarity(&effect), EffectPolarity::Harmful);

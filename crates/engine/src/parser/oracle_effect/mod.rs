@@ -4129,7 +4129,9 @@ fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffect
     Some(ParsedEffectClause {
         effect: Effect::PutCounter {
             counter_type,
-            count: count as i32,
+            count: QuantityExpr::Fixed {
+                value: count as i32,
+            },
             target,
         },
         duration: None,
@@ -5998,7 +6000,7 @@ mod tests {
     fn put_counter_this_creature_is_self_ref() {
         let e = parse_effect("put a +1/+1 counter on this creature");
         assert!(
-            matches!(e, Effect::PutCounter { counter_type: ref ct, count: 1, target: TargetFilter::SelfRef } if ct == "P1P1")
+            matches!(e, Effect::PutCounter { counter_type: ref ct, count: QuantityExpr::Fixed { value: 1 }, target: TargetFilter::SelfRef } if ct == "P1P1")
         );
     }
 
@@ -7348,8 +7350,13 @@ mod tests {
                 target,
             } => {
                 assert_eq!(counter_type, "P1P1");
-                // count=0 is the sentinel for "that many" (event context amount)
-                assert_eq!(count, 0);
+                // "that many" resolves to EventContextAmount at runtime
+                assert!(matches!(
+                    count,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::EventContextAmount
+                    }
+                ));
                 assert!(matches!(target, TargetFilter::SelfRef));
             }
             _ => panic!("Expected PutCounter, got {e:?}"),
@@ -7366,7 +7373,12 @@ mod tests {
                 target,
             } => {
                 assert_eq!(counter_type, "charge");
-                assert_eq!(count, 0);
+                assert!(matches!(
+                    count,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::EventContextAmount
+                    }
+                ));
                 assert!(matches!(target, TargetFilter::SelfRef));
             }
             _ => panic!("Expected PutCounter, got {e:?}"),

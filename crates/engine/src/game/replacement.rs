@@ -120,6 +120,14 @@ fn damage_modification_for_rid(
     state: &GameState,
     rid: ReplacementId,
 ) -> Option<DamageModification> {
+    // CR 615.3: Pending prevention shields use sentinel ObjectId(0).
+    if rid.source == ObjectId(0) {
+        return state
+            .pending_damage_prevention
+            .get(rid.index)?
+            .damage_modification
+            .clone();
+    }
     state
         .objects
         .get(&rid.source)?
@@ -164,11 +172,19 @@ fn damage_done_applier(
     }
 
     // Branch 2: CR 615 — Prevention shield
-    let shield_kind = state
-        .objects
-        .get(&rid.source)
-        .and_then(|obj| obj.replacement_definitions.get(rid.index))
-        .map(|repl| repl.shield_kind);
+    // Look up shield from either object replacement_definitions or pending_damage_prevention.
+    let shield_kind = if rid.source == ObjectId(0) {
+        state
+            .pending_damage_prevention
+            .get(rid.index)
+            .map(|repl| repl.shield_kind)
+    } else {
+        state
+            .objects
+            .get(&rid.source)
+            .and_then(|obj| obj.replacement_definitions.get(rid.index))
+            .map(|repl| repl.shield_kind)
+    };
 
     if let Some(ShieldKind::Prevention { amount }) = shield_kind {
         if let ProposedEvent::Damage {
@@ -186,11 +202,7 @@ fn damage_done_applier(
                 PreventionAmount::All => {
                     // CR 615: Prevent all damage — consume the shield
                     prevented_amount = dmg;
-                    if let Some(obj) = state.objects.get_mut(&rid.source) {
-                        if let Some(repl) = obj.replacement_definitions.get_mut(rid.index) {
-                            repl.is_consumed = true;
-                        }
-                    }
+                    consume_prevention_shield(state, rid, None);
                     result = ApplyResult::Prevented;
                 }
                 PreventionAmount::Next(n) => {
@@ -198,28 +210,22 @@ fn damage_done_applier(
                     if dmg <= n {
                         // All damage absorbed — shield may have remaining capacity
                         prevented_amount = dmg;
-                        if let Some(obj) = state.objects.get_mut(&rid.source) {
-                            if let Some(repl) = obj.replacement_definitions.get_mut(rid.index) {
-                                let remaining = n - dmg;
-                                if remaining == 0 {
-                                    repl.is_consumed = true;
-                                } else {
-                                    repl.shield_kind = ShieldKind::Prevention {
-                                        amount: PreventionAmount::Next(remaining),
-                                    };
-                                }
-                            }
+                        let remaining = n - dmg;
+                        if remaining == 0 {
+                            consume_prevention_shield(state, rid, None);
+                        } else {
+                            consume_prevention_shield(
+                                state,
+                                rid,
+                                Some(PreventionAmount::Next(remaining)),
+                            );
                         }
                         result = ApplyResult::Prevented;
                     } else {
                         // Damage exceeds shield — reduce damage, consume shield
                         prevented_amount = n;
                         let remaining_damage = dmg - n;
-                        if let Some(obj) = state.objects.get_mut(&rid.source) {
-                            if let Some(repl) = obj.replacement_definitions.get_mut(rid.index) {
-                                repl.is_consumed = true;
-                            }
-                        }
+                        consume_prevention_shield(state, rid, None);
                         result = ApplyResult::Modified(ProposedEvent::Damage {
                             source_id,
                             target: target.clone(),
@@ -246,6 +252,31 @@ fn damage_done_applier(
 
     // No modification and no prevention shield — pass through
     ApplyResult::Modified(event)
+}
+
+/// Consume or update a prevention shield on either an object or the game-state registry.
+/// If `new_amount` is `None`, marks the shield as consumed.
+/// If `new_amount` is `Some(amount)`, updates the remaining shield capacity.
+fn consume_prevention_shield(
+    state: &mut GameState,
+    rid: ReplacementId,
+    new_amount: Option<PreventionAmount>,
+) {
+    let repl = if rid.source == ObjectId(0) {
+        state.pending_damage_prevention.get_mut(rid.index)
+    } else {
+        state
+            .objects
+            .get_mut(&rid.source)
+            .and_then(|obj| obj.replacement_definitions.get_mut(rid.index))
+    };
+
+    if let Some(repl) = repl {
+        match new_amount {
+            None => repl.is_consumed = true,
+            Some(amt) => repl.shield_kind = ShieldKind::Prevention { amount: amt },
+        }
+    }
 }
 
 // --- 3. Destroy ---
@@ -939,30 +970,33 @@ fn is_damage_prevention_replacement(
         return false;
     }
 
+    // Look up the replacement definition from either objects or pending_damage_prevention.
+    let repl_def = if rid.source == ObjectId(0) {
+        state.pending_damage_prevention.get(rid.index)
+    } else {
+        state
+            .objects
+            .get(&rid.source)
+            .and_then(|obj| obj.replacement_definitions.get(rid.index))
+    };
+
+    let Some(repl) = repl_def else {
+        return false;
+    };
+
     // CR 614.1a: Damage boost/reduction replacements are definitively not prevention effects
-    let is_boost = state
-        .objects
-        .get(&rid.source)
-        .and_then(|obj| obj.replacement_definitions.get(rid.index))
-        .is_some_and(|repl| repl.damage_modification.is_some());
-    if is_boost {
+    if repl.damage_modification.is_some() {
         return false;
     }
 
     // Check for ShieldKind::Prevention or description-based prevention patterns
-    state
-        .objects
-        .get(&rid.source)
-        .and_then(|obj| obj.replacement_definitions.get(rid.index))
-        .is_some_and(|repl| {
-            // CR 615: Prevention shields created by prevent_damage.rs
-            matches!(repl.shield_kind, ShieldKind::Prevention { .. })
-            // Legacy: description-based prevention from parsed replacement definitions
-            || repl.description.as_ref().is_some_and(|d| {
-                let lower = d.to_lowercase();
-                lower.contains("prevent") && lower.contains("damage")
-            })
-        })
+    // CR 615: Prevention shields created by prevent_damage.rs
+    matches!(repl.shield_kind, ShieldKind::Prevention { .. })
+    // Legacy: description-based prevention from parsed replacement definitions
+    || repl.description.as_ref().is_some_and(|d| {
+        let lower = d.to_lowercase();
+        lower.contains("prevent") && lower.contains("damage")
+    })
 }
 
 /// CR 614.1a: Check if a damage target matches the replacement's target filter.
@@ -1203,6 +1237,54 @@ pub fn find_applicable_replacements(
         }
     }
 
+    // CR 615.3: Also scan game-state-level prevention shields (fog-like spells).
+    // These use a sentinel source ObjectId(0) to distinguish from object-attached shields.
+    if matches!(event, ProposedEvent::Damage { .. }) {
+        for (index, repl_def) in state.pending_damage_prevention.iter().enumerate() {
+            if repl_def.is_consumed {
+                continue;
+            }
+
+            let rid = ReplacementId {
+                source: ObjectId(0),
+                index,
+            };
+
+            if event.already_applied(&rid) {
+                continue;
+            }
+
+            if let Some(handler) = registry.get(&repl_def.event) {
+                // Game-state prevention always matches (no source object filtering needed)
+                // but still check combat scope and target filters.
+                if let Some(ref scope) = repl_def.combat_scope {
+                    if let ProposedEvent::Damage { is_combat, .. } = event {
+                        match scope {
+                            CombatDamageScope::CombatOnly if !is_combat => continue,
+                            CombatDamageScope::NoncombatOnly if *is_combat => continue,
+                            _ => {}
+                        }
+                    }
+                }
+                if let Some(ref tf) = repl_def.damage_target_filter {
+                    if let ProposedEvent::Damage { target, .. } = event {
+                        if !matches_damage_target_filter(tf, target, PlayerId(0), state) {
+                            continue;
+                        }
+                    }
+                }
+                // Check if prevention is disabled
+                if is_prevention_disabled(state, event) {
+                    continue;
+                }
+                // Verify the handler matcher still matches (for DamageDone events)
+                if (handler.matcher)(event, ObjectId(0), state) {
+                    candidates.push(rid);
+                }
+            }
+        }
+    }
+
     candidates
 }
 
@@ -1225,7 +1307,13 @@ fn extract_etb_counters(execute: Option<&AbilityDefinition>) -> Vec<(String, u32
             counter_type,
             count,
             ..
-        } => vec![(counter_type.clone(), *count as u32)],
+        } => {
+            let n = match count {
+                QuantityExpr::Fixed { value } => (*value).max(0) as u32,
+                _ => 1, // Dynamic counts fall back to 1 for ETB counters
+            };
+            vec![(counter_type.clone(), n)]
+        }
         _ => Vec::new(),
     }
 }
@@ -1237,12 +1325,19 @@ fn apply_single_replacement(
     registry: &IndexMap<ReplacementEvent, ReplacementHandlerEntry>,
     events: &mut Vec<GameEvent>,
 ) -> Result<ProposedEvent, ApplyResult> {
+    // CR 615.3: Pending damage prevention shields use sentinel ObjectId(0).
+    // Look up from game-state-level registry instead of object replacement_definitions.
+    let repl_def_ref = if rid.source == ObjectId(0) {
+        state.pending_damage_prevention.get(rid.index)
+    } else {
+        state
+            .objects
+            .get(&rid.source)
+            .and_then(|obj| obj.replacement_definitions.get(rid.index))
+    };
+
     // Extract replacement metadata before mutably borrowing state for the applier.
-    let (event_key, enters_tapped, etb_counters, redirect_zone) = match state
-        .objects
-        .get(&rid.source)
-        .and_then(|obj| obj.replacement_definitions.get(rid.index))
-    {
+    let (event_key, enters_tapped, etb_counters, redirect_zone) = match repl_def_ref {
         Some(repl_def) => {
             let tapped = repl_def.execute.as_ref().is_some_and(|exec| {
                 matches!(

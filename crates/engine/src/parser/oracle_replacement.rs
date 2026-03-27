@@ -6,8 +6,9 @@ use super::oracle_util::{
 };
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ChoiceType, CombatDamageScope, ControllerRef,
-    DamageModification, DamageTargetFilter, Effect, FilterProp, QuantityExpr, ReplacementCondition,
-    ReplacementDefinition, ReplacementMode, TargetFilter, TypeFilter, TypedFilter,
+    DamageModification, DamageTargetFilter, Effect, FilterProp, PreventionAmount, QuantityExpr,
+    ReplacementCondition, ReplacementDefinition, ReplacementMode, TargetFilter, TypeFilter,
+    TypedFilter,
 };
 use crate::types::replacements::ReplacementEvent;
 use crate::types::zones::Zone;
@@ -118,11 +119,9 @@ pub fn parse_replacement_line(text: &str, card_name: &str) -> Option<Replacement
         return Some(def);
     }
 
-    // --- "Prevent all combat damage" / "damage ... can't be prevented" ---
-    if lower.contains("prevent all") && lower.contains("damage") {
-        return Some(
-            ReplacementDefinition::new(ReplacementEvent::DamageDone).description(text.to_string()),
-        );
+    // --- "Prevent all/the next N damage" patterns (CR 615) ---
+    if let Some(def) = parse_damage_prevention_replacement(&norm_lower, &text) {
+        return Some(def);
     }
     // "damage can't be prevented" is handled by effect parsing (Effect::AddRestriction),
     // not replacement parsing. See oracle_effect.rs damage prevention disabled handler.
@@ -565,7 +564,9 @@ fn parse_enters_with_counters(
         AbilityKind::Spell,
         Effect::PutCounter {
             counter_type,
-            count: count as i32,
+            count: QuantityExpr::Fixed {
+                value: count as i32,
+            },
             target: TargetFilter::SelfRef,
         },
     );
@@ -927,38 +928,143 @@ fn parse_damage_redirection_replacement(
     norm_lower: &str,
     original_text: &str,
 ) -> Option<ReplacementDefinition> {
-    // Pattern 1: "all damage that would be dealt to [X] is dealt to ~ instead"
-    // Pattern 2: "damage that would be dealt to [X] is dealt to ~ instead"
+    // Pattern 1: "all damage that would be dealt to [X] is dealt to ~ instead" (Pariah)
+    // Pattern 2: "damage that would be dealt to [X] is dealt to ~ instead" (Palisade Giant)
+    // CR 615.1a: Redirect = prevent original + deal to new target
     if norm_lower.contains("would be dealt to") && norm_lower.contains("is dealt to") {
         let target_filter = if norm_lower.contains("would be dealt to you") {
             Some(DamageTargetFilter::PlayerOnly)
-        } else if norm_lower.contains("would be dealt to ~") {
-            // Self-redirect (unusual, but handle for completeness)
+        } else {
+            // "would be dealt to ~" or other targets — no specific filter
             None
+        };
+
+        // Determine redirect destination
+        let redirect = if norm_lower.contains("is dealt to ~ instead") {
+            // Redirect to self (the permanent with this ability)
+            Some(TargetFilter::SelfRef)
         } else {
             None
         };
 
         let mut def = ReplacementDefinition::new(ReplacementEvent::DamageDone)
+            .prevention_shield(PreventionAmount::All)
             .description(original_text.to_string());
         if let Some(tf) = target_filter {
             def = def.damage_target_filter(tf);
+        }
+        if let Some(rt) = redirect {
+            def = def.redirect_target(rt);
         }
         return Some(def);
     }
 
     // Pattern 3: "if a source would deal damage to you, prevent that damage"
-    // followed by "~ deals that much damage to any target"
+    // followed by "~ deals that much damage to any target" (Pariah's Shield)
+    // CR 615.1a: Prevention + redirect combination
     if norm_lower.contains("would deal damage to you") && norm_lower.contains("prevent that damage")
     {
         return Some(
-            ReplacementDefinition::new(ReplacementEvent::DealtDamage)
+            ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                .prevention_shield(PreventionAmount::All)
                 .damage_target_filter(DamageTargetFilter::PlayerOnly)
+                .redirect_target(TargetFilter::SelfRef)
                 .description(original_text.to_string()),
         );
     }
 
     None
+}
+
+/// CR 615: Parse damage prevention replacement effects.
+/// Handles:
+/// - "prevent all combat damage that would be dealt [this turn]" (Fog, Moments Peace)
+/// - "prevent all damage that would be dealt to you [this turn]" (Hallow)
+/// - "prevent the next N damage that would be dealt to [target] this turn" (Mending Hands)
+/// - "prevent all damage that would be dealt to and dealt by [creature]" (Stonehorn Dignitary)
+fn parse_damage_prevention_replacement(
+    norm_lower: &str,
+    original_text: &str,
+) -> Option<ReplacementDefinition> {
+    // Must contain "prevent" and "damage" to be a prevention pattern
+    if !norm_lower.contains("prevent") || !norm_lower.contains("damage") {
+        return None;
+    }
+
+    // "damage can't be prevented" is NOT a prevention replacement -- it's a restriction.
+    if norm_lower.contains("can't be prevented") {
+        return None;
+    }
+
+    // Redirection patterns ("prevent that damage. ~ deals that much damage to") are handled
+    // by parse_damage_redirection_replacement — don't intercept them here.
+    if norm_lower.contains("prevent that damage") && norm_lower.contains("deals that much damage") {
+        return None;
+    }
+    // "is dealt to ~ instead" patterns are also redirections, not pure prevention
+    if norm_lower.contains("is dealt to") && norm_lower.contains("instead") {
+        return None;
+    }
+
+    // --- 1. Extract prevention amount ---
+    // CR 615.7: "prevent the next N damage" → specific shield amount
+    // CR 615.1a: "prevent all damage" → prevent everything
+    let amount = if norm_lower.contains("prevent all") {
+        PreventionAmount::All
+    } else if let Some(rest) = strip_after(norm_lower, "prevent the next ") {
+        let (n, _) = parse_number(rest)?;
+        PreventionAmount::Next(n)
+    } else if norm_lower.contains("prevent that damage") {
+        // "prevent that damage" in redirection context — redirect handled separately
+        PreventionAmount::All
+    } else {
+        return None;
+    };
+
+    // --- 2. Extract combat scope ---
+    // CR 615: "combat damage" restricts to combat damage only
+    let combat_scope = if norm_lower.contains("combat damage") {
+        Some(CombatDamageScope::CombatOnly)
+    } else if norm_lower.contains("noncombat damage") {
+        Some(CombatDamageScope::NoncombatOnly)
+    } else {
+        None
+    };
+
+    // --- 3. Extract damage target filter ---
+    // "to you" → player only, "to target creature" → creature only
+    let damage_target_filter =
+        if norm_lower.contains("dealt to you") || norm_lower.contains("deal to you") {
+            Some(DamageTargetFilter::PlayerOnly)
+        } else if norm_lower.contains("dealt to target creature")
+            || norm_lower.contains("dealt to ~")
+            || norm_lower.contains("dealt to and dealt by ~")
+        {
+            Some(DamageTargetFilter::CreatureOnly)
+        } else {
+            // "prevent all combat damage" with no target → any target
+            None
+        };
+
+    // --- 4. Extract damage source filter ---
+    let damage_source_filter = parse_damage_source_filter(norm_lower);
+
+    // --- 5. Build the replacement definition ---
+    let mut def = ReplacementDefinition::new(ReplacementEvent::DamageDone)
+        .prevention_shield(amount)
+        .description(original_text.to_string());
+
+    if let Some(cs) = combat_scope {
+        def = def.combat_scope(cs);
+    }
+    if let Some(tf) = damage_target_filter {
+        def = def.damage_target_filter(tf);
+    }
+    if let Some(sf) = damage_source_filter {
+        def = def.damage_source_filter(sf);
+    }
+
+    Some(def)
 }
 
 /// CR 614.1a: Parse event substitution replacement effects.
@@ -1108,6 +1214,7 @@ fn parse_enters_tapped_unless_generic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::{QuantityExpr, ShieldKind};
 
     #[test]
     fn replacement_enters_tapped() {
@@ -1125,13 +1232,84 @@ mod tests {
     }
 
     #[test]
-    fn replacement_prevent_all_combat_damage() {
+    fn replacement_prevent_all_combat_damage_to_you() {
         let def = parse_replacement_line(
             "Prevent all combat damage that would be dealt to you.",
             "Some Card",
         )
         .unwrap();
         assert_eq!(def.event, ReplacementEvent::DamageDone);
+        assert!(matches!(
+            def.shield_kind,
+            ShieldKind::Prevention {
+                amount: PreventionAmount::All
+            }
+        ));
+        assert_eq!(def.combat_scope, Some(CombatDamageScope::CombatOnly));
+        assert_eq!(
+            def.damage_target_filter,
+            Some(DamageTargetFilter::PlayerOnly)
+        );
+    }
+
+    #[test]
+    fn replacement_prevent_all_combat_damage_fog() {
+        // Fog: "Prevent all combat damage that would be dealt this turn."
+        let def = parse_replacement_line(
+            "Prevent all combat damage that would be dealt this turn.",
+            "Fog",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::DamageDone);
+        assert!(matches!(
+            def.shield_kind,
+            ShieldKind::Prevention {
+                amount: PreventionAmount::All
+            }
+        ));
+        assert_eq!(def.combat_scope, Some(CombatDamageScope::CombatOnly));
+        assert!(def.damage_target_filter.is_none()); // any target
+    }
+
+    #[test]
+    fn replacement_prevent_next_n_damage() {
+        let def = parse_replacement_line(
+            "Prevent the next 3 damage that would be dealt to target creature this turn.",
+            "Mending Hands",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::DamageDone);
+        assert!(matches!(
+            def.shield_kind,
+            ShieldKind::Prevention {
+                amount: PreventionAmount::Next(3)
+            }
+        ));
+        assert_eq!(
+            def.damage_target_filter,
+            Some(DamageTargetFilter::CreatureOnly)
+        );
+    }
+
+    #[test]
+    fn replacement_prevent_all_damage_to_you() {
+        let def = parse_replacement_line(
+            "Prevent all damage that would be dealt to you this turn.",
+            "Safe Passage",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::DamageDone);
+        assert!(matches!(
+            def.shield_kind,
+            ShieldKind::Prevention {
+                amount: PreventionAmount::All
+            }
+        ));
+        assert!(def.combat_scope.is_none()); // all damage, not just combat
+        assert_eq!(
+            def.damage_target_filter,
+            Some(DamageTargetFilter::PlayerOnly)
+        );
     }
 
     #[test]
@@ -1377,7 +1555,7 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
                 ref counter_type,
-                count: 12,
+                count: QuantityExpr::Fixed { value: 12 },
                 ..
             } if counter_type == "P1P1"
         ));
@@ -1395,7 +1573,7 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
                 ref counter_type,
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 ..
             } if counter_type == "P1P1"
         ));
@@ -1424,7 +1602,7 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
                 ref counter_type,
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 ..
             } if counter_type == "P1P1"
         ));
@@ -2054,6 +2232,14 @@ mod tests {
             def.damage_target_filter,
             Some(DamageTargetFilter::PlayerOnly)
         );
+        // CR 615.1a: Redirect populates prevention shield + redirect target
+        assert!(matches!(
+            def.shield_kind,
+            ShieldKind::Prevention {
+                amount: PreventionAmount::All
+            }
+        ));
+        assert_eq!(def.redirect_target, Some(TargetFilter::SelfRef));
     }
 
     #[test]
@@ -2065,11 +2251,18 @@ mod tests {
             "Pariah's Shield",
         )
         .unwrap();
-        assert_eq!(def.event, ReplacementEvent::DealtDamage);
+        assert_eq!(def.event, ReplacementEvent::DamageDone);
         assert_eq!(
             def.damage_target_filter,
             Some(DamageTargetFilter::PlayerOnly)
         );
+        assert!(matches!(
+            def.shield_kind,
+            ShieldKind::Prevention {
+                amount: PreventionAmount::All
+            }
+        ));
+        assert_eq!(def.redirect_target, Some(TargetFilter::SelfRef));
     }
 
     #[test]

@@ -753,6 +753,7 @@ pub(super) fn parse_followup_continuation_ast(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::QuantityExpr;
 
     /// Helper: extract just the text fields from split_clause_sequence output.
     fn clause_texts(input: &str) -> Vec<String> {
@@ -948,7 +949,7 @@ mod tests {
 
     fn make_dig_effect() -> Effect {
         Effect::Dig {
-            count: 3,
+            count: QuantityExpr::Fixed { value: 3 },
             destination: None,
             keep_count: None,
             up_to: false,

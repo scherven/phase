@@ -249,6 +249,8 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
         obj.replacement_definitions
             .retain(|r| !r.shield_kind.is_shield());
     }
+    // CR 615.3: Clear game-state-level prevention shields (fog-like spells).
+    state.pending_damage_prevention.clear();
 
     // CR 514.2: Prune "until end of turn" transient continuous effects.
     super::layers::prune_end_of_turn_effects(state);

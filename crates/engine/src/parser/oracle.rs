@@ -3803,7 +3803,7 @@ mod tests {
             def.condition,
         );
         assert!(
-            matches!(&*def.effect, Effect::PutCounter { counter_type, count: 1, .. } if counter_type == "P1P1"),
+            matches!(&*def.effect, Effect::PutCounter { counter_type, count: QuantityExpr::Fixed { value: 1 }, .. } if counter_type == "P1P1"),
             "Expected PutCounter P1P1, got {:?}",
             def.effect,
         );
@@ -3929,7 +3929,7 @@ mod tests {
         // Node 1: PutCounter(quest, 1, SelfRef), no condition
         assert!(def.condition.is_none(), "Node 1 should have no condition");
         assert!(
-            matches!(&*def.effect, Effect::PutCounter { counter_type, count: 1, target: TargetFilter::SelfRef } if counter_type == "quest"),
+            matches!(&*def.effect, Effect::PutCounter { counter_type, count: QuantityExpr::Fixed { value: 1 }, target: TargetFilter::SelfRef } if counter_type == "quest"),
             "Node 1 should be PutCounter(quest, SelfRef), got {:?}",
             def.effect,
         );
@@ -3954,7 +3954,7 @@ mod tests {
         match &*node2.effect {
             Effect::PutCounter {
                 counter_type,
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Typed(tf),
             } => {
                 assert_eq!(counter_type, "P1P1");
@@ -4502,7 +4502,11 @@ mod tests {
                 filter,
                 rest_destination,
             } => {
-                assert_eq!(*count, 6, "dig count should be 6");
+                assert_eq!(
+                    *count,
+                    QuantityExpr::Fixed { value: 6 },
+                    "dig count should be 6"
+                );
                 assert_eq!(
                     *destination,
                     Some(Zone::Battlefield),
@@ -4550,7 +4554,7 @@ mod tests {
                 filter,
                 rest_destination,
             } => {
-                assert_eq!(*count, 5);
+                assert_eq!(*count, QuantityExpr::Fixed { value: 5 });
                 assert_eq!(*destination, Some(Zone::Hand));
                 assert_eq!(*keep_count, Some(1));
                 assert!(*up_to, "a creature card = up to 1");

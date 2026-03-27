@@ -1,4 +1,6 @@
-use crate::types::ability::{DoublePTMode, DoubleTarget, Effect, MultiTargetSpec, TargetFilter};
+use crate::types::ability::{
+    DoublePTMode, DoubleTarget, Effect, MultiTargetSpec, QuantityExpr, TargetFilter,
+};
 use crate::types::mana::ManaColor;
 
 use super::super::oracle_target::{parse_target, parse_type_phrase};
@@ -75,7 +77,9 @@ pub(super) fn try_parse_put_counter<'a>(
     Some((
         Effect::PutCounter {
             counter_type,
-            count: count as i32,
+            count: QuantityExpr::Fixed {
+                value: count as i32,
+            },
             target,
         },
         remainder,

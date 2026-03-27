@@ -312,7 +312,14 @@ fn extract_fixed_distribution_total(effect: &Effect) -> Option<u32> {
             amount: QuantityExpr::Fixed { value },
             ..
         } => Some(*value as u32),
-        Effect::PutCounter { count, .. } | Effect::AddCounter { count, .. } => Some(*count as u32),
+        Effect::PutCounter {
+            count: QuantityExpr::Fixed { value },
+            ..
+        }
+        | Effect::AddCounter {
+            count: QuantityExpr::Fixed { value },
+            ..
+        } => Some(*value as u32),
         _ => None,
     }
 }

@@ -1,6 +1,6 @@
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, CounterTriggerFilter, Effect, ReplacementDefinition,
-    TargetFilter, TriggerDefinition,
+    AbilityDefinition, AbilityKind, CounterTriggerFilter, Effect, QuantityExpr,
+    ReplacementDefinition, TargetFilter, TriggerDefinition,
 };
 use crate::types::replacements::ReplacementEvent;
 use crate::types::triggers::TriggerMode;
@@ -102,7 +102,7 @@ pub(crate) fn parse_saga_chapters(
             AbilityKind::Spell,
             Effect::PutCounter {
                 counter_type: "lore".to_string(),
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::SelfRef,
             },
         ))

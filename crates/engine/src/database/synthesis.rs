@@ -5,8 +5,9 @@ use crate::game::printed_cards::derive_colors_from_mana_cost;
 use crate::parser::oracle::parse_oracle_text;
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, ContinuousModification,
-    ControllerRef, Duration, Effect, ManaProduction, NinjutsuVariant, PtValue, RuntimeHandler,
-    StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition, TypedFilter,
+    ControllerRef, Duration, Effect, ManaProduction, NinjutsuVariant, PtValue, QuantityExpr,
+    RuntimeHandler, StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition,
+    TypedFilter,
 };
 use crate::types::card::{CardFace, CardLayout};
 use crate::types::card_type::{CardType, CoreType, Supertype};
@@ -343,7 +344,7 @@ pub fn synthesize_level_up(face: &mut CardFace) {
                         AbilityKind::Activated,
                         Effect::PutCounter {
                             counter_type: "level".to_string(),
-                            count: 1,
+                            count: QuantityExpr::Fixed { value: 1 },
                             target: TargetFilter::SelfRef,
                         },
                     )

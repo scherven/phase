@@ -1,3 +1,4 @@
+use crate::game::quantity::resolve_quantity;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
@@ -17,14 +18,19 @@ pub fn resolve(
             filter,
             destination,
             rest_destination,
-        } => (
-            *count as usize,
-            keep_count.unwrap_or(1) as usize,
-            *up_to,
-            filter.clone(),
-            *destination,
-            *rest_destination,
-        ),
+        } => {
+            let resolved_count =
+                resolve_quantity(state, count, ability.controller, ability.source_id).max(0)
+                    as usize;
+            (
+                resolved_count,
+                keep_count.unwrap_or(1) as usize,
+                *up_to,
+                filter.clone(),
+                *destination,
+                *rest_destination,
+            )
+        }
         _ => (1, 1, false, TargetFilter::Any, None, None),
     };
 
@@ -84,6 +90,7 @@ pub fn resolve(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
+    use crate::types::ability::QuantityExpr;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
@@ -91,7 +98,9 @@ mod tests {
     fn make_dig_ability(dig_num: u32) -> ResolvedAbility {
         ResolvedAbility::new(
             Effect::Dig {
-                count: dig_num,
+                count: QuantityExpr::Fixed {
+                    value: dig_num as i32,
+                },
                 destination: None,
                 keep_count: None,
                 up_to: false,

@@ -385,6 +385,14 @@ fn fmt_duration(d: &Duration) -> String {
     .into()
 }
 
+fn fmt_qty(q: &QuantityExpr) -> String {
+    match q {
+        QuantityExpr::Fixed { value } => value.to_string(),
+        QuantityExpr::Ref { qty } => format!("{qty:?}"),
+        other => format!("{other:?}"),
+    }
+}
+
 fn fmt_zone(z: &Zone) -> String {
     match z {
         Zone::Library => "library",
@@ -785,15 +793,18 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             count,
             target,
         }
-        | Effect::RemoveCounter {
+        | Effect::PutCounter {
             counter_type,
             count,
             target,
         } => {
-            d.push(("counter".into(), format!("{count} {counter_type}")));
+            d.push((
+                "counter".into(),
+                format!("{} {counter_type}", fmt_qty(count)),
+            ));
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::PutCounter {
+        Effect::RemoveCounter {
             counter_type,
             count,
             target,
@@ -877,7 +888,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             filter,
             rest_destination,
         } => {
-            d.push(("count".into(), count.to_string()));
+            d.push(("count".into(), fmt_qty(count)));
             if let Some(dest) = destination {
                 d.push(("to".into(), fmt_zone(dest)));
             }

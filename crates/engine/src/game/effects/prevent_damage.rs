@@ -5,6 +5,7 @@ use crate::types::ability::{
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::replacements::ReplacementEvent;
+use crate::types::zones::Zone;
 
 /// CR 615: Prevent damage — creates a prevention shield on the source object.
 ///
@@ -68,12 +69,20 @@ pub fn resolve(
             }
         }
     } else {
-        // Untargeted prevention (e.g., Fog): attach to source.
-        // Works for permanents with activated/triggered prevention abilities.
-        // TODO(CR 615): Untargeted instant/sorcery prevention needs a global prevention
-        // mechanism since the spell leaves the battlefield after resolution.
-        if let Some(obj) = state.objects.get_mut(&ability.source_id) {
-            obj.replacement_definitions.push(shield);
+        // CR 615.3: Untargeted prevention (e.g., Fog): check if source is a permanent
+        // on the battlefield. If so, attach to source. If source is an instant/sorcery
+        // (will move to graveyard on resolution), use the game-state-level registry.
+        let is_on_battlefield = state
+            .objects
+            .get(&ability.source_id)
+            .is_some_and(|obj| obj.zone == Zone::Battlefield || obj.zone == Zone::Stack);
+        if is_on_battlefield {
+            if let Some(obj) = state.objects.get_mut(&ability.source_id) {
+                obj.replacement_definitions.push(shield);
+            }
+        } else {
+            // Source left the battlefield (instant/sorcery resolved) — store globally.
+            state.pending_damage_prevention.push(shield);
         }
     }
 

@@ -1,6 +1,5 @@
 ---
 source: crates/engine/tests/oracle_parser.rs
-assertion_line: 154
 expression: result
 ---
 {
@@ -132,7 +131,10 @@ expression: result
         "effect": {
           "type": "PutCounter",
           "counter_type": "P1P1",
-          "count": 1,
+          "count": {
+            "type": "Fixed",
+            "value": 1
+          },
           "target": {
             "type": "Typed",
             "type_filters": [
