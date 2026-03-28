@@ -5,8 +5,10 @@ use std::process;
 use serde::Serialize;
 
 use engine::database::legality::{legalities_to_export_map, normalize_legalities};
-use engine::database::mtgjson::load_atomic_cards;
-use engine::database::synthesis::{build_oracle_face, layout_faces, map_layout, LayoutKind};
+use engine::database::mtgjson::{load_atomic_cards, AtomicCard};
+use engine::database::synthesis::{
+    build_oracle_face, build_oracle_face_multi, layout_faces, map_layout, LayoutKind,
+};
 use engine::game::coverage::card_face_has_unimplemented_parts;
 use engine::types::card::{CardFace, CardLayout};
 
@@ -16,6 +18,28 @@ struct CardExportEntry {
     face: CardFace,
     #[serde(default)]
     legalities: BTreeMap<String, String>,
+}
+
+fn build_export_layout(
+    faces: &[AtomicCard],
+    oracle_id: Option<String>,
+    layout_kind: LayoutKind,
+) -> CardLayout {
+    if faces.len() >= 2 {
+        let face_a = build_oracle_face_multi(&faces[0], oracle_id.clone());
+        let face_b = build_oracle_face_multi(&faces[1], oracle_id);
+        match layout_kind {
+            LayoutKind::Split => CardLayout::Split(face_a, face_b),
+            LayoutKind::Flip => CardLayout::Flip(face_a, face_b),
+            LayoutKind::Transform => CardLayout::Transform(face_a, face_b),
+            LayoutKind::Meld => CardLayout::Meld(face_a, face_b),
+            LayoutKind::Adventure => CardLayout::Adventure(face_a, face_b),
+            LayoutKind::Modal => CardLayout::Modal(face_a, face_b),
+            LayoutKind::Single => CardLayout::Single(face_a),
+        }
+    } else {
+        CardLayout::Single(build_oracle_face(&faces[0], oracle_id))
+    }
 }
 
 fn main() {
@@ -131,26 +155,14 @@ fn main() {
         let layout_kind = map_layout(&faces[0].layout);
 
         if faces.len() >= 2 {
-            let face_a = build_oracle_face(&faces[0], oracle_id.clone());
-            let face_b = build_oracle_face(&faces[1], oracle_id);
             let mut legalities_by_face = BTreeMap::new();
-            legalities_by_face.insert(
-                face_a.name.to_lowercase(),
-                legalities_to_export_map(&normalize_legalities(&faces[0].legalities)),
-            );
-            legalities_by_face.insert(
-                face_b.name.to_lowercase(),
-                legalities_to_export_map(&normalize_legalities(&faces[1].legalities)),
-            );
-            let layout = match layout_kind {
-                LayoutKind::Split => CardLayout::Split(face_a, face_b),
-                LayoutKind::Flip => CardLayout::Flip(face_a, face_b),
-                LayoutKind::Transform => CardLayout::Transform(face_a, face_b),
-                LayoutKind::Meld => CardLayout::Meld(face_a, face_b),
-                LayoutKind::Adventure => CardLayout::Adventure(face_a, face_b),
-                LayoutKind::Modal => CardLayout::Modal(face_a, face_b),
-                LayoutKind::Single => CardLayout::Single(face_a),
-            };
+            let layout = build_export_layout(faces, oracle_id, layout_kind);
+            for (face, source) in layout_faces(&layout).iter().zip(faces.iter()) {
+                legalities_by_face.insert(
+                    face.name.to_lowercase(),
+                    legalities_to_export_map(&normalize_legalities(&source.legalities)),
+                );
+            }
 
             if stats {
                 let has_unimplemented = layout_faces(&layout)
@@ -211,5 +223,75 @@ fn main() {
             0.0
         };
         eprintln!("Fully implemented: {implemented}/{total_cards} ({pct:.1}%)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    use engine::database::mtgjson::{load_atomic_cards, AtomicCardsFile};
+    use engine::types::ability::TargetFilter;
+    use engine::types::keywords::Keyword;
+
+    use super::*;
+
+    fn load_atomic_fixture() -> &'static AtomicCardsFile {
+        static ATOMIC: OnceLock<AtomicCardsFile> = OnceLock::new();
+        ATOMIC.get_or_init(|| {
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mtgjson/AtomicCards.json");
+            load_atomic_cards(&path).expect("AtomicCards.json should load")
+        })
+    }
+
+    #[test]
+    fn export_layout_keeps_aang_front_face_keywords_face_local() {
+        let atomic = load_atomic_fixture();
+        let faces = atomic
+            .data
+            .get("Aang, Swift Savior // Aang and La, Ocean's Fury")
+            .expect("Aang faces should exist");
+        let oracle_id = faces[0].identifiers.scryfall_oracle_id.clone();
+        let layout = build_export_layout(faces, oracle_id, map_layout(&faces[0].layout));
+        let layout_face_refs = layout_faces(&layout);
+        let front = layout_face_refs
+            .iter()
+            .find(|face| face.name == "Aang, Swift Savior")
+            .expect("front face should exist");
+
+        assert!(front.keywords.contains(&Keyword::Flash));
+        assert!(front.keywords.contains(&Keyword::Flying));
+        assert!(!front.keywords.contains(&Keyword::Reach));
+        assert!(!front.keywords.contains(&Keyword::Trample));
+    }
+
+    #[test]
+    fn export_layout_keeps_floodpits_etb_counter_on_parent_target() {
+        let atomic = load_atomic_fixture();
+        let faces = atomic
+            .data
+            .get("Floodpits Drowner")
+            .expect("Floodpits should exist");
+        let oracle_id = faces[0].identifiers.scryfall_oracle_id.clone();
+        let layout = build_export_layout(faces, oracle_id, map_layout(&faces[0].layout));
+        let face = match layout {
+            CardLayout::Single(face) => face,
+            other => panic!("expected single-face layout, got {other:?}"),
+        };
+        let trigger = face.triggers.first().expect("ETB trigger should exist");
+        let sub = trigger
+            .execute
+            .as_ref()
+            .and_then(|ability| ability.sub_ability.as_ref())
+            .expect("ETB should chain into PutCounter");
+
+        match &*sub.effect {
+            engine::types::ability::Effect::PutCounter { target, .. } => {
+                assert!(matches!(target, TargetFilter::ParentTarget));
+            }
+            other => panic!("expected PutCounter sub-ability, got {other:?}"),
+        }
     }
 }

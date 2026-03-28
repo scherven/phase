@@ -95,8 +95,14 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                     // clauses (e.g., "at the beginning of your next upkeep, draw a
                     // card and gain 3 life"). The entire compound inner effect must
                     // stay as one clause so CreateDelayedTrigger wraps all effects.
+                    // CR 608.2c: Preserve targeted compound actions so the effect
+                    // parser can retarget continuation clauses like
+                    // "tap target creature ... and put a stun counter on it".
+                    let targeted_compound_continuation =
+                        before_lower.contains("target ") && remainder_trimmed.starts_with("put ");
                     let suppress = before_lower.contains("from among")
-                        || is_inside_temporal_prefix(&before_lower);
+                        || is_inside_temporal_prefix(&before_lower)
+                        || targeted_compound_continuation;
                     if !suppress && starts_bare_and_clause(remainder_trimmed) {
                         push_clause_chunk(&mut chunks, before_and, Some(ClauseBoundary::Comma));
                         current.clear();
@@ -839,6 +845,16 @@ mod tests {
     fn bare_and_does_not_split_it_and_each_other() {
         let chunks = clause_texts("exile it and each other creature");
         assert_eq!(chunks, vec!["exile it and each other creature"]);
+    }
+
+    #[test]
+    fn bare_and_does_not_split_targeted_put_counter_continuation() {
+        let chunks =
+            clause_texts("tap target creature an opponent controls and put a stun counter on it");
+        assert_eq!(
+            chunks,
+            vec!["tap target creature an opponent controls and put a stun counter on it"]
+        );
     }
 
     #[test]

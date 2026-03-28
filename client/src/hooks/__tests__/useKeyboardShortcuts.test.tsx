@@ -129,4 +129,32 @@ describe("useKeyboardShortcuts", () => {
 
     expect(useUiStore.getState().selectedCardIds).toEqual([]);
   });
+
+  it("escape cancels mana payment through the engine action", () => {
+    const dispatch = vi.fn().mockResolvedValue([]);
+    const gameState = createGameState({
+      waiting_for: {
+        type: "ManaPayment",
+        data: { player: 0 },
+      },
+    });
+
+    act(() => {
+      useGameStore.setState({
+        gameState,
+        waitingFor: gameState.waiting_for,
+        dispatch,
+        undo: vi.fn(),
+        stateHistory: [],
+      });
+    });
+
+    render(<KeyboardHarness />);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({ type: "CancelCast" });
+  });
 });

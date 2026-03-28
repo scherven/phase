@@ -5131,6 +5131,28 @@ mod tests {
     }
 
     #[test]
+    fn trigger_floodpits_etb_keeps_stun_counter_on_parent_target() {
+        let def = parse_trigger_line(
+            "When this creature enters, tap target creature an opponent controls and put a stun counter on it.",
+            "Floodpits Drowner",
+        );
+        let exec = def.execute.as_ref().expect("should have execute ability");
+        let sub = exec
+            .sub_ability
+            .as_ref()
+            .expect("tap effect should chain into stun counter effect");
+        match &*sub.effect {
+            Effect::PutCounter { target, .. } => {
+                assert!(
+                    matches!(target, TargetFilter::ParentTarget),
+                    "expected ParentTarget, got {target:?}"
+                );
+            }
+            other => panic!("expected PutCounter sub-ability, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn extract_if_you_have_n_or_more_life() {
         let (cleaned, cond) = extract_if_condition("draw a card if you have 40 or more life");
         assert!(

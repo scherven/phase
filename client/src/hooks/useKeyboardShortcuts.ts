@@ -94,6 +94,8 @@ export function useKeyboardShortcuts(): void {
           const escPlayerId = gameState?.active_player ?? 0;
           if (gameState?.auto_pass?.[escPlayerId]) {
             dispatchAction({ type: "CancelAutoPass" });
+          } else if (waitingFor?.type === "ManaPayment") {
+            dispatch({ type: "CancelCast" });
           } else if (waitingFor?.type === "TargetSelection") {
             dispatch({ type: "CancelCast" });
           } else if (waitingFor?.type === "TriggerTargetSelection") {

@@ -1013,6 +1013,55 @@ mod tests {
     }
 
     #[test]
+    fn aang_airbend_filter_targets_stack_spells_and_other_creatures() {
+        use crate::types::ability::Effect;
+
+        let (mut state, source_id, other_creature, _land) = setup_with_typed_creatures();
+        let spell_id = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(1),
+            "Mightform Harmonizer".to_string(),
+            Zone::Stack,
+        );
+        {
+            let spell = state.objects.get_mut(&spell_id).unwrap();
+            spell.card_types.core_types.push(CoreType::Instant);
+        }
+        state.stack.push(crate::types::game_state::StackEntry {
+            id: spell_id,
+            source_id: spell_id,
+            controller: PlayerId(1),
+            kind: crate::types::game_state::StackEntryKind::Spell {
+                card_id: CardId(300),
+                ability: crate::types::ability::ResolvedAbility::new(
+                    Effect::Unimplemented {
+                        name: "test".to_string(),
+                        description: None,
+                    },
+                    vec![],
+                    spell_id,
+                    PlayerId(1),
+                ),
+                casting_variant: CastingVariant::Normal,
+            },
+        });
+
+        let effect = crate::parser::oracle_effect::parse_effect(
+            "airbend up to one other target creature or spell",
+        );
+        let filter = match effect {
+            Effect::ChangeZone { target, .. } => target,
+            other => panic!("expected ChangeZone target, got {other:?}"),
+        };
+
+        let targets = find_legal_targets(&state, &filter, PlayerId(0), source_id);
+        assert!(targets.contains(&TargetRef::Object(other_creature)));
+        assert!(targets.contains(&TargetRef::Object(spell_id)));
+        assert!(!targets.contains(&TargetRef::Object(source_id)));
+    }
+
+    #[test]
     fn find_legal_targets_graveyard_finds_graveyard_cards() {
         let mut state = GameState::new_two_player(42);
 

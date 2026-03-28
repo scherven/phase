@@ -425,6 +425,11 @@ fn build_oracle_face_inner(
         .as_ref()
         .map(|kws| kws.iter().map(|s| s.to_ascii_lowercase()).collect())
         .unwrap_or_default();
+    let parser_keyword_names: Vec<String> = if skip_mtgjson_keywords {
+        vec!["__force_keyword_extract__".to_string()]
+    } else {
+        mtgjson_keyword_names.clone()
+    };
 
     // B8: For multi-face cards, skip MTGJSON-provided keywords entirely.
     // MTGJSON duplicates keywords across both faces of Transform/DFC cards,
@@ -454,7 +459,7 @@ fn build_oracle_face_inner(
     let parsed = parse_oracle_text(
         oracle_text,
         face_name,
-        &mtgjson_keyword_names,
+        &parser_keyword_names,
         &types,
         &subtypes,
     );

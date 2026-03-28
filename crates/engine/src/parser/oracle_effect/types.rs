@@ -480,14 +480,17 @@ pub(super) struct ClauseChunk {
 
 /// Debug-only assertion that a `parse_target` remainder doesn't contain a compound
 /// connector (` and <verb>`). Used as a safety net at call sites that discard
-/// remainders — compound detection runs first, so these should never fire.
+/// remainders — compound detection runs first, so these should never fire for
+/// production paths. `and put ...` is exempt because targeted compound actions
+/// intentionally preserve that continuation for the higher-level clause parser.
 #[cfg(debug_assertions)]
 pub(super) fn assert_no_compound_remainder(rem: &str, context: &str) {
     assert!(
         rem.is_empty()
-            || !rem
-                .strip_prefix(" and ")
-                .is_some_and(|after| { super::sequence::starts_bare_and_clause(after.trim()) }),
+            || !rem.strip_prefix(" and ").is_some_and(|after| {
+                let after = after.trim();
+                !after.starts_with("put ") && super::sequence::starts_bare_and_clause(after)
+            }),
         "silent remainder drop: {rem:?} from: {context:?}"
     );
 }

@@ -268,13 +268,11 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
     // Bare type phrase fallback: try parse_type_phrase before giving up.
     // Handles "other nonland permanents you own and control" after quantifier stripping.
     let (filter, rest) = parse_type_phrase(text);
-    match &filter {
-        // parse_type_phrase recognized a card type, subtype, or meaningful properties
-        TargetFilter::Typed(tf) if !tf.type_filters.is_empty() || !tf.properties.is_empty() => {
-            (filter, rest)
-        }
+    if target_filter_has_meaningful_content(&filter) {
+        (filter, rest)
+    } else {
         // No meaningful content parsed — preserve original fallback behavior
-        _ => (TargetFilter::Any, text),
+        (TargetFilter::Any, text)
     }
 }
 
@@ -452,10 +450,11 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
             let left = typed(
                 card_type.unwrap_or(TypeFilter::Any),
                 subtype,
-                properties,
+                properties.clone(),
                 neg_type_filters.clone(),
             );
             let combined = merge_or_filters(left, other_filter);
+            let combined = distribute_shared_properties(combined, &properties);
             let combined = distribute_controller_to_or(combined);
             return (distribute_properties_to_or(combined), final_rest);
         }
@@ -470,10 +469,11 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
             let left = typed(
                 card_type.unwrap_or(TypeFilter::Any),
                 subtype,
-                properties,
+                properties.clone(),
                 neg_type_filters.clone(),
             );
             let combined = merge_or_filters(left, other_filter);
+            let combined = distribute_shared_properties(combined, &properties);
             let combined = distribute_controller_to_or(combined);
             return (distribute_properties_to_or(combined), final_rest);
         }
@@ -488,10 +488,11 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
             let left = typed(
                 card_type.unwrap_or(TypeFilter::Any),
                 subtype,
-                properties,
+                properties.clone(),
                 neg_type_filters.clone(),
             );
             let combined = merge_or_filters(left, other_filter);
+            let combined = distribute_shared_properties(combined, &properties);
             let combined = distribute_controller_to_or(combined);
             return (distribute_properties_to_or(combined), final_rest);
         }
@@ -506,10 +507,11 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
             let left = typed(
                 card_type.unwrap_or(TypeFilter::Any),
                 subtype,
-                properties,
+                properties.clone(),
                 neg_type_filters.clone(),
             );
             let combined = merge_or_filters(left, other_filter);
+            let combined = distribute_shared_properties(combined, &properties);
             let combined = distribute_controller_to_or(combined);
             return (distribute_properties_to_or(combined), final_rest);
         }
@@ -519,57 +521,16 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     if rest_lower.starts_with("or ") {
         let or_text = &text[pos + rest_offset + 3..];
         let (other_filter, final_rest) = parse_type_phrase(or_text);
-        let mut left = typed(
+        let left = typed(
             card_type.unwrap_or(TypeFilter::Any),
             subtype,
-            properties,
+            properties.clone(),
             neg_type_filters.clone(),
         );
-
-        // Distribute shared controller suffix from right branch to left:
-        // "creature or artifact you control" → both get "you control"
-        if let TargetFilter::Typed(TypedFilter {
-            controller: Some(ref ctrl),
-            ..
-        }) = other_filter
-        {
-            if let TargetFilter::Typed(TypedFilter {
-                controller: ref mut left_ctrl,
-                ..
-            }) = left
-            {
-                if left_ctrl.is_none() {
-                    *left_ctrl = Some(ctrl.clone());
-                }
-            }
-        }
-
-        // Distribute shared properties from right branch to left:
-        // "artifacts or creatures with mana value 2 or less" → both get CmcLE(2)
-        if let TargetFilter::Typed(TypedFilter {
-            properties: ref right_props,
-            ..
-        }) = other_filter
-        {
-            if let TargetFilter::Typed(TypedFilter {
-                properties: ref mut left_props,
-                ..
-            }) = left
-            {
-                for prop in right_props {
-                    if !left_props.iter().any(|p| prop.same_kind(p)) {
-                        left_props.push(prop.clone());
-                    }
-                }
-            }
-        }
-
-        return (
-            TargetFilter::Or {
-                filters: vec![left, other_filter],
-            },
-            final_rest,
-        );
+        let combined = merge_or_filters(left, other_filter);
+        let combined = distribute_shared_properties(combined, &properties);
+        let combined = distribute_controller_to_or(combined);
+        return (distribute_properties_to_or(combined), final_rest);
     }
 
     // CR 601.2d: "and/or" between types — for filter purposes, equivalent to Or.
@@ -582,10 +543,11 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
             let left = typed(
                 card_type.unwrap_or(TypeFilter::Any),
                 subtype,
-                properties,
+                properties.clone(),
                 neg_type_filters.clone(),
             );
             let combined = merge_or_filters(left, other_filter);
+            let combined = distribute_shared_properties(combined, &properties);
             let combined = distribute_controller_to_or(combined);
             return (distribute_properties_to_or(combined), final_rest);
         }
@@ -601,55 +563,16 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         if starts_with_type_word(after_and) {
             let and_text = &text[pos + rest_offset + 4..];
             let (other_filter, final_rest) = parse_type_phrase(and_text);
-            let mut left = typed(
+            let left = typed(
                 card_type.unwrap_or(TypeFilter::Any),
                 subtype,
-                properties,
+                properties.clone(),
                 neg_type_filters.clone(),
             );
-
-            // Distribute shared controller suffix from right branch to left
-            if let TargetFilter::Typed(TypedFilter {
-                controller: Some(ref ctrl),
-                ..
-            }) = other_filter
-            {
-                if let TargetFilter::Typed(TypedFilter {
-                    controller: ref mut left_ctrl,
-                    ..
-                }) = left
-                {
-                    if left_ctrl.is_none() {
-                        *left_ctrl = Some(ctrl.clone());
-                    }
-                }
-            }
-
-            // Distribute shared properties from right branch to left
-            if let TargetFilter::Typed(TypedFilter {
-                properties: ref right_props,
-                ..
-            }) = other_filter
-            {
-                if let TargetFilter::Typed(TypedFilter {
-                    properties: ref mut left_props,
-                    ..
-                }) = left
-                {
-                    for prop in right_props {
-                        if !left_props.iter().any(|p| prop.same_kind(p)) {
-                            left_props.push(prop.clone());
-                        }
-                    }
-                }
-            }
-
-            return (
-                TargetFilter::Or {
-                    filters: vec![left, other_filter],
-                },
-                final_rest,
-            );
+            let combined = merge_or_filters(left, other_filter);
+            let combined = distribute_shared_properties(combined, &properties);
+            let combined = distribute_controller_to_or(combined);
+            return (distribute_properties_to_or(combined), final_rest);
         }
     }
 
@@ -843,6 +766,46 @@ fn starts_with_type_word(text: &str) -> bool {
         }
     }
     false
+}
+
+fn target_filter_has_meaningful_content(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => !tf.type_filters.is_empty() || !tf.properties.is_empty(),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().any(target_filter_has_meaningful_content)
+        }
+        _ => false,
+    }
+}
+
+fn distribute_shared_properties(filter: TargetFilter, shared_props: &[FilterProp]) -> TargetFilter {
+    match filter {
+        TargetFilter::Typed(mut typed) => {
+            for prop in shared_props {
+                if !typed
+                    .properties
+                    .iter()
+                    .any(|existing| prop.same_kind(existing))
+                {
+                    typed.properties.push(prop.clone());
+                }
+            }
+            TargetFilter::Typed(typed)
+        }
+        TargetFilter::Or { filters } => TargetFilter::Or {
+            filters: filters
+                .into_iter()
+                .map(|filter| distribute_shared_properties(filter, shared_props))
+                .collect(),
+        },
+        TargetFilter::And { filters } => TargetFilter::And {
+            filters: filters
+                .into_iter()
+                .map(|filter| distribute_shared_properties(filter, shared_props))
+                .collect(),
+        },
+        other => other,
+    }
 }
 
 /// Distribute trailing filter properties (CmcLE, CmcGE, PowerLE, PowerGE, etc.)
@@ -3483,6 +3446,28 @@ mod tests {
         } else {
             panic!("Expected Typed filter, got {filter:?}");
         }
+    }
+
+    #[test]
+    fn parse_target_other_target_creature_or_spell() {
+        let (filter, rest) = parse_target("other target creature or spell");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("Expected Or filter, got {filter:?}");
+        };
+        assert_eq!(filters.len(), 2);
+        assert!(filters.iter().any(|filter| matches!(
+            filter,
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Creature)
+                    && tf.properties.contains(&FilterProp::Another)
+        )));
+        assert!(filters.iter().any(|filter| matches!(
+            filter,
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Card)
+                    && tf.properties.contains(&FilterProp::Another)
+        )));
     }
 
     #[test]

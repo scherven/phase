@@ -326,7 +326,8 @@ fn try_parse_self_name_exile(tp: TextPair<'_>, ctx: &ParseContext) -> Option<Par
 
 fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
     let rest = tp.strip_prefix("airbend ")?;
-    let (target, after_target) = parse_target(rest.original);
+    let (target_text, multi_target) = strip_optional_target_prefix(rest.original);
+    let (target, after_target) = parse_target(target_text);
     let cost = parse_mana_symbols(after_target.trim_start())
         .map(|(cost, _)| cost)
         .unwrap_or(ManaCost::Cost {
@@ -390,7 +391,7 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
             },
         ))),
         distribute: None,
-        multi_target: None,
+        multi_target,
     })
 }
 
@@ -1144,23 +1145,28 @@ fn try_parse_verb_and_target<'a>(
 ) -> Option<(TargetedImperativeAst, &'a str)> {
     // Simple targeted verbs: parse_target on text after the verb prefix
     if lower.starts_with("tap ") {
-        let (target, rem) = parse_target(&text[4..]);
+        let (target_text, _) = strip_optional_target_prefix(&text[4..]);
+        let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Tap { target }, rem));
     }
     if lower.starts_with("untap ") {
-        let (target, rem) = parse_target(&text[6..]);
+        let (target_text, _) = strip_optional_target_prefix(&text[6..]);
+        let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Untap { target }, rem));
     }
     if lower.starts_with("sacrifice ") {
-        let (target, rem) = parse_target(&text[10..]);
+        let (target_text, _) = strip_optional_target_prefix(&text[10..]);
+        let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Sacrifice { target }, rem));
     }
     if lower.starts_with("fight ") {
-        let (target, rem) = parse_target(&text[6..]);
+        let (target_text, _) = strip_optional_target_prefix(&text[6..]);
+        let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Fight { target }, rem));
     }
     if lower.starts_with("gain control of ") {
-        let (target, rem) = parse_target(&text[16..]);
+        let (target_text, _) = strip_optional_target_prefix(&text[16..]);
+        let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::GainControl { target }, rem));
     }
     // Earthbend: "earthbend [N] [target <type>]" → Animate with haste + is_earthbend
@@ -1178,7 +1184,8 @@ fn try_parse_verb_and_target<'a>(
     // Airbend: "airbend target <type> <mana_cost>" → GrantCastingPermission(ExileWithAltCost)
     if let Some(rest) = lower.strip_prefix("airbend ") {
         let original_rest = &text[text.len() - rest.len()..];
-        let (target, after_target) = parse_target(original_rest);
+        let (target_text, _) = strip_optional_target_prefix(original_rest);
+        let (target, after_target) = parse_target(target_text);
         let (cost, rem) = parse_mana_symbols(after_target.trim_start()).unwrap_or((
             crate::types::mana::ManaCost::Cost {
                 generic: 2,
@@ -1378,9 +1385,19 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
         other => lower_targeted_action_ast(other),
     };
 
-    // Parse the sub-effect
-    let mut sub_clause = parse_imperative_effect(sub_text, ctx);
     let sub_lower = sub_text.to_lowercase();
+    let uses_parent_target_reference = has_anaphoric_reference(&sub_lower);
+    let continuation_ctx = if uses_parent_target_reference {
+        ParseContext {
+            card_name: ctx.card_name.clone(),
+            ..Default::default()
+        }
+    } else {
+        ctx.clone()
+    };
+
+    // Parse the sub-effect
+    let mut sub_clause = parse_imperative_effect(sub_text, &continuation_ctx);
 
     // CR 608.2c: Verb carry-forward for bare "target X" clauses in compound actions.
     // When the sub-text starts with "target" and parsed as Unimplemented, prepend
@@ -1390,7 +1407,7 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
     {
         if let Some(verb) = extract_effect_verb(&primary_effect) {
             let reparsed_text = format!("{verb} {sub_text}");
-            let reparsed = parse_imperative_effect(&reparsed_text, ctx);
+            let reparsed = parse_imperative_effect(&reparsed_text, &continuation_ctx);
             if !matches!(reparsed.effect, Effect::Unimplemented { .. }) {
                 sub_clause = reparsed;
             }
@@ -1407,7 +1424,7 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
     {
         if let Some(verb) = extract_effect_verb(&primary_effect) {
             let reparsed_text = format!("{verb} {sub_text}");
-            let reparsed = parse_imperative_effect(&reparsed_text, ctx);
+            let reparsed = parse_imperative_effect(&reparsed_text, &continuation_ctx);
             if !matches!(reparsed.effect, Effect::Unimplemented { .. }) {
                 sub_clause = reparsed;
             }
@@ -1416,7 +1433,7 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
 
     // If the remainder contains anaphoric references ("it", "that creature", "them"),
     // replace the sub_effect's target with ParentTarget so it inherits the parent's targets.
-    if has_anaphoric_reference(&sub_lower) {
+    if uses_parent_target_reference {
         replace_target_with_parent(&mut sub_clause.effect);
     }
 
@@ -4133,6 +4150,35 @@ fn strip_numeric_target_prefix(lower: &str) -> Option<(usize, &str)> {
     None
 }
 
+/// CR 115.1d: Strip optional target-count prefixes before a targeted phrase.
+/// "up to one target creature" → ("target creature", Some { min: 0, max: Some(1) })
+/// "up to one other target creature or spell" → ("other target creature or spell", Some { ... })
+pub(super) fn strip_optional_target_prefix(text: &str) -> (&str, Option<MultiTargetSpec>) {
+    let lower = text.to_ascii_lowercase();
+    let Some(after_up_to) = lower.strip_prefix("up to ") else {
+        return (text, None);
+    };
+    let Some((n, remainder)) = parse_number(after_up_to) else {
+        return (text, None);
+    };
+    let consumed = lower.len() - remainder.len();
+    let rest = text[consumed..].trim_start();
+    let rest_lower = rest.to_ascii_lowercase();
+    if !(rest_lower.starts_with("target ")
+        || rest_lower.starts_with("other target ")
+        || rest_lower.starts_with("another target "))
+    {
+        return (text, None);
+    }
+    (
+        rest,
+        Some(MultiTargetSpec {
+            min: 0,
+            max: Some(n as usize),
+        }),
+    )
+}
+
 /// CR 115.1d: Strip "any number of" or "up to N" quantifier from imperative text.
 /// Only applies to verbs where the quantifier modifies target selection.
 fn strip_any_number_quantifier(text: &str) -> (String, Option<MultiTargetSpec>) {
@@ -6337,6 +6383,53 @@ mod tests {
     }
 
     #[test]
+    fn compound_tap_and_put_counter_ignores_trigger_subject_context() {
+        let clause = parse_effect_clause(
+            "tap target creature an opponent controls and put a stun counter on it",
+            &ParseContext {
+                subject: Some(TargetFilter::SelfRef),
+                card_name: None,
+            },
+        );
+        let sub = clause.sub_ability.expect("should have sub_ability");
+        assert!(
+            matches!(
+                *sub.effect,
+                Effect::PutCounter {
+                    target: TargetFilter::ParentTarget,
+                    ..
+                }
+            ),
+            "sub should stay ParentTarget even in trigger context, got {:?}",
+            sub.effect
+        );
+    }
+
+    #[test]
+    fn compound_tap_and_put_counter_lowercase_trigger_context() {
+        let def = parse_effect_chain_with_context(
+            "tap target creature an opponent controls and put a stun counter on it.",
+            AbilityKind::Spell,
+            &ParseContext {
+                subject: Some(TargetFilter::SelfRef),
+                card_name: None,
+            },
+        );
+        let sub = def.sub_ability.expect("should have sub_ability");
+        assert!(
+            matches!(
+                *sub.effect,
+                Effect::PutCounter {
+                    target: TargetFilter::ParentTarget,
+                    ..
+                }
+            ),
+            "sub should stay ParentTarget through effect-chain parsing, got {:?}",
+            sub.effect
+        );
+    }
+
+    #[test]
     fn compound_exile_own_and_control_not_split() {
         let clause = parse_effect_clause(
             "exile any number of other nonland permanents you own and control",
@@ -7424,6 +7517,20 @@ mod tests {
     fn strip_numeric_target_prefix_no_match() {
         assert!(strip_numeric_target_prefix("target creature").is_none());
         assert!(strip_numeric_target_prefix("a target creature").is_none());
+    }
+
+    #[test]
+    fn strip_optional_target_prefix_up_to_one_other_target() {
+        let (rest, multi_target) =
+            strip_optional_target_prefix("up to one other target creature or spell");
+        assert_eq!(rest, "other target creature or spell");
+        assert_eq!(
+            multi_target,
+            Some(MultiTargetSpec {
+                min: 0,
+                max: Some(1),
+            })
+        );
     }
 
     #[test]
@@ -8570,6 +8677,47 @@ mod tests {
                         } if matches!(filter.as_ref(), TargetFilter::ParentTarget)
                     ))
             ));
+        }
+    }
+
+    #[test]
+    fn parse_airbend_up_to_one_other_target_creature_or_spell() {
+        let clause = parse_effect_clause(
+            "airbend up to one other target creature or spell",
+            &ParseContext::default(),
+        );
+        assert_eq!(
+            clause.multi_target,
+            Some(MultiTargetSpec {
+                min: 0,
+                max: Some(1),
+            })
+        );
+        match clause.effect {
+            Effect::ChangeZone {
+                target: TargetFilter::Or { filters },
+                ..
+            } => {
+                assert!(
+                    filters.iter().any(|filter| matches!(
+                        filter,
+                        TargetFilter::Typed(tf)
+                            if tf.type_filters.contains(&TypeFilter::Creature)
+                                && tf.properties.contains(&FilterProp::Another)
+                    )),
+                    "expected creature branch with Another, got {filters:?}"
+                );
+                assert!(
+                    filters.iter().any(|filter| matches!(
+                        filter,
+                        TargetFilter::Typed(tf)
+                            if tf.type_filters.contains(&TypeFilter::Card)
+                                && tf.properties.contains(&FilterProp::Another)
+                    )),
+                    "expected spell branch with Another, got {filters:?}"
+                );
+            }
+            other => panic!("expected ChangeZone with creature-or-spell target, got {other:?}"),
         }
     }
 

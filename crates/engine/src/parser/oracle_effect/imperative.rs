@@ -236,19 +236,22 @@ fn strip_article(text: &str) -> &str {
 /// (for compound action splitting like "tap target creature and put a counter on it").
 pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<TargetedImperativeAst> {
     if lower.starts_with("tap ") {
-        let (target, _rem) = parse_target(strip_article(&text[4..]));
+        let (target_text, _) = super::strip_optional_target_prefix(strip_article(&text[4..]));
+        let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::Tap { target });
     }
     if lower.starts_with("untap ") {
-        let (target, _rem) = parse_target(strip_article(&text[6..]));
+        let (target_text, _) = super::strip_optional_target_prefix(strip_article(&text[6..]));
+        let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::Untap { target });
     }
     if lower.starts_with("sacrifice ") {
-        let (target, _rem) = parse_target(strip_article(&text[10..]));
+        let (target_text, _) = super::strip_optional_target_prefix(strip_article(&text[10..]));
+        let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::Sacrifice { target });
@@ -305,13 +308,15 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         };
     }
     if lower.starts_with("fight ") {
-        let (target, _rem) = parse_target(&text[6..]);
+        let (target_text, _) = super::strip_optional_target_prefix(&text[6..]);
+        let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::Fight { target });
     }
     if lower.starts_with("gain control of ") {
-        let (target, _rem) = parse_target(&text[16..]);
+        let (target_text, _) = super::strip_optional_target_prefix(&text[16..]);
+        let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::GainControl { target });
@@ -328,7 +333,8 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
     // Airbend: "airbend target <type> <mana_cost>" → GrantCastingPermission(ExileWithAltCost)
     if let Some(rest) = lower.strip_prefix("airbend ") {
         let original_rest = &text[text.len() - rest.len()..];
-        let (target, after_target) = parse_target(original_rest);
+        let (target_text, _) = super::strip_optional_target_prefix(original_rest);
+        let (target, after_target) = parse_target(target_text);
         let cost = parse_mana_symbols(after_target.trim_start())
             .map(|(c, _)| c)
             .unwrap_or(crate::types::mana::ManaCost::Cost {
@@ -2190,6 +2196,47 @@ mod tests {
                 );
             }
             other => panic!("Expected Effect::GrantCastingPermission, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_airbend_up_to_one_other_target_creature_or_spell() {
+        let text = "Airbend up to one other target creature or spell {2}";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower).expect("Should parse airbend");
+        let effect = lower_targeted_action_ast(result);
+        match effect {
+            Effect::GrantCastingPermission {
+                permission,
+                target: crate::types::ability::TargetFilter::Or { filters },
+            } => {
+                assert!(matches!(
+                    permission,
+                    crate::types::ability::CastingPermission::ExileWithAltCost { ref cost }
+                        if matches!(cost, crate::types::mana::ManaCost::Cost { generic: 2, .. })
+                ));
+                assert!(
+                    filters.iter().any(|filter| matches!(
+                        filter,
+                        crate::types::ability::TargetFilter::Typed(tf)
+                            if tf.type_filters.contains(&crate::types::ability::TypeFilter::Creature)
+                                && tf.properties.contains(&crate::types::ability::FilterProp::Another)
+                    )),
+                    "expected creature branch with Another, got {filters:?}"
+                );
+                assert!(
+                    filters.iter().any(|filter| matches!(
+                        filter,
+                        crate::types::ability::TargetFilter::Typed(tf)
+                            if tf.type_filters.contains(&crate::types::ability::TypeFilter::Card)
+                                && tf.properties.contains(&crate::types::ability::FilterProp::Another)
+                    )),
+                    "expected spell branch with Another, got {filters:?}"
+                );
+            }
+            other => panic!(
+                "Expected GrantCastingPermission with creature-or-spell target, got {other:?}"
+            ),
         }
     }
 

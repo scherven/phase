@@ -52,15 +52,6 @@ export function ManaPaymentUI() {
 
   const isAmbiguous = costShards != null && hasAmbiguousCost(costShards);
 
-  // Auto-pay for simple costs
-  useEffect(() => {
-    if (!isManaPayment) return;
-    // If no shards found or cost is not ambiguous, auto-pay
-    if (costShards == null || !hasAmbiguousCost(costShards)) {
-      dispatch({ type: "PassPriority" });
-    }
-  }, [isManaPayment, costShards, dispatch]);
-
   // Local state for ambiguous cost choices
   const [xValue, setXValue] = useState(0);
   const [phyrexianChoices, setPhyrexianChoices] = useState<Map<number, "mana" | "life">>(
@@ -70,7 +61,6 @@ export function ManaPaymentUI() {
     () => new Map(),
   );
 
-  // Reset choices when cost changes
   useEffect(() => {
     setXValue(0);
     setPhyrexianChoices(new Map());
@@ -136,8 +126,8 @@ export function ManaPaymentUI() {
     return cost;
   }, [phyrexianChoices]);
 
-  // Don't render if not a mana payment or if auto-paying
-  if (!isManaPayment || !player || !isAmbiguous || !costShards) return null;
+  // Don't render if not a mana payment for the local player
+  if (!isManaPayment || !player) return null;
 
   return (
     <AnimatePresence>
@@ -158,98 +148,108 @@ export function ManaPaymentUI() {
             )}
           </h3>
 
-          {/* Cost display row */}
-          <div className="mb-3 flex items-center justify-center gap-1.5">
-            {costShards.map((shard, idx) => (
-              <ManaSymbol key={idx} shard={shard} size="lg" />
-            ))}
-          </div>
+          {costShards && (
+            <>
+              {/* Cost display row */}
+              <div className="mb-3 flex items-center justify-center gap-1.5">
+                {costShards.map((shard, idx) => (
+                  <ManaSymbol key={idx} shard={shard} size="lg" />
+                ))}
+              </div>
 
-          {/* X cost slider */}
-          {costShards.some((s) => s === "X") && (
-            <div className="mb-3 px-2">
-              <label className="flex items-center gap-2 text-xs text-gray-400">
-                <span className="shrink-0">X = {xValue}</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={maxX}
-                  value={xValue}
-                  onChange={(e) => setXValue(Number(e.target.value))}
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-cyan-500"
-                />
-                <span className="shrink-0 text-gray-500">
-                  Total: {costShards.filter((s) => s !== "X").length + xValue}
-                </span>
-              </label>
-            </div>
-          )}
-
-          {/* Phyrexian toggles */}
-          {costShards.some((s) => s.endsWith("/P")) && (
-            <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
-              {costShards.map((shard, idx) => {
-                if (!shard.endsWith("/P")) return null;
-                const payLife = phyrexianChoices.get(idx) === "life";
-                return (
-                  <button
-                    key={idx}
-                    onClick={() => togglePhyrexian(idx)}
-                    className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs ring-1 transition ${
-                      payLife
-                        ? "bg-red-900/60 text-red-300 ring-red-500/40"
-                        : "bg-gray-800 text-gray-300 ring-gray-600"
-                    }`}
-                  >
-                    {payLife ? (
-                      <>
-                        <span aria-label="heart">&#x2764;</span>
-                        <span>2 life</span>
-                      </>
-                    ) : (
-                      <ManaSymbol shard={shard} size="sm" />
-                    )}
-                  </button>
-                );
-              })}
-              {lifeCost > 0 && (
-                <span className="text-xs text-red-400">
-                  ({lifeCost} life)
-                </span>
+              {/* X cost slider */}
+              {isAmbiguous && costShards.some((s) => s === "X") && (
+                <div className="mb-3 px-2">
+                  <label className="flex items-center gap-2 text-xs text-gray-400">
+                    <span className="shrink-0">X = {xValue}</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={maxX}
+                      value={xValue}
+                      onChange={(e) => setXValue(Number(e.target.value))}
+                      className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-cyan-500"
+                    />
+                    <span className="shrink-0 text-gray-500">
+                      Total: {costShards.filter((s) => s !== "X").length + xValue}
+                    </span>
+                  </label>
+                </div>
               )}
-            </div>
+
+              {/* Phyrexian toggles */}
+              {isAmbiguous && costShards.some((s) => s.endsWith("/P")) && (
+                <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
+                  {costShards.map((shard, idx) => {
+                    if (!shard.endsWith("/P")) return null;
+                    const payLife = phyrexianChoices.get(idx) === "life";
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => togglePhyrexian(idx)}
+                        className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs ring-1 transition ${
+                          payLife
+                            ? "bg-red-900/60 text-red-300 ring-red-500/40"
+                            : "bg-gray-800 text-gray-300 ring-gray-600"
+                        }`}
+                      >
+                        {payLife ? (
+                          <>
+                            <span aria-label="heart">&#x2764;</span>
+                            <span>2 life</span>
+                          </>
+                        ) : (
+                          <ManaSymbol shard={shard} size="sm" />
+                        )}
+                      </button>
+                    );
+                  })}
+                  {lifeCost > 0 && (
+                    <span className="text-xs text-red-400">
+                      ({lifeCost} life)
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Hybrid toggles */}
+              {isAmbiguous && costShards.some(
+                (s) => s.includes("/") && !s.endsWith("/P"),
+              ) && (
+                <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
+                  {costShards.map((shard, idx) => {
+                    if (!shard.includes("/") || shard.endsWith("/P")) return null;
+                    const [a, b] = shard.split("/");
+                    const chosen = hybridChoices.get(idx) ?? a;
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => toggleHybrid(idx, shard)}
+                        className="flex items-center gap-1 rounded-md bg-gray-800 px-2 py-1 ring-1 ring-gray-600 transition hover:ring-gray-400"
+                      >
+                        <ManaSymbol
+                          shard={chosen}
+                          size="sm"
+                          className={chosen === a ? "opacity-100" : "opacity-40"}
+                        />
+                        <span className="text-[10px] text-gray-500">/</span>
+                        <ManaSymbol
+                          shard={chosen === a ? b : a}
+                          size="sm"
+                          className="opacity-40"
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
 
-          {/* Hybrid toggles */}
-          {costShards.some(
-            (s) => s.includes("/") && !s.endsWith("/P"),
-          ) && (
-            <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
-              {costShards.map((shard, idx) => {
-                if (!shard.includes("/") || shard.endsWith("/P")) return null;
-                const [a, b] = shard.split("/");
-                const chosen = hybridChoices.get(idx) ?? a;
-                return (
-                  <button
-                    key={idx}
-                    onClick={() => toggleHybrid(idx, shard)}
-                    className="flex items-center gap-1 rounded-md bg-gray-800 px-2 py-1 ring-1 ring-gray-600 transition hover:ring-gray-400"
-                  >
-                    <ManaSymbol
-                      shard={chosen}
-                      size="sm"
-                      className={chosen === a ? "opacity-100" : "opacity-40"}
-                    />
-                    <span className="text-[10px] text-gray-500">/</span>
-                    <ManaSymbol
-                      shard={chosen === a ? b : a}
-                      size="sm"
-                      className="opacity-40"
-                    />
-                  </button>
-                );
-              })}
-            </div>
+          {!costShards && (
+            <p className="mb-3 text-center text-xs text-gray-400">
+              Payment is still pending. Tap permanents or cancel this action.
+            </p>
           )}
 
           {/* Current mana pool */}
