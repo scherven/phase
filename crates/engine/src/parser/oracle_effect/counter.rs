@@ -61,6 +61,20 @@ pub(super) fn try_parse_put_counter<'a>(
                     let on_offset = lower.len() - on_rest.len();
                     (&text[on_offset..], None)
                 }
+            } else if let Some(after_each_of) = on_rest.strip_prefix("each of up to ") {
+                if let Some((n, after_n)) = parse_number(after_each_of) {
+                    let on_offset = lower.len() - after_n.len();
+                    (
+                        &text[on_offset..],
+                        Some(MultiTargetSpec {
+                            min: 0,
+                            max: Some(n as usize),
+                        }),
+                    )
+                } else {
+                    let on_offset = lower.len() - on_rest.len();
+                    (&text[on_offset..], None)
+                }
             } else {
                 let on_offset = lower.len() - on_rest.len();
                 (&text[on_offset..], None)

@@ -1854,6 +1854,9 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         {
             *target = subject_filter;
         }
+        Effect::Token { ref mut owner, .. } if *owner == TargetFilter::Controller => {
+            *owner = subject_filter;
+        }
         // CR 701.14a: "enchanted creature fights target creature" — the subject
         // of the fight is the enchanted/equipped creature, not the Aura/Equipment.
         Effect::Fight {
@@ -4106,9 +4109,14 @@ fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerCondition>) 
 /// Used as a post-parse fixup when the AST→Effect lowering loses multi_target info.
 fn extract_put_counter_multi_target(text: &str) -> Option<MultiTargetSpec> {
     let lower = text.to_lowercase();
-    let marker = "counter on up to ";
-    let alt_marker = "counters on up to ";
-    let after = strip_after(&lower, marker).or_else(|| strip_after(&lower, alt_marker))?;
+    let after = [
+        "counter on up to ",
+        "counters on up to ",
+        "counter on each of up to ",
+        "counters on each of up to ",
+    ]
+    .into_iter()
+    .find_map(|marker| strip_after(&lower, marker))?;
     let (n, _) = super::oracle_util::parse_number(after)?;
     Some(MultiTargetSpec {
         min: 0,
@@ -6289,6 +6297,20 @@ mod tests {
     }
 
     #[test]
+    fn effect_its_controller_creates_tokens_sets_parent_target_controller_owner() {
+        let e = parse_effect("Its controller creates two Map tokens");
+        assert!(matches!(
+            e,
+            Effect::Token {
+                ref name,
+                count: QuantityExpr::Fixed { value: 2 },
+                owner: TargetFilter::ParentTargetController,
+                ..
+            } if name == "Map"
+        ));
+    }
+
+    #[test]
     fn effect_target_creature_gains_keyword_uses_continuous_effect() {
         let e = parse_effect("Target creature gains flying until end of turn");
         assert!(matches!(
@@ -6495,6 +6517,33 @@ mod tests {
         .expect("should parse");
         assert!(matches!(effect, Effect::PutCounter { .. }));
         assert!(multi.is_none(), "should not have multi_target");
+    }
+
+    #[test]
+    fn put_counter_each_of_up_to_two_target_creatures_is_multi_targeted() {
+        let clause = parse_effect_clause(
+            "put a +1/+1 counter on each of up to two target creatures",
+            &ParseContext::default(),
+        );
+        assert_eq!(
+            clause.multi_target,
+            Some(MultiTargetSpec {
+                min: 0,
+                max: Some(2),
+            })
+        );
+        assert!(
+            matches!(
+                clause.effect,
+                Effect::PutCounter {
+                    counter_type: ref ct,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Typed(_),
+                } if ct == "P1P1"
+            ),
+            "Expected targeted PutCounter with multi_target, got {:?}",
+            clause.effect
+        );
     }
 
     #[test]

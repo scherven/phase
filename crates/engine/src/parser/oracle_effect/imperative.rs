@@ -511,6 +511,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             keywords: token.keywords,
             tapped: token.tapped,
             count: token.count,
+            owner: TargetFilter::Controller,
             attach_to: token.attach_to,
             enters_attacking: false,
         },
@@ -1968,9 +1969,9 @@ pub(super) fn parse_zone_counter_ast(
                     target,
                 },
                 _remainder,
-                _multi_target,
+                multi_target,
             )) => {
-                if is_all {
+                if is_all && multi_target.is_none() {
                     Some(ZoneCounterImperativeAst::PutCounterAll {
                         counter_type,
                         count,
