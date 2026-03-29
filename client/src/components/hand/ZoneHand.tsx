@@ -100,13 +100,14 @@ export function ZoneHand({ zone }: ZoneHandProps) {
   if (castableObjects.length === 0) return null;
 
   return (
-    <div className="flex flex-col gap-1.5">
-      {castableObjects.map((obj) => (
+    <div className="flex flex-row items-end">
+      {castableObjects.map((obj, i) => (
         <ZoneHandCard
           key={obj.id}
           objectId={obj.id}
           cardName={obj.name}
           zone={zone}
+          index={i}
           onClick={playCard}
           onMouseEnter={inspectObject}
           onMouseLeave={() => inspectObject(null)}
@@ -116,26 +117,36 @@ export function ZoneHand({ zone }: ZoneHandProps) {
   );
 }
 
+/** Horizontal overlap: first card at 0, subsequent cards overlap by 60% of card width */
+const ZONE_HAND_OVERLAP = "calc(var(--card-w) * -0.6)";
+
 interface ZoneHandCardProps {
   objectId: number;
   cardName: string;
   zone: "exile" | "graveyard";
+  index: number;
   onClick: (objectId: number) => void;
   onMouseEnter: (objectId: number | null) => void;
   onMouseLeave: () => void;
 }
 
-function ZoneHandCard({ objectId, cardName, zone, onClick, onMouseEnter, onMouseLeave }: ZoneHandCardProps) {
+function ZoneHandCard({ objectId, cardName, zone, index, onClick, onMouseEnter, onMouseLeave }: ZoneHandCardProps) {
   const { src } = useCardImage(cardName, { size: "normal" });
 
   return (
     <button
+      data-card-hover
       onClick={() => onClick(objectId)}
       onMouseEnter={() => onMouseEnter(objectId)}
       onMouseLeave={onMouseLeave}
-      className="group relative cursor-pointer"
+      className="group relative cursor-pointer transition-transform hover:z-10 hover:scale-105"
       title={`Cast from ${ZONE_LABELS[zone]}: ${cardName}`}
-      style={{ width: "var(--card-w)", height: "var(--card-h)" }}
+      style={{
+        width: "var(--card-w)",
+        height: "var(--card-h)",
+        marginLeft: index === 0 ? 0 : ZONE_HAND_OVERLAP,
+        zIndex: index,
+      }}
     >
       {/* Card image with purple border */}
       <div className="relative h-full w-full overflow-hidden rounded-lg border border-purple-400/60 shadow-md">
