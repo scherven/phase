@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 
-import { audioManager } from "../../audio/AudioManager";
-import { usePreferencesStore } from "../../stores/preferencesStore";
 import { menuButtonClass } from "../menu/buttonStyles";
 import { PreferencesModal } from "../settings/PreferencesModal";
+import { VolumeControl } from "./VolumeControl";
 
 interface ScreenChromeProps {
   onBack?: () => void;
@@ -30,22 +29,6 @@ function BackIcon() {
   );
 }
 
-function SpeakerIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-      <path d="M10.5 3.75a.75.75 0 0 0-1.264-.546L5.203 7H2.667a.75.75 0 0 0-.7.48A6.985 6.985 0 0 0 1.5 10c0 .887.165 1.737.468 2.52.111.29.39.48.7.48h2.535l4.033 3.796A.75.75 0 0 0 10.5 16.25V3.75ZM13.38 7.879a.75.75 0 0 1 1.06 0A4.983 4.983 0 0 1 15.75 11a4.983 4.983 0 0 1-1.31 3.121.75.75 0 1 1-1.06-1.06A3.483 3.483 0 0 0 14.25 11c0-.92-.355-1.758-.94-2.381a.75.75 0 0 1 .07-1.06Z" />
-    </svg>
-  );
-}
-
-function SpeakerMutedIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-      <path d="M9.547 3.062A.75.75 0 0 1 10.5 3.75v12.5a.75.75 0 0 1-1.264.546L5.203 13H2.667a.75.75 0 0 1-.7-.48A6.985 6.985 0 0 1 1.5 10c0-.887.165-1.737.468-2.52a.75.75 0 0 1 .7-.48h2.535l4.033-3.796a.75.75 0 0 1 .811-.142ZM13.28 7.22a.75.75 0 1 0-1.06 1.06L13.94 10l-1.72 1.72a.75.75 0 0 0 1.06 1.06L15 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L16.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L15 8.94l-1.72-1.72Z" />
-    </svg>
-  );
-}
-
 function SettingsIcon() {
   return (
     <svg
@@ -60,37 +43,6 @@ function SettingsIcon() {
         clipRule="evenodd"
       />
     </svg>
-  );
-}
-
-function MuteToggle() {
-  const masterMuted = usePreferencesStore((s) => s.masterMuted);
-  const setMasterMuted = usePreferencesStore((s) => s.setMasterMuted);
-
-  const handleToggle = () => {
-    const next = !masterMuted;
-    setMasterMuted(next);
-    if (!next) {
-      audioManager.ensurePlayback();
-    }
-  };
-
-  return (
-    <motion.button
-      className={menuButtonClass({
-        tone: "neutral",
-        size: "sm",
-        className:
-          "h-11 min-w-11 rounded-[16px] px-3 py-0 text-white/46 hover:text-white/72",
-      })}
-      whileHover={{ y: -1 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={handleToggle}
-      aria-label={masterMuted ? "Unmute" : "Mute"}
-      title={masterMuted ? "Unmute" : "Mute"}
-    >
-      {masterMuted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
-    </motion.button>
   );
 }
 
@@ -133,9 +85,9 @@ export function ScreenChrome({
         </div>
       )}
 
-      {/* Mute toggle + Settings cog — upper-right */}
+      {/* Volume control + Settings cog — upper-right */}
       <div className="fixed right-4 top-[calc(env(safe-area-inset-top)+1rem)] z-30 flex gap-2">
-        <MuteToggle />
+        <VolumeControl variant="chrome" />
         <motion.button
           className={menuButtonClass({
             tone: "neutral",
