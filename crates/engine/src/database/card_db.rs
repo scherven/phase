@@ -180,6 +180,7 @@ mod tests {
             casting_options: vec![],
             solve_condition: None,
             brawl_commander: false,
+            metadata: Default::default(),
         }
     }
 

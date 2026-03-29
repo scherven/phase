@@ -394,6 +394,7 @@ mod tests {
             solve_condition: None::<SolveCondition>,
             strive_cost: None,
             brawl_commander: false,
+            metadata: Default::default(),
         }
     }
 

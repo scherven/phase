@@ -494,6 +494,9 @@ mod tests {
             casting_restrictions: vec![],
             casting_options: vec![],
             solve_condition: None,
+            strive_cost: None,
+            brawl_commander: false,
+            metadata: Default::default(),
         }
     }
 

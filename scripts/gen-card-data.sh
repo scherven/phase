@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Load .env if present (for PHASE_FORGE_PATH, etc.)
+if [ -f ".env" ]; then
+  set -a; source .env; set +a
+fi
+
 DATA_DIR="data"
 OUTPUT_DIR="client/public"
 OUTPUT="${OUTPUT_DIR}/card-data.json"
@@ -23,7 +28,15 @@ fi
 # Build and run the Oracle-based card data generator
 echo "Generating card data from MTGJSON via Oracle text parser..."
 mkdir -p "$(dirname "$OUTPUT")"
-cargo run --profile tool --bin oracle-gen --features cli -- "$DATA_DIR" --stats --names-out "$NAMES_OUTPUT" > "$OUTPUT"
+
+# Enable Forge bridge when cardsfolder is available
+FEATURES="cli"
+if [ -n "${PHASE_FORGE_PATH:-}" ] || [ -d "$DATA_DIR/forge-cardsfolder" ]; then
+  FEATURES="cli,forge"
+  echo "Forge bridge enabled"
+fi
+
+cargo run --profile tool --bin oracle-gen --features "$FEATURES" -- "$DATA_DIR" --stats --names-out "$NAMES_OUTPUT" > "$OUTPUT"
 echo "Generating card coverage data..."
 cargo run --profile tool --bin coverage-report -- "$DATA_DIR" --all > "$COVERAGE_OUTPUT"
 jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' "$COVERAGE_OUTPUT" > "$COVERAGE_SUMMARY"

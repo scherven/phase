@@ -41,6 +41,9 @@ client/src-tauri/binaries/
 client/src-tauri/target/
 client/src-tauri/Cargo.lock
 
+# Environment
+.env
+
 # OS
 .DS_Store
 Thumbs.db

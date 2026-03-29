@@ -567,6 +567,7 @@ fn build_oracle_face_inner(
         casting_options: parsed.casting_options,
         solve_condition: parsed.solve_condition,
         brawl_commander: false,
+        metadata: Default::default(),
     };
 
     face.brawl_commander = compute_brawl_commander(mtgjson, &face);

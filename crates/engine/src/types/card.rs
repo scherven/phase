@@ -8,6 +8,37 @@ use super::card_type::CardType;
 use super::keywords::Keyword;
 use super::mana::{ManaColor, ManaCost};
 
+/// Diagnostic metadata for a card face. Grouped here to keep debug/pipeline
+/// concerns separate from game-logic fields. Omitted from JSON when empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardMetadata {
+    /// Number of abilities translated from Forge card scripts (fallback for Oracle parser gaps).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub forge_abilities: u32,
+    /// Number of triggers translated from Forge card scripts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub forge_triggers: u32,
+    /// Number of static abilities translated from Forge card scripts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub forge_statics: u32,
+    /// Number of replacement effects translated from Forge card scripts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub forge_replacements: u32,
+}
+
+impl CardMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.forge_abilities == 0
+            && self.forge_triggers == 0
+            && self.forge_statics == 0
+            && self.forge_replacements == 0
+    }
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrintedCardRef {
     pub oracle_id: String,
@@ -60,6 +91,9 @@ pub struct CardFace {
     /// (legendary creature, legendary planeswalker, or "can be your commander").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub brawl_commander: bool,
+    /// Diagnostic metadata (forge source counts, etc.). Omitted from JSON when empty.
+    #[serde(default, skip_serializing_if = "CardMetadata::is_empty")]
+    pub metadata: CardMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

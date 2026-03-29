@@ -209,10 +209,10 @@ pub fn apply_forge_fallback(face: &mut CardFace, forge_index: &ForgeIndex) {
     let translated = translate_card(&forge_card);
 
     // Per-ability granular fallback: only replace Unimplemented entries.
-    replace_unimplemented_abilities(face, &translated.abilities);
-    replace_unimplemented_triggers(face, &translated.triggers);
-    replace_unimplemented_statics(face, &translated.statics);
-    replace_unimplemented_replacements(face, &translated.replacements);
+    let ab_count = replace_unimplemented_abilities(face, &translated.abilities);
+    let tr_count = replace_unimplemented_triggers(face, &translated.triggers);
+    let st_count = replace_unimplemented_statics(face, &translated.statics);
+    let rp_count = replace_unimplemented_replacements(face, &translated.replacements);
 
     // Keywords: append any Forge keywords not already present in Oracle-parsed set.
     for kw in &translated.keywords {
@@ -221,12 +221,18 @@ pub fn apply_forge_fallback(face: &mut CardFace, forge_index: &ForgeIndex) {
         }
     }
 
+    // Populate diagnostic metadata with forge replacement counts.
+    face.metadata.forge_abilities = ab_count;
+    face.metadata.forge_triggers = tr_count;
+    face.metadata.forge_statics = st_count;
+    face.metadata.forge_replacements = rp_count;
+
     trace!(
         card = face.name,
-        forge_abilities = translated.abilities.len(),
-        forge_triggers = translated.triggers.len(),
-        forge_statics = translated.statics.len(),
-        forge_replacements = translated.replacements.len(),
+        forge_abilities = ab_count,
+        forge_triggers = tr_count,
+        forge_statics = st_count,
+        forge_replacements = rp_count,
         "applied forge fallback"
     );
 }
@@ -236,11 +242,15 @@ pub fn apply_forge_fallback(face: &mut CardFace, forge_index: &ForgeIndex) {
 /// Strategy: Walk Oracle abilities. For each Unimplemented entry, count its
 /// position among Unimplemented entries. Match that Nth-unimplemented to the
 /// Nth Forge ability.
-fn replace_unimplemented_abilities(face: &mut CardFace, forge_abilities: &[AbilityDefinition]) {
+fn replace_unimplemented_abilities(
+    face: &mut CardFace,
+    forge_abilities: &[AbilityDefinition],
+) -> u32 {
     if forge_abilities.is_empty() {
-        return;
+        return 0;
     }
 
+    let mut count = 0u32;
     let mut unimpl_idx = 0;
     for ability in &mut face.abilities {
         if matches!(&*ability.effect, Effect::Unimplemented { .. }) {
@@ -248,6 +258,7 @@ fn replace_unimplemented_abilities(face: &mut CardFace, forge_abilities: &[Abili
                 // Only replace if the Forge version isn't also Unimplemented
                 if !matches!(&*forge_ability.effect, Effect::Unimplemented { .. }) {
                     *ability = forge_ability.clone();
+                    count += 1;
                 }
             }
             unimpl_idx += 1;
@@ -259,16 +270,24 @@ fn replace_unimplemented_abilities(face: &mut CardFace, forge_abilities: &[Abili
         for forge_ability in &forge_abilities[face.abilities.len()..] {
             if !matches!(&*forge_ability.effect, Effect::Unimplemented { .. }) {
                 face.abilities.push(forge_ability.clone());
+                count += 1;
             }
         }
     }
+
+    count
 }
 
 /// Replace unimplemented triggers by matching on TriggerMode (semantic anchor).
-fn replace_unimplemented_triggers(face: &mut CardFace, forge_triggers: &[TriggerDefinition]) {
+fn replace_unimplemented_triggers(
+    face: &mut CardFace,
+    forge_triggers: &[TriggerDefinition],
+) -> u32 {
     if forge_triggers.is_empty() {
-        return;
+        return 0;
     }
+
+    let mut count = 0u32;
 
     // For each Oracle trigger that has an Unimplemented execute, try to find
     // a matching Forge trigger by mode.
@@ -283,6 +302,7 @@ fn replace_unimplemented_triggers(face: &mut CardFace, forge_triggers: &[Trigger
             if let Some(forge_trigger) = forge_triggers.iter().find(|ft| ft.mode == trigger.mode) {
                 if let Some(ref exec) = forge_trigger.execute {
                     trigger.execute = Some(exec.clone());
+                    count += 1;
                 }
             }
         }
@@ -294,9 +314,12 @@ fn replace_unimplemented_triggers(face: &mut CardFace, forge_triggers: &[Trigger
         for forge_trigger in forge_triggers {
             if !oracle_modes.contains(&forge_trigger.mode) {
                 face.triggers.push(forge_trigger.clone());
+                count += 1;
             }
         }
     }
+
+    count
 }
 
 /// Replace unimplemented statics by matching on StaticMode.
@@ -304,10 +327,12 @@ fn replace_unimplemented_triggers(face: &mut CardFace, forge_triggers: &[Trigger
 /// Strategy: For each Oracle static with empty modifications (likely a placeholder),
 /// find a Forge static with the same mode and replace it. Then append any Forge
 /// statics whose modes don't appear in the Oracle set at all.
-fn replace_unimplemented_statics(face: &mut CardFace, forge_statics: &[StaticDefinition]) {
+fn replace_unimplemented_statics(face: &mut CardFace, forge_statics: &[StaticDefinition]) -> u32 {
     if forge_statics.is_empty() {
-        return;
+        return 0;
     }
+
+    let mut count = 0u32;
 
     // Replace existing placeholder statics by mode
     for oracle_static in &mut face.static_abilities {
@@ -319,6 +344,7 @@ fn replace_unimplemented_statics(face: &mut CardFace, forge_statics: &[StaticDef
                 .find(|fs| fs.mode == oracle_static.mode)
             {
                 *oracle_static = forge_static.clone();
+                count += 1;
             }
         }
     }
@@ -332,8 +358,11 @@ fn replace_unimplemented_statics(face: &mut CardFace, forge_statics: &[StaticDef
     for forge_static in forge_statics {
         if !oracle_modes.contains(&forge_static.mode) {
             face.static_abilities.push(forge_static.clone());
+            count += 1;
         }
     }
+
+    count
 }
 
 /// Replace unimplemented replacements by matching on ReplacementEvent.
@@ -344,10 +373,12 @@ fn replace_unimplemented_statics(face: &mut CardFace, forge_statics: &[StaticDef
 fn replace_unimplemented_replacements(
     face: &mut CardFace,
     forge_replacements: &[ReplacementDefinition],
-) {
+) -> u32 {
     if forge_replacements.is_empty() {
-        return;
+        return 0;
     }
+
+    let mut count = 0u32;
 
     // Replace existing placeholder replacements by event
     for oracle_repl in &mut face.replacements {
@@ -358,6 +389,7 @@ fn replace_unimplemented_replacements(
                 .find(|fr| fr.event == oracle_repl.event)
             {
                 *oracle_repl = forge_repl.clone();
+                count += 1;
             }
         }
     }
@@ -367,8 +399,11 @@ fn replace_unimplemented_replacements(
     for forge_repl in forge_replacements {
         if !oracle_events.contains(&forge_repl.event) {
             face.replacements.push(forge_repl.clone());
+            count += 1;
         }
     }
+
+    count
 }
 
 #[cfg(test)]

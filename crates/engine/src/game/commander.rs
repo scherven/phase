@@ -738,6 +738,7 @@ mod tests {
             casting_options: vec![],
             solve_condition: None,
             brawl_commander: false,
+            metadata: Default::default(),
         };
 
         let obj_id = create_commander_from_card_face(&mut state, &face, PlayerId(0));

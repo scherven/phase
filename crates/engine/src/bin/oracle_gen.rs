@@ -141,22 +141,28 @@ fn main() {
         }
     };
 
-    // Build Forge index if --forge flag or PHASE_FORGE_PATH env var is set.
+    // Build Forge index: --forge flag > PHASE_FORGE_PATH env var > data/forge-cardsfolder/ default.
     #[cfg(feature = "forge")]
     let forge_index = {
-        let path = forge_path.or_else(|| std::env::var("PHASE_FORGE_PATH").ok().map(PathBuf::from));
-        match path {
-            Some(p) if p.exists() => {
-                eprintln!("Building Forge index from: {}", p.display());
-                let idx = engine::database::forge::ForgeIndex::scan(&p);
-                eprintln!("Forge index: {} face names", idx.len());
-                Some(idx)
-            }
-            Some(p) => {
-                eprintln!("Warning: Forge path {} not found, skipping", p.display());
-                None
-            }
-            None => None,
+        let explicit = forge_path.is_some() || std::env::var("PHASE_FORGE_PATH").is_ok();
+        let default_path = data_dir
+            .as_ref()
+            .map(|d| d.join("forge-cardsfolder"))
+            .unwrap_or_else(|| PathBuf::from("data/forge-cardsfolder"));
+        let path = forge_path
+            .or_else(|| std::env::var("PHASE_FORGE_PATH").ok().map(PathBuf::from))
+            .unwrap_or(default_path);
+        if path.exists() {
+            eprintln!("Building Forge index from: {}", path.display());
+            let idx = engine::database::forge::ForgeIndex::scan(&path);
+            eprintln!("Forge index: {} face names", idx.len());
+            Some(idx)
+        } else if explicit {
+            // Only warn if the user explicitly requested a path that doesn't exist.
+            eprintln!("Warning: Forge path {} not found, skipping", path.display());
+            None
+        } else {
+            None
         }
     };
 
