@@ -67,13 +67,15 @@ export function PlayerHud() {
           className={`flex min-w-0 flex-nowrap items-center justify-center gap-0.5 rounded-full px-1.5 py-px text-[9px] transition-all duration-300 lg:gap-2 lg:px-3 lg:py-1 lg:text-xs ${pillClass}`}
         >
           <LifeTotal playerId={playerId} size="lg" hideLabel />
-          <span
-            className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] lg:text-[10px] ${
-              speed >= 4 ? "bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/40" : "bg-white/8 text-gray-300"
-            }`}
-          >
-            SPD {speed}
-          </span>
+          {speed > 0 && (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.12em] lg:text-[10px] ${
+                speed >= 4 ? "bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/40" : "bg-white/8 text-gray-300"
+              }`}
+            >
+              🏁 {speed}
+            </span>
+          )}
           <ManaPoolSummary playerId={playerId} />
           <button
             onClick={() => {

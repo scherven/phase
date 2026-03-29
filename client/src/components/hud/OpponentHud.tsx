@@ -110,13 +110,15 @@ export function OpponentHud({ opponentName }: OpponentHudProps) {
           className={`flex items-center gap-0.5 rounded-full px-1.5 py-px transition-all duration-300 lg:gap-2 lg:px-3 lg:py-1 ${pillClass}`}
         >
           <LifeTotal playerId={opponentId} size="lg" hideLabel />
-          <span
-            className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${
-              opponentSpeed >= 4 ? "bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/40" : "bg-white/8 text-gray-300"
-            }`}
-          >
-            SPD {opponentSpeed}
-          </span>
+          {opponentSpeed > 0 && (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${
+                opponentSpeed >= 4 ? "bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/40" : "bg-white/8 text-gray-300"
+              }`}
+            >
+              🏁 {opponentSpeed}
+            </span>
+          )}
           <ManaPoolSummary playerId={opponentId} />
           {opponentCompanion && (
             <span className={`text-[10px] font-medium ${opponentCompanion.used ? "text-gray-500" : "text-amber-400"}`}>
@@ -245,7 +247,7 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
 
       {/* Hand count */}
       <Stat label="Hnd" value={handCount} color="text-gray-300" />
-      <Stat label="Spd" value={speed} color={speed >= 4 ? "text-amber-300" : "text-gray-300"} />
+      {speed > 0 && <Stat label="🏁" value={speed} color={speed >= 4 ? "text-amber-300" : "text-gray-300"} />}
 
       {/* Permanent counts */}
       {counts.creatures > 0 && <Stat label="Crt" value={counts.creatures} color="text-red-400" />}
