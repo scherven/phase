@@ -2,8 +2,10 @@ use crate::types::ability::{EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{CopyTargetSlot, GameState, StackEntryKind, WaitingFor};
 use crate::types::identifiers::ObjectId;
+use crate::types::zones::Zone;
 
 /// CR 707.10: Copy a spell — create a copy on the stack with the same characteristics and choices.
+/// CR 707.10a: The copy becomes a token.
 /// CR 707.10c: Controller may choose new targets for the copy.
 pub fn resolve(
     state: &mut GameState,
@@ -20,6 +22,19 @@ pub fn resolve(
     // Allocate a new object ID for the copy
     let copy_id = ObjectId(state.next_object_id);
     state.next_object_id += 1;
+
+    // CR 707.10a: The copy becomes a token. Create a GameObject with copiable
+    // characteristics from the original spell so zone transitions work correctly.
+    let source_obj = state
+        .objects
+        .get(&top_entry.id)
+        .ok_or(EffectError::ObjectNotFound(top_entry.id))?;
+    let mut copy_obj = source_obj.clone();
+    copy_obj.id = copy_id;
+    copy_obj.controller = ability.controller;
+    copy_obj.zone = Zone::Stack;
+    copy_obj.is_token = true;
+    state.objects.insert(copy_id, copy_obj);
 
     // Create the copy with a new ID but same kind
     let copy_entry = crate::types::game_state::StackEntry {
@@ -70,16 +85,40 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::game_object::GameObject;
     use crate::types::ability::{Effect, QuantityExpr, TargetFilter, TargetRef};
     use crate::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
 
+    /// Helper: push a spell onto the stack with a matching GameObject.
+    fn push_spell(
+        state: &mut GameState,
+        obj_id: ObjectId,
+        card_id: CardId,
+        owner: PlayerId,
+        name: &str,
+        ability: ResolvedAbility,
+        variant: CastingVariant,
+    ) {
+        let obj = GameObject::new(obj_id, card_id, owner, name.to_string(), Zone::Stack);
+        state.objects.insert(obj_id, obj);
+        state.stack.push(StackEntry {
+            id: obj_id,
+            source_id: obj_id,
+            controller: owner,
+            kind: StackEntryKind::Spell {
+                card_id,
+                ability,
+                casting_variant: variant,
+            },
+        });
+    }
+
     #[test]
     fn test_copy_spell_duplicates_stack_entry() {
         let mut state = GameState::new_two_player(42);
 
-        // Put a spell on the stack
         let original_ability = ResolvedAbility::new(
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value: 3 },
@@ -91,16 +130,15 @@ mod tests {
             PlayerId(0),
         );
 
-        state.stack.push(StackEntry {
-            id: ObjectId(10),
-            source_id: ObjectId(10),
-            controller: PlayerId(0),
-            kind: StackEntryKind::Spell {
-                card_id: CardId(1),
-                ability: original_ability.clone(),
-                casting_variant: CastingVariant::Normal,
-            },
-        });
+        push_spell(
+            &mut state,
+            ObjectId(10),
+            CardId(1),
+            PlayerId(0),
+            "Lightning Bolt",
+            original_ability.clone(),
+            CastingVariant::Normal,
+        );
 
         let copy_ability = ResolvedAbility::new(
             Effect::CopySpell {
@@ -118,7 +156,14 @@ mod tests {
         assert_eq!(state.stack.len(), 2);
         // Copy should have a different ID
         assert_ne!(state.stack[0].id, state.stack[1].id);
-        // But same kind
+
+        // CR 707.10a: The copy's GameObject should be a token
+        let copy_id = state.stack[1].id;
+        let copy_obj = state.objects.get(&copy_id).expect("copy object exists");
+        assert!(copy_obj.is_token);
+        assert_eq!(copy_obj.zone, Zone::Stack);
+
+        // Same spell kind
         match (&state.stack[0].kind, &state.stack[1].kind) {
             (
                 StackEntryKind::Spell {
@@ -165,7 +210,6 @@ mod tests {
     fn test_copy_spell_with_targets_enters_retarget() {
         let mut state = GameState::new_two_player(42);
 
-        // Original spell has a target
         let original_ability = ResolvedAbility::new(
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value: 3 },
@@ -177,16 +221,15 @@ mod tests {
             PlayerId(0),
         );
 
-        state.stack.push(StackEntry {
-            id: ObjectId(10),
-            source_id: ObjectId(10),
-            controller: PlayerId(0),
-            kind: StackEntryKind::Spell {
-                card_id: CardId(1),
-                ability: original_ability,
-                casting_variant: CastingVariant::Normal,
-            },
-        });
+        push_spell(
+            &mut state,
+            ObjectId(10),
+            CardId(1),
+            PlayerId(0),
+            "Lightning Bolt",
+            original_ability,
+            CastingVariant::Normal,
+        );
 
         let copy_ability = ResolvedAbility::new(
             Effect::CopySpell {
@@ -210,7 +253,6 @@ mod tests {
     fn test_copy_spell_without_targets_skips_retarget() {
         let mut state = GameState::new_two_player(42);
 
-        // Original spell has NO targets
         let original_ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 2 },
@@ -220,16 +262,15 @@ mod tests {
             PlayerId(0),
         );
 
-        state.stack.push(StackEntry {
-            id: ObjectId(10),
-            source_id: ObjectId(10),
-            controller: PlayerId(0),
-            kind: StackEntryKind::Spell {
-                card_id: CardId(1),
-                ability: original_ability,
-                casting_variant: CastingVariant::Normal,
-            },
-        });
+        push_spell(
+            &mut state,
+            ObjectId(10),
+            CardId(1),
+            PlayerId(0),
+            "Divination",
+            original_ability,
+            CastingVariant::Normal,
+        );
 
         let copy_ability = ResolvedAbility::new(
             Effect::CopySpell {
