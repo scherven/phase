@@ -50,6 +50,10 @@ pub enum CastingProhibitionCondition {
     DuringYourTurn,
     /// "during combat" — prohibition active during any combat phase.
     DuringCombat,
+    /// CR 117.1a + CR 604.1: "only during your turn" ≡ "can't cast when it's not your turn"
+    /// — prohibition active when it is NOT the controller's turn.
+    /// E.g., Fires of Invention: "You can cast spells only during your turn."
+    NotDuringYourTurn,
 }
 
 impl fmt::Display for CastingProhibitionCondition {
@@ -57,6 +61,7 @@ impl fmt::Display for CastingProhibitionCondition {
         match self {
             CastingProhibitionCondition::DuringYourTurn => write!(f, "your_turn"),
             CastingProhibitionCondition::DuringCombat => write!(f, "combat"),
+            CastingProhibitionCondition::NotDuringYourTurn => write!(f, "not_your_turn"),
         }
     }
 }
@@ -68,6 +73,7 @@ impl FromStr for CastingProhibitionCondition {
         match s {
             "your_turn" => Ok(CastingProhibitionCondition::DuringYourTurn),
             "combat" => Ok(CastingProhibitionCondition::DuringCombat),
+            "not_your_turn" => Ok(CastingProhibitionCondition::NotDuringYourTurn),
             other => Err(format!("unknown CastingProhibitionCondition: {other}")),
         }
     }
@@ -643,6 +649,10 @@ mod tests {
             StaticMode::CantCastDuring {
                 who: CastingProhibitionScope::AllPlayers,
                 when: CastingProhibitionCondition::DuringCombat,
+            },
+            StaticMode::CantCastDuring {
+                who: CastingProhibitionScope::Controller,
+                when: CastingProhibitionCondition::NotDuringYourTurn,
             },
             // Per-turn casting limits
             StaticMode::PerTurnCastLimit {

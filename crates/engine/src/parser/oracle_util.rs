@@ -1268,7 +1268,12 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
                     // Guard: Don't replace subtype references like "Sliver creatures"
                     // when "Sliver" is a prefix of the card name "Sliver Hivelord".
                     // The word before "creatures/creature" is a subtype, not a self-ref.
-                    if replaced.contains("~ creatures") || replaced.contains("~ creature") {
+                    // Also guard against "non-~" — a card name prefix after "non-" is always
+                    // a type/subtype qualifier (e.g., "non-Phyrexian" on Phyrexian Censor).
+                    if replaced.contains("~ creatures")
+                        || replaced.contains("~ creature")
+                        || replaced.contains("non-~")
+                    {
                         continue;
                     }
                     result = replaced;
@@ -1451,6 +1456,18 @@ mod tests {
                 "Sliver Hivelord",
             ),
             "Sliver creatures you control have indestructible."
+        );
+    }
+
+    #[test]
+    fn normalize_phyrexian_censor_preserves_non_subtype() {
+        // "non-Phyrexian" is a type qualifier, not a self-ref for "Phyrexian Censor"
+        assert_eq!(
+            normalize_card_name_refs(
+                "Each player can't cast more than one non-Phyrexian spell each turn.",
+                "Phyrexian Censor",
+            ),
+            "Each player can't cast more than one non-Phyrexian spell each turn."
         );
     }
 

@@ -634,6 +634,26 @@ pub fn parse_oracle_text(
                     i += 1;
                     continue;
                 }
+                // Compound clause: casting time restriction + per-turn limit joined by " and "
+                // E.g., Fires of Invention: "You can cast spells only during your turn and
+                // you can cast no more than two spells each turn."
+                // CR 117.1a + CR 604.1: Both restrictions are independent statics.
+                if lower.contains("only during your turn")
+                    && lower.contains(" and ")
+                    && lower.contains("each turn")
+                {
+                    for clause in static_line.split(" and ") {
+                        let trimmed = clause.trim().trim_end_matches('.');
+                        if !trimmed.is_empty() {
+                            let clause_dot = format!("{trimmed}.");
+                            if let Some(sd) = parse_static_line(&clause_dot) {
+                                result.statics.push(sd);
+                            }
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
                 if let Some(static_def) = parse_static_line(&static_line) {
                     result.statics.push(static_def);
                     i += 1;
@@ -1502,6 +1522,8 @@ pub(super) fn is_static_pattern(lower: &str) -> bool {
         || lower.contains("can't cast spells from")
         // CR 101.2: Turn/phase-scoped casting prohibitions (Teferi, Time Raveler, etc.)
         || lower.contains("can't cast spells during")
+        // CR 117.1a + CR 604.1: "can cast spells only during your turn" (Fires of Invention, etc.)
+        || lower.contains("can cast spells only during")
         // CR 702.127a: "Skip your draw step" (Necropotence, etc.)
         || lower.contains("skip your draw step")
         // CR 102.4: Maximum hand size modifications

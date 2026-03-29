@@ -552,6 +552,25 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         return Some(def);
     }
 
+    // --- CR 117.1a + CR 604.1: "can cast spells only during your turn" ---
+    // E.g., Fires of Invention: "You can cast spells only during your turn."
+    // Must be checked AFTER PerTurnCastLimit (which handles "no more than N" in compound clauses)
+    // and BEFORE the generic CantCastDuring block (which matches "can't cast spells during").
+    // Guard: exclude compound lines containing "each turn" — those are split at the oracle.rs level
+    // so both CantCastDuring and PerTurnCastLimit are emitted independently.
+    if tp.contains("can cast spells only during your turn") && !tp.contains("each turn") {
+        let who = strip_casting_prohibition_subject(tp.lower)
+            .map(|(scope, _)| scope)
+            .unwrap_or(CastingProhibitionScope::Controller);
+        return Some(
+            StaticDefinition::new(StaticMode::CantCastDuring {
+                who,
+                when: CastingProhibitionCondition::NotDuringYourTurn,
+            })
+            .description(text.to_string()),
+        );
+    }
+
     // --- CR 101.2: Turn/phase-scoped casting prohibitions ---
     // e.g., Teferi, Time Raveler: "Your opponents can't cast spells during your turn."
     // e.g., "Players can't cast spells during combat."
@@ -5994,6 +6013,19 @@ mod tests {
                 who: CastingProhibitionScope::Controller,
                 max: 2,
                 spell_filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn only_during_your_turn_standalone() {
+        // CR 117.1a + CR 604.1: "You can cast spells only during your turn."
+        let def = parse_static_line("You can cast spells only during your turn.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantCastDuring {
+                who: CastingProhibitionScope::Controller,
+                when: CastingProhibitionCondition::NotDuringYourTurn,
             }
         );
     }

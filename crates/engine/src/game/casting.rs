@@ -2076,6 +2076,11 @@ fn is_blocked_by_cant_cast_during(state: &GameState, caster: PlayerId) -> bool {
                             | Phase::EndCombat
                     )
                 }
+                CastingProhibitionCondition::NotDuringYourTurn => {
+                    // CR 117.1a + CR 604.1: "can cast spells only during your turn"
+                    // = blocked when it is NOT the controller's turn.
+                    state.active_player != bf_obj.controller
+                }
             };
             if condition_met {
                 return true;
@@ -4239,6 +4244,68 @@ mod tests {
         // Third cast → blocked
         let obj = state.objects.get(&spell_id).unwrap();
         assert!(is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+    }
+
+    #[test]
+    fn per_turn_limit_multiple_sources_strictest_wins() {
+        let mut state = setup_game_at_main_phase();
+        // Permanent A: allows 2 spells per turn
+        let a_id = add_per_turn_cast_limit_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::AllPlayers,
+            2,
+            None,
+        );
+        // Permanent B: allows only 1 spell per turn (stricter)
+        let b_id = add_per_turn_cast_limit_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::AllPlayers,
+            1,
+            None,
+        );
+        let spell_id = make_spell_obj(&mut state, PlayerId(0), false);
+
+        // Record one spell cast
+        let obj_clone = state.objects.get(&spell_id).unwrap().clone();
+        restrictions::record_spell_cast(&mut state, PlayerId(0), &obj_clone);
+
+        // Blocked: B's limit of 1 applies
+        let obj = state.objects.get(&spell_id).unwrap();
+        assert!(is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+
+        // Remove B (stricter source) from battlefield
+        state.battlefield.retain(|id| *id != b_id);
+
+        // Now only A's limit of 2 remains — 1 cast < 2, so NOT blocked
+        let obj = state.objects.get(&spell_id).unwrap();
+        assert!(!is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+
+        // Suppress unused variable warnings
+        let _ = a_id;
+    }
+
+    #[test]
+    fn cant_cast_during_not_your_turn_blocks_on_opponent_turn() {
+        let mut state = setup_game_at_main_phase();
+        // Player 0 controls Fires-like permanent: controller can't cast outside their turn
+        add_cant_cast_during_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::Controller,
+            CastingProhibitionCondition::NotDuringYourTurn,
+        );
+        // Active player is 0 (controller's turn) — controller should NOT be blocked
+        assert!(!is_blocked_by_cant_cast_during(&state, PlayerId(0)));
+
+        // Switch to opponent's turn
+        state.active_player = PlayerId(1);
+
+        // Now controller IS blocked (not their turn)
+        assert!(is_blocked_by_cant_cast_during(&state, PlayerId(0)));
+        // Opponent is NOT blocked (Controller scope only affects P0)
+        assert!(!is_blocked_by_cant_cast_during(&state, PlayerId(1)));
     }
 
     #[test]
