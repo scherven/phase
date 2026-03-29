@@ -12,6 +12,7 @@ use crate::context::AiContext;
 use crate::planner::{
     apply_candidate, build_continuation_planner, rank_candidates, PlannerServices, SearchBudget,
 };
+use crate::policies::tutor::{score_search_choice_cards, score_search_choice_selection};
 use crate::policies::PolicyRegistry;
 use crate::tactical_gate::gate_candidates;
 
@@ -268,14 +269,29 @@ fn deterministic_choice(
     }
 
     if let WaitingFor::SearchChoice { cards, count, .. } = &state.waiting_for {
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let chosen: Vec<_> = scored.iter().take(*count).map(|(id, _)| *id).collect();
-        if !chosen.is_empty() {
-            return Some(GameAction::SelectCards { cards: chosen });
+        if *count == 1 {
+            let mut scored = score_search_choice_cards(state, ai_player, cards);
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some((best, _)) = scored.first() {
+                return Some(GameAction::SelectCards { cards: vec![*best] });
+            }
+        } else {
+            let mut scored: Vec<_> = actions
+                .iter()
+                .filter_map(|action| match action {
+                    GameAction::SelectCards { cards } => Some((
+                        cards.clone(),
+                        score_search_choice_selection(state, ai_player, cards),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some((chosen, _)) = scored.first() {
+                return Some(GameAction::SelectCards {
+                    cards: chosen.clone(),
+                });
+            }
         }
     }
 
@@ -747,6 +763,49 @@ mod tests {
     }
 
     #[test]
+    fn search_choice_picks_best_tutor_target() {
+        let mut state = make_state();
+        let titan = engine::game::zones::create_object(
+            &mut state,
+            CardId(401),
+            PlayerId(0),
+            "Titan".to_string(),
+            Zone::Library,
+        );
+        let land = engine::game::zones::create_object(
+            &mut state,
+            CardId(402),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Library,
+        );
+        {
+            let titan_obj = state.objects.get_mut(&titan).unwrap();
+            titan_obj.card_types.core_types.push(CoreType::Creature);
+            titan_obj.power = Some(6);
+            titan_obj.toughness = Some(6);
+        }
+        state
+            .objects
+            .get_mut(&land)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+        state.waiting_for = WaitingFor::SearchChoice {
+            player: PlayerId(0),
+            cards: vec![titan, land],
+            count: 1,
+        };
+
+        let config = create_config(AiDifficulty::VeryHard, Platform::Native);
+        let mut rng = SmallRng::seed_from_u64(11);
+        let action = choose_action(&state, PlayerId(0), &config, &mut rng);
+
+        assert_eq!(action, Some(GameAction::SelectCards { cards: vec![titan] }));
+    }
+
+    #[test]
     fn self_targeting_is_penalized() {
         let state = make_state();
         let decision = AiDecisionContext {
@@ -787,6 +846,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &AiConfig::default(),
             context: &crate::context::AiContext::empty(&AiConfig::default().weights),
+            cast_facts: None,
         });
         let opp_score = policies.score(&PolicyContext {
             state: &state,
@@ -795,6 +855,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &AiConfig::default(),
             context: &crate::context::AiContext::empty(&AiConfig::default().weights),
+            cast_facts: None,
         });
         assert!(self_score < opp_score);
         assert!(self_score < -50.0);

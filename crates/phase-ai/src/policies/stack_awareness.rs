@@ -219,6 +219,7 @@ mod tests {
             ai_player: PlayerId(1),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         StackAwarenessPolicy.score(&ctx)
     }

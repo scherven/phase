@@ -11,7 +11,8 @@ use engine::game::players;
 use engine::types::game_state::{DayNight, GameState, WaitingFor};
 use engine::types::player::PlayerId;
 
-use crate::card_hints::should_play_now;
+use crate::card_hints::should_play_now_with_facts;
+use crate::cast_facts::cast_facts_for_action;
 use crate::config::{AiConfig, HiddenInfoMode, OpponentModel, PlannerMode};
 use crate::eval::{
     evaluate_for_planner, evaluate_state, strategic_intent, threat_level, StrategicIntent,
@@ -476,7 +477,13 @@ impl<'a> PlannerServices<'a> {
         candidate: &CandidateAction,
         scoring_player: PlayerId,
     ) -> f64 {
-        let mut score = should_play_now(state, &candidate.action, scoring_player);
+        let cast_facts = cast_facts_for_action(state, &candidate.action, scoring_player);
+        let mut score = should_play_now_with_facts(
+            state,
+            &candidate.action,
+            scoring_player,
+            cast_facts.as_ref(),
+        );
         let intent = strategic_intent(state, scoring_player);
         let policy_ctx = PolicyContext {
             state,
@@ -485,6 +492,7 @@ impl<'a> PlannerServices<'a> {
             ai_player: scoring_player,
             config: self.config,
             context: &self.context,
+            cast_facts,
         };
         score += self.policies.score(&policy_ctx);
 

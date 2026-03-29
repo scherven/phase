@@ -99,6 +99,7 @@ pub fn gate_candidates(
                     ai_player,
                     config,
                     context,
+                    cast_facts: None,
                 };
                 assess_candidate(&policy_ctx)
             };
@@ -489,6 +490,7 @@ mod tests {
             ai_player: P0,
             config: &config,
             context: &AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         assert_eq!(assess_candidate(&ctx), GateDecision::Reject);
@@ -544,6 +546,7 @@ mod tests {
             ai_player: P0,
             config: &config,
             context: &AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         assert_ne!(assess_candidate(&ctx), GateDecision::Reject);
@@ -615,6 +618,7 @@ mod tests {
             ai_player: P0,
             config: &config,
             context: &AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         assert_eq!(

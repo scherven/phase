@@ -1,6 +1,12 @@
 use super::anti_self_harm::AntiSelfHarmPolicy;
+use super::board_development::BoardDevelopmentPolicy;
 use super::context::PolicyContext;
 use super::effect_timing::EffectTimingPolicy;
+use super::etb_value::EtbValuePolicy;
+use super::hand_disruption::HandDisruptionPolicy;
+use super::interaction_reservation::InteractionReservationPolicy;
+use super::tutor::TutorPolicy;
+use crate::cast_facts::cast_facts_for_action;
 use crate::config::AiConfig;
 use crate::planner::PolicyPrior;
 use engine::ai_support::{AiDecisionContext, CandidateAction};
@@ -20,6 +26,11 @@ impl Default for PolicyRegistry {
         Self {
             policies: vec![
                 Box::new(AntiSelfHarmPolicy),
+                Box::new(BoardDevelopmentPolicy),
+                Box::new(EtbValuePolicy),
+                Box::new(TutorPolicy),
+                Box::new(HandDisruptionPolicy),
+                Box::new(InteractionReservationPolicy),
                 Box::new(EffectTimingPolicy),
                 Box::new(super::mana_efficiency::ManaEfficiencyPolicy),
                 Box::new(super::stack_awareness::StackAwarenessPolicy),
@@ -50,6 +61,7 @@ impl PolicyRegistry {
         let raw_scores: Vec<f64> = candidates
             .iter()
             .map(|candidate| {
+                let cast_facts = cast_facts_for_action(state, &candidate.action, ai_player);
                 self.score(&PolicyContext {
                     state,
                     decision,
@@ -57,6 +69,7 @@ impl PolicyRegistry {
                     ai_player,
                     config,
                     context,
+                    cast_facts,
                 })
             })
             .collect();

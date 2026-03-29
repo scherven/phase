@@ -392,6 +392,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_own = AntiSelfHarmPolicy.score(&ctx_own);
 
@@ -409,6 +410,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_opp = AntiSelfHarmPolicy.score(&ctx_opp);
 
@@ -449,6 +451,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_own = AntiSelfHarmPolicy.score(&ctx_own);
 
@@ -465,6 +468,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_opp = AntiSelfHarmPolicy.score(&ctx_opp);
 
@@ -499,6 +503,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_own = AntiSelfHarmPolicy.score(&ctx_own);
 
@@ -515,6 +520,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_opp = AntiSelfHarmPolicy.score(&ctx_opp);
 
@@ -551,6 +557,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_self = AntiSelfHarmPolicy.score(&ctx_self);
 
@@ -570,6 +577,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score_opp = AntiSelfHarmPolicy.score(&ctx_opp);
 
@@ -638,6 +646,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let opp_candidate = CandidateAction {
             action: GameAction::ChooseTarget {
@@ -655,6 +664,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let self_score = AntiSelfHarmPolicy.score(&self_ctx);
@@ -723,6 +733,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let opp_candidate = CandidateAction {
             action: GameAction::ChooseTarget {
@@ -740,6 +751,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let self_score = AntiSelfHarmPolicy.score(&self_ctx);
@@ -833,6 +845,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);
@@ -891,6 +904,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);
@@ -949,6 +963,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);
@@ -1010,6 +1025,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);
@@ -1070,6 +1086,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);
@@ -1129,6 +1146,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);
@@ -1216,6 +1234,7 @@ mod tests {
             ai_player: PlayerId(0),
             config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         AntiSelfHarmPolicy.score(&ctx)
     }
@@ -1253,6 +1272,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);
@@ -1380,6 +1400,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = AntiSelfHarmPolicy.score(&ctx);

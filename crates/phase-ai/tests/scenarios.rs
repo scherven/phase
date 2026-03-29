@@ -368,3 +368,40 @@ fn scenario_very_hard_wasm_passes_on_redundant_removal() {
         runner.state().objects[&murder].name
     );
 }
+
+#[test]
+fn scenario_harvester_of_misery_cast_is_preferred_over_pass() {
+    let mut scenario = GameScenario::new();
+    let harvester = scenario
+        .add_creature_to_hand_from_oracle(
+            P0,
+            "Harvester of Misery",
+            5,
+            4,
+            "When Harvester of Misery enters, target creature gets -2/-2 until end of turn.",
+        )
+        .id();
+    scenario.add_creature(P1, "Opponent Bear", 2, 2);
+
+    let mut runner = scenario.build();
+    {
+        let state = runner.state_mut();
+        state.phase = Phase::PreCombatMain;
+        state.active_player = P0;
+        state.priority_player = P0;
+        state.waiting_for = WaitingFor::Priority { player: P0 };
+    }
+
+    let config = create_config(AiDifficulty::VeryHard, Platform::Wasm);
+    let mut rng = SmallRng::seed_from_u64(21);
+    let action = choose_action(runner.state(), P0, &config, &mut rng);
+
+    assert_eq!(
+        action,
+        Some(engine::types::actions::GameAction::CastSpell {
+            object_id: harvester,
+            card_id: runner.state().objects[&harvester].card_id,
+            targets: Vec::new(),
+        })
+    );
+}

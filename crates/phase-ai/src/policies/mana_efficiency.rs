@@ -193,6 +193,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         assert_eq!(
@@ -226,6 +227,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = ManaEfficiencyPolicy.score(&ctx);
@@ -268,6 +270,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let ctx_without = PolicyContext {
             state: &state_no_instant,
@@ -276,6 +279,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score_with = ManaEfficiencyPolicy.score(&ctx_with);
@@ -307,6 +311,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config_patient,
             context: &crate::context::AiContext::empty(&config_patient.weights),
+            cast_facts: None,
         };
 
         let score = ManaEfficiencyPolicy.score(&ctx);
@@ -354,6 +359,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = ManaEfficiencyPolicy.score(&ctx);

@@ -5,6 +5,7 @@ use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
 
+use crate::cast_facts::{cast_facts_for_action, CastFacts};
 use crate::config::{AiConfig, PolicyPenalties};
 use crate::eval::{strategic_intent, StrategicIntent};
 
@@ -15,6 +16,7 @@ pub struct PolicyContext<'a> {
     pub ai_player: PlayerId,
     pub config: &'a AiConfig,
     pub context: &'a crate::context::AiContext,
+    pub cast_facts: Option<CastFacts<'a>>,
 }
 
 impl<'a> PolicyContext<'a> {
@@ -85,6 +87,17 @@ impl<'a> PolicyContext<'a> {
             } => collect_ability_effects(pending_ability),
             _ => Vec::new(),
         }
+    }
+
+    pub fn cast_facts(&self) -> Option<CastFacts<'a>> {
+        self.cast_facts
+            .clone()
+            .or_else(|| match &self.candidate.action {
+                GameAction::CastSpell { .. } => {
+                    cast_facts_for_action(self.state, &self.candidate.action, self.ai_player)
+                }
+                _ => None,
+            })
     }
 }
 
@@ -166,6 +179,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let effects = ctx.effects();
@@ -225,6 +239,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let effects = ctx.effects();
@@ -289,11 +304,82 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let effects = ctx.effects();
         assert_eq!(effects.len(), 2);
         assert!(matches!(effects[0], Effect::Pump { .. }));
         assert!(matches!(effects[1], Effect::Draw { .. }));
+    }
+
+    #[test]
+    fn cast_facts_returns_spell_cast_facts_without_changing_effects() {
+        let mut state = GameState::new_two_player(42);
+        let config = AiConfig::default();
+        let object_id = create_object(
+            &mut state,
+            CardId(9),
+            PlayerId(0),
+            "Test Creature".to_string(),
+            Zone::Hand,
+        );
+        let object = state.objects.get_mut(&object_id).unwrap();
+        object
+            .card_types
+            .core_types
+            .push(engine::types::card_type::CoreType::Creature);
+        object.abilities.push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        ));
+        object.trigger_definitions.push(
+            engine::types::ability::TriggerDefinition::new(
+                engine::types::triggers::TriggerMode::ChangesZone,
+            )
+            .valid_card(TargetFilter::SelfRef)
+            .destination(Zone::Battlefield)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Destroy {
+                    target: TargetFilter::Any,
+                    cant_regenerate: false,
+                },
+            )),
+        );
+
+        let decision = AiDecisionContext {
+            waiting_for: WaitingFor::Priority {
+                player: PlayerId(0),
+            },
+            candidates: Vec::new(),
+        };
+        let candidate = CandidateAction {
+            action: GameAction::CastSpell {
+                object_id,
+                card_id: CardId(9),
+                targets: Vec::new(),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Spell,
+            },
+        };
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        assert_eq!(ctx.effects().len(), 1);
+        let facts = ctx.cast_facts().expect("cast facts");
+        assert_eq!(facts.immediate_etb_triggers.len(), 1);
+        assert!(facts.has_direct_removal_text);
     }
 }

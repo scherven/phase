@@ -152,6 +152,7 @@ mod tests {
             ai_player: PlayerId(1),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         DownsideAwarenessPolicy.score(&ctx)
     }
@@ -284,6 +285,7 @@ mod tests {
             ai_player: PlayerId(1),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
         let score = DownsideAwarenessPolicy.score(&ctx);
         assert!(

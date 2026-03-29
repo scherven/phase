@@ -347,4 +347,33 @@ mod tests {
         assert_eq!(det.players[opponent.0 as usize].hand.len(), 3);
         assert_eq!(det.players[opponent.0 as usize].library.len(), 6);
     }
+
+    #[test]
+    fn determinization_leaves_ai_players_own_zones_unchanged() {
+        let mut state = make_state_with_opponent_cards(2, 5);
+        let ai_player = PlayerId(0);
+        create_object(
+            &mut state,
+            CardId(900),
+            ai_player,
+            "Known Hand Card".to_string(),
+            Zone::Hand,
+        );
+        create_object(
+            &mut state,
+            CardId(901),
+            ai_player,
+            "Known Library Card".to_string(),
+            Zone::Library,
+        );
+
+        let original_hand = state.players[ai_player.0 as usize].hand.clone();
+        let original_library = state.players[ai_player.0 as usize].library.clone();
+
+        let mut determinizer = RandomizedDeterminizer::new(42);
+        let det = determinizer.determinize(&state, ai_player);
+
+        assert_eq!(det.players[ai_player.0 as usize].hand, original_hand);
+        assert_eq!(det.players[ai_player.0 as usize].library, original_library);
+    }
 }

@@ -182,6 +182,7 @@ mod tests {
             ai_player: PlayerId(0),
             config: &config,
             context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
         };
 
         let score = combat_trick_score(&ctx);
