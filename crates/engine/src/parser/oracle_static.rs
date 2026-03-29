@@ -42,6 +42,16 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(&text, &lower);
 
+    if tp.lower == "your speed can increase beyond 4."
+        || tp.lower == "your speed can increase beyond 4"
+    {
+        return Some(
+            StaticDefinition::new(StaticMode::SpeedCanIncreaseBeyondFour)
+                .affected(TargetFilter::Player)
+                .description(text.to_string()),
+        );
+    }
+
     // CR 604.3 + CR 601.2a: "Once during each of your turns, you may cast [filter] from your graveyard."
     if let Some(result) = try_parse_graveyard_cast_permission(&text, &lower) {
         return Some(result);
@@ -461,20 +471,29 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "~ can't block" ---
     if tp.contains("can't block") && !tp.contains("can't be blocked") {
-        return Some(
-            StaticDefinition::new(StaticMode::CantBlock)
-                .affected(TargetFilter::SelfRef)
-                .description(text.to_string()),
-        );
+        let mut def = StaticDefinition::new(StaticMode::CantBlock)
+            .affected(TargetFilter::SelfRef)
+            .description(text.to_string());
+        if let Some(condition) = parse_unless_static_condition(&tp) {
+            def.condition = Some(condition);
+        }
+        return Some(def);
     }
 
     // --- "~ can't attack" ---
     if tp.contains("can't attack") {
-        return Some(
-            StaticDefinition::new(StaticMode::CantAttack)
-                .affected(TargetFilter::SelfRef)
-                .description(text.to_string()),
-        );
+        let mode = if tp.contains("can't attack or block") {
+            StaticMode::CantAttackOrBlock
+        } else {
+            StaticMode::CantAttack
+        };
+        let mut def = StaticDefinition::new(mode)
+            .affected(TargetFilter::SelfRef)
+            .description(text.to_string());
+        if let Some(condition) = parse_unless_static_condition(&tp) {
+            def.condition = Some(condition);
+        }
+        return Some(def);
     }
 
     // --- "can't be countered" ---
@@ -524,16 +543,23 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         );
     }
 
+    // --- CR 101.2 + CR 604.1: Per-turn casting limits ---
+    // e.g., Rule of Law: "Each player can't cast more than one spell each turn."
+    // e.g., Deafening Silence: "Each player can't cast more than one noncreature spell each turn."
+    // e.g., Fires of Invention: "You can cast no more than two spells each turn."
+    // Must be checked before CantCastDuring/CantCastFrom to avoid false matches.
+    if let Some(def) = parse_per_turn_cast_limit(tp.lower, &text) {
+        return Some(def);
+    }
+
     // --- CR 101.2: Turn/phase-scoped casting prohibitions ---
     // e.g., Teferi, Time Raveler: "Your opponents can't cast spells during your turn."
     // e.g., "Players can't cast spells during combat."
     // Must be checked before CantCastFrom to avoid false matches on "can't cast spells".
     if tp.contains("can't cast spells during") {
-        let who = if tp.contains("your opponents") || tp.contains("opponent") {
-            CastingProhibitionScope::Opponents
-        } else {
-            CastingProhibitionScope::AllPlayers
-        };
+        let who = strip_casting_prohibition_subject(tp.lower)
+            .map(|(scope, _)| scope)
+            .unwrap_or(CastingProhibitionScope::AllPlayers);
         let when = if tp.contains("during your turn") {
             CastingProhibitionCondition::DuringYourTurn
         } else if tp.contains("during combat") {
@@ -1275,6 +1301,7 @@ fn try_split_compound_and(text: &str) -> Option<StaticCondition> {
 /// - "it's your turn" → DuringYourTurn
 /// - "you control a/an [type]" → IsPresent with filter
 fn parse_static_condition(text: &str) -> Option<StaticCondition> {
+    let text = text.trim().trim_end_matches('.');
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
 
@@ -1313,6 +1340,26 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     // "it's your turn"
     if tp.lower == "it's your turn" {
         return Some(StaticCondition::DuringYourTurn);
+    }
+
+    if tp.lower == "you have max speed" || tp.lower == "have max speed" {
+        return Some(StaticCondition::HasMaxSpeed);
+    }
+    if tp.lower == "you don't have max speed" || tp.lower == "don't have max speed" {
+        return Some(StaticCondition::Not {
+            condition: Box::new(StaticCondition::HasMaxSpeed),
+        });
+    }
+    if let Some(speed_text) = tp.lower.strip_prefix("your speed is ") {
+        if let Some(number_text) = speed_text.strip_suffix(" or higher") {
+            if let Some((threshold, remainder)) = parse_number(number_text) {
+                if remainder.trim().is_empty() {
+                    return Some(StaticCondition::SpeedGE {
+                        threshold: u8::try_from(threshold).ok()?,
+                    });
+                }
+            }
+        }
     }
 
     // "your devotion to [color(s)] is less than N" (Theros gods)
@@ -1436,6 +1483,11 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     }
 
     None
+}
+
+fn parse_unless_static_condition(tp: &TextPair<'_>) -> Option<StaticCondition> {
+    let (_, unless_text) = tp.split_around(" unless ")?;
+    parse_static_condition(unless_text.original)
 }
 
 /// Parse "your devotion to [color(s)] is less than N" or "is N or greater".
@@ -2145,6 +2197,83 @@ fn parse_cant_be_countered_subject(tp: &TextPair) -> TargetFilter {
         }
     }
     TargetFilter::SelfRef
+}
+
+/// Strip a subject prefix that maps to a `CastingProhibitionScope`.
+/// Returns `(scope, remaining_predicate)` or `None` if no known subject prefix matches.
+/// Shared by all casting prohibition parsers (CantCastDuring, PerTurnCastLimit, etc.).
+fn strip_casting_prohibition_subject(tp: &str) -> Option<(CastingProhibitionScope, &str)> {
+    tp.strip_prefix("each opponent ")
+        .or_else(|| tp.strip_prefix("your opponents "))
+        .map(|rest| (CastingProhibitionScope::Opponents, rest))
+        .or_else(|| {
+            tp.strip_prefix("you ")
+                .map(|rest| (CastingProhibitionScope::Controller, rest))
+        })
+        .or_else(|| {
+            tp.strip_prefix("each player ")
+                .or_else(|| tp.strip_prefix("players "))
+                .map(|rest| (CastingProhibitionScope::AllPlayers, rest))
+        })
+}
+
+/// CR 101.2 + CR 604.1: Parse per-turn casting limits from Oracle text.
+/// Handles "Each player/opponent can't cast more than N [type] spell(s) each turn"
+/// and the alternate phrasing "You can cast no more than N spells each turn."
+fn parse_per_turn_cast_limit(tp: &str, text: &str) -> Option<StaticDefinition> {
+    // 1. Strip subject → scope, yielding the predicate
+    let (who, predicate) = strip_casting_prohibition_subject(tp)?;
+
+    // 2. Strip casting verb → "more than N ..." remainder.
+    // If the predicate doesn't start with the limit phrase, check for compound
+    // "and" clauses (e.g., "can cast spells only during your turn and you can
+    // cast no more than two spells each turn") — re-parse the second clause.
+    let after_more_than = predicate
+        .strip_prefix("can't cast more than ")
+        .or_else(|| predicate.strip_prefix("can cast no more than "))
+        .or_else(|| {
+            // Compound clause: look for " and " joining two restrictions
+            predicate.split_once(" and ").and_then(|(_, second)| {
+                let (_, rest) = strip_casting_prohibition_subject(second)?;
+                rest.strip_prefix("can't cast more than ")
+                    .or_else(|| rest.strip_prefix("can cast no more than "))
+            })
+        })?;
+
+    // 3. Extract limit count
+    let (max, rest) = parse_number(after_more_than)?;
+
+    // 4. Require "each turn" suffix
+    let before_each_turn = rest
+        .trim_start()
+        .strip_suffix(" each turn.")
+        .or_else(|| rest.trim_start().strip_suffix(" each turn"))?;
+
+    // 5. Extract optional spell type filter between count and "spell(s)"
+    let type_text = before_each_turn
+        .strip_suffix(" spells")
+        .or_else(|| before_each_turn.strip_suffix(" spell"))
+        .unwrap_or("")
+        .trim();
+
+    let spell_filter = if type_text.is_empty() {
+        None
+    } else {
+        let (filter, _) = parse_type_phrase(type_text);
+        match &filter {
+            TargetFilter::Typed(tf) if !tf.type_filters.is_empty() => Some(filter),
+            _ => None,
+        }
+    };
+
+    Some(
+        StaticDefinition::new(StaticMode::PerTurnCastLimit {
+            who,
+            max,
+            spell_filter,
+        })
+        .description(text.to_string()),
+    )
 }
 
 /// Parse the subject of "[type] cards in [zones] can't enter the battlefield".
@@ -3042,6 +3171,8 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
         return None;
     }
 
+    let amount_is_variable_x = lower.contains("{x}");
+
     // Extract the mana amount from the text (look for {N} pattern)
     let amount = if let Some(brace_start) = text.find('{') {
         let cost_fragment = &text[brace_start..];
@@ -3112,7 +3243,7 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
     // Detect dynamic "for each" count pattern
     // "for each artifact you control" → QuantityRef::ObjectCount
     let cost_tp = TextPair::new(text, lower);
-    let dynamic_count = if let Some((_, after_for_each)) = cost_tp.split_around("for each ") {
+    let mut dynamic_count = if let Some((_, after_for_each)) = cost_tp.split_around("for each ") {
         // Strip trailing period/punctuation
         let count_text = after_for_each.original.trim_end_matches('.');
         let (count_filter, _) = parse_type_phrase(count_text);
@@ -3121,6 +3252,21 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
         })
     } else {
         None
+    };
+
+    if dynamic_count.is_none() && amount_is_variable_x {
+        let (_, where_x_text) = super::oracle_effect::strip_trailing_where_x(cost_tp);
+        if let Some(expression) = where_x_text {
+            if let Some(QuantityExpr::Ref { qty }) = parse_cda_quantity(&expression) {
+                dynamic_count = Some(qty);
+            }
+        }
+    }
+
+    let amount = if amount_is_variable_x {
+        ManaCost::generic(1)
+    } else {
+        amount
     };
 
     let mode = if is_raise {
@@ -3675,6 +3821,24 @@ mod tests {
                 rhs: QuantityExpr::Fixed { value: 0 },
             } if inner == spell_filter.as_ref().unwrap()
         )));
+    }
+
+    #[test]
+    fn static_spells_cost_x_less_where_x_is_your_speed() {
+        let def = parse_static_line(
+            "Noncreature spells you cast cost {X} less to cast, where X is your speed.",
+        )
+        .unwrap();
+        let StaticMode::ReduceCost {
+            amount,
+            dynamic_count,
+            ..
+        } = def.mode
+        else {
+            panic!("expected ReduceCost");
+        };
+        assert_eq!(amount, ManaCost::generic(1));
+        assert_eq!(dynamic_count, Some(QuantityRef::Speed));
     }
 
     // NOTE: static_enters_with_counters test moved to oracle_replacement tests —
@@ -5730,6 +5894,123 @@ mod tests {
         };
         let s2 = mode2.to_string();
         assert_eq!(StaticMode::from_str(&s2).unwrap(), mode2);
+    }
+
+    // --- PerTurnCastLimit tests ---
+
+    #[test]
+    fn per_turn_cast_limit_all_players() {
+        // CR 101.2 + CR 604.1: Rule of Law — "Each player can't cast more than one spell each turn."
+        let def =
+            parse_static_line("Each player can't cast more than one spell each turn.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::AllPlayers,
+                max: 1,
+                spell_filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_opponents() {
+        let def =
+            parse_static_line("Each opponent can't cast more than one spell each turn.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::Opponents,
+                max: 1,
+                spell_filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_controller() {
+        let def = parse_static_line("You can't cast more than one spell each turn.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::Controller,
+                max: 1,
+                spell_filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_noncreature_filter() {
+        // Deafening Silence: "Each player can't cast more than one noncreature spell each turn."
+        let def =
+            parse_static_line("Each player can't cast more than one noncreature spell each turn.")
+                .unwrap();
+        let StaticMode::PerTurnCastLimit {
+            who,
+            max,
+            spell_filter,
+        } = &def.mode
+        else {
+            panic!("expected PerTurnCastLimit");
+        };
+        assert_eq!(*who, CastingProhibitionScope::AllPlayers);
+        assert_eq!(*max, 1);
+        // Filter should be Non(Creature)
+        let Some(TargetFilter::Typed(tf)) = spell_filter else {
+            panic!("expected typed spell filter, got {spell_filter:?}");
+        };
+        assert_eq!(
+            tf.type_filters,
+            vec![TypeFilter::Non(Box::new(TypeFilter::Creature))]
+        );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_max_two() {
+        // Fires of Invention (standalone clause): "You can cast no more than two spells each turn."
+        let def = parse_static_line("You can cast no more than two spells each turn.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::Controller,
+                max: 2,
+                spell_filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_compound_clause() {
+        // Fires of Invention: compound "and" clause with per-turn limit in second half
+        let def = parse_static_line(
+            "You can cast spells only during your turn and you can cast no more than two spells each turn.",
+        );
+        assert!(def.is_some(), "expected Some for compound clause");
+        let def = def.unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::Controller,
+                max: 2,
+                spell_filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_does_not_affect_cant_cast_during() {
+        // Regression: CantCastDuring must still parse correctly
+        let def = parse_static_line("Your opponents can't cast spells during your turn.").unwrap();
+        assert!(matches!(def.mode, StaticMode::CantCastDuring { .. }));
+    }
+
+    #[test]
+    fn per_turn_cast_limit_does_not_affect_cant_cast_from() {
+        // Regression: CantCastFrom must still parse correctly
+        let def =
+            parse_static_line("Players can't cast spells from graveyards or libraries.").unwrap();
+        assert_eq!(def.mode, StaticMode::CantCastFrom);
     }
 
     // --- MustAttack / MustBlock additional combat requirement tests ---

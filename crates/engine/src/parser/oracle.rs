@@ -150,6 +150,7 @@ fn ability_word_to_condition(word: &str) -> Option<crate::types::ability::Static
                 rhs: QuantityExpr::Fixed { value: 1 },
             })
         }
+        "max speed" => Some(StaticCondition::HasMaxSpeed),
         _ => None,
     }
 }
@@ -169,6 +170,7 @@ fn ability_word_to_ability_condition(
             comparator: *comparator,
             rhs: rhs.clone(),
         }),
+        StaticCondition::HasMaxSpeed => Some(AbilityCondition::HasMaxSpeed),
         _ => None,
     }
 }
@@ -190,6 +192,7 @@ fn ability_word_to_trigger_condition(
             comparator,
             rhs,
         }),
+        StaticCondition::HasMaxSpeed => Some(TriggerCondition::HasMaxSpeed),
         _ => None,
     }
 }
@@ -342,6 +345,22 @@ pub fn parse_oracle_text(
 
         // Normalize card self-references for static parsing (replace card name with ~)
         let static_line = normalize_self_refs_for_static(&line, card_name);
+
+        if lower == "start your engines!" || lower == "start your engines" {
+            result.extracted_keywords.push(Keyword::StartYourEngines);
+            i += 1;
+            continue;
+        }
+
+        if lower == "your speed can increase beyond 4."
+            || lower == "your speed can increase beyond 4"
+        {
+            if let Some(static_def) = parse_static_line(&static_line) {
+                result.statics.push(static_def);
+                i += 1;
+                continue;
+            }
+        }
 
         // Priority 2: "Enchant {filter}" — skip (handled externally)
         if lower.starts_with("enchant ") && !lower.starts_with("enchanted ") {
@@ -1491,6 +1510,8 @@ pub(super) fn is_static_pattern(lower: &str) -> bool {
         || lower.contains("life total can't change")
         // CR 601.3c: Casting restrictions by name/property
         || (lower.contains("can't cast") && lower.contains("spells"))
+        // CR 101.2 + CR 604.1: Per-turn casting limits (alternate "no more than" phrasing)
+        || (lower.contains("no more than") && lower.contains("spells") && lower.contains("each turn"))
         // CR 613: Damage modification statics
         || lower.contains("assigns combat damage equal to its toughness")
         || lower.contains("as though it weren't blocked")
@@ -1958,7 +1979,7 @@ fn parse_harmonize_keyword(line: &str) -> Option<Keyword> {
 mod tests {
     use super::*;
     use crate::types::ability::{
-        ModalSelectionConstraint, QuantityExpr, TargetFilter, TypeFilter, TypedFilter,
+        ModalSelectionConstraint, QuantityExpr, QuantityRef, TargetFilter, TypeFilter, TypedFilter,
     };
     use crate::types::mana::ManaCost;
     use crate::types::replacements::ReplacementEvent;
@@ -3211,6 +3232,39 @@ mod tests {
                 .threshold,
             Some(3)
         );
+    }
+
+    #[test]
+    fn ghirapur_grand_prix_put_counter_uses_speed_quantity() {
+        let oracle = "When you planeswalk here, all players start their engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nAt the beginning of your end step, put X +1/+1 counters on target creature you control, where X is your speed.\nWhen you planeswalk away from Ghirapur Grand Prix, each player with the highest speed among players creates three Treasure tokens.";
+        let result = parse_oracle_text(
+            oracle,
+            "Ghirapur Grand Prix",
+            &[],
+            &[],
+            &["Avishkar".to_string()],
+        );
+
+        let end_step_trigger = result
+            .triggers
+            .iter()
+            .find(|trigger| {
+                trigger
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| d.contains("put X +1/+1 counters"))
+            })
+            .expect("expected end-step trigger");
+        let execute = end_step_trigger.execute.as_ref().expect("expected execute");
+        assert!(matches!(
+            *execute.effect,
+            Effect::PutCounter {
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::Speed,
+                },
+                ..
+            }
+        ));
     }
 
     #[test]

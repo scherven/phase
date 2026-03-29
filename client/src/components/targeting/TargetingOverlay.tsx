@@ -15,6 +15,7 @@ export function TargetingOverlay() {
 
   const isTargetSelection = waitingFor?.type === "TargetSelection" || waitingFor?.type === "TriggerTargetSelection";
   const isCopyTargetChoice = waitingFor?.type === "CopyTargetChoice";
+  const isExploreChoice = waitingFor?.type === "ExploreChoice";
   const isTapCreatureChoice = waitingFor?.type === "TapCreaturesForManaAbility";
   const targetSlots = isTargetSelection ? waitingFor.data.target_slots : [];
   const selection = isTargetSelection ? waitingFor.data.selection : null;
@@ -27,6 +28,8 @@ export function TargetingOverlay() {
     ? waitingFor.data.source_id
     : waitingFor?.type === "TargetSelection"
       ? waitingFor.data.pending_cast?.object_id
+      : waitingFor?.type === "ExploreChoice"
+        ? waitingFor.data.source_id
       : waitingFor?.type === "TapCreaturesForManaAbility"
         ? (waitingFor.data.pending_mana_ability as { source_id?: number } | undefined)?.source_id
       : undefined;
@@ -56,7 +59,7 @@ export function TargetingOverlay() {
     return () => clearSelectedCards();
   }, [clearSelectedCards, isTapCreatureChoice]);
 
-  if (!isTargetSelection && !isCopyTargetChoice && !isTapCreatureChoice) return null;
+  if (!isTargetSelection && !isCopyTargetChoice && !isExploreChoice && !isTapCreatureChoice) return null;
 
   // Only show targeting UI for the human player
   if (waitingFor.data.player !== playerId) return null;
@@ -83,6 +86,8 @@ export function TargetingOverlay() {
             <div className="rounded-lg bg-gray-900/90 px-6 py-2 text-lg font-semibold text-cyan-400 shadow-lg">
               {isCopyTargetChoice
                 ? "Choose a permanent to copy"
+                : isExploreChoice
+                  ? "Choose which creature explores next"
                 : isTapCreatureChoice
                   ? `Tap ${waitingFor.data.count} untapped creature${waitingFor.data.count > 1 ? "s" : ""}`
                 : targetSlots.length > 1

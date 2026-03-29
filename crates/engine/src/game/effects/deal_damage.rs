@@ -394,6 +394,7 @@ pub fn resolve_each_player(
         .filter(|p| {
             !p.is_eliminated
                 && match &player_filter {
+                    PlayerFilter::Controller => p.id == ability.controller,
                     PlayerFilter::All => true,
                     PlayerFilter::Opponent => p.id != ability.controller,
                     PlayerFilter::OpponentLostLife => {
@@ -401,6 +402,16 @@ pub fn resolve_each_player(
                     }
                     PlayerFilter::OpponentGainedLife => {
                         p.id != ability.controller && p.life_gained_this_turn > 0
+                    }
+                    PlayerFilter::HighestSpeed => {
+                        let highest_speed = state
+                            .players
+                            .iter()
+                            .filter(|player| !player.is_eliminated)
+                            .map(|player| player.speed.unwrap_or(0))
+                            .max()
+                            .unwrap_or(0);
+                        p.speed.unwrap_or(0) == highest_speed
                     }
                 }
         })

@@ -23,6 +23,7 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
     match trimmed {
         "cards in your hand" => Some(QuantityRef::HandSize),
         "your life total" => Some(QuantityRef::LifeTotal),
+        "your speed" => Some(QuantityRef::Speed),
         // Duration stripping may remove "this turn" suffix, so handle both forms
         "the life you've lost this turn"
         | "the life you lost this turn"
@@ -239,6 +240,12 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
     if text.contains("your life total") {
         return Some(QuantityExpr::Ref {
             qty: QuantityRef::LifeTotal,
+        });
+    }
+
+    if text.contains("your speed") {
+        return Some(QuantityExpr::Ref {
+            qty: QuantityRef::Speed,
         });
     }
 

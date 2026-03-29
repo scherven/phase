@@ -126,6 +126,20 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        WaitingFor::ExploreChoice {
+            player, choosable, ..
+        } => choosable
+            .iter()
+            .map(|&target_id| {
+                candidate(
+                    GameAction::ChooseTarget {
+                        target: Some(TargetRef::Object(target_id)),
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         WaitingFor::EquipTarget {
             player,
             equipment_id,

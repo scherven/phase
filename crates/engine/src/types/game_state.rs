@@ -357,6 +357,14 @@ pub enum WaitingFor {
         /// Legal permanents on the battlefield that can be copied.
         valid_targets: Vec<ObjectId>,
     },
+    /// CR 701.44d: Player chooses which of their remaining permanents explores next.
+    ExploreChoice {
+        player: PlayerId,
+        source_id: ObjectId,
+        choosable: Vec<ObjectId>,
+        remaining: Vec<ObjectId>,
+        pending_effect: Box<ResolvedAbility>,
+    },
     EquipTarget {
         player: PlayerId,
         equipment_id: ObjectId,
@@ -789,6 +797,7 @@ impl WaitingFor {
             | WaitingFor::DeclareBlockers { player, .. }
             | WaitingFor::ReplacementChoice { player, .. }
             | WaitingFor::CopyTargetChoice { player, .. }
+            | WaitingFor::ExploreChoice { player, .. }
             | WaitingFor::EquipTarget { player, .. }
             | WaitingFor::ScryChoice { player, .. }
             | WaitingFor::DigChoice { player, .. }
@@ -1700,6 +1709,21 @@ mod tests {
             candidate_count: 2,
             candidate_descriptions: vec![],
         }));
+        variants.push(Box::new(WaitingFor::ExploreChoice {
+            player: PlayerId(0),
+            source_id: ObjectId(1),
+            choosable: vec![ObjectId(2)],
+            remaining: vec![ObjectId(2)],
+            pending_effect: Box::new(ResolvedAbility::new(
+                crate::types::ability::Effect::Unimplemented {
+                    name: "Dummy".to_string(),
+                    description: None,
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            )),
+        }));
         variants.push(Box::new(WaitingFor::EquipTarget {
             player: PlayerId(0),
             equipment_id: ObjectId(1),
@@ -1812,7 +1836,7 @@ mod tests {
             mana_reduction: ManaCost::zero(),
             pending_cast: dummy_pending(),
         }));
-        assert_eq!(variants.len(), 24);
+        assert_eq!(variants.len(), 25);
     }
 
     #[test]

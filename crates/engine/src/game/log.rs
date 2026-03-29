@@ -141,6 +141,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::DayNightChanged { .. }
         | GameEvent::PowerToughnessChanged { .. } => LogCategory::State,
 
+        GameEvent::SpeedChanged { .. } => LogCategory::Special,
+
         GameEvent::TokenCreated { .. } => LogCategory::Token,
 
         GameEvent::EffectResolved { .. }
@@ -297,6 +299,22 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
                     text(" life"),
                 ]
             }
+        }
+
+        GameEvent::SpeedChanged {
+            player,
+            old_speed,
+            new_speed,
+        } => {
+            let old_speed = i32::from(old_speed.unwrap_or(0));
+            let new_speed = i32::from(new_speed.unwrap_or(0));
+            vec![
+                player_seg(state, *player),
+                text(" speed changes from "),
+                num(old_speed),
+                text(" to "),
+                num(new_speed),
+            ]
         }
 
         GameEvent::DamageDealt {

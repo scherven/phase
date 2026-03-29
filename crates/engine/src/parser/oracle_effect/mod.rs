@@ -473,6 +473,38 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
         return parsed_clause(Effect::RingTemptsYou);
     }
 
+    if tp.lower == "start your engines!" || tp.lower == "start your engines" {
+        return parsed_clause(Effect::StartYourEngines {
+            player_scope: PlayerFilter::Controller,
+        });
+    }
+
+    if tp.lower == "all players start their engines."
+        || tp.lower == "all players start their engines"
+        || tp.lower == "all players start their engines!"
+    {
+        return parsed_clause(Effect::StartYourEngines {
+            player_scope: PlayerFilter::All,
+        });
+    }
+
+    if let Some(amount_text) = tp
+        .lower
+        .strip_prefix("increase your speed by ")
+        .map(str::trim)
+    {
+        if let Some((amount, remainder)) = crate::parser::oracle_util::parse_number(amount_text) {
+            if remainder.trim().is_empty() {
+                return parsed_clause(Effect::IncreaseSpeed {
+                    player_scope: PlayerFilter::Controller,
+                    amount: QuantityExpr::Fixed {
+                        value: amount as i32,
+                    },
+                });
+            }
+        }
+    }
+
     // CR 603.7c: "Whenever X this turn, Y" — multi-fire delayed trigger creation.
     if let Some(clause) = try_parse_whenever_this_turn(tp) {
         return clause;
@@ -1804,9 +1836,48 @@ fn lower_subject_predicate_ast(
                 });
             }
             let mut clause = lower_imperative_clause(&text, ctx);
+            if matches!(clause.effect, Effect::Explore) {
+                let subject_filter = if subject.inherits_parent {
+                    TargetFilter::ParentTarget
+                } else {
+                    subject.target.as_ref().unwrap_or(&subject.affected).clone()
+                };
+
+                if subject.target.is_some()
+                    || subject.inherits_parent
+                    || matches!(subject.affected, TargetFilter::TriggeringSource)
+                {
+                    let mut explore = AbilityDefinition::new(AbilityKind::Spell, Effect::Explore);
+                    explore.sub_ability = clause.sub_ability;
+                    return ParsedEffectClause {
+                        effect: Effect::TargetOnly {
+                            target: subject_filter,
+                        },
+                        duration: clause.duration,
+                        sub_ability: Some(Box::new(explore)),
+                        distribute: None,
+                        multi_target: subject.multi_target,
+                    };
+                }
+
+                if !matches!(subject.affected, TargetFilter::SelfRef) {
+                    return ParsedEffectClause {
+                        effect: Effect::ExploreAll {
+                            filter: subject_filter,
+                        },
+                        duration: clause.duration,
+                        sub_ability: clause.sub_ability,
+                        distribute: None,
+                        multi_target: subject.multi_target,
+                    };
+                }
+            }
             // CR 608.2c: Inject the subject's target into targeted effects that were
             // parsed via the imperative path (connive, phase out, force block, suspect).
             inject_subject_target(&mut clause.effect, &subject);
+            if clause.multi_target.is_none() {
+                clause.multi_target = subject.multi_target;
+            }
             clause
         }
     }
@@ -2427,6 +2498,9 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         // CR 603.7a: Check for temporal prefix before suffix. When present, parse the
         // inner effect through the full pipeline and wrap in CreateDelayedTrigger.
         let (text_after_prefix, prefix_delayed) = strip_temporal_prefix(&text);
+        let text_where_x_lower = text.to_lowercase();
+        let (_, where_x_expression) =
+            strip_trailing_where_x(TextPair::new(&text, &text_where_x_lower));
         if let Some(prefix_condition) = prefix_delayed {
             let (inner_text, inner_multi_target) = strip_any_number_quantifier(text_after_prefix);
             let inner_clause = parse_effect_clause(&inner_text, ctx);
@@ -2440,6 +2514,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
             if let Some(sub) = inner_clause.sub_ability {
                 inner_def.sub_ability = Some(sub);
             }
+            apply_where_x_ability_expression(&mut inner_def, where_x_expression.as_deref());
             let delayed_effect = Effect::CreateDelayedTrigger {
                 condition: prefix_condition,
                 effect: Box::new(inner_def),
@@ -2497,13 +2572,30 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
             clause
         };
 
+        // CR 608.2c: TargetOnly is a structural wrapper — its sub_ability is the action
+        // to perform on the target. Preserve this relationship rather than flattening.
+        let is_target_only = matches!(clause.effect, Effect::TargetOnly { .. });
         let mut def = AbilityDefinition::new(kind, clause.effect);
+        let clause_sub = if is_target_only {
+            def.sub_ability = clause.sub_ability;
+            None
+        } else {
+            clause.sub_ability
+        };
         if is_optional {
             def.optional = true;
             def.optional_for = opponent_may_scope;
         }
         if let Some(qty) = repeat_for {
-            def.repeat_for = Some(qty);
+            if matches!(*def.effect, Effect::TargetOnly { .. }) {
+                if let Some(sub) = def.sub_ability.as_mut() {
+                    sub.repeat_for = Some(qty);
+                } else {
+                    def.repeat_for = Some(qty);
+                }
+            } else {
+                def.repeat_for = Some(qty);
+            }
         }
         if let Some(scope) = player_scope {
             def.player_scope = Some(scope);
@@ -2558,8 +2650,11 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         }
 
         let mut current_defs = vec![def];
-        if let Some(sub) = clause.sub_ability {
+        if let Some(sub) = clause_sub {
             current_defs.push(*sub);
+        }
+        for current in &mut current_defs {
+            apply_where_x_ability_expression(current, where_x_expression.as_deref());
         }
 
         // CR 603.7: Wrap in CreateDelayedTrigger if temporal suffix was found
@@ -2627,12 +2722,23 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
     // and coin flip conditional branches into their parent FlipCoin.
     consolidate_die_and_coin_defs(&mut defs, kind);
 
-    // Chain: last has no sub_ability, each earlier one chains to next
+    // Chain: last has no sub_ability, each earlier one chains to next.
+    // When a def already has a sub_ability (e.g., TargetOnly with attached Explore),
+    // append to the deepest sub rather than overwriting.
     if defs.len() > 1 {
         let last = defs.pop().unwrap();
         let mut chain = last;
         while let Some(mut prev) = defs.pop() {
-            prev.sub_ability = Some(Box::new(chain));
+            if prev.sub_ability.is_some() {
+                // Walk to the deepest sub_ability and append there
+                let mut cursor = &mut prev;
+                while cursor.sub_ability.is_some() {
+                    cursor = cursor.sub_ability.as_mut().unwrap();
+                }
+                cursor.sub_ability = Some(Box::new(chain));
+            } else {
+                prev.sub_ability = Some(Box::new(chain));
+            }
             chain = prev;
         }
         chain
@@ -3825,6 +3931,16 @@ fn strip_repeat_count_suffix(text: &str) -> (Option<QuantityExpr>, String) {
             );
         }
     }
+    if let Some(base) = lower.strip_suffix(" times") {
+        if let Some(space_idx) = base.rfind(' ') {
+            let qty_text = text[space_idx + 1..text.len() - " times".len()].trim();
+            if let Some((qty, remainder)) = super::oracle_util::parse_count_expr(qty_text) {
+                if remainder.trim().is_empty() {
+                    return (Some(qty), text[..space_idx].to_string());
+                }
+            }
+        }
+    }
     (None, text.to_string())
 }
 
@@ -3834,7 +3950,12 @@ fn strip_repeat_count_suffix(text: &str) -> (Option<QuantityExpr>, String) {
 /// "Each player draws a card" → (Some(All), "draw a card")
 fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
     let lower = text.to_lowercase();
-    let (scope, rest) = if lower.starts_with("each opponent ") {
+    let (scope, rest) = if lower.starts_with("each player with the highest speed among players ") {
+        (
+            PlayerFilter::HighestSpeed,
+            &text["each player with the highest speed among players ".len()..],
+        )
+    } else if lower.starts_with("each opponent ") {
         (PlayerFilter::Opponent, &text["each opponent ".len()..])
     } else if lower.starts_with("each player ") {
         (PlayerFilter::All, &text["each player ".len()..])
@@ -4823,12 +4944,12 @@ fn strip_leading_sequence_connector(text: &str) -> &str {
 fn apply_where_x_expression(value: PtValue, where_x_expression: Option<&str>) -> PtValue {
     match (value, where_x_expression) {
         (PtValue::Variable(alias), Some(expression)) if alias.eq_ignore_ascii_case("X") => {
-            crate::parser::oracle_quantity::parse_cda_quantity(expression)
+            parse_where_x_quantity_expression(expression)
                 .map(PtValue::Quantity)
                 .unwrap_or_else(|| PtValue::Variable(expression.to_string()))
         }
         (PtValue::Variable(alias), Some(expression)) if alias.eq_ignore_ascii_case("-X") => {
-            crate::parser::oracle_quantity::parse_cda_quantity(expression)
+            parse_where_x_quantity_expression(expression)
                 .map(|inner| {
                     PtValue::Quantity(QuantityExpr::Multiply {
                         factor: -1,
@@ -4838,6 +4959,89 @@ fn apply_where_x_expression(value: PtValue, where_x_expression: Option<&str>) ->
                 .unwrap_or_else(|| PtValue::Variable(format!("-({expression})")))
         }
         (value, _) => value,
+    }
+}
+
+fn parse_where_x_quantity_expression(where_x_expression: &str) -> Option<QuantityExpr> {
+    parse_cda_quantity(where_x_expression)
+}
+
+fn apply_where_x_quantity_expression(
+    value: QuantityExpr,
+    where_x_expression: Option<&str>,
+) -> QuantityExpr {
+    match value {
+        QuantityExpr::Ref {
+            qty: QuantityRef::Variable { name },
+        } if where_x_expression.is_some() && name.eq_ignore_ascii_case("X") => {
+            let expression = where_x_expression.expect("checked is_some above");
+            parse_where_x_quantity_expression(expression).unwrap_or_else(|| QuantityExpr::Ref {
+                qty: QuantityRef::Variable {
+                    name: expression.to_string(),
+                },
+            })
+        }
+        QuantityExpr::Offset { inner, offset } => QuantityExpr::Offset {
+            inner: Box::new(apply_where_x_quantity_expression(
+                *inner,
+                where_x_expression,
+            )),
+            offset,
+        },
+        QuantityExpr::Multiply { factor, inner } => QuantityExpr::Multiply {
+            factor,
+            inner: Box::new(apply_where_x_quantity_expression(
+                *inner,
+                where_x_expression,
+            )),
+        },
+        QuantityExpr::HalfRounded { inner, rounding } => QuantityExpr::HalfRounded {
+            inner: Box::new(apply_where_x_quantity_expression(
+                *inner,
+                where_x_expression,
+            )),
+            rounding,
+        },
+        other => other,
+    }
+}
+
+fn apply_where_x_effect_expression(effect: &mut Effect, where_x_expression: Option<&str>) {
+    match effect {
+        Effect::DealDamage { amount, .. }
+        | Effect::GainLife { amount, .. }
+        | Effect::LoseLife { amount, .. }
+        | Effect::IncreaseSpeed { amount, .. }
+        | Effect::Draw { count: amount }
+        | Effect::Mill { count: amount, .. }
+        | Effect::PutCounter { count: amount, .. }
+        | Effect::PutCounterAll { count: amount, .. }
+        | Effect::Token { count: amount, .. } => {
+            *amount = apply_where_x_quantity_expression(amount.clone(), where_x_expression);
+        }
+        Effect::Pump {
+            power, toughness, ..
+        }
+        | Effect::PumpAll {
+            power, toughness, ..
+        } => {
+            *power = apply_where_x_expression(power.clone(), where_x_expression);
+            *toughness = apply_where_x_expression(toughness.clone(), where_x_expression);
+        }
+        _ => {}
+    }
+}
+
+fn apply_where_x_ability_expression(def: &mut AbilityDefinition, where_x_expression: Option<&str>) {
+    apply_where_x_effect_expression(def.effect.as_mut(), where_x_expression);
+    if let Some(sub) = def.sub_ability.as_mut() {
+        apply_where_x_ability_expression(sub, where_x_expression);
+    }
+    if let Some(else_ability) = def.else_ability.as_mut() {
+        apply_where_x_ability_expression(else_ability, where_x_expression);
+    }
+    for mode_ability in &mut def.mode_abilities {
+        apply_where_x_ability_expression(mode_ability, where_x_expression);
     }
 }
 
@@ -5949,6 +6153,93 @@ mod tests {
     }
 
     #[test]
+    fn effect_target_creature_explores_uses_target_only_chain() {
+        let def = parse_effect_chain("Target creature explores", AbilityKind::Spell);
+        assert!(matches!(
+            *def.effect,
+            Effect::TargetOnly {
+                target: TargetFilter::Typed(ref tf)
+            } if tf.type_filters.contains(&TypeFilter::Creature)
+        ));
+        let sub = def
+            .sub_ability
+            .expect("targeted explore should have sub ability");
+        assert!(matches!(*sub.effect, Effect::Explore));
+    }
+
+    #[test]
+    fn effect_up_to_one_target_creature_explores_sets_multi_target() {
+        let def = parse_effect_chain("Up to one target creature explores", AbilityKind::Spell);
+        assert!(matches!(*def.effect, Effect::TargetOnly { .. }));
+        assert_eq!(
+            def.multi_target,
+            Some(MultiTargetSpec {
+                min: 0,
+                max: Some(1),
+            })
+        );
+        assert!(matches!(
+            *def.sub_ability
+                .expect("expected explore sub ability")
+                .effect,
+            Effect::Explore
+        ));
+    }
+
+    #[test]
+    fn effect_target_creature_explores_then_explores_again() {
+        let def = parse_effect_chain(
+            "Target creature explores, then it explores again",
+            AbilityKind::Spell,
+        );
+        assert!(matches!(*def.effect, Effect::TargetOnly { .. }));
+        let first = def.sub_ability.expect("expected first explore");
+        assert!(matches!(*first.effect, Effect::Explore));
+        let second = first.sub_ability.expect("expected repeated explore");
+        assert!(matches!(*second.effect, Effect::Explore));
+    }
+
+    #[test]
+    fn effect_target_creature_explores_x_times_sets_repeat_for() {
+        let def = parse_effect_chain("Target creature explores X times", AbilityKind::Spell);
+        assert!(matches!(*def.effect, Effect::TargetOnly { .. }));
+        let sub = def.sub_ability.expect("expected explore sub ability");
+        assert!(matches!(
+            sub.repeat_for,
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::Variable { .. }
+            })
+        ));
+        assert!(matches!(*sub.effect, Effect::Explore));
+    }
+
+    #[test]
+    fn effect_it_explores_x_times_sets_repeat_for() {
+        let def = parse_effect_chain("It explores X times", AbilityKind::Spell);
+        assert!(matches!(*def.effect, Effect::Explore));
+        assert!(matches!(
+            def.repeat_for,
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::Variable { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn effect_each_merfolk_creature_you_control_explores_uses_explore_all() {
+        let e = parse_effect("Each Merfolk creature you control explores");
+        assert!(
+            matches!(
+                e,
+                Effect::ExploreAll {
+                    filter: TargetFilter::Typed(ref tf)
+                } if tf.type_filters.contains(&TypeFilter::Creature)
+            ),
+            "expected ExploreAll creature filter, got {e:?}"
+        );
+    }
+
+    #[test]
     fn effect_manifest_dread() {
         let e = parse_effect("Manifest dread");
         assert!(matches!(e, Effect::ManifestDread));
@@ -6173,6 +6464,17 @@ mod tests {
             e,
             Effect::Token { ref name, ref types, power: PtValue::Fixed(0), toughness: PtValue::Fixed(0), count: QuantityExpr::Fixed { value: 1 }, .. }
             if name == "Treasure" && types == &vec!["Artifact".to_string(), "Treasure".to_string()]
+        ));
+    }
+
+    #[test]
+    fn effect_all_players_start_their_engines() {
+        let e = parse_effect("All players start their engines!");
+        assert!(matches!(
+            e,
+            Effect::StartYourEngines {
+                player_scope: PlayerFilter::All
+            }
         ));
     }
 
@@ -6501,6 +6803,25 @@ mod tests {
             "Expected targeted PutCounter with multi_target, got {:?}",
             clause.effect
         );
+    }
+
+    #[test]
+    fn put_counter_where_x_is_lowers_to_speed_quantity() {
+        let def = parse_effect_chain_with_context(
+            "put X +1/+1 counters on target creature you control, where X is your speed",
+            AbilityKind::Spell,
+            &ParseContext::default(),
+        );
+
+        assert!(matches!(
+            *def.effect,
+            Effect::PutCounter {
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::Speed,
+                },
+                ..
+            }
+        ));
     }
 
     #[test]

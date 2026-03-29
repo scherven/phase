@@ -1528,6 +1528,34 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             }
         }
         (
+            WaitingFor::ExploreChoice {
+                player,
+                remaining,
+                pending_effect,
+                ..
+            },
+            GameAction::ChooseTarget { target },
+        ) => {
+            if state.waiting_for.acting_player() != Some(*player) {
+                return Err(EngineError::WrongPlayer);
+            }
+            let chosen = match target {
+                Some(TargetRef::Object(id)) => id,
+                _ => {
+                    return Err(EngineError::InvalidAction(
+                        "Invalid explore choice".to_string(),
+                    ));
+                }
+            };
+            super::effects::explore::handle_choice(
+                state,
+                chosen,
+                remaining,
+                pending_effect.as_ref(),
+                &mut events,
+            )?
+        }
+        (
             WaitingFor::EquipTarget {
                 player,
                 equipment_id,
@@ -2264,10 +2292,32 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             // Store the chosen value for continuations to read
             state.last_named_choice = ChoiceValue::from_choice(choice_type, &choice);
 
-            // Resume pending continuation if present
             state.waiting_for = WaitingFor::Priority { player: p };
             state.priority_player = p;
-            if let Some(cont) = state.pending_continuation.take() {
+            if let Some(pending) = state.pending_cast.take() {
+                if let Some(ability_index) = pending.activation_ability_index {
+                    state.waiting_for = casting_costs::push_activated_ability_to_stack(
+                        state,
+                        p,
+                        pending.object_id,
+                        ability_index,
+                        pending.ability,
+                        pending.activation_cost.as_ref(),
+                        &mut events,
+                    )?;
+                } else {
+                    state.waiting_for = casting_costs::finalize_cast(
+                        state,
+                        p,
+                        pending.object_id,
+                        pending.card_id,
+                        pending.ability,
+                        &pending.cost,
+                        pending.casting_variant,
+                        &mut events,
+                    )?;
+                }
+            } else if let Some(cont) = state.pending_continuation.take() {
                 let _ = effects::resolve_ability_chain(state, &cont, &mut events, 0);
             }
             // Clear the choice after the continuation has consumed it

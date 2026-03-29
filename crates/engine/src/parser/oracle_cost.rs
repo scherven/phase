@@ -151,6 +151,29 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
         }
     }
 
+    if let Some(rest) = lower.strip_prefix("pay ") {
+        if let Some(speed_text) = rest.strip_suffix(" speed") {
+            if speed_text.trim() == "x" {
+                return AbilityCost::PaySpeed {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                };
+            }
+            if let Some((amount, remainder)) = parse_number(speed_text) {
+                if remainder.trim().is_empty() {
+                    return AbilityCost::PaySpeed {
+                        amount: QuantityExpr::Fixed {
+                            value: amount as i32,
+                        },
+                    };
+                }
+            }
+        }
+    }
+
     // "Discard a card" / "Discard N cards"
     if let Some(rest) = lower.strip_prefix("discard ") {
         // CR 207.2c: "Discard this card" — Channel self-ref cost (ability word, not keyword).

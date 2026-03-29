@@ -33,6 +33,7 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::RaiseCost { .. }
             | StaticMode::DefilerCostReduction { .. }
             | StaticMode::CantCastDuring { .. }
+            | StaticMode::PerTurnCastLimit { .. }
             | StaticMode::GraveyardCastPermission { .. }
     )
 }
@@ -432,6 +433,7 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::GraveyardSize => "cards in graveyard".into(),
         QuantityRef::LifeAboveStarting => "life above starting".into(),
         QuantityRef::StartingLifeTotal => "starting life total".into(),
+        QuantityRef::Speed => "speed".into(),
         QuantityRef::ObjectCount { filter } => format!("# of {}", fmt_target(filter)),
         QuantityRef::PlayerCount { filter } => format!("# of {}", fmt_player_filter(filter)),
         QuantityRef::CountersOnSelf { counter_type } => {
@@ -513,10 +515,12 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
 
 fn fmt_player_filter(pf: &PlayerFilter) -> String {
     match pf {
+        PlayerFilter::Controller => "you",
         PlayerFilter::Opponent => "each opponent",
         PlayerFilter::OpponentLostLife => "each opponent who lost life this turn",
         PlayerFilter::OpponentGainedLife => "each opponent who gained life this turn",
         PlayerFilter::All => "each player",
+        PlayerFilter::HighestSpeed => "each player with the highest speed",
     }
     .into()
 }
@@ -681,6 +685,16 @@ fn fmt_count_scope(scope: &CountScope) -> &'static str {
 fn effect_details(effect: &Effect) -> Vec<(String, String)> {
     let mut d = Vec::new();
     match effect {
+        Effect::StartYourEngines { player_scope } => {
+            d.push(("players".into(), fmt_player_filter(player_scope)));
+        }
+        Effect::IncreaseSpeed {
+            player_scope,
+            amount,
+        } => {
+            d.push(("players".into(), fmt_player_filter(player_scope)));
+            d.push(("amount".into(), fmt_quantity(amount)));
+        }
         Effect::DealDamage { amount, target, .. } => {
             d.push(("amount".into(), fmt_quantity(amount)));
             d.push(("target".into(), fmt_target(target)));
@@ -1091,6 +1105,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         }
         Effect::Unimplemented { .. }
         | Effect::Explore
+        | Effect::ExploreAll { .. }
         | Effect::Investigate
         | Effect::BecomeMonarch
         | Effect::Proliferate
@@ -2822,6 +2837,9 @@ fn extract_effect_quantity_features(effect: &Effect, features: &mut HashSet<Stri
         Effect::Mill { count, .. } => extract_quantity_features(count, features),
         Effect::GainLife { amount, .. } => extract_quantity_features(amount, features),
         Effect::LoseLife { amount, .. } => extract_quantity_features(amount, features),
+        Effect::IncreaseSpeed { amount, .. } => extract_quantity_features(amount, features),
+        Effect::PutCounter { count, .. } => extract_quantity_features(count, features),
+        Effect::PutCounterAll { count, .. } => extract_quantity_features(count, features),
         Effect::Token { count, .. } => extract_quantity_features(count, features),
         Effect::Pump {
             power, toughness, ..
@@ -2852,6 +2870,7 @@ fn condition_variant_name(cond: &AbilityCondition) -> &'static str {
         AbilityCondition::NinjutsuVariantPaidInstead { .. } => "NinjutsuVariantPaidInstead",
         AbilityCondition::IfAPlayerDoes => "IfAPlayerDoes",
         AbilityCondition::QuantityCheck { .. } => "QuantityCheck",
+        AbilityCondition::HasMaxSpeed => "HasMaxSpeed",
         AbilityCondition::TargetHasKeywordInstead { .. } => "TargetHasKeywordInstead",
         AbilityCondition::TargetMatchesFilter { .. } => "TargetMatchesFilter",
     }
@@ -2865,6 +2884,7 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::GraveyardSize => "GraveyardSize",
         QuantityRef::LifeAboveStarting => "LifeAboveStarting",
         QuantityRef::StartingLifeTotal => "StartingLifeTotal",
+        QuantityRef::Speed => "Speed",
         QuantityRef::ObjectCount { .. } => "ObjectCount",
         QuantityRef::PlayerCount { .. } => "PlayerCount",
         QuantityRef::CountersOnSelf { .. } => "CountersOnSelf",
@@ -2927,17 +2947,20 @@ fn resolver_handled_features() -> HashSet<&'static str> {
         "condition:NinjutsuVariantPaid",
         "condition:NinjutsuVariantPaidInstead",
         "condition:QuantityCheck",
+        "condition:HasMaxSpeed",
         "condition:TargetHasKeywordInstead",
         // -- Player scope variants handled by resolve_ability_chain --
         "player_scope:All",
         "player_scope:Opponent",
         "player_scope:OpponentLostLife",
         "player_scope:OpponentGainedLife",
+        "player_scope:HighestSpeed",
         // -- QuantityRef variants handled by resolve_quantity --
         "quantity_ref:HandSize",
         "quantity_ref:LifeTotal",
         "quantity_ref:GraveyardSize",
         "quantity_ref:LifeAboveStarting",
+        "quantity_ref:Speed",
         "quantity_ref:ObjectCount",
         "quantity_ref:PlayerCount",
         "quantity_ref:CountersOnSelf",
@@ -3505,5 +3528,36 @@ mod tests {
 
         let item = build_ability_item(&def);
         assert_eq!(item.label, "grant Flying, grant Haste");
+    }
+
+    #[test]
+    fn speed_quantity_features_are_extracted_and_marked_handled() {
+        let mut face = CardFace::default();
+        face.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::PutCounter {
+                    counter_type: "P1P1".to_string(),
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Speed,
+                    },
+                    target: TargetFilter::SelfRef,
+                },
+            )
+            .condition(AbilityCondition::HasMaxSpeed)
+            .player_scope(PlayerFilter::HighestSpeed),
+        );
+
+        let mut features = HashSet::new();
+        extract_card_features(&face, &mut features);
+
+        assert!(features.contains("condition:HasMaxSpeed"));
+        assert!(features.contains("player_scope:HighestSpeed"));
+        assert!(features.contains("quantity_ref:Speed"));
+
+        let handled = resolver_handled_features();
+        assert!(handled.contains("condition:HasMaxSpeed"));
+        assert!(handled.contains("player_scope:HighestSpeed"));
+        assert!(handled.contains("quantity_ref:Speed"));
     }
 }

@@ -59,11 +59,15 @@ pub(super) fn try_parse_subject_predicate_ast(text: &str, ctx: &ParseContext) ->
             parse_subject_application(&subject_text, ctx).unwrap_or(SubjectApplication {
                 affected: TargetFilter::Any,
                 target: None,
+                multi_target: None,
+                inherits_parent: false,
             });
         return Some(ClauseAst::SubjectPredicate {
             subject: Box::new(SubjectPhraseAst {
                 affected: application.affected,
                 target: application.target,
+                multi_target: application.multi_target,
+                inherits_parent: application.inherits_parent,
             }),
             predicate: Box::new(PredicateAst::ImperativeFallback { text: stripped }),
         });
@@ -85,12 +89,16 @@ where
     let application = parse_subject_application(&subject_text, ctx).unwrap_or(SubjectApplication {
         affected: TargetFilter::Any,
         target: None,
+        multi_target: None,
+        inherits_parent: false,
     });
 
     ClauseAst::SubjectPredicate {
         subject: Box::new(SubjectPhraseAst {
             affected: application.affected,
             target: application.target,
+            multi_target: application.multi_target,
+            inherits_parent: application.inherits_parent,
         }),
         predicate: Box::new(build_predicate(
             clause.effect,
@@ -200,14 +208,13 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         let (filter, _) = parse_target(subject);
         return subject_filter_application(filter, true);
     }
-    // "up to N target X" — the quantifier count is handled by strip_any_number_quantifier()
-    // in parse_effect_chain; here we just need to route to parse_target for the filter.
     if lower.starts_with("up to ") {
-        let tp = TextPair::new(subject, &lower);
-        if let Some(pos) = tp.find("target ") {
-            let (_, from_target) = tp.split_at(pos);
-            let (filter, _) = parse_target(from_target.original);
-            return subject_filter_application(filter, true);
+        let (target_text, multi_target) = super::strip_optional_target_prefix(subject);
+        if multi_target.is_some() {
+            let (filter, _) = parse_target(target_text);
+            let mut application = subject_filter_application(filter, true)?;
+            application.multi_target = multi_target;
+            return Some(application);
         }
     }
     // "each of your opponents" / "each of those creatures" / "each of them" — variant of
@@ -231,7 +238,13 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         return subject_filter_application(filter, false);
     }
     if lower.starts_with("all ") || lower.starts_with("each ") {
-        let (filter, _) = parse_target(subject);
+        let phrase = if lower.starts_with("all ") {
+            &subject[4..]
+        } else {
+            &subject[5..]
+        };
+        let (filter, rest) = parse_type_phrase(phrase);
+        let filter = merge_partial_type_phrase_filter(filter, rest.trim());
         return subject_filter_application(filter, false);
     }
     if lower.starts_with("enchanted creature")
@@ -242,6 +255,8 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         return Some(SubjectApplication {
             affected: filter,
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
     // Bare plural noun phrase subjects ("creatures you control", "other creatures you control")
@@ -271,12 +286,16 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         return Some(SubjectApplication {
             affected: TargetFilter::Typed(TypedFilter::default()),
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
     if lower == "that player" || lower == "the player" {
         return Some(SubjectApplication {
             affected: TargetFilter::Player,
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
     // "an opponent" as subject — single opponent (two-player: equivalent to "each opponent").
@@ -291,18 +310,24 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         return Some(SubjectApplication {
             affected: TargetFilter::DefendingPlayer,
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
     if lower == "that controller" {
         return Some(SubjectApplication {
             affected: TargetFilter::Controller,
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
     if lower == "its controller" || lower == "their controller" {
         return Some(SubjectApplication {
             affected: TargetFilter::ParentTargetController,
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
     // Explicit self-reference — always SelfRef
@@ -312,6 +337,8 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         return Some(SubjectApplication {
             affected: TargetFilter::SelfRef,
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
     // CR 608.2k: Bare pronoun "it" — context-dependent
@@ -319,6 +346,8 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         return Some(SubjectApplication {
             affected: resolve_it_pronoun(ctx),
             target: None,
+            multi_target: None,
+            inherits_parent: false,
         });
     }
 
@@ -335,6 +364,8 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
             return Some(SubjectApplication {
                 affected: filter,
                 target: None,
+                multi_target: None,
+                inherits_parent: true,
             });
         }
     }
@@ -351,7 +382,41 @@ fn subject_filter_application(filter: TargetFilter, targeted: bool) -> Option<Su
     Some(SubjectApplication {
         target: targeted.then_some(filter.clone()),
         affected: filter,
+        multi_target: None,
+        inherits_parent: false,
     })
+}
+
+fn merge_partial_type_phrase_filter(filter: TargetFilter, remainder: &str) -> TargetFilter {
+    if remainder.is_empty() {
+        return filter;
+    }
+
+    let TargetFilter::Typed(mut left) = filter else {
+        return filter;
+    };
+    let (suffix_filter, suffix_remainder) = parse_type_phrase(remainder);
+    let TargetFilter::Typed(right) = suffix_filter else {
+        return TargetFilter::Typed(left);
+    };
+    if !suffix_remainder.trim().is_empty() {
+        return TargetFilter::Typed(left);
+    }
+
+    for type_filter in right.type_filters {
+        if !left.type_filters.contains(&type_filter) {
+            left.type_filters.push(type_filter);
+        }
+    }
+    if left.controller.is_none() {
+        left.controller = right.controller;
+    }
+    for property in right.properties {
+        if !left.properties.contains(&property) {
+            left.properties.push(property);
+        }
+    }
+    TargetFilter::Typed(left)
 }
 
 /// Build a Pump or PumpAll effect from a subject application and P/T values.
@@ -854,6 +919,7 @@ pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
         "an opponent ",
         "defending player ",
         "each of ",
+        "each ",
         "each opponent ",
         "each player ",
         "enchanted ",

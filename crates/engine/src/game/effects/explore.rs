@@ -1,13 +1,19 @@
 use std::collections::HashSet;
 
+use crate::game::filter;
 use crate::game::game_object::CounterType;
 use crate::game::replacement::{self, ReplacementResult};
-use crate::types::ability::{EffectError, EffectKind, ResolvedAbility, TargetRef};
+use crate::types::ability::{
+    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+};
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
+use crate::types::player::PlayerId;
 use crate::types::proposed_event::ProposedEvent;
+
+use super::resolve_ability_chain;
 
 /// Add a +1/+1 counter to the exploring creature via the replacement pipeline.
 fn add_explore_counter(state: &mut GameState, explorer_id: ObjectId, events: &mut Vec<GameEvent>) {
@@ -38,6 +44,158 @@ fn add_explore_counter(state: &mut GameState, explorer_id: ObjectId, events: &mu
     }
 }
 
+fn next_explore_chooser(
+    state: &GameState,
+    remaining: &[ObjectId],
+) -> Option<(PlayerId, Vec<ObjectId>)> {
+    let apnap = crate::game::players::apnap_order(state);
+    for player in apnap {
+        let choosable: Vec<ObjectId> = remaining
+            .iter()
+            .copied()
+            .filter(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|object| object.controller == player)
+            })
+            .collect();
+        if !choosable.is_empty() {
+            return Some((player, choosable));
+        }
+    }
+    None
+}
+
+fn collect_explorers(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    filter_spec: &TargetFilter,
+) -> Vec<ObjectId> {
+    match filter_spec {
+        TargetFilter::ParentTarget => ability
+            .targets
+            .iter()
+            .filter_map(|target| match target {
+                TargetRef::Object(id) => Some(*id),
+                _ => None,
+            })
+            .filter(|obj_id| state.objects.contains_key(obj_id))
+            .collect(),
+        TargetFilter::TrackedSet { id } => state
+            .tracked_object_sets
+            .get(id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|obj_id| state.objects.contains_key(obj_id))
+            .collect(),
+        _ => state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|obj_id| {
+                filter::matches_target_filter_controlled(
+                    state,
+                    *obj_id,
+                    filter_spec,
+                    ability.source_id,
+                    ability.controller,
+                )
+            })
+            .collect(),
+    }
+}
+
+fn continuation_for_remaining(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    remaining: Vec<ObjectId>,
+) -> Option<ResolvedAbility> {
+    if remaining.is_empty() {
+        return None;
+    }
+
+    let tracked_set_id = crate::types::identifiers::TrackedSetId(state.next_tracked_set_id);
+    state.next_tracked_set_id += 1;
+    state.tracked_object_sets.insert(tracked_set_id, remaining);
+
+    Some(
+        ResolvedAbility::new(
+            Effect::ExploreAll {
+                filter: TargetFilter::TrackedSet { id: tracked_set_id },
+            },
+            vec![],
+            ability.source_id,
+            ability.controller,
+        )
+        .kind(ability.kind)
+        .context(ability.context.clone()),
+    )
+}
+
+fn resolve_single_explorer(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    explorer_id: ObjectId,
+    remaining: Vec<ObjectId>,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let mut single = ResolvedAbility::new(
+        Effect::Explore,
+        vec![TargetRef::Object(explorer_id)],
+        ability.source_id,
+        ability.controller,
+    )
+    .kind(ability.kind)
+    .context(ability.context.clone());
+
+    if let Some(next) = continuation_for_remaining(state, ability, remaining) {
+        single = single.sub_ability(next);
+    } else if let Some(sub) = ability.sub_ability.as_deref() {
+        single = single.sub_ability(sub.clone());
+    }
+
+    resolve_ability_chain(state, &single, events, 1)
+}
+
+fn advance_explore_all(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    remaining: Vec<ObjectId>,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Some((player, choosable)) = next_explore_chooser(state, &remaining) else {
+        events.push(GameEvent::EffectResolved {
+            kind: EffectKind::from(&ability.effect),
+            source_id: ability.source_id,
+        });
+        return Ok(());
+    };
+
+    if choosable.len() == 1 {
+        let chosen = choosable[0];
+        let remaining: Vec<ObjectId> = remaining
+            .into_iter()
+            .filter(|obj_id| *obj_id != chosen)
+            .collect();
+        return resolve_single_explorer(state, ability, chosen, remaining, events);
+    }
+
+    state.waiting_for = WaitingFor::ExploreChoice {
+        player,
+        source_id: ability.source_id,
+        choosable,
+        remaining,
+        pending_effect: Box::new(ability.clone()),
+    };
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::from(&ability.effect),
+        source_id: ability.source_id,
+    });
+    Ok(())
+}
+
 /// CR 701.44a: Explore — reveal the top card of the exploring creature's controller's library.
 /// - If the card is a land: put it into that player's hand (no counter).
 /// - If the card is not a land: put a +1/+1 counter on the creature, then the player
@@ -64,7 +222,11 @@ pub fn resolve(
         })
         .unwrap_or(ability.source_id);
 
-    let controller = ability.controller;
+    let controller = state
+        .objects
+        .get(&explorer_id)
+        .map(|object| object.controller)
+        .unwrap_or(ability.controller);
 
     // Find the controller's library
     let player = state
@@ -146,12 +308,58 @@ pub fn resolve(
     Ok(())
 }
 
+/// CR 701.44d: If multiple permanents explore simultaneously, controllers choose
+/// the order within APNAP buckets and each permanent explores one at a time.
+pub fn resolve_all(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Effect::ExploreAll { filter } = &ability.effect else {
+        return Ok(());
+    };
+    let remaining = collect_explorers(state, ability, filter);
+    advance_explore_all(state, ability, remaining, events)
+}
+
+pub fn handle_choice(
+    state: &mut GameState,
+    chosen: ObjectId,
+    remaining: &[ObjectId],
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, crate::game::engine::EngineError> {
+    let WaitingFor::ExploreChoice { choosable, .. } = &state.waiting_for else {
+        return Err(crate::game::engine::EngineError::InvalidAction(
+            "Not waiting for explore choice".to_string(),
+        ));
+    };
+    if !choosable.contains(&chosen) {
+        return Err(crate::game::engine::EngineError::InvalidAction(
+            "Invalid explore choice".to_string(),
+        ));
+    }
+
+    let remaining: Vec<ObjectId> = remaining
+        .iter()
+        .copied()
+        .filter(|obj_id| *obj_id != chosen)
+        .collect();
+    resolve_single_explorer(state, ability, chosen, remaining, events).map_err(|err| {
+        crate::game::engine::EngineError::InvalidAction(format!(
+            "Failed to continue explore sequence: {err}"
+        ))
+    })?;
+    Ok(state.waiting_for.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::Effect;
+    use crate::types::ability::{ControllerRef, Effect, TargetFilter, TargetRef, TypedFilter};
     use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::keywords::Keyword;
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
 
@@ -302,5 +510,188 @@ mod tests {
             state.objects[&explorer].counters[&CounterType::Plus1Plus1],
             1
         );
+    }
+
+    #[test]
+    fn targeted_explore_uses_target_controllers_library() {
+        let mut state = GameState::new_two_player(42);
+        let target = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(1),
+            "Opponent Creature".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&target)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let opponent_top = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(1),
+            "Opponent Spell".to_string(),
+            Zone::Library,
+        );
+        state
+            .objects
+            .get_mut(&opponent_top)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Sorcery);
+        let _controller_top = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(0),
+            "Controller Land".to_string(),
+            Zone::Library,
+        );
+
+        let ability = ResolvedAbility::new(
+            Effect::Explore,
+            vec![TargetRef::Object(target)],
+            ObjectId(900),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(
+            state.objects[&target].counters[&CounterType::Plus1Plus1],
+            1,
+            "targeted explore should put the counter on the chosen creature"
+        );
+        match &state.waiting_for {
+            WaitingFor::DigChoice { player, cards, .. } => {
+                assert_eq!(*player, PlayerId(1));
+                assert_eq!(cards.as_slice(), &[opponent_top]);
+            }
+            other => panic!("expected DigChoice from opponent library, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explore_all_waits_for_choice_when_one_player_has_multiple_explorers() {
+        let mut state = GameState::new_two_player(42);
+        let first = create_object(
+            &mut state,
+            CardId(20),
+            PlayerId(0),
+            "First".to_string(),
+            Zone::Battlefield,
+        );
+        let second = create_object(
+            &mut state,
+            CardId(21),
+            PlayerId(0),
+            "Second".to_string(),
+            Zone::Battlefield,
+        );
+        for creature in [first, second] {
+            state
+                .objects
+                .get_mut(&creature)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+        state
+            .objects
+            .get_mut(&second)
+            .unwrap()
+            .keywords
+            .push(Keyword::Hexproof);
+
+        let ability = ResolvedAbility::new(
+            Effect::ExploreAll {
+                filter: TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+            },
+            vec![],
+            ObjectId(901),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve_all(&mut state, &ability, &mut events).unwrap();
+
+        match &state.waiting_for {
+            WaitingFor::ExploreChoice {
+                player,
+                choosable,
+                remaining,
+                ..
+            } => {
+                assert_eq!(*player, PlayerId(0));
+                assert_eq!(choosable.len(), 2);
+                assert!(choosable.contains(&first));
+                assert!(choosable.contains(&second));
+                assert_eq!(remaining.len(), 2);
+            }
+            other => panic!("expected ExploreChoice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explore_all_parent_target_uses_inherited_targets() {
+        let mut state = GameState::new_two_player(42);
+        let first = create_object(
+            &mut state,
+            CardId(30),
+            PlayerId(0),
+            "First".to_string(),
+            Zone::Battlefield,
+        );
+        let second = create_object(
+            &mut state,
+            CardId(31),
+            PlayerId(0),
+            "Second".to_string(),
+            Zone::Battlefield,
+        );
+        let outsider = create_object(
+            &mut state,
+            CardId(32),
+            PlayerId(0),
+            "Outsider".to_string(),
+            Zone::Battlefield,
+        );
+        for creature in [first, second, outsider] {
+            state
+                .objects
+                .get_mut(&creature)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+
+        let ability = ResolvedAbility::new(
+            Effect::ExploreAll {
+                filter: TargetFilter::ParentTarget,
+            },
+            vec![TargetRef::Object(first), TargetRef::Object(second)],
+            ObjectId(902),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve_all(&mut state, &ability, &mut events).unwrap();
+
+        match &state.waiting_for {
+            WaitingFor::ExploreChoice { choosable, .. } => {
+                assert_eq!(choosable.len(), 2);
+                assert!(choosable.contains(&first));
+                assert!(choosable.contains(&second));
+                assert!(!choosable.contains(&outsider));
+            }
+            other => panic!("expected ExploreChoice, got {other:?}"),
+        }
     }
 }

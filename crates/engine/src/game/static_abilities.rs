@@ -41,6 +41,7 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     // Core rule-modification handlers with real logic
     registry.insert(StaticMode::CantAttack, handle_rule_mod);
     registry.insert(StaticMode::CantBlock, handle_rule_mod);
+    registry.insert(StaticMode::CantAttackOrBlock, handle_rule_mod);
     registry.insert(StaticMode::CantBeTargeted, handle_rule_mod);
     registry.insert(StaticMode::CantBeCast, handle_rule_mod);
     registry.insert(StaticMode::CantBeActivated, handle_rule_mod);
@@ -108,6 +109,8 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     // CR 104.2a: CantWinTheGame — opponents can't win the game (Platinum Angel).
     // TODO: Full enforcement at game-end determination (elimination.rs).
     registry.insert(StaticMode::CantWinTheGame, handle_rule_mod);
+    // CR 702.179e: Card-specific rule modification allowing speed to exceed 4.
+    registry.insert(StaticMode::SpeedCanIncreaseBeyondFour, handle_rule_mod);
 
     // CR 614.1d: Zone-based restriction handlers.
     // Enforcement happens in zones.rs (CantEnterBattlefieldFrom) and casting.rs (CantCastFrom),
@@ -117,6 +120,8 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     registry.insert(StaticMode::CantCastFrom, handle_rule_mod);
     // Note: CantCastDuring is a data-carrying variant — runtime enforcement will be in
     // casting.rs. Coverage support is via is_data_carrying_static().
+    // Note: PerTurnCastLimit is a data-carrying variant — runtime enforcement is in
+    // casting.rs::is_blocked_by_per_turn_cast_limit(). Coverage support is via is_data_carrying_static().
 
     // Promoted Tier 3 statics -- parser-produced, rule-modification handlers
     // CR 509.1b: BlockRestriction — restricts what a creature can block.

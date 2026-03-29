@@ -4,6 +4,7 @@ use petgraph::graph::DiGraph;
 use crate::game::devotion::count_devotion;
 use crate::game::filter::matches_target_filter;
 use crate::game::game_object::CounterType;
+use crate::game::speed::{effective_speed, has_max_speed};
 use crate::types::ability::{
     BasicLandType, ContinuousModification, Duration, QuantityExpr, StaticCondition,
     StaticDefinition, TargetFilter, TypedFilter,
@@ -118,6 +119,8 @@ pub(crate) fn evaluate_condition(
             };
             comparator.evaluate(resolve(lhs), resolve(rhs))
         }
+        StaticCondition::HasMaxSpeed => has_max_speed(state, controller),
+        StaticCondition::SpeedGE { threshold } => effective_speed(state, controller) >= *threshold,
         StaticCondition::And { conditions } => conditions
             .iter()
             .all(|c| evaluate_condition(state, c, controller, source_id)),

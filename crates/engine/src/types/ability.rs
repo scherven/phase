@@ -1145,6 +1145,8 @@ pub enum QuantityRef {
     /// CR 118.4: Amount of life the controller has lost this turn.
     /// Used for "as long as you've lost life this turn" static conditions.
     LifeLostThisTurn,
+    /// CR 702.179f: The controller's current speed, treating no speed as 0.
+    Speed,
     /// CR 603.7c: Numeric value from the triggering event.
     /// Extracts amount/count from DamageDealt, LifeChanged, CardsDrawn, CounterAdded, etc.
     EventContextAmount,
@@ -1208,6 +1210,8 @@ pub enum ObjectProperty {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum PlayerFilter {
+    /// The controller of the effect or quantity.
+    Controller,
     /// All opponents of the controller.
     Opponent,
     /// Each opponent who lost life this turn (life_lost_this_turn > 0).
@@ -1216,6 +1220,8 @@ pub enum PlayerFilter {
     OpponentGainedLife,
     /// All players.
     All,
+    /// CR 702.179f: Each player whose speed is tied for the highest speed among players.
+    HighestSpeed,
 }
 
 /// An expression that produces an integer for quantity comparisons.
@@ -1306,6 +1312,12 @@ pub enum StaticCondition {
         lhs: QuantityExpr,
         comparator: Comparator,
         rhs: QuantityExpr,
+    },
+    /// CR 702.178a: The relevant player has max speed.
+    HasMaxSpeed,
+    /// CR 702.178a + CR 702.179f: The relevant player's speed is at least the threshold.
+    SpeedGE {
+        threshold: u8,
     },
     /// True when ALL sub-conditions are satisfied.
     And {
@@ -1507,8 +1519,16 @@ pub enum ParsedCondition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum PaymentCost {
-    Mana { cost: ManaCost },
-    Life { amount: u32 },
+    Mana {
+        cost: ManaCost,
+    },
+    Life {
+        amount: u32,
+    },
+    /// CR 118.3 + CR 702.179f: Pay speed during effect resolution.
+    Speed {
+        amount: QuantityExpr,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1586,6 +1606,10 @@ pub enum AbilityCost {
     },
     PayEnergy {
         amount: u32,
+    },
+    /// CR 118.3 + CR 702.179f: Pay speed as an activation or additional cost.
+    PaySpeed {
+        amount: QuantityExpr,
     },
     ReturnToHand {
         count: u32,
@@ -1764,6 +1788,16 @@ pub enum DamageSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, strum::IntoStaticStr)]
 #[serde(tag = "type")]
 pub enum Effect {
+    /// CR 702.179a: A player starts their engines, setting speed to 1 if they have no speed.
+    StartYourEngines {
+        player_scope: PlayerFilter,
+    },
+    /// CR 702.179c-d: Increase the selected players' speed by the given amount.
+    IncreaseSpeed {
+        player_scope: PlayerFilter,
+        #[serde(default = "default_quantity_one")]
+        amount: QuantityExpr,
+    },
     DealDamage {
         #[serde(default = "default_quantity_one")]
         amount: QuantityExpr,
@@ -2003,6 +2037,13 @@ pub enum Effect {
         destination: Option<Zone>,
     },
     Explore,
+    /// CR 701.44d: Simultaneous multi-permanent explore instruction.
+    /// The resolver processes matching permanents one explore at a time in
+    /// APNAP/controller-chosen order, reusing the single-permanent Explore resolver.
+    ExploreAll {
+        #[serde(default = "default_target_filter_any")]
+        filter: TargetFilter,
+    },
     /// CR 702.136: Investigate — create a Clue artifact token.
     Investigate,
     /// CR 722: Become the monarch. Sets GameState::monarch to the controller.
@@ -2649,7 +2690,9 @@ impl Effect {
 
             // --- Effects with no player-selectable target field ---
             // These use filters, zone-level operations, or have no targeting at all.
-            Effect::Draw { .. }
+            Effect::StartYourEngines { .. }
+            | Effect::IncreaseSpeed { .. }
+            | Effect::Draw { .. }
             | Effect::Token { .. }
             | Effect::GainLife { .. }
             | Effect::LoseLife { .. }
@@ -2698,6 +2741,7 @@ impl Effect {
             | Effect::Forage
             | Effect::CollectEvidence { .. }
             | Effect::Endure { .. }
+            | Effect::ExploreAll { .. }
             | Effect::Seek { .. }
             | Effect::SetDayNight { .. }
             | Effect::RuntimeHandled { .. }
@@ -2710,6 +2754,8 @@ impl Effect {
 /// Production API for GameEvent::EffectResolved api_type strings and logging.
 pub fn effect_variant_name(effect: &Effect) -> &str {
     match effect {
+        Effect::StartYourEngines { .. } => "StartYourEngines",
+        Effect::IncreaseSpeed { .. } => "IncreaseSpeed",
         Effect::DealDamage { .. } => "DealDamage",
         Effect::Draw { .. } => "Draw",
         Effect::Pump { .. } => "Pump",
@@ -2740,6 +2786,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Fight { .. } => "Fight",
         Effect::Bounce { .. } => "Bounce",
         Effect::Explore => "Explore",
+        Effect::ExploreAll { .. } => "ExploreAll",
         Effect::Investigate => "Investigate",
         Effect::BecomeMonarch => "BecomeMonarch",
         Effect::Proliferate => "Proliferate",
@@ -2827,6 +2874,8 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
 /// and trigger-condition placeholders (Reveal, Transform, TurnFaceUp, DayTimeChange).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum EffectKind {
+    StartYourEngines,
+    IncreaseSpeed,
     DealDamage,
     Draw,
     Pump,
@@ -2857,6 +2906,7 @@ pub enum EffectKind {
     Fight,
     Bounce,
     Explore,
+    ExploreAll,
     Investigate,
     BecomeMonarch,
     Proliferate,
@@ -2939,6 +2989,8 @@ pub enum EffectKind {
 impl From<&Effect> for EffectKind {
     fn from(effect: &Effect) -> Self {
         match effect {
+            Effect::StartYourEngines { .. } => EffectKind::StartYourEngines,
+            Effect::IncreaseSpeed { .. } => EffectKind::IncreaseSpeed,
             Effect::DealDamage { .. } => EffectKind::DealDamage,
             Effect::Draw { .. } => EffectKind::Draw,
             Effect::Pump { .. } => EffectKind::Pump,
@@ -2969,6 +3021,7 @@ impl From<&Effect> for EffectKind {
             Effect::Fight { .. } => EffectKind::Fight,
             Effect::Bounce { .. } => EffectKind::Bounce,
             Effect::Explore => EffectKind::Explore,
+            Effect::ExploreAll { .. } => EffectKind::ExploreAll,
             Effect::Investigate => EffectKind::Investigate,
             Effect::BecomeMonarch => EffectKind::BecomeMonarch,
             Effect::Proliferate => EffectKind::Proliferate,
@@ -3473,6 +3526,8 @@ pub enum AbilityCondition {
         comparator: Comparator,
         rhs: QuantityExpr,
     },
+    /// CR 702.178a: The ability functions only while its controller has max speed.
+    HasMaxSpeed,
     /// CR 608.2e: "If [target] has [keyword], [override effect] instead"
     /// Checked at resolution time against the first resolved object target's keywords.
     /// Uses "Instead" override semantics: swaps the parent effect when condition is met.
@@ -3598,6 +3653,8 @@ pub enum TriggerCondition {
         comparator: Comparator,
         rhs: QuantityExpr,
     },
+    /// CR 702.178a: The trigger functions only while its controller has max speed.
+    HasMaxSpeed,
 
     /// CR 122.1: "if you put a counter on a permanent this turn" — true when the controller
     /// added any counter to any permanent this turn.

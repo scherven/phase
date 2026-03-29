@@ -16,6 +16,8 @@ pub enum CastingProhibitionScope {
     Opponents,
     /// "players" / "each player" — all players are prohibited.
     AllPlayers,
+    /// "you" — only the controller is prohibited.
+    Controller,
 }
 
 impl fmt::Display for CastingProhibitionScope {
@@ -23,6 +25,7 @@ impl fmt::Display for CastingProhibitionScope {
         match self {
             CastingProhibitionScope::Opponents => write!(f, "opponents"),
             CastingProhibitionScope::AllPlayers => write!(f, "all_players"),
+            CastingProhibitionScope::Controller => write!(f, "controller"),
         }
     }
 }
@@ -34,6 +37,7 @@ impl FromStr for CastingProhibitionScope {
         match s {
             "opponents" => Ok(CastingProhibitionScope::Opponents),
             "all_players" => Ok(CastingProhibitionScope::AllPlayers),
+            "controller" => Ok(CastingProhibitionScope::Controller),
             other => Err(format!("unknown CastingProhibitionScope: {other}")),
         }
     }
@@ -76,6 +80,7 @@ pub enum StaticMode {
     Continuous,
     CantAttack,
     CantBlock,
+    CantAttackOrBlock,
     CantBeTargeted,
     CantBeCast,
     CantBeActivated,
@@ -139,6 +144,15 @@ pub enum StaticMode {
     CantCastDuring {
         who: CastingProhibitionScope,
         when: CastingProhibitionCondition,
+    },
+    /// CR 101.2 + CR 604.1: Per-turn casting limit — static ability generating a
+    /// continuous "can't" effect that restricts how many spells a player may cast.
+    /// E.g., Rule of Law: "Each player can't cast more than one spell each turn."
+    /// E.g., Deafening Silence: "Each player can't cast more than one noncreature spell each turn."
+    PerTurnCastLimit {
+        who: CastingProhibitionScope,
+        max: u32,
+        spell_filter: Option<TargetFilter>,
     },
 
     // -- Tier 1: Keyword/evasion statics with dedicated handlers --
@@ -207,6 +221,8 @@ pub enum StaticMode {
     CantWinTheGame,
     /// CR 104.3b: This player can't lose the game (Platinum Angel effect).
     CantLoseTheGame,
+    /// Speed may increase beyond 4, and 4+ still counts as max speed for that player.
+    SpeedCanIncreaseBeyondFour,
     /// CR 118.12a: Defiler cycle — "As an additional cost to cast [color] permanent
     /// spells, you may pay [N] life. Those spells cost {C} less to cast."
     /// Optional life payment during casting with conditional mana reduction.
@@ -250,7 +266,8 @@ impl Hash for StaticMode {
             // These are never used as HashMap keys (handled by is_data_carrying_static).
             StaticMode::ReduceCost { .. }
             | StaticMode::RaiseCost { .. }
-            | StaticMode::DefilerCostReduction { .. } => {}
+            | StaticMode::DefilerCostReduction { .. }
+            | StaticMode::PerTurnCastLimit { .. } => {}
             // All other variants are unit variants — discriminant suffices.
             _ => {}
         }
@@ -263,6 +280,7 @@ impl fmt::Display for StaticMode {
             StaticMode::Continuous => write!(f, "Continuous"),
             StaticMode::CantAttack => write!(f, "CantAttack"),
             StaticMode::CantBlock => write!(f, "CantBlock"),
+            StaticMode::CantAttackOrBlock => write!(f, "CantAttackOrBlock"),
             StaticMode::CantBeTargeted => write!(f, "CantBeTargeted"),
             StaticMode::CantBeCast => write!(f, "CantBeCast"),
             StaticMode::CantBeActivated => write!(f, "CantBeActivated"),
@@ -288,6 +306,9 @@ impl fmt::Display for StaticMode {
             StaticMode::CantCastFrom => write!(f, "CantCastFrom"),
             StaticMode::CantCastDuring { who, when } => {
                 write!(f, "CantCastDuring({who},{when})")
+            }
+            StaticMode::PerTurnCastLimit { who, max, .. } => {
+                write!(f, "PerTurnCastLimit({who},{max})")
             }
             StaticMode::ExtraBlockers { count } => match count {
                 None => write!(f, "ExtraBlockers(any)"),
@@ -338,6 +359,7 @@ impl fmt::Display for StaticMode {
             }
             StaticMode::CantWinTheGame => write!(f, "CantWinTheGame"),
             StaticMode::CantLoseTheGame => write!(f, "CantLoseTheGame"),
+            StaticMode::SpeedCanIncreaseBeyondFour => write!(f, "SpeedCanIncreaseBeyondFour"),
             StaticMode::DefilerCostReduction { color, .. } => {
                 write!(f, "DefilerCostReduction({color:?})")
             }
@@ -355,6 +377,7 @@ impl FromStr for StaticMode {
             "Continuous" => StaticMode::Continuous,
             "CantAttack" => StaticMode::CantAttack,
             "CantBlock" => StaticMode::CantBlock,
+            "CantAttackOrBlock" => StaticMode::CantAttackOrBlock,
             "CantBeTargeted" => StaticMode::CantBeTargeted,
             "CantBeCast" => StaticMode::CantBeCast,
             "CantBeActivated" => StaticMode::CantBeActivated,
@@ -460,6 +483,23 @@ impl FromStr for StaticMode {
                             CastingProhibitionCondition::from_str(when_str),
                         ) {
                             return Ok(StaticMode::CantCastDuring { who, when });
+                        }
+                    }
+                    return Ok(StaticMode::Other(other.to_string()));
+                } else if let Some(inner) = other
+                    .strip_prefix("PerTurnCastLimit(")
+                    .and_then(|s| s.strip_suffix(')'))
+                {
+                    if let Some((who_str, max_str)) = inner.split_once(',') {
+                        if let (Ok(who), Ok(max)) = (
+                            CastingProhibitionScope::from_str(who_str),
+                            max_str.parse::<u32>(),
+                        ) {
+                            return Ok(StaticMode::PerTurnCastLimit {
+                                who,
+                                max,
+                                spell_filter: None,
+                            });
                         }
                     }
                     return Ok(StaticMode::Other(other.to_string()));
@@ -603,6 +643,17 @@ mod tests {
             StaticMode::CantCastDuring {
                 who: CastingProhibitionScope::AllPlayers,
                 when: CastingProhibitionCondition::DuringCombat,
+            },
+            // Per-turn casting limits
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::AllPlayers,
+                max: 1,
+                spell_filter: None,
+            },
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::Controller,
+                max: 2,
+                spell_filter: None,
             },
             // Fallback
             StaticMode::Other("Custom".to_string()),

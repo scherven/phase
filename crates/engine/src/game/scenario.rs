@@ -1030,6 +1030,7 @@ impl GameRunner {
             WaitingFor::GameOver { .. } => "GameOver",
             WaitingFor::ReplacementChoice { .. } => "ReplacementChoice",
             WaitingFor::CopyTargetChoice { .. } => "CopyTargetChoice",
+            WaitingFor::ExploreChoice { .. } => "ExploreChoice",
             WaitingFor::EquipTarget { .. } => "EquipTarget",
             WaitingFor::ScryChoice { .. } => "ScryChoice",
             WaitingFor::DigChoice { .. } => "DigChoice",

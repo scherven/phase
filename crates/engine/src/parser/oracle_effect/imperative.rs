@@ -1448,7 +1448,9 @@ pub(super) fn parse_imperative_family_ast(
             .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Choose(ast))),
 
         // ── Exact-match keyword actions ──
-        "explore" => Some(ImperativeFamilyAst::Explore),
+        "explore" if lower == "explore" || lower == "explore again" => {
+            Some(ImperativeFamilyAst::Explore)
+        }
         // CR 702.162a: "connive" / "connives" — extract target from remainder
         "connive" | "connives" => {
             let rest = lower[first_word.len()..].trim();

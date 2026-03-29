@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::types::ability::{
-    AbilityDefinition, ControllerRef, Effect, ModalChoice, ResolvedAbility, TargetFilter,
-    TargetRef, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter, UnlessCost,
+    AbilityDefinition, ControllerRef, Effect, ModalChoice, PlayerFilter, ResolvedAbility,
+    TargetFilter, TargetRef, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
+    UnlessCost,
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
@@ -20,6 +21,10 @@ use crate::types::zones::Zone;
 
 use super::ability_utils::build_resolved_from_def;
 use super::filter::{matches_target_filter, spell_record_matches_filter};
+use super::speed::{
+    effective_speed, has_max_speed, mark_speed_trigger_used, speed_key_source,
+    speed_trigger_available,
+};
 use super::stack;
 
 // Re-export so existing `use crate::game::triggers::build_trigger_registry` paths still work.
@@ -523,6 +528,44 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                         });
                     }
                 }
+            }
+        }
+
+        // CR 702.179d: The player with speed has an inherent no-source trigger that
+        // increases their speed once each turn when one or more opponents lose life
+        // during that player's turn, if their speed is less than 4.
+        if let GameEvent::LifeChanged { player_id, amount } = event {
+            let trigger_controller = state.active_player;
+            if *amount < 0
+                && *player_id != trigger_controller
+                && effective_speed(state, trigger_controller) > 0
+                && speed_trigger_available(state, trigger_controller)
+                && !has_max_speed(state, trigger_controller)
+            {
+                let increase_ability = ResolvedAbility::new(
+                    Effect::IncreaseSpeed {
+                        player_scope: PlayerFilter::Controller,
+                        amount: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                    },
+                    Vec::new(),
+                    speed_key_source(),
+                    trigger_controller,
+                );
+                let trig_def = TriggerDefinition::new(TriggerMode::LifeLost)
+                    .description("Start your engines! (CR 702.179d)".to_string());
+                pending.push(PendingTrigger {
+                    source_id: speed_key_source(),
+                    controller: trigger_controller,
+                    condition: trig_def.condition,
+                    ability: increase_ability,
+                    timestamp: 0,
+                    target_constraints: Vec::new(),
+                    trigger_event: Some(event.clone()),
+                    modal: None,
+                    mode_abilities: vec![],
+                    description: None,
+                });
+                mark_speed_trigger_used(state, trigger_controller);
             }
         }
     }
@@ -1068,6 +1111,7 @@ pub(crate) fn check_trigger_condition(
             let rhs = crate::game::quantity::resolve_quantity(state, rhs, controller, source_id);
             comparator.evaluate(lhs, rhs)
         }
+        TriggerCondition::HasMaxSpeed => has_max_speed(state, controller),
         // CR 122.1: "if you put a counter on a permanent this turn"
         TriggerCondition::CounterAddedThisTurn => state
             .players_who_added_counter_this_turn

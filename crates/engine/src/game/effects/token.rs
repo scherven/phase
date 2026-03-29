@@ -5,9 +5,10 @@ use crate::game::quantity::resolve_quantity;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::game::zones;
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, DelayedTriggerCondition, Duration, Effect,
-    EffectError, EffectKind, GainLifePlayer, ManaProduction, PtValue, QuantityExpr, QuantityRef,
-    ResolvedAbility, TargetFilter, TargetRef,
+    AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction, ControllerRef,
+    DelayedTriggerCondition, Duration, Effect, EffectError, EffectKind, GainLifePlayer,
+    ManaProduction, PtValue, QuantityExpr, QuantityRef, ResolvedAbility, TargetFilter, TargetRef,
+    TypedFilter,
 };
 use crate::types::card_type::{CardType, CoreType};
 use crate::types::events::GameEvent;
@@ -761,8 +762,35 @@ fn powerstone_ability() -> AbilityDefinition {
     .cost(AbilityCost::Tap)
 }
 
-// TODO(CR 111.10f): Map — "{1}, {T}, Sacrifice: Target creature you control explores."
-// Deferred: Effect::Explore is a unit variant with no target field.
+/// CR 111.10s: Map — "{1}, {T}, Sacrifice this artifact: Target creature you control explores."
+fn map_ability() -> AbilityDefinition {
+    AbilityDefinition::new(
+        AbilityKind::Activated,
+        Effect::TargetOnly {
+            target: TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+        },
+    )
+    .sub_ability(AbilityDefinition::new(
+        AbilityKind::Activated,
+        Effect::Explore,
+    ))
+    .cost(AbilityCost::Composite {
+        costs: vec![
+            AbilityCost::Mana {
+                cost: ManaCost::Cost {
+                    shards: vec![],
+                    generic: 1,
+                },
+            },
+            AbilityCost::Tap,
+            AbilityCost::Sacrifice {
+                target: TargetFilter::SelfRef,
+                count: 1,
+            },
+        ],
+    })
+    .activation_restrictions(vec![ActivationRestriction::AsSorcery])
+}
 
 /// CR 111.10a–v: Predefined token abilities keyed by subtype.
 /// Returns ability definitions to inject for the given subtype, or empty if none.
@@ -773,7 +801,8 @@ fn predefined_token_abilities(subtype: &str) -> Vec<AbilityDefinition> {
         "Clue" => vec![clue_ability()],
         "Blood" => vec![blood_ability()],
         "Powerstone" => vec![powerstone_ability()],
-        // TODO: Map (needs targeted Explore), Incubator (transform), Shard, Gold, Junk
+        "Map" => vec![map_ability()],
+        // TODO: Incubator (transform), Shard, Gold, Junk
         _ => vec![],
     }
 }
@@ -1274,6 +1303,49 @@ mod tests {
     }
 
     #[test]
+    fn predefined_map_has_targeted_explore_ability() {
+        let abilities = predefined_token_abilities("Map");
+        assert_eq!(abilities.len(), 1);
+        assert!(matches!(
+            *abilities[0].effect,
+            Effect::TargetOnly {
+                target: TargetFilter::Typed(ref tf)
+            } if tf.type_filters.contains(&crate::types::ability::TypeFilter::Creature)
+        ));
+        assert!(matches!(
+            *abilities[0]
+                .sub_ability
+                .as_ref()
+                .expect("map should chain to explore")
+                .effect,
+            Effect::Explore
+        ));
+        assert_eq!(
+            abilities[0].activation_restrictions,
+            vec![ActivationRestriction::AsSorcery]
+        );
+        match abilities[0].cost.as_ref().expect("map needs a cost") {
+            AbilityCost::Composite { costs } => {
+                assert!(costs.iter().any(|cost| matches!(
+                    cost,
+                    AbilityCost::Mana {
+                        cost: ManaCost::Cost { generic: 1, .. }
+                    }
+                )));
+                assert!(costs.iter().any(|cost| matches!(cost, AbilityCost::Tap)));
+                assert!(costs.iter().any(|cost| matches!(
+                    cost,
+                    AbilityCost::Sacrifice {
+                        target: TargetFilter::SelfRef,
+                        count: 1
+                    }
+                )));
+            }
+            other => panic!("expected composite cost, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn non_predefined_token_gets_no_abilities() {
         let abilities = predefined_token_abilities("Soldier");
         assert!(abilities.is_empty());
@@ -1304,5 +1376,42 @@ mod tests {
         assert_eq!(obj.abilities.len(), 1);
         assert!(matches!(*obj.abilities[0].effect, Effect::Mana { .. }));
         assert_eq!(obj.base_abilities.len(), 1);
+    }
+
+    #[test]
+    fn inject_adds_map_ability_to_map_token() {
+        use crate::game::zones::create_object;
+        use crate::types::identifiers::CardId;
+
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Map".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.subtypes.push("Map".to_string());
+            obj.is_token = true;
+        }
+
+        inject_predefined_token_abilities(&mut state, obj_id);
+
+        let obj = &state.objects[&obj_id];
+        assert_eq!(obj.abilities.len(), 1);
+        assert!(matches!(
+            *obj.abilities[0].effect,
+            Effect::TargetOnly { .. }
+        ));
+        assert!(matches!(
+            *obj.abilities[0]
+                .sub_ability
+                .as_ref()
+                .expect("map should chain to explore")
+                .effect,
+            Effect::Explore
+        ));
     }
 }

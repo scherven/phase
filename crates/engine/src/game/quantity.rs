@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use crate::game::filter::{matches_target_filter_controlled, spell_record_matches_filter};
 use crate::game::game_object::parse_counter_type;
+use crate::game::speed::effective_speed;
 use crate::types::ability::{
     AggregateFunction, CountScope, ObjectProperty, PlayerFilter, QuantityExpr, QuantityRef,
     ResolvedAbility, RoundingMode, TargetRef, TypeFilter, ZoneRef,
@@ -129,6 +130,7 @@ fn resolve_ref(
         QuantityRef::StartingLifeTotal => state.format_config.starting_life,
         // CR 118.4: Total life lost this turn by the controller.
         QuantityRef::LifeLostThisTurn => player.map_or(0, |p| p.life_lost_this_turn as i32),
+        QuantityRef::Speed => i32::from(effective_speed(state, controller)),
         QuantityRef::ObjectCount { filter } => state
             .battlefield
             .iter()
@@ -145,11 +147,14 @@ fn resolve_ref(
                 obj.counters.get(&ct).copied().unwrap_or(0) as i32
             })
             .unwrap_or(0),
-        QuantityRef::Variable { .. } => {
-            // Variable amounts (X) are resolved during mana payment, not here.
-            // Default to 0 for unresolved variables.
-            0
-        }
+        QuantityRef::Variable { .. } => state
+            .last_named_choice
+            .as_ref()
+            .and_then(|choice| match choice {
+                crate::types::ability::ChoiceValue::Number(value) => Some(i32::from(*value)),
+                _ => None,
+            })
+            .unwrap_or(0),
         // CR 208.3 + CR 113.6: A creature's power/toughness from current state,
         // falling back to Last Known Information if the source has left the battlefield.
         QuantityRef::SelfPower => state
@@ -461,6 +466,7 @@ fn resolve_player_count(state: &GameState, filter: &PlayerFilter, controller: Pl
         .filter(|p| {
             !p.is_eliminated
                 && match filter {
+                    PlayerFilter::Controller => p.id == controller,
                     PlayerFilter::Opponent => p.id != controller,
                     PlayerFilter::OpponentLostLife => {
                         p.id != controller && p.life_lost_this_turn > 0
@@ -469,6 +475,15 @@ fn resolve_player_count(state: &GameState, filter: &PlayerFilter, controller: Pl
                         p.id != controller && p.life_gained_this_turn > 0
                     }
                     PlayerFilter::All => true,
+                    PlayerFilter::HighestSpeed => {
+                        let highest_speed = state
+                            .players
+                            .iter()
+                            .map(|player| effective_speed(state, player.id))
+                            .max()
+                            .unwrap_or(0);
+                        effective_speed(state, p.id) == highest_speed
+                    }
                 }
         })
         .count() as i32

@@ -1,4 +1,6 @@
 use crate::game::casting;
+use crate::game::quantity::resolve_quantity;
+use crate::game::speed::{effective_speed, set_speed};
 use crate::types::ability::{Effect, PaymentCost};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -57,6 +59,21 @@ pub fn resolve(
                         amount: -(*amount as i32),
                     });
                 }
+            } else {
+                state.cost_payment_failed_flag = true;
+            }
+        }
+        PaymentCost::Speed { amount } => {
+            let amount = resolve_quantity(state, amount, ability.controller, ability.source_id);
+            let amount = u8::try_from(amount.max(0)).unwrap_or(u8::MAX);
+            let current_speed = effective_speed(state, ability.controller);
+            if amount <= current_speed {
+                set_speed(
+                    state,
+                    ability.controller,
+                    Some(current_speed - amount),
+                    events,
+                );
             } else {
                 state.cost_payment_failed_flag = true;
             }

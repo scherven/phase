@@ -12,6 +12,7 @@ use crate::types::proposed_event::ProposedEvent;
 use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
+use super::speed::{controls_start_your_engines, set_speed};
 use super::zones;
 
 const MAX_SBA_ITERATIONS: u32 = 9;
@@ -123,9 +124,33 @@ pub fn check_state_based_actions(state: &mut GameState, events: &mut Vec<GameEve
         // CR 704.5d: Tokens in zones other than the battlefield cease to exist.
         check_token_cease_to_exist(state, &mut any_performed);
 
+        // CR 704.5z: A player controlling Start your engines! gets speed 1 if they had none.
+        check_start_your_engines(state, events, &mut any_performed);
+
         if !any_performed {
             break;
         }
+    }
+}
+
+/// CR 704.5z + CR 702.179a: If a player controls a permanent with start your engines!
+/// and has no speed, their speed becomes 1.
+fn check_start_your_engines(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+    any_performed: &mut bool,
+) {
+    let players_to_start: Vec<PlayerId> = state
+        .players
+        .iter()
+        .filter(|player| player.speed.is_none())
+        .filter(|player| controls_start_your_engines(state, player.id))
+        .map(|player| player.id)
+        .collect();
+
+    for player_id in players_to_start {
+        set_speed(state, player_id, Some(1), events);
+        *any_performed = true;
     }
 }
 

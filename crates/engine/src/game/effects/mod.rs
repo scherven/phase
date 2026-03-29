@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use crate::game::filter;
+use crate::game::speed::has_max_speed;
 use crate::types::ability::{
     AbilityCondition, AbilityKind, Effect, EffectError, FilterProp, PlayerFilter, QuantityExpr,
     QuantityRef, ResolvedAbility, SharedQuality, TargetFilter, TargetRef, TypeFilter, UnlessCost,
@@ -79,6 +80,7 @@ pub mod seek;
 pub mod set_class_level;
 pub mod shuffle;
 pub mod solve_case;
+pub mod speed_effects;
 pub mod surveil;
 pub mod suspect;
 pub mod tap_untap;
@@ -119,6 +121,8 @@ pub fn resolve_effect(
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
     match &ability.effect {
+        Effect::StartYourEngines { .. } => speed_effects::resolve_start(state, ability, events),
+        Effect::IncreaseSpeed { .. } => speed_effects::resolve_increase(state, ability, events),
         Effect::DealDamage { .. } => deal_damage::resolve(state, ability, events),
         Effect::Draw { .. } => draw::resolve(state, ability, events),
         Effect::Pump { .. } => pump::resolve(state, ability, events),
@@ -151,6 +155,7 @@ pub fn resolve_effect(
         Effect::Fight { .. } => fight::resolve(state, ability, events),
         Effect::Bounce { .. } => bounce::resolve(state, ability, events),
         Effect::Explore => explore::resolve(state, ability, events),
+        Effect::ExploreAll { .. } => explore::resolve_all(state, ability, events),
         Effect::Investigate => investigate::resolve(state, ability, events),
         Effect::BecomeMonarch => become_monarch::resolve(state, ability, events),
         Effect::Proliferate => proliferate::resolve(state, ability, events),
@@ -320,7 +325,8 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         | Effect::PutOnTopOrBottom { target, .. }
         | Effect::ChangeTargets { target, .. }
         | Effect::ExtraTurn { target, .. }
-        | Effect::Double { target, .. } => target,
+        | Effect::Double { target, .. }
+        | Effect::TargetOnly { target } => target,
         Effect::Token { owner, .. } => owner,
         Effect::RevealTop { player, .. } => player,
         _ => return None,
@@ -517,6 +523,7 @@ pub fn resolve_ability_chain(
             .filter(|p| {
                 !p.is_eliminated
                     && match scope {
+                        PlayerFilter::Controller => p.id == controller,
                         PlayerFilter::All => true,
                         PlayerFilter::Opponent => p.id != controller,
                         PlayerFilter::OpponentLostLife => {
@@ -524,6 +531,16 @@ pub fn resolve_ability_chain(
                         }
                         PlayerFilter::OpponentGainedLife => {
                             p.id != controller && p.life_gained_this_turn > 0
+                        }
+                        PlayerFilter::HighestSpeed => {
+                            let highest_speed = state
+                                .players
+                                .iter()
+                                .filter(|player| !player.is_eliminated)
+                                .map(|player| player.speed.unwrap_or(0))
+                                .max()
+                                .unwrap_or(0);
+                            p.speed.unwrap_or(0) == highest_speed
                         }
                     }
             })
@@ -797,6 +814,7 @@ pub fn resolve_ability_chain(
                 | WaitingFor::DiscoverChoice { .. }
                 | WaitingFor::TopOrBottomChoice { .. }
                 | WaitingFor::ProliferateChoice { .. }
+                | WaitingFor::ExploreChoice { .. }
                 | WaitingFor::CopyRetarget { .. }
                 | WaitingFor::DistributeAmong { .. }
                 | WaitingFor::RetargetChoice { .. }
@@ -940,6 +958,7 @@ fn evaluate_condition(
             );
             comparator.evaluate(l, r)
         }
+        AbilityCondition::HasMaxSpeed => has_max_speed(state, ability.controller),
         // "Instead" override conditions — return pure boolean value.
         // Terminal control flow (early return from resolve_ability_chain) is the caller's
         // responsibility in the sub-ability context.

@@ -26,6 +26,8 @@ pub(super) struct ParsedEffectClause {
 pub(super) struct SubjectApplication {
     pub(super) affected: TargetFilter,
     pub(super) target: Option<TargetFilter>,
+    pub(super) multi_target: Option<MultiTargetSpec>,
+    pub(super) inherits_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +86,8 @@ pub(super) enum ClauseAst {
 pub(super) struct SubjectPhraseAst {
     pub(super) affected: TargetFilter,
     pub(super) target: Option<TargetFilter>,
+    pub(super) multi_target: Option<MultiTargetSpec>,
+    pub(super) inherits_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

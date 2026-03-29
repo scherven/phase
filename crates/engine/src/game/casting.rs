@@ -1,10 +1,11 @@
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, CardPlayMode, Effect, GameRestriction,
-    ResolvedAbility, RestrictionPlayerScope, TargetFilter, TargetRef,
+    AbilityCost, AbilityDefinition, AbilityKind, CardPlayMode, ChoiceType, Effect, GameRestriction,
+    QuantityExpr, ResolvedAbility, RestrictionPlayerScope, TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    CastingVariant, ConvokeMode, GameState, PendingCast, StackEntry, StackEntryKind, WaitingFor,
+    CastingVariant, ConvokeMode, GameState, PendingCast, SpellCastRecord, StackEntry,
+    StackEntryKind, WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::mana::{ManaCost, SpellMeta};
@@ -24,9 +25,48 @@ use super::casting_costs::{
 };
 use super::engine::EngineError;
 use super::mana_payment;
+use super::quantity::resolve_quantity;
 use super::restrictions;
+use super::speed::{effective_speed, set_speed};
 use super::stack;
 use super::targeting;
+
+pub(crate) fn variable_speed_payment_range(cost: &AbilityCost, max_speed: u8) -> Option<(u8, u8)> {
+    match cost {
+        AbilityCost::PaySpeed {
+            amount:
+                QuantityExpr::Ref {
+                    qty: crate::types::ability::QuantityRef::Variable { .. },
+                },
+        } => Some((0, max_speed)),
+        AbilityCost::Composite { costs } => costs
+            .iter()
+            .find_map(|sub_cost| variable_speed_payment_range(sub_cost, max_speed)),
+        _ => None,
+    }
+}
+
+pub(crate) fn begin_variable_speed_payment(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    resolved: ResolvedAbility,
+    cost: AbilityCost,
+    ability_index: usize,
+) -> WaitingFor {
+    let max_speed = effective_speed(state, player);
+    let (min, max) = variable_speed_payment_range(&cost, max_speed).unwrap_or((0, max_speed));
+    let mut pending = PendingCast::new(source_id, CardId(0), resolved, ManaCost::NoCost);
+    pending.activation_cost = Some(cost);
+    pending.activation_ability_index = Some(ability_index);
+    state.pending_cast = Some(Box::new(pending));
+    WaitingFor::NamedChoice {
+        player,
+        options: (min..=max).map(|value| value.to_string()).collect(),
+        choice_type: ChoiceType::NumberRange { min, max },
+        source_id: None,
+    }
+}
 
 /// Emit `BecomesTarget` and `CrimeCommitted` events for each target.
 ///
@@ -474,6 +514,14 @@ fn prepare_spell_cast(
     {
         return Err(EngineError::ActionNotAllowed(
             "Lands are played, not cast".to_string(),
+        ));
+    }
+
+    // CR 101.2 + CR 604.1: Per-turn casting limit — "can't cast more than N spells each turn."
+    // E.g., Rule of Law, High Noon, Deafening Silence.
+    if is_blocked_by_per_turn_cast_limit(state, player, obj) {
+        return Err(EngineError::ActionNotAllowed(
+            "A static ability limits the number of spells you can cast this turn".to_string(),
         ));
     }
 
@@ -1502,6 +1550,15 @@ pub fn pay_ability_cost(
                 delta: -(amount as i32),
             });
         }
+        AbilityCost::PaySpeed { amount } => {
+            let amount = resolve_quantity(state, amount, player, source_id);
+            let amount = u8::try_from(amount.max(0)).unwrap_or(u8::MAX);
+            let current_speed = effective_speed(state, player);
+            if amount > current_speed {
+                return Err(EngineError::ActionNotAllowed("Not enough speed".into()));
+            }
+            set_speed(state, player, Some(current_speed - amount), events);
+        }
         // Other cost types (Exile, PayLife, etc.) require interactive resolution
         // and are intercepted before reaching pay_ability_cost, or are not yet auto-payable.
         AbilityCost::Untap
@@ -1795,6 +1852,16 @@ pub fn handle_activate_ability(
             assign_targets_in_chain(&mut resolved, &targets)?;
 
             if let Some(ref cost) = ability_def.cost {
+                if variable_speed_payment_range(cost, effective_speed(state, player)).is_some() {
+                    return Ok(begin_variable_speed_payment(
+                        state,
+                        player,
+                        source_id,
+                        resolved,
+                        cost.clone(),
+                        ability_index,
+                    ));
+                }
                 pay_ability_cost(state, player, source_id, cost, events)?;
             }
 
@@ -1843,6 +1910,16 @@ pub fn handle_activate_ability(
     }
 
     if let Some(ref cost) = ability_def.cost {
+        if variable_speed_payment_range(cost, effective_speed(state, player)).is_some() {
+            return Ok(begin_variable_speed_payment(
+                state,
+                player,
+                source_id,
+                resolved,
+                cost.clone(),
+                ability_index,
+            ));
+        }
         pay_ability_cost(state, player, source_id, cost, events)?;
     }
 
@@ -1977,6 +2054,7 @@ fn is_blocked_by_cant_cast_during(state: &GameState, caster: PlayerId) -> bool {
             let caster_affected = match who {
                 CastingProhibitionScope::Opponents => caster != bf_obj.controller,
                 CastingProhibitionScope::AllPlayers => true,
+                CastingProhibitionScope::Controller => caster == bf_obj.controller,
             };
             if !caster_affected {
                 continue;
@@ -2007,6 +2085,85 @@ fn is_blocked_by_cant_cast_during(state: &GameState, caster: PlayerId) -> bool {
     false
 }
 
+/// CR 101.2 + CR 604.1: Check if any PerTurnCastLimit static on the battlefield prevents
+/// the given player from casting the given spell this turn.
+/// E.g., Rule of Law: "Each player can't cast more than one spell each turn."
+/// E.g., Deafening Silence: "Each player can't cast more than one noncreature spell each turn."
+fn is_blocked_by_per_turn_cast_limit(
+    state: &GameState,
+    caster: PlayerId,
+    spell_obj: &super::game_object::GameObject,
+) -> bool {
+    for &bf_id in &state.battlefield {
+        let Some(bf_obj) = state.objects.get(&bf_id) else {
+            continue;
+        };
+        for def in &bf_obj.static_definitions {
+            let StaticMode::PerTurnCastLimit {
+                ref who,
+                max,
+                ref spell_filter,
+            } = def.mode
+            else {
+                continue;
+            };
+
+            // CR 101.2: Check if the caster is in the affected scope.
+            let caster_affected = match who {
+                CastingProhibitionScope::Opponents => caster != bf_obj.controller,
+                CastingProhibitionScope::AllPlayers => true,
+                CastingProhibitionScope::Controller => caster == bf_obj.controller,
+            };
+            if !caster_affected {
+                continue;
+            }
+
+            // If a spell filter is set, first check if the spell being cast matches.
+            // E.g., Deafening Silence only limits noncreature spells — creature spells
+            // are unaffected regardless of how many noncreature spells were cast.
+            if let Some(filter) = spell_filter {
+                let current_record = SpellCastRecord {
+                    core_types: spell_obj.card_types.core_types.clone(),
+                    supertypes: spell_obj.card_types.supertypes.clone(),
+                    subtypes: spell_obj.card_types.subtypes.clone(),
+                    keywords: spell_obj.keywords.clone(),
+                    colors: spell_obj.color.clone(),
+                    mana_value: spell_obj.mana_cost.mana_value(),
+                };
+                if !super::filter::spell_record_matches_filter(
+                    &current_record,
+                    filter,
+                    bf_obj.controller,
+                ) {
+                    continue;
+                }
+            }
+
+            // Count matching spells already cast this turn by this player.
+            // The current spell has not yet been recorded (recording happens in
+            // finalize_cast), so this correctly counts only prior spells.
+            let cast_count = state
+                .spells_cast_this_turn_by_player
+                .get(&caster)
+                .map(|records| match spell_filter {
+                    None => records.len(),
+                    Some(filter) => records
+                        .iter()
+                        .filter(|r| {
+                            super::filter::spell_record_matches_filter(r, filter, bf_obj.controller)
+                        })
+                        .count(),
+                })
+                .unwrap_or(0);
+
+            if cast_count >= max as usize {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2015,7 +2172,8 @@ mod tests {
     use crate::parser::oracle_static::parse_static_line;
     use crate::types::ability::{
         BasicLandType, ChosenAttribute, ChosenSubtypeKind, ContinuousModification, GameRestriction,
-        QuantityExpr, RestrictionExpiry, RestrictionPlayerScope, StaticDefinition,
+        QuantityExpr, RestrictionExpiry, RestrictionPlayerScope, StaticDefinition, TypeFilter,
+        TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::keywords::Keyword;
@@ -2769,7 +2927,7 @@ mod tests {
 
     // --- Aura casting tests ---
 
-    use crate::types::ability::{ControllerRef, TargetFilter, TypedFilter};
+    use crate::types::ability::{ControllerRef, TargetFilter};
 
     /// Create an Aura enchantment in hand with Enchant creature keyword.
     fn create_aura_in_hand(state: &mut GameState, player: PlayerId) -> ObjectId {
@@ -3899,6 +4057,188 @@ mod tests {
         // No CantCastDuring statics on battlefield — baseline
         assert!(!is_blocked_by_cant_cast_during(&state, PlayerId(0)));
         assert!(!is_blocked_by_cant_cast_during(&state, PlayerId(1)));
+    }
+
+    // --- PerTurnCastLimit enforcement tests ---
+
+    fn add_per_turn_cast_limit_permanent(
+        state: &mut GameState,
+        controller: PlayerId,
+        who: CastingProhibitionScope,
+        max: u32,
+        spell_filter: Option<TargetFilter>,
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            controller,
+            "Limiter".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&id)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::PerTurnCastLimit {
+                who,
+                max,
+                spell_filter,
+            }));
+        id
+    }
+
+    fn make_spell_obj(state: &mut GameState, controller: PlayerId, is_creature: bool) -> ObjectId {
+        use crate::types::card_type::CoreType;
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            controller,
+            "Test Spell".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        if is_creature {
+            obj.card_types.core_types = vec![CoreType::Creature];
+        } else {
+            obj.card_types.core_types = vec![CoreType::Instant];
+        }
+        id
+    }
+
+    #[test]
+    fn per_turn_limit_all_players_blocks_after_one_cast() {
+        let mut state = setup_game_at_main_phase();
+        add_per_turn_cast_limit_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::AllPlayers,
+            1,
+            None,
+        );
+        let spell_id = make_spell_obj(&mut state, PlayerId(0), false);
+
+        // No spells cast yet — should NOT be blocked
+        let obj = state.objects.get(&spell_id).unwrap();
+        assert!(!is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+
+        // Record one spell cast (clone to avoid borrow conflict)
+        let obj_clone = state.objects.get(&spell_id).unwrap().clone();
+        restrictions::record_spell_cast(&mut state, PlayerId(0), &obj_clone);
+
+        // Now should be blocked
+        let obj = state.objects.get(&spell_id).unwrap();
+        assert!(is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+    }
+
+    #[test]
+    fn per_turn_limit_controller_scope_blocks_only_controller() {
+        let mut state = setup_game_at_main_phase();
+        add_per_turn_cast_limit_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::Controller,
+            1,
+            None,
+        );
+        let spell_id = make_spell_obj(&mut state, PlayerId(0), false);
+
+        let obj_clone = state.objects.get(&spell_id).unwrap().clone();
+        restrictions::record_spell_cast(&mut state, PlayerId(0), &obj_clone);
+        restrictions::record_spell_cast(&mut state, PlayerId(1), &obj_clone);
+
+        let obj = state.objects.get(&spell_id).unwrap();
+        // Controller (P0) should be blocked
+        assert!(is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+        // Opponent (P1) should NOT be blocked
+        assert!(!is_blocked_by_per_turn_cast_limit(&state, PlayerId(1), obj));
+    }
+
+    #[test]
+    fn per_turn_limit_opponents_scope_blocks_only_opponents() {
+        let mut state = setup_game_at_main_phase();
+        add_per_turn_cast_limit_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::Opponents,
+            1,
+            None,
+        );
+        let spell_id = make_spell_obj(&mut state, PlayerId(0), false);
+
+        let obj_clone = state.objects.get(&spell_id).unwrap().clone();
+        restrictions::record_spell_cast(&mut state, PlayerId(0), &obj_clone);
+        restrictions::record_spell_cast(&mut state, PlayerId(1), &obj_clone);
+
+        let obj = state.objects.get(&spell_id).unwrap();
+        // Controller (P0) should NOT be blocked by their own "opponents" restriction
+        assert!(!is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+        // Opponent (P1) should be blocked
+        assert!(is_blocked_by_per_turn_cast_limit(&state, PlayerId(1), obj));
+    }
+
+    #[test]
+    fn per_turn_limit_noncreature_filter_allows_creature_spells() {
+        let mut state = setup_game_at_main_phase();
+        // Deafening Silence: noncreature filter
+        add_per_turn_cast_limit_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::AllPlayers,
+            1,
+            Some(TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Non(Box::new(TypeFilter::Creature))],
+                ..TypedFilter::default()
+            })),
+        );
+
+        // Cast a noncreature spell first
+        let nc_id = make_spell_obj(&mut state, PlayerId(0), false);
+        let nc_clone = state.objects.get(&nc_id).unwrap().clone();
+        restrictions::record_spell_cast(&mut state, PlayerId(0), &nc_clone);
+
+        // Trying to cast another noncreature → blocked
+        let nc_obj = state.objects.get(&nc_id).unwrap();
+        assert!(is_blocked_by_per_turn_cast_limit(
+            &state,
+            PlayerId(0),
+            nc_obj
+        ));
+
+        // Trying to cast a creature → NOT blocked (creatures bypass the filter)
+        let cr_id = make_spell_obj(&mut state, PlayerId(0), true);
+        let cr_obj = state.objects.get(&cr_id).unwrap();
+        assert!(!is_blocked_by_per_turn_cast_limit(
+            &state,
+            PlayerId(0),
+            cr_obj
+        ));
+    }
+
+    #[test]
+    fn per_turn_limit_max_two_allows_second_cast() {
+        let mut state = setup_game_at_main_phase();
+        add_per_turn_cast_limit_permanent(
+            &mut state,
+            PlayerId(0),
+            CastingProhibitionScope::Controller,
+            2,
+            None,
+        );
+        let spell_id = make_spell_obj(&mut state, PlayerId(0), false);
+
+        // First cast OK
+        let obj_clone = state.objects.get(&spell_id).unwrap().clone();
+        restrictions::record_spell_cast(&mut state, PlayerId(0), &obj_clone);
+        let obj = state.objects.get(&spell_id).unwrap();
+        assert!(!is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
+
+        // Second cast OK
+        restrictions::record_spell_cast(&mut state, PlayerId(0), &obj_clone);
+
+        // Third cast → blocked
+        let obj = state.objects.get(&spell_id).unwrap();
+        assert!(is_blocked_by_per_turn_cast_limit(&state, PlayerId(0), obj));
     }
 
     #[test]

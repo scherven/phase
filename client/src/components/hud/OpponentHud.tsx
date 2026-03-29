@@ -81,6 +81,7 @@ export function OpponentHud({ opponentName }: OpponentHudProps) {
     const isOpponentTurn = gameState?.active_player === opponentId;
     const isValidTarget = validPlayerTargetIds.includes(opponentId);
     const opponentCompanion = gameState?.players[opponentId]?.companion;
+    const opponentSpeed = gameState?.players[opponentId]?.speed ?? 0;
     const isDisconnected = isOnline && disconnectedPlayers.has(opponentId);
     const label = opponentName ?? `Opp ${opponentId + 1}`;
 
@@ -90,21 +91,46 @@ export function OpponentHud({ opponentName }: OpponentHudProps) {
         ? "bg-black/50 ring-[3px] ring-red-400 shadow-[0_0_20px_rgba(248,113,113,0.5),0_0_6px_rgba(248,113,113,0.4)]"
         : "bg-black/50";
 
+    const nameColorClass = isValidTarget
+      ? "text-cyan-300"
+      : isOpponentTurn
+        ? "text-red-300"
+        : "text-gray-300";
+
+    const nameBgClass = isValidTarget
+      ? "bg-cyan-900/80 ring-1 ring-cyan-400/50"
+      : isOpponentTurn
+        ? "bg-red-900/80 ring-1 ring-red-400/40"
+        : "bg-gray-800/90 ring-1 ring-gray-600/50";
+
     return (
-      <div data-player-hud={String(opponentId)} className="flex items-center justify-center py-0.5 lg:py-1">
+      <div data-player-hud={String(opponentId)} className="relative flex flex-col items-center py-0.5 lg:py-1">
         <div
           onClick={isValidTarget ? () => handlePlayerTarget(opponentId) : undefined}
           className={`flex items-center gap-0.5 rounded-full px-1.5 py-px transition-all duration-300 lg:gap-2 lg:px-3 lg:py-1 ${pillClass}`}
         >
-          <span className="text-[10px] font-medium text-gray-400 lg:text-xs">{label}</span>
-          {isOnline && <ConnectionDotInline disconnected={isDisconnected} />}
           <LifeTotal playerId={opponentId} size="lg" hideLabel />
+          <span
+            className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${
+              opponentSpeed >= 4 ? "bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/40" : "bg-white/8 text-gray-300"
+            }`}
+          >
+            SPD {opponentSpeed}
+          </span>
           <ManaPoolSummary playerId={opponentId} />
           {opponentCompanion && (
             <span className={`text-[10px] font-medium ${opponentCompanion.used ? "text-gray-500" : "text-amber-400"}`}>
               Companion
             </span>
           )}
+        </div>
+        {/* Name badge — overlaps bottom of pill */}
+        <div className={`-mt-1.5 z-10 flex items-center gap-1 rounded-full px-2.5 py-0.5 ${nameBgClass}`}>
+          {isOpponentTurn && <span className="h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse" />}
+          <span className={`text-[11px] font-semibold uppercase tracking-widest lg:text-xs ${nameColorClass}`}>
+            {label}
+          </span>
+          {isOnline && <ConnectionDotInline disconnected={isDisconnected} />}
         </div>
       </div>
     );
@@ -182,6 +208,7 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
   if (!player) return null;
 
   const handCount = player.hand.length;
+  const speed = player.speed ?? 0;
 
   const label = ally ? "Ally" : `Opp ${playerId + 1}`;
 
@@ -218,6 +245,7 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
 
       {/* Hand count */}
       <Stat label="Hnd" value={handCount} color="text-gray-300" />
+      <Stat label="Spd" value={speed} color={speed >= 4 ? "text-amber-300" : "text-gray-300"} />
 
       {/* Permanent counts */}
       {counts.creatures > 0 && <Stat label="Crt" value={counts.creatures} color="text-red-400" />}

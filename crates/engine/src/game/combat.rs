@@ -226,6 +226,14 @@ pub fn validate_attackers(state: &GameState, attacker_ids: &[ObjectId]) -> Resul
         if obj.has_keyword(&Keyword::Defender) {
             return Err(format!("{:?} has Defender", id));
         }
+        if obj.static_definitions.iter().any(|sd| {
+            matches!(
+                sd.mode,
+                StaticMode::CantAttack | StaticMode::CantAttackOrBlock
+            )
+        }) {
+            return Err(format!("{:?} can't attack", id));
+        }
 
         // CR 302.6: Summoning sickness — must have haste or have been under controller's
         // control since the beginning of the turn.
@@ -308,11 +316,12 @@ pub fn validate_blockers(
         if blocker.tapped {
             return Err(format!("{:?} is tapped", blocker_id));
         }
-        if blocker
-            .static_definitions
-            .iter()
-            .any(|sd| sd.mode == StaticMode::CantBlock)
-        {
+        if blocker.static_definitions.iter().any(|sd| {
+            matches!(
+                sd.mode,
+                StaticMode::CantBlock | StaticMode::CantAttackOrBlock
+            )
+        }) {
             return Err(format!("{:?} can't block", blocker_id));
         }
 
@@ -575,11 +584,12 @@ pub fn validate_blockers(
             if obj.tapped {
                 continue;
             }
-            if obj
-                .static_definitions
-                .iter()
-                .any(|sd| sd.mode == StaticMode::CantBlock)
-            {
+            if obj.static_definitions.iter().any(|sd| {
+                matches!(
+                    sd.mode,
+                    StaticMode::CantBlock | StaticMode::CantAttackOrBlock
+                )
+            }) {
                 continue;
             }
             // Check if this creature could legally block any attacker attacking its controller
@@ -923,6 +933,12 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
                 && obj.card_types.core_types.contains(&CoreType::Creature)
                 && !obj.tapped
                 && !obj.has_keyword(&Keyword::Defender)
+                && !obj.static_definitions.iter().any(|sd| {
+                    matches!(
+                        sd.mode,
+                        StaticMode::CantAttack | StaticMode::CantAttackOrBlock
+                    )
+                })
                 && (obj.has_keyword(&Keyword::Haste)
                     || obj.entered_battlefield_turn.is_some_and(|etb| etb < turn))
             {
@@ -937,11 +953,12 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
 /// Check per-pair blocking legality (evasion abilities, CR 509.1b).
 /// Does NOT check menace (which is a multi-blocker constraint).
 fn can_block_pair(blocker: &GameObject, attacker: &GameObject) -> bool {
-    if blocker
-        .static_definitions
-        .iter()
-        .any(|sd| sd.mode == StaticMode::CantBlock)
-    {
+    if blocker.static_definitions.iter().any(|sd| {
+        matches!(
+            sd.mode,
+            StaticMode::CantBlock | StaticMode::CantAttackOrBlock
+        )
+    }) {
         return false;
     }
     if attacker
@@ -1170,6 +1187,12 @@ pub fn has_potential_attackers(state: &GameState) -> bool {
                     && obj.card_types.core_types.contains(&CoreType::Creature)
                     && !obj.tapped
                     && !obj.has_keyword(&Keyword::Defender)
+                    && !obj.static_definitions.iter().any(|sd| {
+                        matches!(
+                            sd.mode,
+                            StaticMode::CantAttack | StaticMode::CantAttackOrBlock
+                        )
+                    })
                     && (obj.has_keyword(&Keyword::Haste)
                         || obj.entered_battlefield_turn.is_some_and(|etb| etb < turn))
             })

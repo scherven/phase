@@ -266,6 +266,21 @@ pub(super) fn push_activated_ability_to_stack(
     // Pay remaining sub-costs (Tap, Mana, etc.) — the Sacrifice arm in pay_ability_cost
     // is a no-op for non-SelfRef targets, so the already-paid sacrifice is idempotent.
     if let Some(cost) = remaining_cost {
+        if super::casting::variable_speed_payment_range(
+            cost,
+            super::speed::effective_speed(state, player),
+        )
+        .is_some()
+        {
+            return Ok(super::casting::begin_variable_speed_payment(
+                state,
+                player,
+                source_id,
+                resolved,
+                cost.clone(),
+                ability_index,
+            ));
+        }
         super::casting::pay_ability_cost(state, player, source_id, cost, events)?;
     }
 

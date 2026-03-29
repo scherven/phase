@@ -254,6 +254,7 @@ export interface CompanionInfo {
 export interface Player {
   id: PlayerId;
   life: number;
+  speed?: number | null;
   mana_pool: ManaPool;
   library: ObjectId[];
   hand: ObjectId[];
@@ -383,6 +384,7 @@ export type WaitingFor =
   | { type: "GameOver"; data: { winner: PlayerId | null } }
   | { type: "ReplacementChoice"; data: { player: PlayerId; candidate_count: number; candidate_descriptions?: string[] } }
   | { type: "CopyTargetChoice"; data: { player: PlayerId; source_id: ObjectId; valid_targets: ObjectId[] } }
+  | { type: "ExploreChoice"; data: { player: PlayerId; source_id: ObjectId; choosable: ObjectId[]; remaining: ObjectId[]; pending_effect: unknown } }
   | { type: "EquipTarget"; data: { player: PlayerId; equipment_id: ObjectId; valid_targets: ObjectId[] } }
   | { type: "ScryChoice"; data: { player: PlayerId; cards: ObjectId[] } }
   | { type: "DigChoice"; data: { player: PlayerId; cards: ObjectId[]; keep_count: number; up_to?: boolean; selectable_cards?: ObjectId[]; kept_destination?: Zone | null; rest_destination?: Zone | null } }
@@ -561,6 +563,7 @@ export type GameEvent =
   | { type: "CompanionRevealed"; data: { player: PlayerId; card_name: string } }
   | { type: "CompanionMovedToHand"; data: { player: PlayerId; card_name: string } }
   | { type: "EnergyChanged"; data: { player: PlayerId; delta: number } }
+  | { type: "SpeedChanged"; data: { player: PlayerId; old_speed: number | null; new_speed: number | null } }
   | { type: "CreatureExploited"; data: { exploiter: ObjectId; sacrificed: ObjectId } }
   | { type: "PowerToughnessChanged"; data: { object_id: ObjectId; power: number; toughness: number; power_delta: number; toughness_delta: number } };
 

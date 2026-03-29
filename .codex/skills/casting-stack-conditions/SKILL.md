@@ -37,22 +37,31 @@ CastSpell action
    → proceeds to targeting (walks sub_ability chain for first target filter)
   │
   ▼
-3. Validate timing
+3. Casting prohibition checks (prepare_spell_cast)
+   ├─ Zone castability (hand, command, exile w/ permission, graveyard w/ escape/permission)
+   ├─ CantCastFrom statics (Grafdigger's Cage) — is_blocked_from_casting_from_zone()
+   ├─ CantCastDuring statics (Teferi) — is_blocked_by_cant_cast_during()
+   ├─ PerTurnCastLimit statics (Rule of Law) — is_blocked_by_per_turn_cast_limit()
+   │  └─ Uses CastingProhibitionScope (Controller/Opponents/AllPlayers) + optional spell_filter
+   └─ Temporary zone restrictions — is_blocked_by_cast_only_from_zones()
+  │
+  ▼
+4. Validate timing
    ├─ Instant / Flash → anytime
    └─ Sorcery-speed → main phase + empty stack + active player
   │
   ▼
-4. Commander color identity check (Commander only)
+5. Commander color identity check (Commander only)
   │
   ▼
-5. Calculate mana cost (base + commander tax if from command zone)
+6. Calculate mana cost (base + commander tax if from command zone)
   │
   ▼
-6. Build ResolvedAbility from AbilityDefinition
+7. Build ResolvedAbility from AbilityDefinition
    └─ Recursively converts sub_ability chain via build_resolved_from_def()
   │
   ▼
-7. Handle targeting
+8. Handle targeting
    ├─ Auras: extract Enchant keyword filter
    └─ Others: extract_target_filter_from_effect()
        ├─ 0 legal targets → error
@@ -60,7 +69,7 @@ CastSpell action
        └─ >1 → WaitingFor::TargetSelection
   │
   ▼
-8. pay_and_push()
+9. pay_and_push()
    ├─ X in cost → WaitingFor::ManaPayment
    ├─ pay_mana_cost() — shared mana payment building block (see below)
    ├─ Move card to Zone::Stack
@@ -68,7 +77,7 @@ CastSpell action
    └─ stack::push_to_stack() creates StackEntry
   │
   ▼
-9. Return WaitingFor::Priority
+10. Return WaitingFor::Priority
 ```
 
 Key functions: `handle_cast_spell()`, `pay_and_push()`, `pay_mana_cost()`, `pay_ability_cost()`, `handle_activate_ability()`, `handle_select_targets()`, `handle_cancel_cast()`, `build_resolved_from_def()`

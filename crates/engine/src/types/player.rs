@@ -89,6 +89,13 @@ pub struct Player {
     pub descended_this_turn: bool,
     #[serde(default)]
     pub cards_drawn_this_turn: u32,
+    /// CR 702.179b: Players have no speed until a rule or effect sets it.
+    /// `None` means the player currently has no speed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<u8>,
+    /// CR 702.179d: The inherent speed trigger can increase speed only once each turn.
+    #[serde(default)]
+    pub speed_trigger_used_this_turn: bool,
     /// CR 710.2: Number of crimes committed this turn.
     #[serde(default)]
     pub crimes_committed_this_turn: u32,
@@ -143,6 +150,8 @@ impl Default for Player {
             life_lost_last_turn: 0,
             descended_this_turn: false,
             cards_drawn_this_turn: 0,
+            speed: None,
+            speed_trigger_used_this_turn: false,
             crimes_committed_this_turn: 0,
             drew_from_empty_library: false,
             turns_taken: 0,

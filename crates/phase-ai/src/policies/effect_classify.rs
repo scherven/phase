@@ -198,7 +198,7 @@ pub(crate) fn is_spell_beneficial(ctx: &PolicyContext<'_>) -> bool {
 pub(crate) fn aggregate_player_impact(ctx: &PolicyContext<'_>) -> f64 {
     ctx.effects()
         .iter()
-        .map(|effect| player_impact(*effect))
+        .map(|effect| player_impact(effect))
         .sum()
 }
 

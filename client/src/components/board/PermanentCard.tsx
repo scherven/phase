@@ -61,6 +61,9 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
     if (wf?.type === "CopyTargetChoice" && wf.data.player === playerId) {
       return wf.data.valid_targets.includes(objectId);
     }
+    if (wf?.type === "ExploreChoice" && wf.data.player === playerId) {
+      return wf.data.choosable.includes(objectId);
+    }
     return false;
   });
   const isValidAttacker = useGameStore((s) =>

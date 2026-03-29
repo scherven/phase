@@ -134,6 +134,7 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
         player.life_lost_this_turn = 0;
         player.descended_this_turn = false;
         player.cards_drawn_this_turn = 0;
+        player.speed_trigger_used_this_turn = false;
         player.bending_types_this_turn.clear();
     }
 

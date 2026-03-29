@@ -267,6 +267,12 @@ pub enum GameEvent {
         player: PlayerId,
         delta: i32,
     },
+    /// CR 702.179: A player's speed changed.
+    SpeedChanged {
+        player: PlayerId,
+        old_speed: Option<u8>,
+        new_speed: Option<u8>,
+    },
     /// CR 122.1: A player counter (poison, experience, rad, ticket, etc.) changed.
     PlayerCounterChanged {
         player: PlayerId,
