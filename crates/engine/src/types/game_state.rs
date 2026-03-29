@@ -1040,6 +1040,12 @@ pub struct GameState {
     #[serde(default)]
     pub spells_cast_last_turn: Option<u8>,
 
+    /// Objects whose casting/activation was cancelled this priority window.
+    /// Prevents the AI from looping cast→cancel→recast on the same spell or ability.
+    /// Cleared on PassPriority or PlayLand.
+    #[serde(default)]
+    pub cancelled_casts: Vec<ObjectId>,
+
     // Triggered ability targeting
     #[serde(default)]
     pub pending_trigger: Option<crate::game::triggers::PendingTrigger>,
@@ -1423,6 +1429,7 @@ impl GameState {
             pending_cast: None,
             ring_level: HashMap::new(),
             ring_bearer: HashMap::new(),
+            cancelled_casts: Vec::new(),
         }
     }
 

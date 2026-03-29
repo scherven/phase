@@ -5,7 +5,7 @@ export type LogVerbosity = "full" | "compact" | "minimal";
 const COMPACT_EXCLUDE: Set<LogCategory> = new Set(["Mana", "State", "Turn"]);
 
 const MINIMAL_INCLUDE: Set<LogCategory> = new Set([
-  "Game", "Stack", "Combat", "Life", "Destroy", "Token",
+  "Game", "Stack", "Combat", "Life", "Destroy", "Token", "Debug",
 ]);
 
 /** ZoneChanged entries contain Zone segments ("moves from X to Y"). Other Zone-category
@@ -56,6 +56,8 @@ export function categoryColorClass(entry: GameLogEntry): string {
       return "text-red-400";
     case "Special":
       return "text-amber-400";
+    case "Debug":
+      return "text-red-500";
     default:
       return "text-gray-400";
   }

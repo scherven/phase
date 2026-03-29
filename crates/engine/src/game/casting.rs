@@ -1950,14 +1950,13 @@ pub fn handle_activate_ability(
     Ok(WaitingFor::Priority { player })
 }
 
-/// Cancel a pending cast, reverting any side effects (e.g. untapping a source tapped for cost).
+/// Record a cancelled cast so the AI avoids re-attempting the same spell/ability this window.
 pub fn handle_cancel_cast(
-    _state: &mut GameState,
-    _pending: &PendingCast,
+    state: &mut GameState,
+    pending: &PendingCast,
     _events: &mut Vec<GameEvent>,
 ) {
-    // Costs are not paid before cancelable target/mode selection states, so cancel has no
-    // side effects to unwind.
+    state.cancelled_casts.push(pending.object_id);
 }
 
 // Cost payment handlers are in casting_costs module.

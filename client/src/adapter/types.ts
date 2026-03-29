@@ -444,7 +444,8 @@ export type RetargetScope =
 
 export type LogCategory =
   | "Game" | "Turn" | "Stack" | "Combat" | "Zone" | "Life"
-  | "Mana" | "State" | "Token" | "Trigger" | "Special" | "Destroy";
+  | "Mana" | "State" | "Token" | "Trigger" | "Special" | "Destroy"
+  | "Debug";
 
 export type LogSegment =
   | { type: "Text"; value: string }

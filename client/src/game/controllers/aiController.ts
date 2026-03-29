@@ -1,5 +1,6 @@
 import { AI_BASE_DELAY_MS, AI_DELAY_VARIANCE_MS } from "../../constants/game";
 import { useGameStore } from "../../stores/gameStore";
+import { debugLog } from "../debugLog";
 import { dispatchAction } from "../dispatch";
 import type { OpponentController } from "./types";
 
@@ -26,10 +27,9 @@ export function createAIController(config: AIControllerConfig): AIController {
     if (!active || pending) return;
 
     const state = useGameStore.getState().gameState;
-    if (!state) return;
+    if (!state?.waiting_for) return;
 
     const waitingFor = state.waiting_for;
-    if (!waitingFor) return;
 
     // Game over -- stop scheduling
     if (waitingFor.type === "GameOver") return;
@@ -55,18 +55,16 @@ export function createAIController(config: AIControllerConfig): AIController {
         }
         const action = await adapter.getAiAction(config.difficulty, playerId);
         if (action == null) {
-          console.warn(
-            "[AI] getAiAction returned null for player",
-            playerId,
-            "waitingFor:",
-            gameState?.waiting_for,
+          debugLog(
+            `AI getAiAction returned null for player ${playerId} (waitingFor: ${gameState?.waiting_for?.type ?? "none"})`,
+            "warn",
           );
           pending = false;
           return;
         }
         await dispatchAction(action);
       } catch (e) {
-        console.error("[AI] Error choosing action:", e);
+        debugLog(`AI error choosing action: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         pending = false;
         if (active) checkAndSchedule();
@@ -76,6 +74,7 @@ export function createAIController(config: AIControllerConfig): AIController {
 
   function start() {
     active = true;
+    debugLog(`AI controller started for players [${[...aiPlayerIds].join(",")}]`, "warn");
     unsubscribe = useGameStore.subscribe(
       (s) => s.waitingFor,
       () => {

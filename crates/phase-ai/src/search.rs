@@ -62,6 +62,25 @@ pub fn score_candidates(
         config,
         &services.context,
     );
+
+    // Filter out spells/abilities that were cast then cancelled this priority window.
+    // Prevents deterministic cast→cancel→recast infinite loops.
+    let gated: Vec<_> = if state.cancelled_casts.is_empty() {
+        gated
+    } else {
+        gated
+            .into_iter()
+            .filter(|g| match &g.candidate.action {
+                GameAction::CastSpell { object_id, .. }
+                | GameAction::ActivateAbility {
+                    source_id: object_id,
+                    ..
+                } => !state.cancelled_casts.contains(object_id),
+                _ => true,
+            })
+            .collect()
+    };
+
     let actions: Vec<GameAction> = gated
         .iter()
         .map(|candidate| candidate.candidate.action.clone())

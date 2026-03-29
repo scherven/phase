@@ -235,6 +235,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             // processes non-phase events (LifeChanged, DamageDealt) for triggers inline.
             // Other phase triggers (Upkeep, End, etc.) only process PhaseChanged events
             // which the pipeline already filters, so they don't need this guard.
+            state.cancelled_casts.clear();
             let stack_was_empty = state.stack.is_empty();
             let wf = priority::handle_priority_pass(state, &mut events);
             if stack_was_empty && !state.stack.is_empty() && state.phase == Phase::CombatDamage {
@@ -246,6 +247,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             if state.priority_player != *player {
                 return Err(EngineError::NotYourPriority);
             }
+            state.cancelled_casts.clear();
             // CR 305.2: Playing a land is a special action, not a spell.
             handle_play_land(state, object_id, card_id, &mut events)?
         }

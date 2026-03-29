@@ -5,6 +5,7 @@ import type { AnimationStep } from "../animation/types";
 import { SPEED_MULTIPLIERS } from "../animation/types";
 import { audioManager } from "../audio/AudioManager";
 import { MAX_UNDO_HISTORY, UNDOABLE_ACTIONS } from "../constants/game";
+import { debugLog } from "./debugLog";
 import { useAnimationStore } from "../stores/animationStore";
 import { useGameStore, saveGame, saveCheckpoints } from "../stores/gameStore";
 import { useMultiplayerStore } from "../stores/multiplayerStore";
@@ -67,6 +68,7 @@ const pendingQueue: PendingWork[] = [];
 async function processAction(action: GameAction): Promise<void> {
   const { adapter, gameState } = useGameStore.getState();
   if (!adapter || !gameState) {
+    debugLog("processAction called with no adapter or gameState");
     throw new Error("Game not initialized");
   }
 
@@ -193,6 +195,7 @@ async function processQueue(): Promise<void> {
       }
       next.resolve();
     } catch (err) {
+      debugLog(`processQueue error (${next.kind}): ${err instanceof Error ? err.message : String(err)}`);
       next.reject(err);
     }
   }
@@ -213,6 +216,7 @@ async function processQueue(): Promise<void> {
  */
 export async function dispatchAction(action: GameAction): Promise<void> {
   if (isAnimating) {
+    debugLog(`dispatch queued (mutex held): ${action.type}, queue=${pendingQueue.length}`, "warn");
     return new Promise<void>((resolve, reject) => {
       pendingQueue.push({ kind: "local", action, resolve, reject });
     });
@@ -221,6 +225,9 @@ export async function dispatchAction(action: GameAction): Promise<void> {
   isAnimating = true;
   try {
     await processAction(action);
+  } catch (e) {
+    debugLog(`dispatch error for ${action.type}: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
   } finally {
     if (pendingQueue.length > 0) {
       processQueue().catch(() => { isAnimating = false; });

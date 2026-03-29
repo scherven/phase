@@ -11,6 +11,7 @@ import type {
   MatchConfig,
   SubmitResult,
 } from "./types";
+import { debugLog } from "../game/debugLog";
 
 type EngineResponse =
   | { type: "ready" }
@@ -63,9 +64,11 @@ export class EngineWorkerClient {
     };
 
     this.worker.onerror = (e: ErrorEvent) => {
-      // Reject all pending requests
+      // Reject all pending requests — log via debugLog for in-app visibility
+      const msg = e.message ?? "Worker error";
+      debugLog(`Engine worker error: ${msg} (${this.pending.size} pending requests rejected)`);
       for (const [, entry] of this.pending) {
-        entry.reject(new Error(e.message ?? "Worker error"));
+        entry.reject(new Error(msg));
       }
       this.pending.clear();
     };
