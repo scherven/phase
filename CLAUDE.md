@@ -59,7 +59,7 @@ When creating or participating in an agent team (whether triggered by `/batch-me
 
 | Module | What lives here |
 |--------|----------------|
-| `parser/oracle_util.rs` | Number/ordinal parsing, mana symbol parsing, reminder text stripping, possessive/pronoun phrase matching, phrase variant helpers, subtype canonicalization, filter merging, `SELF_REF_TYPE_PHRASES` (shared "this \<type\>" self-reference constant) |
+| `parser/oracle_util.rs` | `TextPair` (paired original/lowercase slices with `strip_prefix`/`strip_suffix` for case-insensitive matching preserving original case), number/ordinal parsing, mana symbol parsing, reminder text stripping, possessive/pronoun phrase matching, phrase variant helpers, subtype canonicalization, filter merging, `SELF_REF_TYPE_PHRASES` (normalization-safe self-reference constant), `SELF_REF_PARSE_ONLY_PHRASES` (parse-only self-references excluded from `~` normalization) |
 | `parser/oracle_quantity.rs` | Semantic quantity interpretation: `parse_cda_quantity`, `parse_quantity_ref`, `parse_event_context_quantity`, `parse_for_each_clause` — maps Oracle text phrases to typed `QuantityExpr`/`QuantityRef` values |
 | `parser/oracle_target.rs` | Target extraction from Oracle text (`"target creature"` → `TargetFilter`), type phrase parsing, event context refs |
 | `parser/oracle_static.rs` | Static ability line parsing, continuous modification extraction (`"gets +N/+M and has flying"` → typed modifications), `strip_casting_prohibition_subject` (shared subject→`CastingProhibitionScope` extractor for all casting prohibition patterns) |
@@ -247,6 +247,7 @@ State is filtered per-player (`filter_state_for_player`) to hide opponent's hand
 These patterns must be used on first write, not fixed after clippy complains:
 
 - **`strip_prefix`/`strip_suffix`** over `starts_with` + manual slicing: `if let Some(rest) = s.strip_prefix("foo")` not `if s.starts_with("foo") { &s[3..] }`. **Compose from `std` primitives** — chain `strip_prefix` calls for multi-part patterns: `s.strip_prefix(word)?.strip_prefix(' ')?` not `format!("{word} ")` + `strip_prefix`. The standard library's string methods are building blocks; use them compositionally rather than constructing new strings to match against.
+- **`TextPair` for dual-string parsing** — when matching on lowercase text but preserving original casing, use `TextPair::new(original, &lower)` and its `strip_prefix`/`strip_suffix` methods instead of manually computing `&text[text.len() - rest.len()..]` or `&text[prefix.len()..]`. In functions where `TextPair` cannot be constructed (e.g., `parse_target` where `lower` is a local `String` with a shorter lifetime than the returned `&str`), the `text.len() - rest.len()` offset idiom remains correct. See `oracle_util.rs`.
 - **Iterator methods** over range-indexed loops: `for item in slice.iter().skip(1)` not `for i in 1..slice.len()`
 - **`rsplit(' ').next()`** to get the last word, not `rsplit().collect::<Vec>().first()`
 - **Exhaustive `match`** without wildcard fallbacks when the enum is known — let the compiler catch missing arms

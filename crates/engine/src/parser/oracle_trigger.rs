@@ -5,6 +5,7 @@ use super::oracle_target::parse_type_phrase;
 use super::oracle_util::{
     canonicalize_subtype_name, merge_or_filters, normalize_card_name_refs, parse_number,
     parse_ordinal, parse_subtype, strip_after, strip_reminder_text, TextPair,
+    SELF_REF_PARSE_ONLY_PHRASES,
 };
 use crate::types::ability::{
     AbilityKind, Comparator, ControllerRef, DamageKindFilter, FilterProp, NinjutsuVariant,
@@ -2518,7 +2519,7 @@ fn try_parse_counter_removed(lower: &str) -> Option<(TriggerMode, TriggerDefinit
         };
 
     // Parse subject
-    if subject_text == "~" || subject_text == "this card" {
+    if subject_text == "~" || SELF_REF_PARSE_ONLY_PHRASES.contains(&subject_text) {
         def.valid_card = Some(TargetFilter::SelfRef);
     } else {
         let (filter, _) = parse_single_subject(subject_text);

@@ -13,7 +13,7 @@ use crate::types::zones::Zone;
 use super::oracle_quantity::capitalize_first;
 use super::oracle_util::{
     merge_or_filters, parse_subtype, starts_with_possessive, strip_possessive, TextPair,
-    SELF_REF_TYPE_PHRASES,
+    SELF_REF_PARSE_ONLY_PHRASES, SELF_REF_TYPE_PHRASES,
 };
 
 /// Parse an event-context possessive reference from Oracle text.
@@ -138,10 +138,13 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
 
         // "t" — "this creature" (self-ref), "target ...", "those ...", "the exiled ..."
         Some(b't') => {
-            // "this creature", "this permanent", etc. — self-reference
-            for phrase in SELF_REF_TYPE_PHRASES {
-                if lower.starts_with(phrase) {
-                    return (TargetFilter::SelfRef, &text[phrase.len()..]);
+            // CR 201.5: "this creature", "this spell", etc. — self-reference
+            for phrase in SELF_REF_TYPE_PHRASES
+                .iter()
+                .chain(SELF_REF_PARSE_ONLY_PHRASES)
+            {
+                if let Some(rest) = lower.strip_prefix(phrase) {
+                    return (TargetFilter::SelfRef, &text[text.len() - rest.len()..]);
                 }
             }
             if lower.starts_with("target ") {

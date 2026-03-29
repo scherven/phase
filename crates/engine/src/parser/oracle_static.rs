@@ -8,6 +8,7 @@ use super::oracle_target::{parse_combat_status_prefix, parse_counter_suffix, par
 use super::oracle_util::{
     has_unconsumed_conditional, infer_core_type_for_subtype, parse_comparator_prefix,
     parse_mana_symbols, parse_number, parse_subtype, strip_after, strip_reminder_text, TextPair,
+    SELF_REF_PARSE_ONLY_PHRASES, SELF_REF_TYPE_PHRASES,
 };
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, BasicLandType, CardPlayMode, ChosenSubtypeKind, Comparator,
@@ -2002,16 +2003,10 @@ fn parse_rule_static_subject_filter(subject: &str) -> Option<TargetFilter> {
     let lower = subject.to_lowercase();
     let tp = TextPair::new(subject, &lower);
 
-    if matches!(
-        tp.lower,
-        "~" | "this"
-            | "it"
-            | "this card"
-            | "this creature"
-            | "this permanent"
-            | "this artifact"
-            | "this land"
-    ) {
+    if matches!(tp.lower, "~" | "this" | "it")
+        || SELF_REF_PARSE_ONLY_PHRASES.contains(&tp.lower)
+        || SELF_REF_TYPE_PHRASES.contains(&tp.lower)
+    {
         return Some(TargetFilter::SelfRef);
     }
 

@@ -509,7 +509,7 @@ pub fn synthesize_casualty(face: &mut CardFace) {
     let copy_effect = AbilityDefinition::new(
         AbilityKind::Spell,
         Effect::CopySpell {
-            target: TargetFilter::Any,
+            target: TargetFilter::SelfRef,
         },
     )
     .condition(AbilityCondition::AdditionalCostPaid);

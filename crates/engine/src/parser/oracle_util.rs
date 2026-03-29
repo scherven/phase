@@ -455,10 +455,9 @@ pub const OBJECT_PRONOUNS: &[&str] = &["it", "them", "that card", "those cards"]
 /// `normalize_card_name_refs` (tilde normalization).
 ///
 /// Does NOT include: `"~"` (already handled separately), `"this"` (bare, too ambiguous
-/// for prefix matching), `"this card"` (not safe for normalization — context-dependent),
-/// `"this spell"` (not safe for normalization — breaks `oracle_casting.rs` spell-specific
-/// parsing), `"it"` (context-dependent, needs `ParseContext` resolution).
-/// Those are handled locally in their consuming functions.
+/// for prefix matching), `"it"` (context-dependent, needs `ParseContext` resolution).
+/// See also `SELF_REF_PARSE_ONLY_PHRASES` for phrases recognized in parsing but excluded
+/// from normalization.
 pub const SELF_REF_TYPE_PHRASES: &[&str] = &[
     "this creature",
     "this permanent",
@@ -471,6 +470,15 @@ pub const SELF_REF_TYPE_PHRASES: &[&str] = &[
     "this planeswalker",
     "this battle",
 ];
+
+/// CR 201.5: Self-reference phrases recognized by parsers but NOT safe for `~` normalization.
+///
+/// "this spell" — `oracle_casting.rs` matches literal "this spell" for alternative costs/restrictions.
+/// "this card" — context-dependent in costs, conditions, and static abilities.
+///
+/// Used by: `parse_target` (target recognition), `subject.rs` (subject stripping).
+/// NOT used by: `normalize_card_name_refs` (must not replace these with `~`).
+pub const SELF_REF_PARSE_ONLY_PHRASES: &[&str] = &["this spell", "this card"];
 
 /// Test whether `text` matches `"{prefix} {word} {suffix}"` for any word in `variants`,
 /// using the given match strategy.
