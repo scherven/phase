@@ -49,9 +49,9 @@ export function createAIController(config: AIControllerConfig): AIController {
     // This turns additive latency (delay + compute) into max(delay, compute),
     // which matters most for VeryHard where the pool search takes 1-2 seconds.
     const { adapter } = useGameStore.getState();
-    const actionPromise = adapter
-      ? adapter.getAiAction(config.difficulty, playerId)
-      : Promise.resolve(null);
+    const actionPromise: Promise<GameAction | null> = Promise.resolve(
+  adapter?.getAiAction(config.difficulty, playerId) ?? null,
+);
     // Suppress unhandled-rejection warnings if stop() cancels the timeout
     // before it fires and nothing else awaits this promise.
     actionPromise.catch(() => {});

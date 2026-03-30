@@ -2,8 +2,7 @@ use std::cell::{Cell, RefCell};
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use serde::{Deserialize, Serialize};
-use tsify::Tsify;
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use engine::ai_support::legal_actions;
@@ -17,9 +16,7 @@ use engine::game::{
 };
 use engine::types::format::FormatConfig;
 use engine::types::match_config::MatchConfig;
-use engine::types::{
-    GameAction, GameEvent, GameState, ManaColor, ManaPool, ManaType, Phase, PlayerId, Zone,
-};
+use engine::types::{GameAction, GameState, PlayerId};
 
 /// Serialize a Rust value to a JS object via JSON.
 ///
@@ -373,72 +370,6 @@ pub fn select_action_from_scores(
     }
 }
 
-// Tsify re-exports for TypeScript type generation.
-// Newtype wrappers expose engine types to the WASM boundary.
-
-#[derive(Tsify, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-pub enum WasmManaColor {
-    White,
-    Blue,
-    Black,
-    Red,
-    Green,
-}
-
-#[derive(Tsify, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-pub struct WasmManaPool {
-    pub white: u32,
-    pub blue: u32,
-    pub black: u32,
-    pub red: u32,
-    pub green: u32,
-    pub colorless: u32,
-}
-
-#[derive(Tsify, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-pub enum WasmZone {
-    Library,
-    Hand,
-    Battlefield,
-    Graveyard,
-    Stack,
-    Exile,
-    Command,
-}
-
-#[derive(Tsify, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-pub enum WasmPhase {
-    Untap,
-    Upkeep,
-    Draw,
-    PreCombatMain,
-    BeginCombat,
-    DeclareAttackers,
-    DeclareBlockers,
-    CombatDamage,
-    EndCombat,
-    PostCombatMain,
-    End,
-    Cleanup,
-}
-
-// Suppress unused import warnings -- types are used for tsify generation.
-const _: () = {
-    fn _assert_types() {
-        let _ = std::any::type_name::<GameAction>();
-        let _ = std::any::type_name::<GameEvent>();
-        let _ = std::any::type_name::<GameState>();
-        let _ = std::any::type_name::<ManaColor>();
-        let _ = std::any::type_name::<ManaPool>();
-        let _ = std::any::type_name::<ManaType>();
-        let _ = std::any::type_name::<Phase>();
-        let _ = std::any::type_name::<Zone>();
-    }
-};
 
 #[cfg(all(test, target_arch = "wasm32"))]
 mod tests {

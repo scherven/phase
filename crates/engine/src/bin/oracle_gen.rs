@@ -212,7 +212,7 @@ fn main() {
             for face_ref in layout_faces(&layout) {
                 let key = face_ref.name.to_lowercase();
                 let legalities = legalities_by_face.remove(&key).unwrap_or_default();
-                let mut face = face_ref.clone();
+                let face = face_ref.clone();
                 #[cfg(feature = "forge")]
                 if let Some(ref fi) = forge_index {
                     engine::database::forge::apply_forge_fallback(&mut face, fi);
@@ -220,7 +220,7 @@ fn main() {
                 face_index.insert(key, CardExportEntry { face, legalities });
             }
         } else {
-            let mut face = build_oracle_face(&faces[0], oracle_id);
+            let face = build_oracle_face(&faces[0], oracle_id);
             #[cfg(feature = "forge")]
             if let Some(ref fi) = forge_index {
                 engine::database::forge::apply_forge_fallback(&mut face, fi);
