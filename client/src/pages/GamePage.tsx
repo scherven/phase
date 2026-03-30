@@ -832,10 +832,8 @@ function GamePageContent({
       <CardPreview cardName={inspectedCardName} backFaceName={inspectedOtherFaceName} />
 
       {/* WaitingFor-driven prompt overlays (only for human player) */}
-      {((waitingFor?.type === "TargetSelection" ||
-        waitingFor?.type === "TriggerTargetSelection" ||
-        waitingFor?.type === "CopyTargetChoice" ||
-        waitingFor?.type === "ExploreChoice")) &&
+      {waitingFor != null &&
+        ["TargetSelection", "TriggerTargetSelection", "CopyTargetChoice", "ExploreChoice", "TapCreaturesForManaAbility"].includes(waitingFor.type) &&
         waitingFor.data.player === playerId && <TargetingOverlay />}
       {waitingFor?.type === "ManaPayment" &&
         waitingFor.data.player === playerId && <ManaPaymentUI />}

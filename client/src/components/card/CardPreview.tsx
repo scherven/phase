@@ -446,7 +446,7 @@ function ParsedAbilitiesPanel({ obj }: { obj: GameObject }) {
   const lines = buildParsedLines(obj);
 
   return (
-    <div className="w-[clamp(220px,26vw,472px)] max-h-[80vh] overflow-y-auto pointer-events-auto rounded-[3.5%] border border-gray-600 bg-gray-950/95 shadow-2xl backdrop-blur-sm">
+    <div className="w-[clamp(220px,26vw,472px)] max-h-[80vh] overflow-y-auto pointer-events-auto rounded-[3.5%] border border-gray-600 bg-gray-950/95 shadow-2xl backdrop-blur-sm" data-card-hover>
       <div className="sticky top-0 z-10 bg-gray-950 border-b border-gray-700/80 px-3 py-2">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold text-gray-200">{obj.name}</div>
