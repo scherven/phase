@@ -1152,13 +1152,15 @@ fn parse_multiple_opponents_condition(norm_lower: &str) -> Option<ReplacementCon
     Some(ReplacementCondition::UnlessMultipleOpponents)
 }
 
-/// Extract "unless it's your turn" condition.
+/// Extract "unless it's your turn" / "if it's not your turn" condition.
+/// Both phrasings are semantically identical: the permanent enters tapped on the opponent's turn.
 /// CR 614.1d + CR 500
 fn parse_your_turn_condition(norm_lower: &str) -> Option<ReplacementCondition> {
-    if !norm_lower.contains("unless it's your turn") {
-        return None;
+    if norm_lower.contains("unless it's your turn") || norm_lower.contains("if it's not your turn") {
+        Some(ReplacementCondition::UnlessYourTurn)
+    } else {
+        None
     }
-    Some(ReplacementCondition::UnlessYourTurn)
 }
 
 /// Extract "unless it's your <ordinal-list> turn of the game" condition.
@@ -2390,6 +2392,16 @@ mod tests {
         let text = "~ enters tapped unless it's your turn.";
         let result = parse_replacement_line(text, "Test Card");
         let def = result.expect("Should parse unless-your-turn");
+        assert_eq!(def.condition, Some(ReplacementCondition::UnlessYourTurn));
+    }
+
+    #[test]
+    fn enters_tapped_if_not_your_turn() {
+        // "if it's not your turn" is semantically equivalent to "unless it's your turn" (CR 614.1d).
+        // Eddymurk Crab uses this positive-conditional phrasing.
+        let text = "~ enters tapped if it's not your turn.";
+        let result = parse_replacement_line(text, "Eddymurk Crab");
+        let def = result.expect("Should parse if-not-your-turn as UnlessYourTurn");
         assert_eq!(def.condition, Some(ReplacementCondition::UnlessYourTurn));
     }
 

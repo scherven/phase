@@ -1,5 +1,5 @@
 use super::super::oracle_target::parse_target;
-use super::super::oracle_util::parse_number;
+use super::super::oracle_util::{contains_possessive, parse_number};
 use super::types::*;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, Chooser, Effect, StaticDefinition, TargetFilter,
@@ -476,6 +476,7 @@ pub(super) fn apply_clause_continuation(
             up_to: is_up_to,
             filter: card_filter,
             destination: kept_dest,
+            rest_destination: rest_dest,
         } => {
             let Some(previous) = defs.last_mut() else {
                 return;
@@ -485,6 +486,7 @@ pub(super) fn apply_clause_continuation(
                 up_to,
                 filter,
                 destination,
+                rest_destination,
                 ..
             } = &mut *previous.effect
             {
@@ -492,6 +494,9 @@ pub(super) fn apply_clause_continuation(
                 *up_to = is_up_to;
                 *filter = card_filter;
                 *destination = Some(kept_dest);
+                if let Some(rd) = rest_dest {
+                    *rest_destination = Some(rd);
+                }
             }
         }
         ContinuationAst::ChooseFromExile { count, chooser } => {
@@ -615,17 +620,51 @@ pub(super) fn parse_intrinsic_continuation_ast(
 /// battlefield / into your hand" into a DigFromAmong continuation that patches the preceding
 /// Dig effect. The player follows the Oracle text instructions in written order (CR 608.2c).
 ///
+/// Also handles "put N of them into your hand [and the rest on the bottom]" — the simpler
+/// form used by Impulse, Stock Up, Dig Through Time, etc. where no filter is specified.
+///
 /// Examples:
 /// - "put up to two creature cards with mana value 3 or less from among them onto the battlefield"
 /// - "put a creature card from among them into your hand"
 /// - "you may reveal a creature card from among them and put it into your hand"
+/// - "put two of them into your hand and the rest on the bottom of your library in any order"
 fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst> {
-    // Determine destination
+    // Determine kept-cards destination
     let destination = if lower.contains("onto the battlefield") {
         Zone::Battlefield
     } else {
         Zone::Hand
     };
+
+    // "put N of them into your hand [and the rest on the bottom]" — no filter, count explicit.
+    // Must be checked BEFORE the "from among" path since "of them" appears in both forms.
+    if let Some(of_them_pos) = lower.find(" of them") {
+        let before_of = lower[..of_them_pos].trim();
+        let after_put = before_of
+            .strip_prefix("you may put ")
+            .or_else(|| before_of.strip_prefix("put "))
+            .unwrap_or(before_of);
+
+        let (count, up_to) = if let Some(rest) = after_put.strip_prefix("up to ") {
+            parse_number(rest).map_or((1, true), |(n, _)| (n, true))
+        } else if let Some((n, _)) = parse_number(after_put) {
+            (n, false)
+        } else {
+            // "a/an" or unrecognized → treat as up_to 1
+            (1, true)
+        };
+
+        // Detect rest destination from "and the rest on the bottom/into graveyard" suffix.
+        let rest_destination = parse_of_them_rest_destination(lower);
+
+        return Some(ContinuationAst::DigFromAmong {
+            count,
+            up_to,
+            filter: TargetFilter::Any,
+            destination,
+            rest_destination,
+        });
+    }
 
     // Find "from among" to split the text into count+filter vs destination
     let from_among_pos = lower.find("from among")?;
@@ -680,7 +719,22 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
         up_to,
         filter,
         destination,
+        rest_destination: None, // rest_destination handled by subsequent PutRest continuation
     })
+}
+
+/// Extract rest_destination from "put N of them into your hand and the rest on the bottom/graveyard".
+/// Returns None if no "and the rest" clause is present.
+fn parse_of_them_rest_destination(lower: &str) -> Option<Zone> {
+    let after_rest = lower.split_once(" and the rest")?.1;
+    if contains_possessive(after_rest, "into", "graveyard") {
+        Some(Zone::Graveyard)
+    } else if contains_possessive(after_rest, "into", "hand") {
+        Some(Zone::Hand)
+    } else {
+        // Default: bottom of library ("on the bottom", "in any order", etc.)
+        Some(Zone::Library)
+    }
 }
 
 pub(super) fn parse_followup_continuation_ast(
@@ -765,9 +819,12 @@ pub(super) fn parse_followup_continuation_ast(
             Some(ContinuationAst::ChooseFromExile { count, chooser })
         }
         // "Put up to N [filter] from among them/those cards onto the battlefield/into your hand"
+        // and "put N of them into your hand [and the rest on the bottom]"
         // after Dig — patches keep_count, filter, destination on the preceding Dig effect.
         Effect::Dig { .. }
-            if (lower.contains("from among them") || lower.contains("from among those cards"))
+            if (lower.contains("from among them")
+                || lower.contains("from among those cards")
+                || lower.contains(" of them"))
                 && (lower.contains("onto the battlefield")
                     || lower.contains("into your hand")
                     || lower.contains("into their hand")) =>
@@ -1093,6 +1150,67 @@ mod tests {
             result,
             Some(ContinuationAst::PutRest {
                 destination: Zone::Library
+            })
+        );
+    }
+
+    // --- "put N of them" DigFromAmong continuation ---
+
+    #[test]
+    fn put_two_of_them_into_hand_with_rest_on_bottom() {
+        // Stock Up / Dig Through Time pattern: keep count + rest destination in one clause.
+        let dig = make_dig_effect();
+        let result = parse_followup_continuation_ast(
+            "Put two of them into your hand and the rest on the bottom of your library in any order.",
+            &dig,
+        );
+        assert_eq!(
+            result,
+            Some(ContinuationAst::DigFromAmong {
+                count: 2,
+                up_to: false,
+                filter: TargetFilter::Any,
+                destination: Zone::Hand,
+                rest_destination: Some(Zone::Library),
+            })
+        );
+    }
+
+    #[test]
+    fn put_one_of_them_into_hand_with_rest_on_bottom() {
+        // Impulse / Anticipate pattern.
+        let dig = make_dig_effect();
+        let result = parse_followup_continuation_ast(
+            "Put one of them into your hand and the rest on the bottom of your library in any order.",
+            &dig,
+        );
+        assert_eq!(
+            result,
+            Some(ContinuationAst::DigFromAmong {
+                count: 1,
+                up_to: false,
+                filter: TargetFilter::Any,
+                destination: Zone::Hand,
+                rest_destination: Some(Zone::Library),
+            })
+        );
+    }
+
+    #[test]
+    fn put_two_of_them_into_hand_rest_into_graveyard() {
+        let dig = make_dig_effect();
+        let result = parse_followup_continuation_ast(
+            "Put two of them into your hand and the rest into your graveyard.",
+            &dig,
+        );
+        assert_eq!(
+            result,
+            Some(ContinuationAst::DigFromAmong {
+                count: 2,
+                up_to: false,
+                filter: TargetFilter::Any,
+                destination: Zone::Hand,
+                rest_destination: Some(Zone::Graveyard),
             })
         );
     }

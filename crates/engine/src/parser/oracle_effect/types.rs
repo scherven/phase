@@ -154,6 +154,10 @@ pub(super) enum ContinuationAst {
         up_to: bool,
         filter: TargetFilter,
         destination: Zone,
+        /// Set when the same clause encodes both kept and rest destinations, e.g.,
+        /// "put two of them into your hand and the rest on the bottom of your library".
+        /// When None, a subsequent PutRest continuation handles rest_destination.
+        rest_destination: Option<Zone>,
     },
     /// CR 508.4 / CR 614.1: "It/The token enters tapped and attacking [that player]"
     /// Absorbs into preceding CopyTokenOf, Token, or ChangeZone by setting
