@@ -60,7 +60,7 @@ function CardPreviewInner({
   });
   const classLevel = obj?.class_level;
   const [pointerPosition, setPointerPosition] = useState<{ x: number; y: number } | null>(null);
-  const [altHeld, setAltHeld] = useState(false);
+  const altHeld = useUiStore((s) => s.altHeld);
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" && window.innerWidth < 1024,
@@ -79,16 +79,13 @@ function CardPreviewInner({
 
     function handlePointerMove(event: MouseEvent) {
       setPointerPosition({ x: event.clientX, y: event.clientY });
-      setAltHeld(event.altKey);
     }
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Alt") setAltHeld(true);
       if (event.key === "Control") setCtrlHeld(true);
     }
 
     function handleKeyUp(event: KeyboardEvent) {
-      if (event.key === "Alt") setAltHeld(false);
       if (event.key === "Control") setCtrlHeld(false);
     }
 
@@ -149,6 +146,10 @@ function CardPreviewInner({
       }
     : null;
 
+  const margin = 16;
+  const altTop = cursorStyle ? Math.max(margin, pointerPosition!.y - 40) : margin;
+  const altMaxHeight = viewportHeight - altTop - margin;
+
   const style: React.CSSProperties = position
     ? {
         left: Math.min(position.x + 16, window.innerWidth - 488),
@@ -156,15 +157,12 @@ function CardPreviewInner({
       }
     : cursorStyle
       ? altHeld
-        ? {
-            ...cursorStyle,
-            top: Math.min(Math.max(16, pointerPosition!.y - 40), viewportHeight - 200),
-          }
+        ? { ...cursorStyle, top: altTop }
         : {
             ...cursorStyle,
             top: Math.min(
-              Math.max(16, pointerPosition!.y - previewHeight / 2),
-              viewportHeight - previewHeight - 16,
+              Math.max(margin, pointerPosition!.y - previewHeight / 2),
+              viewportHeight - previewHeight - margin,
             ),
           }
     : {
@@ -179,7 +177,7 @@ function CardPreviewInner({
       data-card-preview
     >
       {altHeld && obj ? (
-        <ParsedAbilitiesPanel obj={obj} />
+        <ParsedAbilitiesPanel obj={obj} maxHeight={altMaxHeight} />
       ) : (
         <CardImagePreview
           cardName={displayName}
@@ -442,11 +440,15 @@ function buildParsedLines(obj: GameObject): ParsedLine[] {
   return lines;
 }
 
-function ParsedAbilitiesPanel({ obj }: { obj: GameObject }) {
+function ParsedAbilitiesPanel({ obj, maxHeight }: { obj: GameObject; maxHeight?: number }) {
   const lines = buildParsedLines(obj);
 
   return (
-    <div className="w-[clamp(220px,26vw,472px)] max-h-[80vh] overflow-y-auto pointer-events-auto rounded-[3.5%] border border-gray-600 bg-gray-950/95 shadow-2xl backdrop-blur-sm" data-card-hover>
+    <div
+      className="w-[clamp(220px,26vw,472px)] overflow-y-auto pointer-events-auto rounded-[3.5%] border border-gray-600 bg-gray-950/95 shadow-2xl backdrop-blur-sm"
+      style={{ maxHeight: maxHeight ?? "80vh" }}
+      data-card-hover
+    >
       <div className="sticky top-0 z-10 bg-gray-950 border-b border-gray-700/80 px-3 py-2">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold text-gray-200">{obj.name}</div>

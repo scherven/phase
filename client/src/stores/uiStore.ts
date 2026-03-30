@@ -4,16 +4,22 @@ import type {
   ObjectId,
 } from "../adapter/types";
 
-// Guard against spurious mouseleave events that fire ~30ms after mouseenter
-// (caused by Framer Motion layout recalculations moving elements under the cursor).
-let lastInspectSetAt = 0;
-const INSPECT_DEBOUNCE_MS = 80;
+// Guard against spurious mouseleave events caused by Framer Motion layout
+// recalculations or pointer-events-auto overlays stealing focus from the card.
+// Clears are deferred — if the cursor is still over a card/preview element
+// when the timer fires, the clear is suppressed.
+let pendingClearTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPointer = { x: 0, y: 0 };
+if (typeof window !== "undefined") {
+  window.addEventListener("pointermove", (e) => { lastPointer = { x: e.clientX, y: e.clientY }; }, { passive: true });
+}
 
 interface UiStoreState {
   selectedObjectId: ObjectId | null;
   hoveredObjectId: ObjectId | null;
   inspectedObjectId: ObjectId | null;
   inspectedFaceIndex: number;
+  altHeld: boolean;
   selectedCardIds: ObjectId[];
   fullControl: boolean;
   autoPass: boolean;
@@ -34,6 +40,7 @@ interface UiStoreActions {
   selectObject: (id: ObjectId | null) => void;
   hoverObject: (id: ObjectId | null) => void;
   inspectObject: (id: ObjectId | null, faceIndex?: number) => void;
+  setAltHeld: (held: boolean) => void;
   addSelectedCard: (cardId: ObjectId) => void;
   toggleSelectedCard: (cardId: ObjectId) => void;
   clearSelectedCards: () => void;
@@ -61,6 +68,7 @@ export const useUiStore = create<UiStore>()((set) => ({
   hoveredObjectId: null,
   inspectedObjectId: null,
   inspectedFaceIndex: 0,
+  altHeld: false,
   selectedCardIds: [],
   fullControl: false,
   autoPass: false,
@@ -78,18 +86,27 @@ export const useUiStore = create<UiStore>()((set) => ({
 
   selectObject: (id) => set({ selectedObjectId: id }),
   hoverObject: (id) => set({ hoveredObjectId: id }),
+  setAltHeld: (held) => set({ altHeld: held }),
   inspectObject: (id, faceIndex) => {
     if (id != null) {
-      lastInspectSetAt = Date.now();
-    } else if (Date.now() - lastInspectSetAt < INSPECT_DEBOUNCE_MS) {
-      // Ignore spurious clear within debounce window
-      return;
+      // Setting a new inspection target: cancel any pending clear and apply immediately
+      if (pendingClearTimer != null) {
+        clearTimeout(pendingClearTimer);
+        pendingClearTimer = null;
+      }
+      set({ inspectedObjectId: id, inspectedFaceIndex: faceIndex ?? 0 });
+    } else {
+      // Clearing: defer so spurious mouseleave from re-render-induced layout shifts
+      // is cancelled if a new inspectObject(id) arrives in the same frame.
+      if (pendingClearTimer != null) return; // already scheduled
+      pendingClearTimer = setTimeout(() => {
+        pendingClearTimer = null;
+        // If cursor is still over a card or the preview panel, suppress the clear
+        const el = document.elementFromPoint(lastPointer.x, lastPointer.y);
+        if (el?.closest("[data-card-hover]") || el?.closest("[data-card-preview]")) return;
+        set({ inspectedObjectId: null, inspectedFaceIndex: 0, previewSticky: false, altHeld: false });
+      }, 50);
     }
-    set({
-      inspectedObjectId: id,
-      inspectedFaceIndex: faceIndex ?? 0,
-      ...(id == null ? { previewSticky: false } : {}),
-    });
   },
 
   addSelectedCard: (cardId) =>
@@ -159,8 +176,3 @@ export const useUiStore = create<UiStore>()((set) => ({
   setPendingAbilityChoice: (choice) => set({ pendingAbilityChoice: choice }),
   toggleDebugPanel: () => set((state) => ({ debugPanelOpen: !state.debugPanelOpen })),
 }));
-
-// DEBUG: temporary — remove after fixing hover preview
-if (typeof window !== "undefined") {
-  (window as unknown as Record<string, unknown>).__uiStore = useUiStore;
-}

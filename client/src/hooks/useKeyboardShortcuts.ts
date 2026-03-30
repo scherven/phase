@@ -16,6 +16,17 @@ import { dispatchAction } from "../game/dispatch";
  */
 export function useKeyboardShortcuts(): void {
   useEffect(() => {
+    // Toggle Alt globally — macOS fires instant synthetic keyup for Option key
+    // (0.8ms after keydown), making hold-to-show impossible. Press-to-toggle instead.
+    function onAltToggle(e: KeyboardEvent) {
+      if (e.key === "Alt" && !e.repeat) {
+        e.preventDefault();
+        const store = useUiStore.getState();
+        store.setAltHeld(!store.altHeld);
+      }
+    }
+    window.addEventListener("keydown", onAltToggle);
+
     const handler = (e: KeyboardEvent) => {
       // Don't fire shortcuts when typing in input fields
       const target = e.target as HTMLElement;
@@ -138,6 +149,9 @@ export function useKeyboardShortcuts(): void {
     };
 
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      window.removeEventListener("keydown", onAltToggle);
+    };
   }, []);
 }
