@@ -29,8 +29,26 @@ parse_oracle_text() — classify line by priority
     ├─ is_static_pattern() → parse_static_line()       [oracle_static.rs]
     ├─ is_replacement_pattern() → parse_replacement()   [oracle_replacement.rs]
     ├─ Imperative verb → parse_effect_chain()           [oracle_effect/]
+    ├─ dispatch_line_nom() — nom alt() fallback         [oracle.rs, Priority 15]
     └─ Fallback → Effect::Unimplemented
 ```
+
+### Nom Combinator Layer — `oracle_nom/`
+
+All parser branches delegate atomic parsing to shared nom 8.0 combinators in `parser/oracle_nom/`:
+
+- **`primitives.rs`** — `parse_number`, `parse_number_or_x`, `parse_mana_symbol`, `parse_mana_cost`, `parse_color`, `parse_counter_type`, `parse_pt_modifier`, `parse_roman_numeral`, `parse_article_number` (word-boundary guard)
+- **`target.rs`** — Controller suffix, color prefix, combat status combinators
+- **`quantity.rs`** — Quantity expression combinators
+- **`duration.rs`** — Duration phrase combinators
+- **`condition.rs`** — Condition phrase combinators
+- **`filter.rs`** — Filter property combinators
+- **`error.rs`** — `OracleResult` type, `parse_or_unimplemented` (converts nom `VerboseError` → `Effect::Unimplemented` with diagnostic trace), `format_verbose_error`
+
+**Current state — hybrid architecture:**
+- **Nom handles**: atomic parsing (numbers, mana, colors, P/T, roman numerals) AND medium-level structural patterns (conditions, durations, quantities, target filters, controller suffixes). The `oracle_nom/` modules are designed to eventually replace `strip_prefix` counterparts entirely.
+- **strip_prefix/TextPair still handles**: top-level sentence parsing (subject-predicate decomposition, clause AST classification, verb family dispatch). These will be migrated incrementally.
+- **For new parser code**: prefer nom combinators in `oracle_nom/` for new patterns. For extensions to existing sentence-level parsers, follow the existing style in that file.
 
 ---
 
@@ -397,13 +415,26 @@ Parses keyword ability lines and keyword grants. Handles comma-separated keyword
 
 | Function | What it does | Use when |
 |----------|-------------|----------|
-| `parse_number(text)` | Parses digits AND English ("three", "a", "an") | Extracting counts from Oracle text |
+| `parse_number(text)` | Delegates to `nom_primitives::parse_number` with word-boundary guard and X→0 fallback | Extracting counts in non-nom code |
 | `parse_mana_symbols(text)` | Parses `{2}{W}{U}` cost syntax | Mana costs and mana production |
 | `strip_reminder_text(text)` | Removes `(parenthesized text)` | Called before all parsing |
 | `contains_possessive(text)` | Matches "your"/"their"/"its owner's" | Zone references: "into your hand" |
 | `starts_with_possessive(text)` | Same, anchored at start | Subject detection |
 | `contains_object_pronoun(text)` | Matches "it"/"them"/"that card"/"those cards" | Anaphoric references in compound effects |
 | `match_phrase_variants(text, phrases)` | Shared backbone for all phrase helpers | Building new phrase matchers |
+
+### `oracle_nom/primitives.rs` — Nom Atomic Combinators
+
+| Combinator | What it does | Use when |
+|-----------|-------------|----------|
+| `parse_number(input)` | Digits + English words + "a"/"an" with word-boundary guard | In nom pipelines — rejects "another" |
+| `parse_number_or_x(input)` | Same + "x" → 0 | Costs, P/T, counters where X is variable |
+| `parse_mana_symbol(input)` | `{W}`, `{U/B}`, `{R/P}`, `{2/W}`, `{X}`, `{S}` | Mana symbol extraction |
+| `parse_mana_cost(input)` | Sequence of mana symbols → `ManaCost` | Full mana cost parsing |
+| `parse_color(input)` | "white"/"blue"/"black"/"red"/"green" → `ManaColor` | Color word extraction |
+| `parse_counter_type(input)` | "+1/+1", "-1/-1", named types | Counter type identification |
+| `parse_pt_modifier(input)` | "+2/+3", "-1/-1" → `(i32, i32)` | P/T modification parsing |
+| `parse_roman_numeral(input)` | I-XX → `u32` | Saga chapters, class levels |
 
 ---
 
@@ -512,6 +543,7 @@ After completing work using this skill:
 rg -q "fn parse_oracle_text" crates/engine/src/parser/oracle.rs && \
 rg -q "fn is_static_pattern" crates/engine/src/parser/oracle.rs && \
 rg -q "fn is_replacement_pattern" crates/engine/src/parser/oracle.rs && \
+rg -q "fn dispatch_line_nom" crates/engine/src/parser/oracle.rs && \
 rg -q "fn parse_effect_chain" crates/engine/src/parser/oracle_effect/mod.rs && \
 rg -q "fn parse_effect_clause" crates/engine/src/parser/oracle_effect/mod.rs && \
 rg -q "fn parse_imperative_effect" crates/engine/src/parser/oracle_effect/mod.rs && \
@@ -536,6 +568,12 @@ rg -q "fn match_phrase_variants" crates/engine/src/parser/oracle_util.rs && \
 rg -q "fn parse_trigger_line" crates/engine/src/parser/oracle_trigger.rs && \
 rg -q "fn parse_static_line" crates/engine/src/parser/oracle_static.rs && \
 test -f crates/engine/src/parser/oracle_keyword.rs && \
+rg -q "pub fn parse_number" crates/engine/src/parser/oracle_nom/primitives.rs && \
+rg -q "pub fn parse_number_or_x" crates/engine/src/parser/oracle_nom/primitives.rs && \
+rg -q "pub fn parse_color" crates/engine/src/parser/oracle_nom/primitives.rs && \
+rg -q "pub fn parse_mana_cost" crates/engine/src/parser/oracle_nom/primitives.rs && \
+rg -q "fn parse_or_unimplemented" crates/engine/src/parser/oracle_nom/error.rs && \
+rg -q "pub type OracleResult" crates/engine/src/parser/oracle_nom/error.rs && \
 echo "✓ extend-oracle-parser skill references valid" || \
 echo "✗ STALE — update skill references"
 ```

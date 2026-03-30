@@ -3454,6 +3454,27 @@ fn check_wrong_parameters(
                 continue;
             }
 
+            // When +N/+M refers to counters (not pump), check for counter effects instead.
+            if is_counter_reference(&lower) {
+                let counter_type = format!(
+                    "{}{}/{}{}",
+                    if pump_match.0 >= 0 { "+" } else { "" },
+                    pump_match.0,
+                    if pump_match.1 >= 0 { "+" } else { "" },
+                    pump_match.1
+                );
+                let has_counter_effect = has_matching_counter_effect(face, &counter_type);
+                if !has_counter_effect {
+                    findings.push(SemanticFinding::WrongParameter {
+                        oracle_line: line.clone(),
+                        field: "counter".to_string(),
+                        expected: format!("{counter_type} counter"),
+                        actual: "no matching counter effect".to_string(),
+                    });
+                }
+                continue;
+            }
+
             // Find matching pump effect in abilities and trigger executions
             let has_matching_pump = face
                 .abilities
@@ -3546,6 +3567,88 @@ fn extract_pt_modifier(lower: &str) -> Option<(i32, i32)> {
     let toughness = if sign2 == '-' { -toughness } else { toughness };
 
     Some((power, toughness))
+}
+
+/// Returns true if the Oracle line's +N/+M pattern refers to counters rather than a pump effect.
+/// Examples: "+1/+1 counter", "two +1/+1 counters", "in the form of -1/-1 counters"
+fn is_counter_reference(lower: &str) -> bool {
+    // Direct counter mention: "+1/+1 counter" or "+1/+1 counters"
+    if lower.contains("counter") {
+        // Find the +N/+M pattern and check if "counter" follows it
+        if let Some(idx) = lower.find('+').or_else(|| lower.find('-')) {
+            let rest = &lower[idx..];
+            // Match +N/+M pattern then check what follows
+            let after_pattern = rest
+                .find('/')
+                .and_then(|slash| {
+                    // Skip past the /+N or /-N part
+                    let after_slash = &rest[slash + 1..];
+                    let digits_end = after_slash
+                        .find(|c: char| !c.is_ascii_digit() && c != '+' && c != '-')
+                        .unwrap_or(after_slash.len());
+                    Some(&after_slash[digits_end..])
+                });
+            if let Some(after) = after_pattern {
+                let trimmed = after.trim_start();
+                if trimmed.starts_with("counter") {
+                    return true;
+                }
+            }
+        }
+    }
+    // "in the form of +N/+M" (wither, infect reminder text)
+    if lower.contains("in the form of ") {
+        return true;
+    }
+    false
+}
+
+/// Check if any parsed ability, trigger execution, or replacement has a PutCounter/PutCounterAll
+/// effect matching the given counter type (e.g., "+1/+1").
+fn has_matching_counter_effect(face: &CardFace, counter_type: &str) -> bool {
+    fn counter_in_chain(def: &AbilityDefinition, ct: &str) -> bool {
+        match &*def.effect {
+            Effect::PutCounter { counter_type, .. } | Effect::PutCounterAll { counter_type, .. }
+                if counter_type == ct =>
+            {
+                return true;
+            }
+            // EntersWithCounters is handled via replacement effects or ETB triggers
+            _ => {}
+        }
+        if let Some(ref sub) = def.sub_ability {
+            if counter_in_chain(sub, ct) {
+                return true;
+            }
+        }
+        if let Some(ref else_ab) = def.else_ability {
+            if counter_in_chain(else_ab, ct) {
+                return true;
+            }
+        }
+        for mode_ab in &def.mode_abilities {
+            if counter_in_chain(mode_ab, ct) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Check abilities and trigger executions
+    let in_abilities = face
+        .abilities
+        .iter()
+        .chain(face.triggers.iter().filter_map(|t| t.execute.as_deref()))
+        .any(|def| counter_in_chain(def, counter_type));
+
+    // Check replacement effect executions
+    let in_replacements = face.replacements.iter().any(|r| {
+        r.execute
+            .as_ref()
+            .is_some_and(|e| counter_in_chain(e, counter_type))
+    });
+
+    in_abilities || in_replacements
 }
 
 /// Check if an ability definition has a pump effect matching the given P/T values.

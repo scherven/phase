@@ -114,5 +114,16 @@ Coverage: [current coverage %]
 | `crates/engine/src/parser/oracle_effect/imperative.rs` | Verb dispatch table (~line 1224) |
 | `crates/engine/src/parser/oracle_effect/mod.rs` | Pre-dispatch patterns, `parse_effect_clause` |
 | `crates/engine/src/parser/oracle_effect/subject.rs` | Subject stripping, `PREDICATE_VERBS`, `starts_with_subject_prefix` |
+| `crates/engine/src/parser/oracle_nom/primitives.rs` | Shared nom combinators (numbers, mana, colors, P/T, counters) |
+| `crates/engine/src/parser/oracle_nom/error.rs` | `parse_or_unimplemented` error boundary, `OracleResult` type |
 | `crates/engine/src/game/gap_analysis.rs` | Classification logic and verb lists |
-| `crates/engine/src/game/coverage.rs` | Coverage types consumed by the analyzer |
+| `crates/engine/src/game/coverage.rs` | Coverage types and semantic audit pipeline (`audit_semantic`, `SemanticFinding`) |
+
+## Complementary Tool: Semantic Audit
+
+The semantic audit (`cargo semantic-audit`) analyzes *supported* cards for parsing accuracy issues — cards the coverage system counts as supported but that have dropped conditions, wrong parameters, or silently dropped lines. Use this alongside `cargo parser-gaps` for a complete picture:
+
+- `cargo parser-gaps` → finds cards that are entirely unsupported (Unimplemented effects)
+- `cargo semantic-audit` → finds cards that are "supported" but parsed incorrectly
+
+The audit outputs `data/semantic-audit.json` (structured findings) and `data/semantic-audit.md` (markdown summary). Findings are categorized: WrongParameter, DroppedCondition, SilentDrop, DroppedDuration, UnimplementedSubEffect.

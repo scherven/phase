@@ -141,7 +141,18 @@ Only needed if the effect has a `target: TargetFilter` field that isn't `None`/`
 
 #### Parser Helpers Reference
 
-These helpers live in `oracle_effect/` and `oracle_util.rs`. Know them — they eliminate entire classes of edge cases.
+These helpers live in `oracle_effect/`, `oracle_util.rs`, and `oracle_nom/`. Know them — they eliminate entire classes of edge cases.
+
+**Nom combinators** (`oracle_nom/primitives.rs`) — all parser branches delegate to these for atomic operations:
+
+| Combinator | What it does | When to use |
+|-----------|-------------|-------------|
+| `parse_number` | Digits + English + "a"/"an" with word-boundary guard | Number extraction (rejects "another") |
+| `parse_number_or_x` | Same + "x" → 0 | Costs, P/T, counters where X is variable |
+| `parse_color` | "white"/"blue"/etc. → `ManaColor` | Color word extraction |
+| `parse_mana_cost` | `{2}{W}{U}` → `ManaCost` | Full mana cost parsing |
+| `parse_pt_modifier` | "+2/+3" → `(i32, i32)` | P/T modification |
+| `parse_counter_type` | "+1/+1", "loyalty", etc. | Counter identification |
 
 **Possessive helpers** — detect who "owns" something without requiring explicit targeting:
 

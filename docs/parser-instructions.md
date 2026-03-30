@@ -33,15 +33,78 @@ data structures, never executes game rules.
 ## Architecture
 
 ```
-oracle.rs               Entry point: parse_oracle_text()
+oracle.rs               Entry point: parse_oracle_text(), dispatch_line_nom() fallback
 oracle_effect/          Effect / ability parsing (directory with mod.rs + sub-modules)
 oracle_target.rs        Target filter parsing (TargetFilter) + event-context references
 oracle_cost.rs          Cost parsing (AbilityCost)
 oracle_trigger.rs       Trigger condition parsing
 oracle_static.rs        Static ability parsing
 oracle_replacement.rs   Replacement effect parsing (lands, graveyard exile, counters, …)
-oracle_util.rs          Shared utilities (parse_number, parse_mana_production, TextPair, …)
+oracle_util.rs          Shared utilities (parse_number wrapper, TextPair, phrase helpers, …)
+oracle_nom/             Nom 8.0 combinator foundation (see below)
 ```
+
+### Nom Combinator Foundation — `oracle_nom/`
+
+All parser branches delegate atomic parsing operations to shared nom 8.0 combinators in
+`parser/oracle_nom/`. This module provides typed, composable parsers with structured error
+traces via `VerboseError`.
+
+```
+oracle_nom/
+├── primitives.rs   — Numbers, mana symbols, colors, counters, P/T modifiers, roman numerals
+├── target.rs       — Target phrase combinators (controller suffix, color prefix, combat status)
+├── quantity.rs     — Quantity expression combinators (quantity refs, for-each)
+├── duration.rs     — Duration phrase combinators (until end of turn, etc.)
+├── condition.rs    — Condition phrase combinators (if/unless/as long as)
+├── filter.rs       — Filter property combinators (type phrases, controller)
+├── error.rs        — OracleResult type, parse_or_unimplemented error boundary, format_verbose_error
+├── context.rs      — ParseContext for stateful parsing
+└── mod.rs          — Re-exports
+```
+
+**Key primitives in `primitives.rs`:**
+
+| Combinator | What it parses | Notes |
+|-----------|---------------|-------|
+| `parse_number` | Digits, English words ("three"), articles ("a"/"an") | Word-boundary guard prevents "another" → "a" false match |
+| `parse_number_or_x` | Same as above + "x" → 0 | Use for costs/P/T/counters where X is variable |
+| `parse_mana_symbol` | `{W}`, `{U/B}`, `{R/P}`, `{2/W}`, `{X}`, `{S}` | Full hybrid/phyrexian/generic support |
+| `parse_mana_cost` | `{2}{W}{U}` → `ManaCost` | Accumulates generic mana correctly |
+| `parse_color` | "white", "blue", "black", "red", "green" → `ManaColor` | |
+| `parse_counter_type` | "+1/+1", "-1/-1", "loyalty", "charge", etc. | |
+| `parse_pt_modifier` | "+2/+3", "-1/-1", "+3/-2" → `(i32, i32)` | Handles mixed signs |
+| `parse_roman_numeral` | I through XX → `u32` | Case-insensitive, for saga/class/level |
+
+**Error boundary — `parse_or_unimplemented` in `error.rs`:**
+
+At the dispatcher level (`oracle.rs`), `dispatch_line_nom` wraps nom combinators with
+`parse_or_unimplemented`, which converts nom errors into `Effect::Unimplemented` with
+diagnostic traces. Partial parses (non-empty remainder) also become `Unimplemented`. This
+ensures unparsed fragments never silently pass.
+
+**Current state — hybrid architecture:**
+
+The parser is midway through a migration from `strip_prefix`/`TextPair` chains to nom
+combinators. Currently:
+
+- **Nom handles**: atomic parsing (numbers, mana, colors, P/T, roman numerals) AND
+  medium-level structural patterns (conditions, durations, quantities, target filters,
+  controller suffixes, combat status prefixes). The `oracle_nom/` modules for condition,
+  duration, quantity, target, and filter are designed to eventually replace their
+  `strip_prefix` counterparts entirely.
+- **`strip_prefix`/`TextPair` still handles**: top-level sentence parsing (subject-predicate
+  decomposition, clause AST classification, verb family dispatch). These are the most
+  complex parsing layers and will be migrated incrementally.
+- **`oracle_util::parse_number`** is now a thin wrapper that delegates to
+  `nom_primitives::parse_number` with word-boundary guard and X→0 fallback.
+
+**When writing new parser code:**
+- For new atomic/structural patterns, prefer writing nom combinators in `oracle_nom/`.
+- For extensions to existing sentence-level parsers, follow the existing style in that file
+  (which may be `strip_prefix` or nom depending on what's been migrated).
+- All parser branches import from `oracle_nom` — use the shared combinators rather than
+  reimplementing number/color/mana/condition parsing locally.
 
 ### Parse pipeline for a spell ability
 
@@ -401,6 +464,9 @@ in `process_triggers()` using `(ObjectId, trigger_index)` tracking sets on `Game
 | Pitfall | Correct approach |
 |---------|-----------------|
 | Manual index arithmetic `&text[n..]` | Use `strip_prefix()` / clippy will flag this |
+| Reimplementing number/color/mana parsing | Delegate to `oracle_nom::primitives` combinators |
+| Using `nom::tag("a")` without word boundary | Use `parse_article_number` (prevents "another" → "a") |
+| Using `parse_number` for X-cost values | Use `parse_number_or_x` (X → 0 at parse time) |
 | `unwrap()` on parse results | Return `None` or `Effect::Unimplemented` instead |
 | Losing subject context via `strip_subject_clause` | Add `try_parse_*` before the strip call |
 | Boolean flags on effect types | Use an enum variant |
