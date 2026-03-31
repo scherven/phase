@@ -83,20 +83,17 @@ At the dispatcher level (`oracle.rs`), `dispatch_line_nom` wraps nom combinators
 diagnostic traces. Partial parses (non-empty remainder) also become `Unimplemented`. This
 ensures unparsed fragments never silently pass.
 
-**Current state — hybrid architecture:**
+**Current state — hybrid architecture (migration in progress):**
 
-The parser is midway through a migration from `strip_prefix`/`TextPair` chains to nom
-combinators. Currently:
-
-- **Nom handles**: atomic parsing (numbers, mana, colors, P/T, roman numerals) AND
-  medium-level structural patterns (conditions, durations, quantities, target filters,
-  controller suffixes, combat status prefixes). The `oracle_nom/` modules for condition,
-  duration, quantity, target, and filter are designed to eventually replace their
-  `strip_prefix` counterparts entirely.
+- **Nom handles**: atomic parsing (numbers, mana, colors, P/T, roman numerals), medium-level
+  structural patterns (conditions, durations, quantities, target filters, controller suffixes,
+  combat status prefixes), and dispatch-level routing via `dispatch_line_nom` in `oracle.rs`.
+  The dispatcher calls `parse_effect_chain_with_context` for effect-sentence candidates and
+  provides structural classification with diagnostic traces for unmatched lines.
 - **`strip_prefix`/`TextPair` still handles**: top-level sentence parsing (subject-predicate
-  decomposition, clause AST classification, verb family dispatch). These are the most
-  complex parsing layers and will be migrated incrementally.
-- **`oracle_util::parse_number`** is now a thin wrapper that delegates to
+  decomposition, clause AST classification, verb family dispatch) within the sub-parsers
+  themselves. These are being migrated incrementally to nom combinators.
+- **`oracle_util::parse_number`** is a thin wrapper that delegates to
   `nom_primitives::parse_number` with word-boundary guard and X→0 fallback.
 
 **When writing new parser code:**

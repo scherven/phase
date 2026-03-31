@@ -29,8 +29,9 @@ parse_oracle_text() — classify line by priority
     ├─ is_static_pattern() → parse_static_line()       [oracle_static.rs]
     ├─ is_replacement_pattern() → parse_replacement()   [oracle_replacement.rs]
     ├─ Imperative verb → parse_effect_chain()           [oracle_effect/]
-    ├─ dispatch_line_nom() — nom alt() fallback         [oracle.rs, Priority 15]
-    └─ Fallback → Effect::Unimplemented
+    ├─ dispatch_line_nom() — tries effect parsing,      [oracle.rs, Priority 14a]
+    │   structural classification for diagnostics
+    └─ Fallback → Effect::Unimplemented                 [Priority 15]
 ```
 
 ### Nom Combinator Layer — `oracle_nom/`
@@ -45,9 +46,9 @@ All parser branches delegate atomic parsing to shared nom 8.0 combinators in `pa
 - **`filter.rs`** — Filter property combinators
 - **`error.rs`** — `OracleResult` type, `parse_or_unimplemented` (converts nom `VerboseError` → `Effect::Unimplemented` with diagnostic trace), `format_verbose_error`
 
-**Current state — hybrid architecture:**
-- **Nom handles**: atomic parsing (numbers, mana, colors, P/T, roman numerals) AND medium-level structural patterns (conditions, durations, quantities, target filters, controller suffixes). The `oracle_nom/` modules are designed to eventually replace `strip_prefix` counterparts entirely.
-- **strip_prefix/TextPair still handles**: top-level sentence parsing (subject-predicate decomposition, clause AST classification, verb family dispatch). These will be migrated incrementally.
+**Current state — hybrid architecture (migration in progress):**
+- **Nom handles**: atomic parsing, medium-level structural patterns (conditions, durations, quantities, target filters, controller suffixes), and dispatch-level routing via `dispatch_line_nom` (which calls `parse_effect_chain_with_context` for effect candidates).
+- **strip_prefix/TextPair still handles**: top-level sentence parsing within sub-parsers (subject-predicate decomposition, clause AST classification, verb family dispatch). Being migrated incrementally.
 - **For new parser code**: prefer nom combinators in `oracle_nom/` for new patterns. For extensions to existing sentence-level parsers, follow the existing style in that file.
 
 ---
@@ -71,8 +72,8 @@ Lines are classified in this exact order. **The first match wins.** Understandin
 | 11 | Roman numeral (saga chapter) | Skipped | — |
 | 12 | Keyword cost line (kicker, etc.) | Skipped (MTGJSON handles) | — |
 | 13 | Has ability word prefix (`"Landfall —"`) | Strip prefix, re-classify from priority 7 | `oracle.rs` |
-| 14 | Looks like effect sentence (non-spell) | `parse_effect_chain()` | `oracle_effect/` |
-| 15 | Fallback | `Effect::Unimplemented` | — |
+| 14a | `dispatch_line_nom()` — effect candidates | `parse_effect_chain_with_context()` + structural diagnostics | `oracle.rs` |
+| 15 | Fallback | `Effect::Unimplemented` (from dispatch_line_nom diagnostic) | — |
 
 ### `is_static_pattern()` — `oracle.rs`
 
