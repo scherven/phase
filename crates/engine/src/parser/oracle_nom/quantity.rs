@@ -36,6 +36,7 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         parse_life_gained_ref,
         parse_starting_life_ref,
     ))
+    .or(alt((parse_speed_ref,)))
     .parse(input)
 }
 
@@ -74,9 +75,18 @@ fn parse_self_toughness_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     .parse(input)
 }
 
-/// Parse life-lost references: "the life you've lost this turn", etc.
+/// Parse life-lost references: "the life you've lost this turn", "life you've lost", etc.
+/// Includes duration-stripped forms (without "this turn") for post-duration-stripping contexts.
 fn parse_life_lost_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     alt((
+        value(
+            QuantityRef::LifeLostThisTurn,
+            tag("total life you lost this turn"),
+        ),
+        value(
+            QuantityRef::LifeLostThisTurn,
+            tag("total life you've lost this turn"),
+        ),
         value(
             QuantityRef::LifeLostThisTurn,
             tag("the life you've lost this turn"),
@@ -93,13 +103,27 @@ fn parse_life_lost_ref(input: &str) -> OracleResult<'_, QuantityRef> {
             QuantityRef::LifeLostThisTurn,
             tag("life you lost this turn"),
         ),
+        // Duration-stripped forms (after strip_trailing_duration removes "this turn")
+        value(QuantityRef::LifeLostThisTurn, tag("the life you've lost")),
+        value(QuantityRef::LifeLostThisTurn, tag("the life you lost")),
+        value(QuantityRef::LifeLostThisTurn, tag("life you've lost")),
+        value(QuantityRef::LifeLostThisTurn, tag("life you lost")),
     ))
     .parse(input)
 }
 
-/// Parse life-gained references: "the life you've gained this turn", etc.
+/// Parse life-gained references: "the life you've gained this turn", "life you've gained", etc.
+/// Includes duration-stripped forms (without "this turn") for post-duration-stripping contexts.
 fn parse_life_gained_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     alt((
+        value(
+            QuantityRef::LifeGainedThisTurn,
+            tag("total life you gained this turn"),
+        ),
+        value(
+            QuantityRef::LifeGainedThisTurn,
+            tag("total life you've gained this turn"),
+        ),
         value(
             QuantityRef::LifeGainedThisTurn,
             tag("the life you've gained this turn"),
@@ -116,6 +140,14 @@ fn parse_life_gained_ref(input: &str) -> OracleResult<'_, QuantityRef> {
             QuantityRef::LifeGainedThisTurn,
             tag("life you gained this turn"),
         ),
+        // Duration-stripped forms
+        value(
+            QuantityRef::LifeGainedThisTurn,
+            tag("the life you've gained"),
+        ),
+        value(QuantityRef::LifeGainedThisTurn, tag("the life you gained")),
+        value(QuantityRef::LifeGainedThisTurn, tag("life you've gained")),
+        value(QuantityRef::LifeGainedThisTurn, tag("life you gained")),
     ))
     .parse(input)
 }
@@ -127,6 +159,11 @@ fn parse_starting_life_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         tag("your starting life total"),
     )
     .parse(input)
+}
+
+/// Parse "your speed".
+fn parse_speed_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    value(QuantityRef::Speed, tag("your speed")).parse(input)
 }
 
 #[cfg(test)]

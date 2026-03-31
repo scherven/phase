@@ -67,9 +67,7 @@ fn parse_article_number(input: &str) -> OracleResult<'_, u32> {
     // Try "an" before "a" (longest match first).
     let (rest, _) = alt((tag("an"), tag("a"))).parse(input)?;
     match rest.chars().next() {
-        None | Some(' ' | ',' | ';' | '.' | ':' | ')' | '/' | '-' | '\'' | '"') => {
-            Ok((rest, 1))
-        }
+        None | Some(' ' | ',' | ';' | '.' | ':' | ')' | '/' | '-' | '\'' | '"') => Ok((rest, 1)),
         _ => Err(nom::Err::Error(nom_language::error::VerboseError {
             errors: vec![(
                 input,

@@ -36,104 +36,86 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
         }
     }
 
-    // Patterns not covered by nom combinator — complex strip_prefix chains.
-    match trimmed {
-        // Speed is not in nom combinator yet
-        "your speed" => Some(QuantityRef::Speed),
-        // Duration-stripped forms not in nom combinator
-        "the life you've lost"
-        | "the life you lost"
-        | "life you've lost"
-        | "life you lost"
-        | "total life you lost this turn"
-        | "total life you've lost this turn" => Some(QuantityRef::LifeLostThisTurn),
-        "the life you've gained"
-        | "the life you gained"
-        | "life you've gained"
-        | "life you gained"
-        | "total life you gained this turn"
-        | "total life you've gained this turn" => Some(QuantityRef::LifeGainedThisTurn),
-        _ => {
-            // "[counter type] counters on ~" / "[counter type] counters on it"
-            if let Some(rest) = trimmed
-                .strip_suffix(" counters on ~")
-                .or_else(|| trimmed.strip_suffix(" counters on it"))
-            {
-                let raw_type = rest.strip_prefix("the number of ").unwrap_or(rest).trim();
-                let counter_type = normalize_counter_type(raw_type);
-                if !counter_type.is_empty() {
-                    return Some(QuantityRef::CountersOnSelf { counter_type });
-                }
-            }
+    // Complex patterns requiring type phrase parsing or counter normalization.
 
-            // "the greatest power among {type phrase}" → Aggregate { Max, Power, filter }
-            if let Some(rest) = trimmed.strip_prefix("the greatest power among ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Max,
-                        property: ObjectProperty::Power,
-                        filter,
-                    });
-                }
-            }
-            // "the greatest toughness among {type phrase}"
-            if let Some(rest) = trimmed.strip_prefix("the greatest toughness among ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Max,
-                        property: ObjectProperty::Toughness,
-                        filter,
-                    });
-                }
-            }
-            // "the greatest mana value among {type phrase}"
-            if let Some(rest) = trimmed.strip_prefix("the greatest mana value among ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Max,
-                        property: ObjectProperty::ManaValue,
-                        filter,
-                    });
-                }
-            }
-            // "the total power of {type phrase}"
-            if let Some(rest) = trimmed.strip_prefix("the total power of ") {
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::Aggregate {
-                        function: AggregateFunction::Sum,
-                        property: ObjectProperty::Power,
-                        filter,
-                    });
-                }
-            }
-
-            // "the number of {type} you control" → ObjectCount { filter }
-            // "the number of opponents you have" → PlayerCount { Opponent }
-            if let Some(rest) = trimmed.strip_prefix("the number of ") {
-                if rest == "opponents you have" || rest == "opponent you have" {
-                    return Some(QuantityRef::PlayerCount {
-                        filter: PlayerFilter::Opponent,
-                    });
-                }
-                let (filter, _) = parse_type_phrase(rest);
-                if !matches!(filter, TargetFilter::Any) {
-                    return Some(QuantityRef::ObjectCount { filter });
-                }
-            }
-            // "your devotion to {color}" / "your devotion to {color} and {color}"
-            if let Some(rest) = trimmed.strip_prefix("your devotion to ") {
-                let colors = parse_devotion_colors(rest);
-                if !colors.is_empty() {
-                    return Some(QuantityRef::Devotion { colors });
-                }
-            }
-            None
+    // "[counter type] counters on ~" / "[counter type] counters on it"
+    if let Some(rest) = trimmed
+        .strip_suffix(" counters on ~")
+        .or_else(|| trimmed.strip_suffix(" counters on it"))
+    {
+        let raw_type = rest.strip_prefix("the number of ").unwrap_or(rest).trim();
+        let counter_type = normalize_counter_type(raw_type);
+        if !counter_type.is_empty() {
+            return Some(QuantityRef::CountersOnSelf { counter_type });
         }
     }
+
+    // "the greatest power among {type phrase}" → Aggregate { Max, Power, filter }
+    if let Some(rest) = trimmed.strip_prefix("the greatest power among ") {
+        let (filter, _) = parse_type_phrase(rest);
+        if !matches!(filter, TargetFilter::Any) {
+            return Some(QuantityRef::Aggregate {
+                function: AggregateFunction::Max,
+                property: ObjectProperty::Power,
+                filter,
+            });
+        }
+    }
+    // "the greatest toughness among {type phrase}"
+    if let Some(rest) = trimmed.strip_prefix("the greatest toughness among ") {
+        let (filter, _) = parse_type_phrase(rest);
+        if !matches!(filter, TargetFilter::Any) {
+            return Some(QuantityRef::Aggregate {
+                function: AggregateFunction::Max,
+                property: ObjectProperty::Toughness,
+                filter,
+            });
+        }
+    }
+    // "the greatest mana value among {type phrase}"
+    if let Some(rest) = trimmed.strip_prefix("the greatest mana value among ") {
+        let (filter, _) = parse_type_phrase(rest);
+        if !matches!(filter, TargetFilter::Any) {
+            return Some(QuantityRef::Aggregate {
+                function: AggregateFunction::Max,
+                property: ObjectProperty::ManaValue,
+                filter,
+            });
+        }
+    }
+    // "the total power of {type phrase}"
+    if let Some(rest) = trimmed.strip_prefix("the total power of ") {
+        let (filter, _) = parse_type_phrase(rest);
+        if !matches!(filter, TargetFilter::Any) {
+            return Some(QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::Power,
+                filter,
+            });
+        }
+    }
+
+    // "the number of {type} you control" → ObjectCount { filter }
+    // "the number of opponents you have" → PlayerCount { Opponent }
+    if let Some(rest) = trimmed.strip_prefix("the number of ") {
+        if rest == "opponents you have" || rest == "opponent you have" {
+            return Some(QuantityRef::PlayerCount {
+                filter: PlayerFilter::Opponent,
+            });
+        }
+        let (filter, _) = parse_type_phrase(rest);
+        if !matches!(filter, TargetFilter::Any) {
+            return Some(QuantityRef::ObjectCount { filter });
+        }
+    }
+    // "your devotion to {color}" / "your devotion to {color} and {color}"
+    if let Some(rest) = trimmed.strip_prefix("your devotion to ") {
+        let colors = parse_devotion_colors(rest);
+        if !colors.is_empty() {
+            return Some(QuantityRef::Devotion { colors });
+        }
+    }
+    None
 }
 
 /// Parse color names from a devotion phrase like "black", "black and red".
