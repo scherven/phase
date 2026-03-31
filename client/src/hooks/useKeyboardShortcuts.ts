@@ -3,9 +3,11 @@ import { useEffect } from "react";
 import { useGameStore } from "../stores/gameStore";
 import { useUiStore } from "../stores/uiStore";
 import { dispatchAction } from "../game/dispatch";
+import { useAltToggle } from "./useAltToggle";
 
 /**
  * Registers global keyboard shortcuts for the game.
+ * - Alt: Toggle parsed-abilities preview (shared via useAltToggle)
  * - Space: Pass priority / advance phase
  * - Enter: Toggle end-turn mode
  * - F: Toggle full control
@@ -15,18 +17,9 @@ import { dispatchAction } from "../game/dispatch";
  * - D: Copy game state JSON to clipboard (debug)
  */
 export function useKeyboardShortcuts(): void {
-  useEffect(() => {
-    // Toggle Alt globally — macOS fires instant synthetic keyup for Option key
-    // (0.8ms after keydown), making hold-to-show impossible. Press-to-toggle instead.
-    function onAltToggle(e: KeyboardEvent) {
-      if (e.key === "Alt" && !e.repeat) {
-        e.preventDefault();
-        const store = useUiStore.getState();
-        store.setAltHeld(!store.altHeld);
-      }
-    }
-    window.addEventListener("keydown", onAltToggle);
+  useAltToggle();
 
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // Don't fire shortcuts when typing in input fields
       const target = e.target as HTMLElement;
@@ -151,7 +144,6 @@ export function useKeyboardShortcuts(): void {
     window.addEventListener("keydown", handler);
     return () => {
       window.removeEventListener("keydown", handler);
-      window.removeEventListener("keydown", onAltToggle);
     };
   }, []);
 }

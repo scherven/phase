@@ -1107,13 +1107,129 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::Exploit { target } => {
             d.push(("target".into(), fmt_target(target)));
         }
+        Effect::PreventDamage {
+            amount, target, scope, ..
+        } => {
+            d.push(("amount".into(), format!("{amount:?}")));
+            d.push(("target".into(), fmt_target(target)));
+            d.push(("scope".into(), format!("{scope:?}")));
+        }
+        Effect::ChooseFromZone { count, zone, .. } => {
+            d.push(("count".into(), count.to_string()));
+            d.push(("zone".into(), fmt_zone(zone)));
+        }
+        Effect::GainEnergy { amount } => {
+            d.push(("amount".into(), amount.to_string()));
+        }
+        Effect::GivePlayerCounter {
+            counter_kind,
+            count,
+            target,
+        } => {
+            d.push(("counter".into(), format!("{counter_kind:?}")));
+            d.push(("count".into(), fmt_quantity(count)));
+            d.push(("target".into(), fmt_target(target)));
+        }
+        Effect::ExileFromTopUntil { filter } => {
+            d.push(("until".into(), fmt_target(filter)));
+        }
+        Effect::Discover { mana_value_limit } => {
+            d.push(("mv limit".into(), mana_value_limit.to_string()));
+        }
+        Effect::PutAtLibraryPosition { target, position } => {
+            d.push(("target".into(), fmt_target(target)));
+            d.push(("position".into(), format!("{position:?}")));
+        }
+        Effect::PutOnTopOrBottom { target } => {
+            d.push(("target".into(), fmt_target(target)));
+        }
+        Effect::Amass { subtype, count } => {
+            d.push(("subtype".into(), subtype.clone()));
+            d.push(("count".into(), fmt_quantity(count)));
+        }
+        Effect::Monstrosity { count } => {
+            d.push(("counters".into(), fmt_quantity(count)));
+        }
+        Effect::Adapt { count } => {
+            d.push(("counters".into(), fmt_quantity(count)));
+        }
+        Effect::Bolster { count } => {
+            d.push(("counters".into(), fmt_quantity(count)));
+        }
+        Effect::Goad { target } => {
+            d.push(("target".into(), fmt_target(target)));
+        }
+        Effect::ExtraTurn { target } => {
+            d.push(("player".into(), fmt_target(target)));
+        }
+        Effect::AdditionalCombatPhase {
+            with_main_phase, ..
+        } => {
+            if *with_main_phase {
+                d.push(("+ main phase".into(), "yes".into()));
+            }
+        }
+        Effect::Double { target_kind, target } => {
+            d.push(("doubles".into(), format!("{target_kind:?}")));
+            d.push(("target".into(), fmt_target(target)));
+        }
+        Effect::CollectEvidence { amount } => {
+            d.push(("amount".into(), amount.to_string()));
+        }
+        Effect::Endure { amount } => {
+            d.push(("amount".into(), amount.to_string()));
+        }
+        Effect::BlightEffect { count, target } => {
+            d.push(("count".into(), count.to_string()));
+            d.push(("target".into(), fmt_target(target)));
+        }
+        Effect::Seek {
+            filter,
+            count,
+            destination,
+            ..
+        } => {
+            d.push(("filter".into(), fmt_target(filter)));
+            d.push(("count".into(), fmt_quantity(count)));
+            if *destination != Zone::Hand {
+                d.push(("to".into(), fmt_zone(destination)));
+            }
+        }
+        Effect::SetLifeTotal { target, amount } => {
+            d.push(("target".into(), fmt_target(target)));
+            d.push(("amount".into(), fmt_quantity(amount)));
+        }
+        Effect::GiveControl {
+            target, recipient, ..
+        } => {
+            d.push(("target".into(), fmt_target(target)));
+            d.push(("to".into(), fmt_target(recipient)));
+        }
+        Effect::CopyTokenOf {
+            target,
+            enters_attacking,
+            ..
+        } => {
+            d.push(("copies".into(), fmt_target(target)));
+            if *enters_attacking {
+                d.push(("attacking".into(), "yes".into()));
+            }
+        }
+        Effect::ExploreAll { filter } => {
+            d.push(("filter".into(), fmt_target(filter)));
+        }
+        Effect::GiftDelivery { kind } => {
+            d.push(("gift".into(), format!("{kind:?}")));
+        }
+        Effect::SetDayNight { to } => {
+            d.push(("to".into(), format!("{to:?}")));
+        }
+        // Effects with no interesting parameters
         Effect::Unimplemented { .. }
         | Effect::Explore
-        | Effect::ExploreAll { .. }
         | Effect::Investigate
         | Effect::BecomeMonarch
         | Effect::Proliferate
-        | Effect::PreventDamage { .. }
         | Effect::SolveCase
         | Effect::Cleanup { .. }
         | Effect::AddRestriction { .. }
@@ -1123,35 +1239,11 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::WinTheGame
         | Effect::RingTemptsYou
         | Effect::GrantCastingPermission { .. }
-        | Effect::ChooseFromZone { .. }
-        | Effect::GainEnergy { .. }
-        | Effect::GivePlayerCounter { .. }
-        | Effect::AdditionalCombatPhase { .. }
-        | Effect::ExileFromTopUntil { .. }
-        | Effect::Discover { .. }
-        | Effect::PutAtLibraryPosition { .. }
-        | Effect::PutOnTopOrBottom { .. }
-        | Effect::GiftDelivery { .. }
         | Effect::ManifestDread
         | Effect::RuntimeHandled { .. }
         | Effect::ChangeTargets { .. }
-        | Effect::CopyTokenOf { .. }
-        | Effect::Amass { .. }
-        | Effect::Monstrosity { .. }
-        | Effect::Adapt { .. }
-        | Effect::Bolster { .. }
-        | Effect::Goad { .. }
         | Effect::ExchangeControl
-        | Effect::ExtraTurn { .. }
-        | Effect::Double { .. }
         | Effect::Forage
-        | Effect::CollectEvidence { .. }
-        | Effect::Endure { .. }
-        | Effect::BlightEffect { .. }
-        | Effect::Seek { .. }
-        | Effect::SetLifeTotal { .. }
-        | Effect::SetDayNight { .. }
-        | Effect::GiveControl { .. }
         | Effect::Learn => {}
     }
     d

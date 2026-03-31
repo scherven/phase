@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import type { GameObject } from "../../adapter/types.ts";
 import { useCardImage } from "../../hooks/useCardImage.ts";
+import { useEngineCardData, useCardParseDetails, type ParsedItem } from "../../hooks/useEngineCardData.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { ManaCostPips } from "../mana/ManaCostPips.tsx";
@@ -39,7 +40,7 @@ export function CardPreview({
 
 function CardPreviewInner({
   cardName,
-  backFaceName,
+  backFaceName: backFaceNameProp,
   faceIndex,
   position,
 }: {
@@ -53,6 +54,27 @@ function CardPreviewInner({
   const obj = useGameStore((s) =>
     inspectedObjectId != null ? s.gameState?.objects[inspectedObjectId] ?? null : null,
   );
+
+  // Auto-derive back face name from " // " separator when not explicitly provided
+  // (e.g., deck builder passes "Delver of Secrets // Insectile Aberration" as cardName)
+  const backFaceName = backFaceNameProp ?? (
+    cardName.includes(" // ") ? cardName.split(" // ")[1] : null
+  );
+
+  // For DFC names ("Front // Back"), extract the front face name for engine lookup
+  const frontFaceName = cardName.includes(" // ") ? cardName.split(" // ")[0] : cardName;
+
+  // When no game object exists (deck builder context), look up engine-parsed data via WASM.
+  // Fetch both faces so Alt+Ctrl shows the back face's parsed data.
+  const engineFrontFace = useEngineCardData(obj ? null : frontFaceName);
+  const engineBackFace = useEngineCardData(obj ? null : backFaceName);
+
+  // Parse details: hierarchical tree with per-item support status.
+  // For in-game objects, look up by obj.name; for deck builder, use the face names.
+  const lookupName = obj?.name ?? frontFaceName;
+  const frontParseDetails = useCardParseDetails(lookupName);
+  const backParseDetails = useCardParseDetails(backFaceName);
+
   const isToken = obj?.card_id === 0;
   const { src, isLoading } = useCardImage(cardName, {
     size: "normal",
@@ -176,8 +198,13 @@ function CardPreviewInner({
       style={style}
       data-card-preview
     >
-      {altHeld && obj ? (
-        <ParsedAbilitiesPanel obj={obj} maxHeight={viewportHeight - margin * 2} />
+      {altHeld && (frontParseDetails || engineFrontFace) ? (
+        <ParsedAbilitiesPanel
+          name={showBackFace ? (engineBackFace?.name ?? backFaceName ?? "") : (obj?.name ?? engineFrontFace?.name ?? frontFaceName)}
+          cardTypes={showBackFace ? engineBackFace?.card_type : (obj?.card_types ?? engineFrontFace?.card_type)}
+          parseDetails={showBackFace && backParseDetails ? backParseDetails : frontParseDetails}
+          maxHeight={viewportHeight - margin * 2}
+        />
       ) : (
         <CardImagePreview
           cardName={displayName}
@@ -338,113 +365,105 @@ function CardImagePreview({
   );
 }
 
-type AbilityCategory = "keyword" | "ability" | "trigger" | "static" | "replacement";
+type ItemCategory = ParsedItem["category"];
 
-interface ParsedLine {
-  text: string;
-  category: AbilityCategory;
-  pills: string[];
+/** Stable key for a ParsedItem — category + label is unique within a card's parse tree */
+function itemKey(item: ParsedItem, index: number): string {
+  return `${item.category}-${item.label}-${index}`;
 }
 
-const CATEGORY_STYLES: Record<AbilityCategory, { border: string; badge: string; badgeText: string; icon: string }> = {
-  keyword:     { border: "border-l-violet-400/60", badge: "bg-violet-400/15 text-violet-300", badgeText: "Keyword", icon: "◆" },
-  ability:     { border: "border-l-sky-400/60",    badge: "bg-sky-400/15 text-sky-300",       badgeText: "Effect",  icon: "✦" },
-  trigger:     { border: "border-l-amber-400/60",  badge: "bg-amber-400/15 text-amber-300",   badgeText: "Trigger", icon: "⚡" },
-  static:      { border: "border-l-teal-400/60",   badge: "bg-teal-400/15 text-teal-300",     badgeText: "Static",  icon: "🛡" },
-  replacement: { border: "border-l-orange-400/60", badge: "bg-orange-400/15 text-orange-300",  badgeText: "Replace", icon: "↺" },
+const CATEGORY_STYLES: Record<ItemCategory, { border: string; badge: string; icon: string }> = {
+  keyword:     { border: "border-l-violet-400/60", badge: "bg-violet-400/15 text-violet-300", icon: "◆" },
+  ability:     { border: "border-l-sky-400/60",    badge: "bg-sky-400/15 text-sky-300",       icon: "✦" },
+  trigger:     { border: "border-l-amber-400/60",  badge: "bg-amber-400/15 text-amber-300",   icon: "⚡" },
+  static:      { border: "border-l-teal-400/60",   badge: "bg-teal-400/15 text-teal-300",     icon: "🛡" },
+  replacement: { border: "border-l-orange-400/60", badge: "bg-orange-400/15 text-orange-300", icon: "↺" },
+  cost:        { border: "border-l-rose-400/60",   badge: "bg-rose-400/15 text-rose-300",     icon: "$" },
 };
 
-function extractPills(data: Record<string, unknown>): string[] {
-  const pills: string[] = [];
-  const effect = data.effect as Record<string, unknown> | undefined;
-  if (effect?.type) pills.push(String(effect.type));
+const CATEGORY_ABBR: Record<ItemCategory, string> = {
+  keyword: "KW", ability: "EFF", trigger: "TRG", static: "STC", replacement: "RPL", cost: "CST",
+};
 
-  const target = (effect?.target ?? data.valid_target) as Record<string, unknown> | undefined;
-  if (target) {
-    if (target.type === "Any") pills.push("any target");
-    else if (target.controller) pills.push(`${target.controller} controlled`);
-    const filters = target.type_filters as unknown[] | undefined;
-    if (filters?.length) pills.push(filters.map((f) => (typeof f === "string" ? f : typeof f === "object" && f ? Object.values(f).join(" ") : "")).join(" "));
-  }
-
-  const amount = (effect?.amount ?? data.amount) as Record<string, unknown> | undefined;
-  if (amount?.type === "Fixed" && amount.value != null) pills.push(`${amount.value}`);
-  else if (amount?.type === "Ref" && (amount.qty as Record<string, unknown>)?.type) pills.push(String((amount.qty as Record<string, unknown>).type));
-
-  const mode = data.mode;
-  if (mode && typeof mode === "string" && mode !== "Continuous") pills.push(mode);
-  else if (mode && typeof mode === "object") {
-    const key = Object.keys(mode as object)[0];
-    if (key) pills.push(key);
-  }
-
-  if (data.kind && data.kind !== "Spell") pills.push(String(data.kind));
-  if (data.optional === true) pills.push("optional");
-
-  const sub = data.sub_ability as Record<string, unknown> | undefined;
-  if (sub?.effect) {
-    const subEffect = sub.effect as Record<string, unknown>;
-    if (subEffect.type) pills.push(`→ ${subEffect.type}`);
-  }
-
-  return pills.filter(Boolean);
+/** Detail pills rendered as key:value badges */
+function DetailPills({ details, badgeClass }: { details: [string, string][]; badgeClass: string }) {
+  if (details.length === 0) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {details.map(([key, value]) => (
+        <span key={key} className={`inline-block rounded-[4px] px-1.5 py-px text-[9px] leading-tight ${badgeClass}`}>
+          <span className="opacity-60">{key}:</span> {value}
+        </span>
+      ))}
+    </div>
+  );
 }
 
-function buildParsedLines(obj: GameObject): ParsedLine[] {
-  const lines: ParsedLine[] = [];
+/** Renders a single ParsedItem node with support status and recursive children */
+function ParsedItemRow({ item, depth = 0 }: { item: ParsedItem; depth?: number }) {
+  const catStyle = CATEGORY_STYLES[item.category];
+  const statusColor = item.supported ? "text-emerald-400" : "text-rose-400";
 
-  for (const kw of obj.keywords) {
-    const label = typeof kw === "string" ? kw : typeof kw === "object" && kw ? Object.keys(kw)[0] ?? "?" : "?";
-    lines.push({ text: label, category: "keyword", pills: [] });
-  }
-
-  for (const ab of obj.abilities) {
-    const data = ab as Record<string, unknown>;
-    const desc = data.description as string | undefined;
-    const pills = extractPills(data);
-    lines.push({ text: desc ?? "Ability", category: "ability", pills });
-  }
-
-  for (const tr of obj.trigger_definitions) {
-    const data = tr as Record<string, unknown>;
-    const desc = data.description as string | undefined;
-    const exec = data.execute as Record<string, unknown> | undefined;
-    const pills = exec ? extractPills({ ...data, ...exec }) : extractPills(data);
-    lines.push({ text: desc ?? "Trigger", category: "trigger", pills });
-  }
-
-  for (const st of obj.static_definitions) {
-    const data = st as Record<string, unknown>;
-    const desc = data.description as string | undefined;
-    const mods = data.modifications as Record<string, unknown>[] | undefined;
-    const pills: string[] = [];
-    const mode = data.mode;
-    if (mode && typeof mode === "string" && mode !== "Continuous") pills.push(mode);
-    else if (mode && typeof mode === "object") {
-      const key = Object.keys(mode as object)[0];
-      if (key) pills.push(key);
-    }
-    if (mods?.length) {
-      for (const mod of mods) {
-        if (mod.type) pills.push(String(mod.type));
-      }
-    }
-    if (data.characteristic_defining) pills.push("CDA");
-    lines.push({ text: desc ?? "Static ability", category: "static", pills });
-  }
-
-  for (const rp of obj.replacement_definitions) {
-    const data = rp as Record<string, unknown>;
-    const desc = data.description as string | undefined;
-    const pills = extractPills(data);
-    lines.push({ text: desc ?? "Replacement", category: "replacement", pills });
-  }
-
-  return lines;
+  return (
+    <div className={depth ? "ml-3 mt-0.5" : undefined}>
+      <div className={`border-l-2 ${catStyle.border} pl-2.5 py-1`}>
+        <div className="flex items-start gap-1.5">
+          <span className={`text-[10px] mt-px shrink-0 ${statusColor}`}>
+            {item.supported ? "●" : "○"}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className={`text-[8px] font-bold uppercase tracking-wider ${statusColor} opacity-70`}>
+                {CATEGORY_ABBR[item.category]}
+              </span>
+              <span className="text-[11px] leading-snug text-gray-200 font-medium">{item.label}</span>
+              {!item.supported && <span className="text-[9px] text-rose-400">unsupported</span>}
+            </div>
+            {item.source_text && (
+              <div className="text-[10px] leading-snug text-gray-500 mt-0.5 italic">{item.source_text}</div>
+            )}
+            <DetailPills details={item.details ?? []} badgeClass={catStyle.badge} />
+          </div>
+        </div>
+      </div>
+      {item.children?.map((child, i) => (
+        <ParsedItemRow key={itemKey(child, i)} item={child} depth={(depth ?? 0) + 1} />
+      ))}
+    </div>
+  );
 }
 
-function ParsedAbilitiesPanel({ obj, maxHeight }: { obj: GameObject; maxHeight?: number }) {
-  const lines = buildParsedLines(obj);
+/** Support coverage summary: progress bar + fraction */
+function SupportSummary({ items }: { items: ParsedItem[] }) {
+  if (items.length === 0) return null;
+  const supported = items.filter((item) => item.supported).length;
+  const total = items.length;
+  const allSupported = supported === total;
+
+  return (
+    <div className="mt-1.5 flex items-center gap-2">
+      <div className="flex-1 h-1 rounded-full bg-gray-800 overflow-hidden">
+        <div
+          className={`h-full rounded-full ${allSupported ? "bg-emerald-500" : "bg-amber-500"}`}
+          style={{ width: `${(supported / total) * 100}%` }}
+        />
+      </div>
+      <span className={`text-[9px] font-medium ${allSupported ? "text-emerald-400" : "text-amber-400"}`}>
+        {supported}/{total}
+      </span>
+    </div>
+  );
+}
+
+interface ParsedAbilitiesPanelProps {
+  name: string;
+  cardTypes?: { supertypes: string[]; core_types: string[]; subtypes: string[] } | null;
+  parseDetails: ParsedItem[] | null;
+  maxHeight?: number;
+}
+
+function ParsedAbilitiesPanel({ name, cardTypes, parseDetails, maxHeight }: ParsedAbilitiesPanelProps) {
+  const items = parseDetails ?? [];
 
   return (
     <div
@@ -454,42 +473,21 @@ function ParsedAbilitiesPanel({ obj, maxHeight }: { obj: GameObject; maxHeight?:
     >
       <div className="sticky top-0 z-10 bg-gray-950 border-b border-gray-700/80 px-3 py-2">
         <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold text-gray-200">{obj.name}</div>
+          <div className="text-sm font-semibold text-gray-200">{name}</div>
           <div className="text-[9px] uppercase tracking-widest text-gray-600">Engine Parse</div>
         </div>
-        {formatTypeLine(obj.card_types) && (
-          <div className="text-[10px] text-gray-500 mt-0.5">{formatTypeLine(obj.card_types)}</div>
+        {cardTypes && formatTypeLine(cardTypes) && (
+          <div className="text-[10px] text-gray-500 mt-0.5">{formatTypeLine(cardTypes)}</div>
         )}
+        <SupportSummary items={items} />
       </div>
       <div className="px-2 py-2 space-y-0.5">
-        {lines.length === 0 && (
+        {items.length === 0 && (
           <div className="px-1 py-2 text-xs text-gray-500 italic">Vanilla — no parsed abilities</div>
         )}
-        {lines.map((line, i) => {
-          const style = CATEGORY_STYLES[line.category];
-          return (
-            <div key={i} className={`border-l-2 ${style.border} pl-2.5 py-1`}>
-              <div className="flex items-start gap-1.5">
-                <span className="text-[10px] mt-px shrink-0 opacity-60">{style.icon}</span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-[11px] leading-snug text-gray-300">{line.text}</div>
-                  {line.pills.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {line.pills.map((pill, j) => (
-                        <span
-                          key={j}
-                          className={`inline-block rounded-[4px] px-1.5 py-px text-[9px] leading-tight ${style.badge}`}
-                        >
-                          {pill}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        })}
+        {items.map((item, i) => (
+          <ParsedItemRow key={itemKey(item, i)} item={item} />
+        ))}
       </div>
     </div>
   );

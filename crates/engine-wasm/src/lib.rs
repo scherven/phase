@@ -15,9 +15,9 @@ use engine::game::{
     resolve_deck_list, start_game, validate_deck_for_format, DeckCompatibilityRequest, DeckList,
 };
 use engine::types::format::FormatConfig;
-use engine::types::match_config::MatchConfig;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
+use engine::types::match_config::MatchConfig;
 use engine::types::{GameAction, GameState, PlayerId};
 
 /// Result of `get_legal_actions_js` — bundles actions with the engine's auto-pass
@@ -114,6 +114,44 @@ pub fn load_card_database(json_str: &str) -> Result<u32, JsValue> {
         *cell.borrow_mut() = Some(db);
     });
     Ok(count)
+}
+
+/// Look up a card face by name from the loaded card database.
+/// Returns the serialized `CardFace` (keywords, abilities, triggers, static_abilities,
+/// replacements, card_type, oracle_text, etc.) or null if not found.
+/// Used by the deck builder to display engine-parsed ability data.
+#[wasm_bindgen]
+pub fn get_card_face_data(name: &str) -> JsValue {
+    CARD_DB.with(|cell| {
+        let db = cell.borrow();
+        let Some(db) = db.as_ref() else {
+            return JsValue::NULL;
+        };
+        match db.get_face_by_name(name) {
+            Some(face) => to_js(face),
+            None => JsValue::NULL,
+        }
+    })
+}
+
+/// Returns the hierarchical parse tree for a card face, with per-item support status.
+/// Each `ParsedItem` contains category, label, source_text, supported (bool), details
+/// (key-value pairs), and recursive children (sub-abilities, modal modes, costs).
+/// Returns null if the card database is not loaded or the card is not found.
+#[wasm_bindgen]
+pub fn get_card_parse_details(name: &str) -> JsValue {
+    use engine::game::coverage::build_parse_details_for_face;
+
+    CARD_DB.with(|cell| {
+        let db = cell.borrow();
+        let Some(db) = db.as_ref() else {
+            return JsValue::NULL;
+        };
+        match db.get_face_by_name(name) {
+            Some(face) => to_js(&build_parse_details_for_face(face)),
+            None => JsValue::NULL,
+        }
+    })
 }
 
 /// Evaluate deck compatibility and format legality using the loaded card database.

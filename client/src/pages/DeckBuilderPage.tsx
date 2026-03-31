@@ -5,9 +5,11 @@ import { useAudioContext } from "../audio/useAudioContext";
 import { CardPreview } from "../components/card/CardPreview";
 import { DeckBuilder } from "../components/deck-builder/DeckBuilder";
 import type { DeckFormat } from "../components/deck-builder/FormatFilter";
+import { useAltToggle } from "../hooks/useAltToggle";
 
 export function DeckBuilderPage() {
   useAudioContext("deck_builder");
+  useAltToggle();
   const [searchParams] = useSearchParams();
   const [hoveredCardName, setHoveredCardName] = useState<string | null>(null);
   const [format, setFormat] = useState<DeckFormat>("standard");
