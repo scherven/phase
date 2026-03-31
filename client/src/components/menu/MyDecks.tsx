@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { GameFormat, MatchType } from "../../adapter/types";
 import type { FeedDeck } from "../../types/feed";
-import { ACTIVE_DECK_KEY, STORAGE_KEY_PREFIX, listSavedDeckNames, getDeckMeta, deleteDeck } from "../../constants/storage";
+import { ACTIVE_DECK_KEY, listSavedDeckNames, getDeckMeta, deleteDeck } from "../../constants/storage";
 import {
   getDeckFeedOrigin,
   getCachedFeed,
@@ -22,25 +22,20 @@ import {
 import { ImportDeckModal } from "./ImportDeckModal";
 import { MenuPanel } from "./MenuShell";
 import { menuButtonClass } from "./buttonStyles";
+import {
+  COLOR_DOT_CLASS,
+  getDeckCardCount,
+  getDeckColorIdentity,
+  getRepresentativeCard,
+  isBundledDeck,
+  loadDeck,
+} from "./deckHelpers";
 
 const BASIC_LANDS = new Set(["Plains", "Island", "Swamp", "Mountain", "Forest"]);
-
-const COLOR_DOT_CLASS: Record<string, string> = {
-  W: "bg-amber-200",
-  U: "bg-blue-400",
-  B: "bg-gray-600",
-  R: "bg-red-500",
-  G: "bg-green-500",
-};
-
 const PRECON_PREFIX = "[Pre-built] ";
 
 /** Tags that represent a format/archetype — shown with active (green) styling. */
 const FORMAT_TAGS = new Set(["standard", "modern", "pioneer", "commander", "legacy", "vintage", "pauper", "historic", "brawl", "metagame"]);
-
-function isBundledDeck(deckName: string): boolean {
-  return getDeckFeedOrigin(deckName) !== null;
-}
 
 type DeckFilter = "all" | "standard" | "pioneer" | "modern" | "legacy" | "vintage" | "pauper" | "commander" | "historic" | "brawl" | "bo3";
 type DeckSort = "alpha" | "recent";
@@ -63,48 +58,6 @@ const FORMAT_FILTERS: Array<{ key: DeckFilter; label: string; aetherhubUrl?: str
 /** Formats that use `format_legality` for filtering (all except standard/commander/bo3 which have dedicated checks). */
 const LEGALITY_BASED_FORMATS = new Set<DeckFilter>(["pioneer", "modern", "legacy", "vintage", "pauper", "historic", "brawl"]);
 
-function loadDeck(deckName: string): ParsedDeck | null {
-  const raw = localStorage.getItem(STORAGE_KEY_PREFIX + deckName);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as ParsedDeck;
-  } catch {
-    return null;
-  }
-}
-
-function getDeckColorIdentity(deckName: string): string[] {
-  const feedId = getDeckFeedOrigin(deckName);
-  if (feedId) {
-    const feed = getCachedFeed(feedId);
-    const feedDeck = feed?.decks.find((d) => d.name === deckName);
-    if (feedDeck) return feedDeck.colors;
-  }
-  return [];
-}
-
-function getDeckCardCount(deckName: string): number {
-  const deck = loadDeck(deckName);
-  if (!deck) return 0;
-
-  const mainCount = deck.main.reduce((sum, entry) => sum + entry.count, 0);
-  const commanders = deck.commander ?? [];
-  const representedInMain = commanders.filter((name) =>
-    deck.main.some((entry) => entry.name.toLowerCase() === name.toLowerCase()),
-  ).length;
-  return mainCount + (commanders.length - representedInMain);
-}
-
-function getRepresentativeCard(deckName: string): string | null {
-  const deck = loadDeck(deckName);
-  if (!deck) return null;
-  if (deck.commander && deck.commander.length > 0) {
-    return deck.commander[0];
-  }
-  const entry = deck.main.find((item) => !BASIC_LANDS.has(item.name));
-  return entry?.name ?? null;
-}
-
 function DeckArtTile({ cardName }: { cardName: string | null }) {
   const { src, isLoading } = useCardImage(cardName ?? "", { size: "art_crop" });
 
@@ -115,7 +68,7 @@ function DeckArtTile({ cardName }: { cardName: string | null }) {
   return <img src={src} alt="" className="absolute inset-0 h-full w-full object-cover" />;
 }
 
-function StatusBadge({ label, active }: { label: string; active: boolean }) {
+export function StatusBadge({ label, active }: { label: string; active: boolean }) {
   return (
     <span
       className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
@@ -142,6 +95,13 @@ interface DeckTileProps {
 
 function DeckTile({ deckName, isActive, compatibility, onClick, onDelete, onAdopt, hideFeedBadge, feedDeckOverride }: DeckTileProps) {
   const [coverageHovered, setCoverageHovered] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  useEffect(() => {
+    if (!confirmingDelete) return;
+    const timer = setTimeout(() => setConfirmingDelete(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmingDelete]);
   const colors = compatibility?.color_identity
     ?? feedDeckOverride?.colors
     ?? getDeckColorIdentity(deckName);
@@ -177,15 +137,32 @@ function DeckTile({ deckName, isActive, compatibility, onClick, onDelete, onAdop
       )}
 
       {onDelete && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="absolute left-2 top-2 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-black/70 text-gray-400 opacity-0 transition-opacity hover:bg-red-600 hover:text-white group-hover:opacity-100"
-          title="Delete deck"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
-            <path fillRule="evenodd" d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5A.75.75 0 0 1 9.95 6Z" clipRule="evenodd" />
-          </svg>
-        </button>
+        confirmingDelete ? (
+          <div className="absolute left-2 top-2 z-20 flex gap-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); setConfirmingDelete(false); }}
+              className="rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-semibold text-white transition-colors hover:bg-red-500"
+            >
+              Delete
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); setConfirmingDelete(false); }}
+              className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-gray-300 transition-colors hover:bg-black/90"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={(e) => { e.stopPropagation(); setConfirmingDelete(true); }}
+            className="absolute left-2 top-2 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-black/70 text-gray-400 opacity-0 transition-opacity hover:bg-red-600 hover:text-white group-hover:opacity-100"
+            title="Delete deck"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+              <path fillRule="evenodd" d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5A.75.75 0 0 1 9.95 6Z" clipRule="evenodd" />
+            </svg>
+          </button>
+        )
       )}
 
       {onAdopt && (
@@ -279,6 +256,10 @@ interface MyDecksProps {
   confirmAction?: ReactNode;
   onCreateDeck?: () => void;
   onEditDeck?: (deckName: string) => void;
+  /** When true, render without the MenuPanel wrapper and header (for embedding). */
+  bare?: boolean;
+  /** Called whenever compatibility data is updated, so the parent can use it. */
+  onCompatibilityUpdate?: (data: Record<string, DeckCompatibilityResult>) => void;
 }
 
 type MyDecksTab = "decks" | "subscriptions";
@@ -294,6 +275,8 @@ export function MyDecks({
   confirmAction,
   onCreateDeck,
   onEditDeck,
+  bare = false,
+  onCompatibilityUpdate,
 }: MyDecksProps) {
   const [activeTab, setActiveTab] = useState<MyDecksTab>("decks");
   const [deckNames, setDeckNames] = useState<string[]>([]);
@@ -318,8 +301,9 @@ export function MyDecks({
     return map[selectedFormat] ?? null;
   }, [selectedFormat]);
   const [activeFilter, setActiveFilter] = useState<DeckFilter>(contextualFilter ?? "all");
-  const [activeSort, setActiveSort] = useState<DeckSort>("alpha");
-  const [sortAsc, setSortAsc] = useState(true);
+  const [activeSort, setActiveSort] = useState<DeckSort>(mode === "select" ? "recent" : "alpha");
+  const [sortAsc, setSortAsc] = useState(mode !== "select");
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     setActiveFilter(contextualFilter ?? "all");
@@ -382,6 +366,7 @@ export function MyDecks({
         if (!cancelled) {
           setCompatibilities(results);
           setCompatibilityError(null);
+          onCompatibilityUpdate?.(results);
         }
       } catch (error) {
         if (!cancelled) {
@@ -427,6 +412,12 @@ export function MyDecks({
     });
   }, [deckNames, compatibilities, activeFilter, contextualFilter, selectedFormat]);
 
+  const searchFiltered = useMemo(() => {
+    if (!searchQuery) return filteredDeckNames;
+    const q = searchQuery.toLowerCase();
+    return filteredDeckNames.filter((name) => name.toLowerCase().includes(q));
+  }, [filteredDeckNames, searchQuery]);
+
   const { userDecks, bundledDecks } = useMemo(() => {
     const dir = sortAsc ? 1 : -1;
     const sortNames = (names: string[]): string[] => {
@@ -434,13 +425,15 @@ export function MyDecks({
       return [...names].sort((a, b) => {
         const metaA = getDeckMeta(a);
         const metaB = getDeckMeta(b);
-        return ((metaA?.addedAt ?? 0) - (metaB?.addedAt ?? 0)) * dir;
+        const scoreA = Math.max(metaA?.lastPlayedAt ?? 0, metaA?.addedAt ?? 0);
+        const scoreB = Math.max(metaB?.lastPlayedAt ?? 0, metaB?.addedAt ?? 0);
+        return (scoreA - scoreB) * dir;
       });
     };
 
     const user: string[] = [];
     const bundled: string[] = [];
-    for (const name of filteredDeckNames) {
+    for (const name of searchFiltered) {
       if (isBundledDeck(name)) {
         bundled.push(name);
       } else {
@@ -448,12 +441,12 @@ export function MyDecks({
       }
     }
     return { userDecks: sortNames(user), bundledDecks: sortNames(bundled) };
-  }, [filteredDeckNames, activeSort, sortAsc]);
+  }, [searchFiltered, activeSort, sortAsc]);
 
   const noDeckSelected = mode === "select"
-    ? !activeDeckName || !filteredDeckNames.includes(activeDeckName)
+    ? !activeDeckName || !searchFiltered.includes(activeDeckName)
     : false;
-  const selectedDeckLabel = mode === "select" && activeDeckName && filteredDeckNames.includes(activeDeckName)
+  const selectedDeckLabel = mode === "select" && activeDeckName && searchFiltered.includes(activeDeckName)
     ? activeDeckName
     : null;
 
@@ -490,7 +483,6 @@ export function MyDecks({
   };
 
   const handleDeleteDeck = (deckName: string) => {
-    if (!confirm(`Delete "${deckName}"? This cannot be undone.`)) return;
     deleteDeck(deckName);
     setDeckNames(listSavedDeckNames());
   };
@@ -500,8 +492,14 @@ export function MyDecks({
     setDeckNames(listSavedDeckNames());
   };
 
+  const Wrapper = bare ? "div" : MenuPanel;
+  const wrapperClass = bare
+    ? "flex w-full flex-col items-center gap-4"
+    : "flex w-full max-w-5xl flex-col items-center gap-6 px-4 py-5";
+
   return (
-    <MenuPanel className="flex w-full max-w-5xl flex-col items-center gap-6 px-4 py-5">
+    <Wrapper className={wrapperClass}>
+      {!bare && (
       <div className="flex w-full items-center justify-between gap-3">
         <div className="flex items-center gap-4">
           <h2 className="menu-display text-[1.9rem] leading-tight text-white">
@@ -558,9 +556,25 @@ export function MyDecks({
           </div>
         )}
       </div>
+      )}
 
       {(activeTab === "decks" || mode === "select") && (<>
+      {/* Search + filter/sort controls */}
       <div className="flex w-full flex-wrap items-center gap-2">
+        <div className="relative">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500">
+            <path fillRule="evenodd" d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" clipRule="evenodd" />
+          </svg>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search decks…"
+            className="rounded-lg bg-black/30 py-1.5 pl-8 pr-3 text-xs text-slate-200 outline-none ring-1 ring-white/10 transition-colors placeholder:text-slate-500 focus:ring-white/20"
+          />
+        </div>
+
+        {mode === "manage" && (<>
         {FORMAT_FILTERS.filter((f) => !(mode === "select" && contextualFilter && f.key === "all")).map(({ key, label, aetherhubUrl }) => (
           <span key={key} className="inline-flex items-center gap-0.5">
             <button
@@ -588,7 +602,7 @@ export function MyDecks({
             )}
           </span>
         ))}
-        {mode === "manage" && contextualFilter && activeFilter === contextualFilter && (
+        {contextualFilter && activeFilter === contextualFilter && (
           <button
             onClick={() => setActiveFilter("all")}
             className="rounded border border-indigo-500/50 bg-indigo-500/10 px-2 py-1 text-xs font-medium text-indigo-200 hover:bg-indigo-500/20"
@@ -624,6 +638,7 @@ export function MyDecks({
             </svg>
           </button>
         </div>
+        </>)}
       </div>
 
       {isEvaluating && (
@@ -639,7 +654,7 @@ export function MyDecks({
         </div>
       )}
 
-      {filteredDeckNames.length === 0 ? (
+      {searchFiltered.length === 0 ? (
         <div className="flex w-full flex-col items-center justify-center gap-4 rounded-[20px] border border-dashed border-white/10 bg-black/12 px-6 py-12 text-center">
           <div className="text-lg font-medium text-white">No decks match this filter.</div>
           <div className="max-w-md text-sm leading-6 text-slate-400">
@@ -700,10 +715,18 @@ export function MyDecks({
           {/* Bundled decks section */}
           {bundledDecks.length > 0 && (
             <div>
-              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Starter Decks
-                <span className="ml-2 text-slate-600">{bundledDecks.length}</span>
-              </h3>
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  Starter Decks
+                  <span className="ml-2 text-slate-600">{bundledDecks.length}</span>
+                </h3>
+                <button
+                  onClick={() => setShowFeedManager(true)}
+                  className="text-[11px] text-slate-500 transition-colors hover:text-slate-300"
+                >
+                  Manage Feeds
+                </button>
+              </div>
               <div className="grid w-full grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
                 {bundledDecks.map((deckName) => (
                   <DeckTile
@@ -730,7 +753,7 @@ export function MyDecks({
         />
       )}
 
-      {mode === "select" && (
+      {mode === "select" && onConfirmSelection && (
         <div className="sticky bottom-3 z-10 w-full">
           <div className="flex items-center justify-between gap-4 rounded-[20px] border border-white/10 bg-[#0a0f1b]/90 px-4 py-3 shadow-[0_18px_40px_rgba(0,0,0,0.28)] backdrop-blur-md">
             <div className="min-w-0">
@@ -761,7 +784,7 @@ export function MyDecks({
         open={showFeedManager}
         onClose={handleFeedManagerClose}
       />
-    </MenuPanel>
+    </Wrapper>
   );
 }
 

@@ -1,93 +1,72 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import type { FormatConfig, GameFormat, MatchType } from "../adapter/types";
 import { useAudioContext } from "../audio/useAudioContext";
 import { ScreenChrome } from "../components/chrome/ScreenChrome";
 import { AiDifficultyDropdown } from "../components/menu/AiDifficultyDropdown";
-import { HostSetup } from "../components/lobby/HostSetup";
-import { LobbyView } from "../components/lobby/LobbyView";
-import { WaitingScreen } from "../components/lobby/WaitingScreen";
-import { FormatPicker } from "../components/menu/FormatPicker";
-import { GamePresets } from "../components/menu/GamePresets";
 import { MenuParticles } from "../components/menu/MenuParticles";
-import { MenuPanel, MenuShell } from "../components/menu/MenuShell";
-import { MyDecks } from "../components/menu/MyDecks";
+import { MenuPanel } from "../components/menu/MenuShell";
+import { MyDecks, StatusBadge } from "../components/menu/MyDecks";
+import {
+  COLOR_DOT_CLASS,
+  getRepresentativeCard,
+  getDeckCardCount,
+} from "../components/menu/deckHelpers";
 import { menuButtonClass } from "../components/menu/buttonStyles";
-import { getAiDifficultyLabel, type AIDifficulty } from "../constants/ai";
-import { ACTIVE_DECK_KEY, loadActiveDeck } from "../constants/storage";
-import { parseRoomCode } from "../network/connection";
-import { isValidWebSocketUrl } from "../services/serverDetection";
-import type { GamePreset } from "../services/presets";
-import { savePreset } from "../services/presets";
+import { ACTIVE_DECK_KEY, touchDeckPlayed } from "../constants/storage";
+import { useCardImage } from "../hooks/useCardImage";
 import { FORMAT_DEFAULTS, useMultiplayerStore } from "../stores/multiplayerStore";
 import { usePreferencesStore } from "../stores/preferencesStore";
 import { saveActiveGame, useGameStore } from "../stores/gameStore";
-import type { HostSettings } from "../components/lobby/HostSetup";
+import type { DeckCompatibilityResult } from "../services/deckCompatibility";
 
-const FORMAT_LABELS: Partial<Record<GameFormat, string>> = {
-  HistoricBrawl: "Historic Brawl",
-  TwoHeadedGiant: "Two-Headed Giant",
-  FreeForAll: "Free-for-All",
-};
+// --- Format pill definitions ---
 
-function formatLabel(format: GameFormat): string {
-  return FORMAT_LABELS[format] ?? format;
-}
+type FormatGroup = "constructed" | "commander" | "multiplayer";
 
-type SetupStep =
-  | "format"
-  | "config"
-  | "deck-select"
-  | "mode"
-  | "lobby"
-  | "host-setup"
-  | "waiting";
-
-const STEP_BACK: Record<SetupStep, SetupStep | "exit"> = {
-  format: "exit",
-  config: "format",
-  "deck-select": "config",
-  mode: "deck-select",
-  lobby: "mode",
-  "host-setup": "lobby",
-  waiting: "lobby",
-};
-
-interface SetupSummaryButtonProps {
+interface FormatInfo {
+  format: GameFormat;
   label: string;
-  value: string;
-  helper: string;
-  onClick: () => void;
+  group: FormatGroup;
 }
 
-function SetupSummaryButton({ label, value, helper, onClick }: SetupSummaryButtonProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex min-w-0 flex-1 items-center justify-between gap-4 rounded-[18px] border border-white/10 bg-black/14 px-4 py-3 text-left transition-colors hover:border-white/18 hover:bg-white/[0.04]"
-    >
-      <div className="min-w-0">
-        <div className="text-[0.68rem] uppercase tracking-[0.22em] text-slate-500">{label}</div>
-        <div className="mt-1 truncate text-sm font-medium text-white">{value}</div>
-      </div>
-      <div className="shrink-0 text-xs text-slate-400">{helper}</div>
-    </button>
-  );
-}
+const FORMATS: FormatInfo[] = [
+  { format: "Standard", label: "Standard", group: "constructed" },
+  { format: "Pioneer", label: "Pioneer", group: "constructed" },
+  { format: "Historic", label: "Historic", group: "constructed" },
+  { format: "Pauper", label: "Pauper", group: "constructed" },
+  { format: "Commander", label: "Commander", group: "commander" },
+  { format: "Brawl", label: "Brawl", group: "commander" },
+  { format: "HistoricBrawl", label: "Historic Brawl", group: "commander" },
+  { format: "FreeForAll", label: "Free-for-All", group: "multiplayer" },
+  { format: "TwoHeadedGiant", label: "Two-Headed Giant", group: "multiplayer" },
+];
+
+const GROUP_PILL_ACTIVE: Record<FormatGroup, string> = {
+  constructed: "border-indigo-300/30 bg-indigo-500/20 text-indigo-100",
+  commander: "border-amber-300/30 bg-amber-500/20 text-amber-100",
+  multiplayer: "border-emerald-300/30 bg-emerald-500/20 text-emerald-100",
+};
+
+const PILL_INACTIVE = "border-white/10 text-slate-400 hover:border-white/18 hover:text-white";
+
+// --- Component ---
 
 export function GameSetupPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-
   useAudioContext("menu");
-  const [step, setStep] = useState<SetupStep>("format");
+
+  // Format & config state
   const [selectedFormat, setSelectedFormat] = useState<GameFormat | null>(null);
   const [formatConfig, setFormatConfig] = useState<FormatConfig | null>(null);
   const [playerCount, setPlayerCount] = useState(2);
-  const [activeDeckName, setActiveDeckName] = useState<string | null>(null);
   const [matchType, setMatchType] = useState<MatchType>("Bo1");
+  const [activeDeckName, setActiveDeckName] = useState<string | null>(null);
+  const [compatibilities, setCompatibilities] = useState<Record<string, DeckCompatibilityResult>>({});
+
+  // Preferences (persisted)
   const difficulty = usePreferencesStore((s) => s.aiDifficulty);
   const setDifficulty = usePreferencesStore((s) => s.setAiDifficulty);
   const lastFormat = usePreferencesStore((s) => s.lastFormat);
@@ -97,42 +76,29 @@ export function GameSetupPage() {
   const setLastMatchType = usePreferencesStore((s) => s.setLastMatchType);
   const setLastPlayerCount = usePreferencesStore((s) => s.setLastPlayerCount);
 
-  // Multiplayer state
-  const [hostGameCode, setHostGameCode] = useState<string | null>(null);
-  const [hostIsPublic, setHostIsPublic] = useState(true);
-  const [connectionMode, setConnectionMode] = useState<"server" | "p2p">("server");
-  const hostWsRef = useRef<WebSocket | null>(null);
-  const serverAddress = useMultiplayerStore((s) => s.serverAddress);
   const setFormatConfigStore = useMultiplayerStore((s) => s.setFormatConfig);
-  const showToast = useMultiplayerStore((s) => s.showToast);
 
+  // Restore last session on mount
   useEffect(() => {
-    const savedDeck = localStorage.getItem(ACTIVE_DECK_KEY);
-    setActiveDeckName(savedDeck);
+    setActiveDeckName(localStorage.getItem(ACTIVE_DECK_KEY));
 
-    // Allow direct format entry via search param
-    const fmt = searchParams.get("format") as GameFormat | null;
-    if (fmt && FORMAT_DEFAULTS[fmt]) {
-      handleFormatSelect(fmt);
+    // Allow direct format entry via ?format= search param
+    const fmtParam = searchParams.get("format") as GameFormat | null;
+    if (fmtParam && FORMAT_DEFAULTS[fmtParam]) {
+      applyFormat(fmtParam);
       return;
     }
 
-    // Restore persisted setup — skip to mode step if we have format + deck
-    if (lastFormat && FORMAT_DEFAULTS[lastFormat]) {
-      const defaults = FORMAT_DEFAULTS[lastFormat];
-      setSelectedFormat(lastFormat);
-      setFormatConfig(defaults);
-      setPlayerCount(lastPlayerCount);
-      setMatchType(lastMatchType);
-      if (savedDeck) {
-        setStep("mode");
-      } else {
-        setStep("deck-select");
-      }
-    }
+    // Restore last-used format, or default to Standard
+    const fmt = lastFormat && FORMAT_DEFAULTS[lastFormat] ? lastFormat : "Standard";
+    const defaults = FORMAT_DEFAULTS[fmt];
+    setSelectedFormat(fmt);
+    setFormatConfig(defaults);
+    setPlayerCount(lastFormat ? lastPlayerCount : defaults.min_players);
+    setMatchType(lastFormat ? lastMatchType : "Bo1");
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleFormatSelect = (format: GameFormat) => {
+  function applyFormat(format: GameFormat) {
     const defaults = FORMAT_DEFAULTS[format];
     setSelectedFormat(format);
     setFormatConfig(defaults);
@@ -143,24 +109,16 @@ export function GameSetupPage() {
       setMatchType("Bo1");
       setLastMatchType("Bo1");
     }
-    setStep("config");
-  };
-
-  const handleConfigConfirm = () => {
-    setStep("deck-select");
-  };
+  }
 
   const handleSelectDeck = (name: string) => {
     setActiveDeckName(name);
     localStorage.setItem(ACTIVE_DECK_KEY, name);
   };
 
-  const handleDeckConfirm = () => {
-    setStep("mode");
-  };
-
   const handleStartAI = () => {
     if (!activeDeckName || !formatConfig) return;
+    touchDeckPlayed(activeDeckName);
     const gameId = crypto.randomUUID();
     saveActiveGame({ id: gameId, mode: "ai", difficulty });
     useGameStore.setState({ gameId });
@@ -169,471 +127,261 @@ export function GameSetupPage() {
     );
   };
 
-  const handleSavePreset = () => {
-    if (!selectedFormat || !formatConfig) return;
-    const name = prompt("Preset name:");
-    if (!name) return;
-    savePreset({
-      id: crypto.randomUUID(),
-      name,
-      format: selectedFormat,
-      formatConfig,
-      deckId: activeDeckName,
-      aiDifficulty: difficulty,
-      playerCount,
-    });
+  const handlePlayOnline = () => {
+    if (formatConfig) setFormatConfigStore(formatConfig);
+    navigate("/multiplayer");
   };
 
-  const handlePresetSelect = (preset: GamePreset) => {
-    const defaults = FORMAT_DEFAULTS[preset.format];
-    setSelectedFormat(preset.format);
-    setFormatConfig({ ...defaults, ...preset.formatConfig });
-    setPlayerCount(preset.playerCount);
-    setLastFormat(preset.format);
-    setLastPlayerCount(preset.playerCount);
-    if (preset.aiDifficulty) {
-      setDifficulty(preset.aiDifficulty as AIDifficulty);
-    }
-    if (preset.deckId) {
-      setActiveDeckName(preset.deckId);
-      localStorage.setItem(ACTIVE_DECK_KEY, preset.deckId);
-    }
-    setStep("mode");
+  const handlePlayP2P = () => {
+    navigate("/multiplayer");
   };
 
-  const handleHostWithSettings = useCallback(
-    (settings: HostSettings) => {
-      if (!activeDeckName) {
-        setStep("deck-select");
-        return;
-      }
-      localStorage.removeItem("phase-ws-session");
-      setHostIsPublic(settings.public);
-
-      const deck = loadActiveDeck();
-      if (!deck) {
-        setStep("deck-select");
-        return;
-      }
-
-      const mainDeck: string[] = [];
-      for (const entry of deck.main) {
-        for (let i = 0; i < entry.count; i++) {
-          mainDeck.push(entry.name);
-        }
-      }
-      const sideboard: string[] = [];
-      for (const entry of deck.sideboard) {
-        for (let i = 0; i < entry.count; i++) {
-          sideboard.push(entry.name);
-        }
-      }
-
-      if (!isValidWebSocketUrl(serverAddress)) {
-        showToast("Invalid server address. Update it in Settings before hosting.");
-        return;
-      }
-
-      const ws = new WebSocket(serverAddress);
-      hostWsRef.current = ws;
-
-      ws.onopen = () => {
-        ws.send(
-          JSON.stringify({
-            type: "CreateGameWithSettings",
-            data: {
-              deck: { main_deck: mainDeck, sideboard },
-              display_name: settings.displayName,
-              public: settings.public,
-              password: settings.password || null,
-              timer_seconds: settings.timerSeconds,
-              player_count: settings.formatConfig.max_players,
-              match_config: { match_type: settings.matchType },
-              format_config: settings.formatConfig,
-              ai_seats: settings.aiSeats,
-            },
-          }),
-        );
-      };
-
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data as string) as { type: string; data?: unknown };
-
-        if (msg.type === "GameCreated") {
-          const data = msg.data as { game_code: string; player_token: string };
-          setHostGameCode(data.game_code);
-          localStorage.setItem(
-            "phase-ws-session",
-            JSON.stringify({ gameCode: data.game_code, playerToken: data.player_token, serverUrl: serverAddress, timestamp: Date.now() }),
-          );
-          // AI games get GameStarted immediately — skip the waiting step
-          if (!settings.aiSeats.length) {
-            setStep("waiting");
-          }
-        } else if (msg.type === "GameStarted") {
-          ws.close();
-          hostWsRef.current = null;
-          const gameId = crypto.randomUUID();
-          saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
-          useGameStore.setState({ gameId });
-          navigate(`/game/${gameId}?mode=host`);
-        } else if (msg.type === "Error") {
-          const data = msg.data as { message: string };
-          console.error("Host error:", data.message);
-        }
-      };
-
-      ws.onerror = () => {
-        console.error("Failed to connect to server");
-      };
-    },
-    [activeDeckName, serverAddress, navigate, showToast],
-  );
-
-  const handleHostP2P = useCallback((settings: HostSettings) => {
-    if (!activeDeckName) {
-      setStep("deck-select");
-      return;
-    }
-    const gameId = crypto.randomUUID();
-    useGameStore.setState({ gameId });
-    navigate(`/game/${gameId}?mode=p2p-host&match=${settings.matchType.toLowerCase()}`);
-  }, [activeDeckName, navigate]);
-
-  const handleJoinWithPassword = useCallback(
-    (code: string, password?: string) => {
-      if (!activeDeckName) {
-        setStep("deck-select");
-        return;
-      }
-
-      const p2pCode = parseRoomCode(code);
-      if (p2pCode && code.trim().length === 5) {
-        const gameId = crypto.randomUUID();
-        useGameStore.setState({ gameId });
-        navigate(`/game/${gameId}?mode=p2p-join&code=${p2pCode}`);
-        return;
-      }
-
-      localStorage.removeItem("phase-ws-session");
-      const gameId = crypto.randomUUID();
-      saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
-      useGameStore.setState({ gameId });
-      const params = new URLSearchParams({ mode: "join", code });
-      if (password) {
-        params.set("password", password);
-      }
-      navigate(`/game/${gameId}?${params.toString()}`);
-    },
-    [activeDeckName, navigate],
-  );
-
-  const handleCancelHost = useCallback(() => {
-    if (hostWsRef.current) {
-      hostWsRef.current.close();
-      hostWsRef.current = null;
-    }
-    setHostGameCode(null);
-    localStorage.removeItem("phase-ws-session");
-    setStep("lobby");
-  }, []);
-
-  const handleBack = () => {
-    if (step === "waiting") {
-      handleCancelHost();
-      return;
-    }
-    const target = STEP_BACK[step];
-    if (target === "exit") {
-      navigate("/");
-    } else {
-      setStep(target);
-    }
-  };
-
+  const noDeckSelected = !activeDeckName;
   const needsServer = playerCount > 2;
-  const title = step === "format"
-    ? "Set up a match."
-    : step === "config"
-      ? "Adjust the rules."
-      : step === "deck-select"
-        ? "Choose a deck."
-        : step === "mode"
-          ? "Choose how to play."
-          : step === "lobby"
-            ? "Connect the table."
-            : step === "host-setup"
-              ? "Finalize hosted play."
-              : "Waiting for players.";
 
-  const description = step === "format"
-    ? "Pick a format or start from a saved preset."
-    : step === "config"
-      ? "Set life totals, player count, and match structure."
-      : step === "deck-select"
-        ? "Select the deck you want to bring into the match."
-        : step === "mode"
-          ? "Start locally or continue into multiplayer."
-          : step === "lobby"
-            ? "Join by code or host a new room."
-    : step === "host-setup"
-      ? "Adjust room settings before it opens."
-      : "Share the code and wait for the room to fill.";
+  // Sidebar deck preview
+  const selectedCompat = activeDeckName ? compatibilities[activeDeckName] : undefined;
+  const representativeCard = useMemo(
+    () => (activeDeckName ? getRepresentativeCard(activeDeckName) : null),
+    [activeDeckName],
+  );
+  const deckCardCount = useMemo(
+    () => (activeDeckName ? getDeckCardCount(activeDeckName) : 0),
+    [activeDeckName],
+  );
+  const { src: deckArtSrc } = useCardImage(representativeCard ?? "", { size: "art_crop" });
+  const colors = selectedCompat?.color_identity ?? [];
 
   return (
     <div className="menu-scene relative flex min-h-screen flex-col overflow-hidden">
       <MenuParticles />
-      <ScreenChrome onBack={handleBack} />
+      <ScreenChrome onBack={() => navigate("/")} />
       <div className="menu-scene__vignette" />
       <div className="menu-scene__sigil menu-scene__sigil--left" />
       <div className="menu-scene__sigil menu-scene__sigil--right" />
       <div className="menu-scene__haze" />
 
-      <MenuShell
-        eyebrow="Match Setup"
-        title={title}
-        description={description}
-        layout="stacked"
-      >
-        {step === "format" && (
-          <div className="flex flex-col items-center gap-8">
-            <FormatPicker onFormatSelect={handleFormatSelect} />
-            <div className="w-full max-w-2xl border-t border-white/10 pt-6">
-              <GamePresets onSelectPreset={handlePresetSelect} />
-            </div>
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col px-6 pt-20 pb-10 lg:px-10">
+        {/* Header + format pills */}
+        <div className="mb-8 flex flex-col items-center gap-4">
+          <div className="menu-kicker text-amber-100/58">Match Setup</div>
+          <h1 className="menu-display text-balance text-center text-[2.4rem] leading-[1.02] text-white sm:text-[3.1rem]">
+            Start a match.
+          </h1>
+          <div className="flex flex-wrap justify-center gap-2">
+            {FORMATS.map(({ format, label, group }) => (
+              <button
+                key={format}
+                onClick={() => applyFormat(format)}
+                className={`rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                  selectedFormat === format ? GROUP_PILL_ACTIVE[group] : PILL_INACTIVE
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-        )}
+        </div>
 
-        {step === "config" && selectedFormat && formatConfig && (
-          <MenuPanel className="mx-auto flex w-full max-w-md flex-col gap-6 px-4 py-5">
-            <SetupSummaryButton
-              label="Format"
-              value={formatLabel(selectedFormat)}
-              helper="Change"
-              onClick={() => setStep("format")}
-            />
+        {/* Main: deck grid (left) + sidebar (right) */}
+        <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[1fr_280px]">
+          {/* Deck grid */}
+          <MyDecks
+            mode="select"
+            selectedFormat={selectedFormat ?? undefined}
+            selectedMatchType={matchType}
+            onSelectDeck={handleSelectDeck}
+            activeDeckName={activeDeckName}
+            bare
+            onCompatibilityUpdate={setCompatibilities}
+          />
 
-            <h2 className="menu-display text-[1.9rem] leading-tight text-white">
-              {formatLabel(selectedFormat)} Settings
-            </h2>
-
-            <label className="flex w-full flex-col gap-1">
-              <span className="text-sm text-gray-400">Starting Life</span>
-              <input
-                type="number"
-                value={formatConfig.starting_life}
-                onChange={(e) =>
-                  setFormatConfig({ ...formatConfig, starting_life: Number(e.target.value) })
-                }
-                className="rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-white"
-              />
-            </label>
-
-            {!formatConfig.team_based && formatConfig.max_players > 2 && (
-              <label className="flex w-full flex-col gap-1">
-                <span className="text-sm text-gray-400">
-                  Players ({formatConfig.min_players}-{formatConfig.max_players})
-                </span>
-                <input
-                  type="range"
-                  min={formatConfig.min_players}
-                  max={formatConfig.max_players}
-                  value={playerCount}
-                  onChange={(e) => {
-                    const nextCount = Number(e.target.value);
-                    setPlayerCount(nextCount);
-                    setLastPlayerCount(nextCount);
-                    if (nextCount !== 2) {
-                      setMatchType("Bo1");
-                      setLastMatchType("Bo1");
-                    }
-                  }}
-                  className="w-full"
-                />
-                <span className="text-center text-lg font-semibold">{playerCount}</span>
-              </label>
-            )}
-
-            <label className="flex w-full flex-col gap-2">
-              <span className="text-sm text-gray-400">Match Type</span>
-              <div className="flex overflow-hidden rounded-lg border border-gray-700">
-                <button
-                  type="button"
-                  onClick={() => { setMatchType("Bo1"); setLastMatchType("Bo1"); }}
-                  className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                    matchType === "Bo1"
-                      ? "bg-indigo-600 text-white"
-                      : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-                  }`}
-                >
-                  BO1
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setMatchType("Bo3"); setLastMatchType("Bo3"); }}
-                  disabled={playerCount !== 2}
-                  className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                    matchType === "Bo3"
-                      ? "bg-indigo-600 text-white"
-                      : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-                  } ${playerCount !== 2 ? "cursor-not-allowed opacity-40" : ""}`}
-                >
-                  BO3
-                </button>
-              </div>
-              {playerCount !== 2 && (
-                <span className="text-xs text-gray-500">BO3 is available only for 2-player matches.</span>
-              )}
-            </label>
-
-            {formatConfig.command_zone && (
-              <div className="w-full rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-                Commander rules: 100-card singleton, commander damage at {formatConfig.commander_damage_threshold}
-              </div>
-            )}
-
-            <button
-              onClick={handleConfigConfirm}
-              className={menuButtonClass({ tone: "indigo", size: "md" })}
-            >
-              Choose Deck
-            </button>
-          </MenuPanel>
-        )}
-
-        {step === "deck-select" && (
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-            {selectedFormat && (
-              <div className="mx-auto flex w-full max-w-5xl flex-wrap gap-3">
-                <SetupSummaryButton
-                  label="Format"
-                  value={formatLabel(selectedFormat)}
-                  helper="Change"
-                  onClick={() => setStep("format")}
-                />
-              </div>
-            )}
-
-            <MyDecks
-              mode="select"
-              onSelectDeck={handleSelectDeck}
-              activeDeckName={activeDeckName}
-              onConfirmSelection={handleDeckConfirm}
-              confirmLabel="Continue"
-              selectedFormat={selectedFormat ?? undefined}
-              selectedMatchType={matchType}
-            />
-          </div>
-        )}
-
-        {step === "mode" && (
-          <MenuPanel className="mx-auto flex w-full max-w-md flex-col gap-6 px-4 py-5">
-            <div className="flex flex-col gap-3 sm:flex-row">
-              {selectedFormat && (
-                <SetupSummaryButton
-                  label="Format"
-                  value={formatLabel(selectedFormat)}
-                  helper="Change"
-                  onClick={() => setStep("format")}
-                />
-              )}
-              {activeDeckName && (
-                <SetupSummaryButton
-                  label="Deck"
-                  value={activeDeckName}
-                  helper="Change"
-                  onClick={() => setStep("deck-select")}
-                />
-              )}
-            </div>
-
-            <h2 className="menu-display text-[1.9rem] leading-tight text-white">Game Mode</h2>
-
-            <div className="flex w-full flex-col gap-3">
-              <div className="flex overflow-hidden rounded-[18px] border border-indigo-300/18 shadow-[0_10px_28px_rgba(49,46,129,0.24)]">
-                <button
-                  onClick={handleStartAI}
-                  className="min-h-11 flex-1 bg-indigo-400/10 px-6 py-3 text-base font-medium text-indigo-100 transition-colors hover:bg-indigo-400/14"
-                >
-                  Play vs AI ({playerCount > 2 ? `${playerCount - 1} opponents` : "1 opponent"})
-                </button>
-                <div className="border-l border-indigo-300/18">
-                  <AiDifficultyDropdown
-                    difficulty={difficulty}
-                    onChange={setDifficulty}
-                    compact
-                    className="h-full"
-                  />
+          {/* Sidebar */}
+          <div className="order-first lg:sticky lg:top-8 lg:order-last lg:self-start">
+            <MenuPanel className="flex flex-col gap-4 px-4 py-4">
+              {/* Deck preview */}
+              {activeDeckName ? (
+                <div>
+                  <div className="aspect-[5/3] overflow-hidden rounded-xl bg-gray-800">
+                    {deckArtSrc ? (
+                      <img src={deckArtSrc} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="h-full w-full animate-pulse bg-gray-800" />
+                    )}
+                  </div>
+                  <h3 className="mt-3 truncate text-base font-semibold text-white">
+                    {activeDeckName}
+                  </h3>
+                  <div className="mt-1 flex items-center gap-2">
+                    <div className="flex gap-1">
+                      {colors.map((c) => (
+                        <span
+                          key={c}
+                          className={`inline-block h-2.5 w-2.5 rounded-full ${COLOR_DOT_CLASS[c] ?? "bg-gray-400"}`}
+                        />
+                      ))}
+                      {colors.length === 0 && (
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-gray-500" />
+                      )}
+                    </div>
+                    <span className="text-xs text-gray-300">{deckCardCount} cards</span>
+                  </div>
+                  {selectedCompat && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {selectedCompat.standard.compatible && <StatusBadge label="STD" active />}
+                      {selectedCompat.commander.compatible && <StatusBadge label="CMD" active />}
+                      {selectedCompat.bo3_ready && <StatusBadge label="BO3" active />}
+                      {selectedCompat.unknown_cards.length > 0 && (
+                        <span
+                          className="rounded bg-amber-500/80 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-black"
+                          title={`Unknown cards:\n${selectedCompat.unknown_cards.join("\n")}`}
+                        >
+                          Unknown {selectedCompat.unknown_cards.length}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-              <p className="text-center text-xs text-slate-500">
-                Default AI difficulty: {getAiDifficultyLabel(difficulty)}
-              </p>
+              ) : (
+                <div className="flex aspect-[5/3] flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-black/12 text-center">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" className="h-10 w-10 fill-current text-slate-600">
+                    <path d="M7 3h9a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm1 3v9h7V6H8Zm-2 15h11v-2H6v2Z" />
+                  </svg>
+                  <p className="mt-2 text-sm text-slate-500">Select a deck</p>
+                </div>
+              )}
 
-              <button
-                onClick={() => {
-                  if (formatConfig) setFormatConfigStore(formatConfig);
-                  setConnectionMode("server");
-                  setStep("lobby");
-                }}
-                className={menuButtonClass({ tone: "emerald", size: "md" })}
-              >
-                Play Online
-              </button>
+              {/* Separator */}
+              <div className="border-t border-white/8" />
 
-              {!needsServer && (
+              {/* Config */}
+              {formatConfig && (
+                <div className="flex flex-col gap-3">
+                  <label className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">Starting Life</span>
+                    <input
+                      type="number"
+                      value={formatConfig.starting_life}
+                      onChange={(e) =>
+                        setFormatConfig({ ...formatConfig, starting_life: Number(e.target.value) })
+                      }
+                      className="w-16 rounded-lg border border-gray-700 bg-gray-800/60 px-2 py-1 text-right text-sm text-white"
+                    />
+                  </label>
+
+                  {!formatConfig.team_based && formatConfig.max_players > 2 && (
+                    <label className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-400">Players</span>
+                        <span className="text-sm font-medium text-white">{playerCount}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={formatConfig.min_players}
+                        max={formatConfig.max_players}
+                        value={playerCount}
+                        onChange={(e) => {
+                          const next = Number(e.target.value);
+                          setPlayerCount(next);
+                          setLastPlayerCount(next);
+                          if (next !== 2) {
+                            setMatchType("Bo1");
+                            setLastMatchType("Bo1");
+                          }
+                        }}
+                        className="w-full"
+                      />
+                    </label>
+                  )}
+
+                  <div className="flex overflow-hidden rounded-lg border border-gray-700">
+                    <button
+                      type="button"
+                      onClick={() => { setMatchType("Bo1"); setLastMatchType("Bo1"); }}
+                      className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                        matchType === "Bo1"
+                          ? "bg-indigo-600 text-white"
+                          : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                      }`}
+                    >
+                      BO1
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setMatchType("Bo3"); setLastMatchType("Bo3"); }}
+                      disabled={playerCount !== 2}
+                      className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                        matchType === "Bo3"
+                          ? "bg-indigo-600 text-white"
+                          : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                      } ${playerCount !== 2 ? "cursor-not-allowed opacity-40" : ""}`}
+                    >
+                      BO3
+                    </button>
+                  </div>
+
+                  {formatConfig.command_zone && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                      Commander: 100-card singleton, commander damage at{" "}
+                      {formatConfig.commander_damage_threshold}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Separator */}
+              <div className="border-t border-white/8" />
+
+              {/* Play actions */}
+              <div className="flex flex-col gap-2">
+                <div className="flex overflow-hidden rounded-[14px] border border-indigo-300/18 shadow-[0_10px_28px_rgba(49,46,129,0.24)]">
+                  <button
+                    onClick={handleStartAI}
+                    disabled={noDeckSelected}
+                    className={`min-h-10 flex-1 px-4 text-sm font-medium transition-colors ${
+                      noDeckSelected
+                        ? "cursor-not-allowed bg-white/5 text-white/30"
+                        : "bg-indigo-400/10 text-indigo-100 hover:bg-indigo-400/14"
+                    }`}
+                  >
+                    Play vs AI{playerCount > 2 ? ` (${playerCount - 1} opp.)` : ""}
+                  </button>
+                  <div className="border-l border-indigo-300/18">
+                    <AiDifficultyDropdown
+                      difficulty={difficulty}
+                      onChange={setDifficulty}
+                      compact
+                      className="h-full"
+                    />
+                  </div>
+                </div>
+
                 <button
-                  onClick={() => {
-                    setConnectionMode("p2p");
-                    setStep("lobby");
-                  }}
-                  className={menuButtonClass({ tone: "cyan", size: "md" })}
+                  onClick={handlePlayOnline}
+                  className={menuButtonClass({ tone: "emerald", size: "sm" })}
                 >
-                  Play P2P
+                  Play Online
                 </button>
-              )}
 
-              {needsServer && (
-                <p className="text-center text-xs text-gray-500">
-                  P2P not available for 3+ player games
-                </p>
-              )}
+                {!needsServer && (
+                  <button
+                    onClick={handlePlayP2P}
+                    className={menuButtonClass({ tone: "cyan", size: "sm" })}
+                  >
+                    Play P2P
+                  </button>
+                )}
 
-              <button
-                onClick={handleSavePreset}
-                className="mt-2 text-xs text-gray-500 transition-colors hover:text-gray-300"
-              >
-                Save as Preset
-              </button>
-            </div>
-          </MenuPanel>
-        )}
-
-        {step === "lobby" && (
-          <LobbyView
-            onHostGame={() => { setStep("host-setup"); }}
-            onHostP2P={() => { setStep("host-setup"); }}
-            onJoinGame={handleJoinWithPassword}
-            connectionMode={connectionMode}
-          />
-        )}
-
-        {step === "host-setup" && (
-          <HostSetup
-            onHost={connectionMode === "p2p" ? handleHostP2P : handleHostWithSettings}
-            onBack={() => setStep("lobby")}
-            connectionMode={connectionMode}
-          />
-        )}
-
-        {step === "waiting" && hostGameCode && (
-          <WaitingScreen
-            gameCode={hostGameCode}
-            isPublic={hostIsPublic}
-            onCancel={handleCancelHost}
-          />
-        )}
-      </MenuShell>
+                {needsServer && (
+                  <p className="text-center text-[10px] text-gray-500">
+                    P2P not available for 3+ players
+                  </p>
+                )}
+              </div>
+            </MenuPanel>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

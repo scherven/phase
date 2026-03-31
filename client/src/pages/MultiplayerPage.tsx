@@ -11,7 +11,7 @@ import { ConnectionToast } from "../components/multiplayer/ConnectionToast";
 import { MenuParticles } from "../components/menu/MenuParticles";
 import { MenuShell } from "../components/menu/MenuShell";
 import { MyDecks } from "../components/menu/MyDecks";
-import { ACTIVE_DECK_KEY, loadActiveDeck } from "../constants/storage";
+import { ACTIVE_DECK_KEY, loadActiveDeck, touchDeckPlayed } from "../constants/storage";
 import { parseRoomCode } from "../network/connection";
 import { useMultiplayerStore } from "../stores/multiplayerStore";
 import { useGameStore, saveActiveGame } from "../stores/gameStore";
@@ -81,75 +81,98 @@ export function MultiplayerPage() {
     return { main_deck: mainDeck, sideboard };
   }, []);
 
-  // Execute pending action after deck is selected
-  const handleDeckConfirm = useCallback(() => {
-    if (!pendingAction || !activeDeckName) {
-      showToast("Select a deck before continuing.");
-      return;
-    }
-
-    if (pendingAction.type === "host") {
-      const deck = expandDeck();
-      if (!deck) {
-        showToast("Could not load deck. Try re-importing it.");
-        return;
+  // Execute a pending action (host or join) with the currently active deck
+  const executeAction = useCallback(
+    (action: PendingAction) => {
+      const deckName = localStorage.getItem(ACTIVE_DECK_KEY);
+      if (!deckName) {
+        showToast("Select a deck before continuing.");
+        return false;
       }
 
-      if (pendingAction.connectionMode === "p2p") {
-        const gameId = crypto.randomUUID();
-        useGameStore.setState({ gameId });
-        navigate(
-          `/game/${gameId}?mode=p2p-host&match=${pendingAction.settings.matchType.toLowerCase()}`,
-        );
+      touchDeckPlayed(deckName);
+
+      if (action.type === "host") {
+        const deck = expandDeck();
+        if (!deck) {
+          showToast("Could not load deck. Try re-importing it.");
+          return false;
+        }
+
+        if (action.connectionMode === "p2p") {
+          const gameId = crypto.randomUUID();
+          useGameStore.setState({ gameId });
+          navigate(
+            `/game/${gameId}?mode=p2p-host&match=${action.settings.matchType.toLowerCase()}`,
+          );
+        } else {
+          startHosting(action.settings, deck);
+          // Navigate to main menu — the HostingBanner takes over as the
+          // hosting indicator. User can browse freely while waiting.
+          navigate("/");
+        }
       } else {
-        startHosting(pendingAction.settings, deck);
-        // Navigate to main menu — the HostingBanner takes over as the
-        // hosting indicator. User can browse freely while waiting.
-        // Clicking the banner returns them to /multiplayer → WaitingScreen.
-        navigate("/");
-      }
-    } else {
-      // Join flow
-      const { code, password } = pendingAction;
+        // Join flow
+        const { code, password } = action;
 
-      const p2pCode = parseRoomCode(code);
-      if (p2pCode && code.trim().length === 5) {
+        const p2pCode = parseRoomCode(code);
+        if (p2pCode && code.trim().length === 5) {
+          const gameId = crypto.randomUUID();
+          useGameStore.setState({ gameId });
+          navigate(`/game/${gameId}?mode=p2p-join&code=${p2pCode}`);
+          return true;
+        }
+
+        localStorage.removeItem("phase-ws-session");
         const gameId = crypto.randomUUID();
+        saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
         useGameStore.setState({ gameId });
-        navigate(`/game/${gameId}?mode=p2p-join&code=${p2pCode}`);
-        return;
+        const params = new URLSearchParams({ mode: "join", code });
+        if (password) {
+          params.set("password", password);
+        }
+        navigate(`/game/${gameId}?${params.toString()}`);
       }
 
-      localStorage.removeItem("phase-ws-session");
-      const gameId = crypto.randomUUID();
-      saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
-      useGameStore.setState({ gameId });
-      const params = new URLSearchParams({ mode: "join", code });
-      if (password) {
-        params.set("password", password);
-      }
-      navigate(`/game/${gameId}?${params.toString()}`);
-    }
-
-    setPendingAction(null);
-  }, [pendingAction, activeDeckName, expandDeck, startHosting, navigate, showToast]);
-
-  // Host setup complete → save settings, go to deck-select
-  const handleHostSetupComplete = useCallback(
-    (settings: HostSettings) => {
-      setPendingAction({ type: "host", settings, connectionMode });
-      setView("deck-select");
+      return true;
     },
-    [connectionMode],
+    [expandDeck, startHosting, navigate, showToast],
   );
 
-  // Join from lobby (list or code) → save join info, go to deck-select
+  // Execute pending action after deck is selected (fallback path)
+  const handleDeckConfirm = useCallback(() => {
+    if (!pendingAction) return;
+    if (executeAction(pendingAction)) {
+      setPendingAction(null);
+    }
+  }, [pendingAction, executeAction]);
+
+  // Host setup complete → execute immediately if deck exists, otherwise prompt
+  const handleHostSetupComplete = useCallback(
+    (settings: HostSettings) => {
+      const action: PendingAction = { type: "host", settings, connectionMode };
+      if (activeDeckName) {
+        executeAction(action);
+      } else {
+        setPendingAction(action);
+        setView("deck-select");
+      }
+    },
+    [connectionMode, activeDeckName, executeAction],
+  );
+
+  // Join from lobby → execute immediately if deck exists, otherwise prompt
   const handleJoinGame = useCallback(
     (code: string, password?: string, format?: GameFormat) => {
-      setPendingAction({ type: "join", code, password, format });
-      setView("deck-select");
+      const action: PendingAction = { type: "join", code, password, format };
+      if (activeDeckName) {
+        executeAction(action);
+      } else {
+        setPendingAction(action);
+        setView("deck-select");
+      }
     },
-    [],
+    [activeDeckName, executeAction],
   );
 
   const handleBack = () => {
@@ -211,6 +234,42 @@ export function MultiplayerPage() {
       <div className="menu-scene__haze" />
 
       <MenuShell eyebrow="Multiplayer" title={title} description={description} layout="stacked">
+        {/* Active deck indicator — shown on lobby/host-setup when a deck is selected */}
+        {(view === "lobby" || view === "host-setup") && activeDeckName && (
+          <div className="mx-auto mb-4 flex w-full max-w-xl items-center justify-between gap-3 rounded-[16px] border border-white/8 bg-black/16 px-4 py-2.5">
+            <div className="min-w-0">
+              <div className="text-[0.6rem] uppercase tracking-[0.22em] text-slate-500">
+                Active Deck
+              </div>
+              <div className="truncate text-sm font-medium text-white">{activeDeckName}</div>
+            </div>
+            <button
+              onClick={() => {
+                setPendingAction(null);
+                setView("deck-select");
+              }}
+              className="shrink-0 text-xs text-slate-400 transition-colors hover:text-white"
+            >
+              Change
+            </button>
+          </div>
+        )}
+
+        {/* No deck warning — shown on lobby/host-setup when no deck is selected */}
+        {(view === "lobby" || view === "host-setup") && !activeDeckName && (
+          <div className="mx-auto mb-4 flex w-full max-w-xl items-center justify-between gap-3 rounded-[16px] border border-amber-500/20 bg-amber-500/8 px-4 py-2.5">
+            <span className="text-xs text-amber-200">
+              No deck selected — you'll need to pick one before hosting or joining.
+            </span>
+            <button
+              onClick={() => setView("deck-select")}
+              className="shrink-0 rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 transition-colors hover:bg-amber-400/18"
+            >
+              Pick Deck
+            </button>
+          </div>
+        )}
+
         {view === "lobby" && (
           <LobbyView
             onHostGame={() => { setConnectionMode("server"); setView("host-setup"); }}

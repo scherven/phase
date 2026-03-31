@@ -33,6 +33,7 @@ export const FEEDS_INITIALIZED_KEY = "phase-feeds-initialized";
 
 export interface DeckMeta {
   addedAt: number;
+  lastPlayedAt?: number;
 }
 
 function loadMetadataStore(): Record<string, DeckMeta> {
@@ -55,6 +56,14 @@ export function stampDeckMeta(deckName: string, addedAt?: number): void {
     store[deckName] = { addedAt: addedAt ?? Date.now() };
     saveMetadataStore(store);
   }
+}
+
+/** Update the lastPlayedAt timestamp for a deck. Call when starting a game. */
+export function touchDeckPlayed(deckName: string): void {
+  const store = loadMetadataStore();
+  const existing = store[deckName];
+  store[deckName] = { addedAt: existing?.addedAt ?? Date.now(), lastPlayedAt: Date.now() };
+  saveMetadataStore(store);
 }
 
 /** Get metadata for a single deck, or null if not tracked. */
