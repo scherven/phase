@@ -3579,16 +3579,14 @@ fn is_counter_reference(lower: &str) -> bool {
         if let Some(idx) = lower.find('+').or_else(|| lower.find('-')) {
             let rest = &lower[idx..];
             // Match +N/+M pattern then check what follows
-            let after_pattern = rest
-                .find('/')
-                .map(|slash| {
-                    // Skip past the /+N or /-N part
-                    let after_slash = &rest[slash + 1..];
-                    let digits_end = after_slash
-                        .find(|c: char| !c.is_ascii_digit() && c != '+' && c != '-')
-                        .unwrap_or(after_slash.len());
-                    &after_slash[digits_end..]
-                });
+            let after_pattern = rest.find('/').map(|slash| {
+                // Skip past the /+N or /-N part
+                let after_slash = &rest[slash + 1..];
+                let digits_end = after_slash
+                    .find(|c: char| !c.is_ascii_digit() && c != '+' && c != '-')
+                    .unwrap_or(after_slash.len());
+                &after_slash[digits_end..]
+            });
             if let Some(after) = after_pattern {
                 let trimmed = after.trim_start();
                 if trimmed.starts_with("counter") {

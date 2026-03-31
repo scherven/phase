@@ -24,26 +24,22 @@ pub(super) fn try_parse_put_counter<'a>(
 
     // Skip "counter" or "counters" keyword, then parse target after "on"
     let after_type = rest[type_end..].trim_start();
-    let counter_word_len = if after_type.starts_with("counters") {
-        "counters".len()
-    } else if after_type.starts_with("counter") {
-        "counter".len()
-    } else {
-        0
-    };
-    let after_counter_word = if counter_word_len > 0 {
-        after_type[counter_word_len..].trim_start()
-    } else {
-        after_type
-    };
+    let after_counter_word = after_type
+        .strip_prefix("counters")
+        .or_else(|| after_type.strip_prefix("counter"))
+        .map(|s| s.trim_start())
+        .unwrap_or(after_type);
 
     let (target, remainder, multi_target) = if let Some(on_rest) =
         after_counter_word.strip_prefix("on ")
     {
-        if on_rest.starts_with("this ") || on_rest.starts_with("~") {
+        if on_rest.strip_prefix("this ").is_some() || on_rest.strip_prefix("~").is_some() {
             // Explicit self-reference — always SelfRef
             (TargetFilter::SelfRef, "", None)
-        } else if on_rest == "it" || on_rest.starts_with("it ") || on_rest.starts_with("itself") {
+        } else if on_rest == "it"
+            || on_rest.strip_prefix("it ").is_some()
+            || on_rest.strip_prefix("itself").is_some()
+        {
             // CR 608.2k: Bare pronoun — context-dependent
             (resolve_it_pronoun(ctx), "", None)
         } else {
@@ -116,20 +112,21 @@ pub(super) fn try_parse_remove_counter(lower: &str, ctx: &ParseContext) -> Optio
         .map(|s| s.trim_start())?;
 
     let target_text = after_counter_word.strip_prefix("from ")?.trim();
-    let target = if target_text.starts_with("this ") || target_text.starts_with("~") {
-        TargetFilter::SelfRef
-    } else if target_text == "it"
-        || target_text.starts_with("it ")
-        || target_text.starts_with("itself")
-    {
-        // CR 608.2k: Bare pronoun — context-dependent
-        resolve_it_pronoun(ctx)
-    } else {
-        let (t, _rem) = parse_target(target_text);
-        #[cfg(debug_assertions)]
-        super::types::assert_no_compound_remainder(_rem, target_text);
-        t
-    };
+    let target =
+        if target_text.strip_prefix("this ").is_some() || target_text.strip_prefix("~").is_some() {
+            TargetFilter::SelfRef
+        } else if target_text == "it"
+            || target_text.strip_prefix("it ").is_some()
+            || target_text.strip_prefix("itself").is_some()
+        {
+            // CR 608.2k: Bare pronoun — context-dependent
+            resolve_it_pronoun(ctx)
+        } else {
+            let (t, _rem) = parse_target(target_text);
+            #[cfg(debug_assertions)]
+            super::types::assert_no_compound_remainder(_rem, target_text);
+            t
+        };
 
     Some(Effect::RemoveCounter {
         counter_type,
@@ -191,20 +188,21 @@ pub(super) fn try_parse_multiply_counter(lower: &str, ctx: &ParseContext) -> Opt
         .map(|s| s.trim_start())?;
     let target_text = after_counter_word.strip_prefix("on ")?;
 
-    let target = if target_text.starts_with("this ") || target_text.starts_with("~") {
-        TargetFilter::SelfRef
-    } else if target_text == "it"
-        || target_text.starts_with("it ")
-        || target_text.starts_with("itself")
-    {
-        // CR 608.2k: Bare pronoun — context-dependent
-        resolve_it_pronoun(ctx)
-    } else {
-        let (t, _rem) = parse_target(target_text);
-        #[cfg(debug_assertions)]
-        super::types::assert_no_compound_remainder(_rem, target_text);
-        t
-    };
+    let target =
+        if target_text.strip_prefix("this ").is_some() || target_text.strip_prefix("~").is_some() {
+            TargetFilter::SelfRef
+        } else if target_text == "it"
+            || target_text.strip_prefix("it ").is_some()
+            || target_text.strip_prefix("itself").is_some()
+        {
+            // CR 608.2k: Bare pronoun — context-dependent
+            resolve_it_pronoun(ctx)
+        } else {
+            let (t, _rem) = parse_target(target_text);
+            #[cfg(debug_assertions)]
+            super::types::assert_no_compound_remainder(_rem, target_text);
+            t
+        };
 
     Some(Effect::MultiplyCounter {
         counter_type,
@@ -218,14 +216,14 @@ pub(super) fn try_parse_multiply_counter(lower: &str, ctx: &ParseContext) -> Opt
 pub(super) fn try_parse_double_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
     // CR 701.10e: "double the number of each kind of counter on ..." → all counter types
     if let Some(rest) = lower.strip_prefix("double the number of each kind of counter on ") {
-        let target = if rest.starts_with("target ") {
+        let target = if rest.strip_prefix("target ").is_some() {
             let (t, _rem) = parse_target(rest);
             #[cfg(debug_assertions)]
             super::types::assert_no_compound_remainder(_rem, rest);
             t
-        } else if rest.starts_with("~") || rest.starts_with("this ") {
+        } else if rest.strip_prefix("~").is_some() || rest.strip_prefix("this ").is_some() {
             TargetFilter::SelfRef
-        } else if rest.starts_with("it") {
+        } else if rest.strip_prefix("it").is_some() {
             // CR 608.2k: Bare pronoun — context-dependent
             resolve_it_pronoun(ctx)
         } else {
@@ -241,19 +239,19 @@ pub(super) fn try_parse_double_effect(lower: &str, ctx: &ParseContext) -> Option
     }
 
     // Counter doubling: "double the number of ..."
-    if lower.starts_with("double the number of ") {
+    if lower.strip_prefix("double the number of ").is_some() {
         return try_parse_multiply_counter(lower, ctx);
     }
 
     // CR 701.10d: "double your life total" / "double target player's life total"
     if let Some(rest) = lower.strip_prefix("double ") {
-        if rest == "your life total" || rest.starts_with("your life total") {
+        if rest.strip_prefix("your life total").is_some() {
             return Some(Effect::Double {
                 target_kind: DoubleTarget::LifeTotal,
                 target: TargetFilter::Controller,
             });
         }
-        if rest.starts_with("target ") && rest.contains("life total") {
+        if rest.strip_prefix("target ").is_some() && rest.contains("life total") {
             let (target, _) = parse_target(rest);
             return Some(Effect::Double {
                 target_kind: DoubleTarget::LifeTotal,
@@ -275,11 +273,11 @@ pub(super) fn try_parse_double_effect(lower: &str, ctx: &ParseContext) -> Option
 
     // CR 608.2k: "double its power [and toughness]" — possessive "its" is context-dependent
     if let Some(rest) = lower.strip_prefix("double its ") {
-        let mode = if rest.starts_with("power and toughness") {
+        let mode = if rest.strip_prefix("power and toughness").is_some() {
             DoublePTMode::PowerAndToughness
-        } else if rest.starts_with("power") {
+        } else if rest.strip_prefix("power").is_some() {
             DoublePTMode::Power
-        } else if rest.starts_with("toughness") {
+        } else if rest.strip_prefix("toughness").is_some() {
             DoublePTMode::Toughness
         } else {
             return None;
@@ -304,7 +302,7 @@ pub(super) fn try_parse_double_effect(lower: &str, ctx: &ParseContext) -> Option
     };
 
     // "target creature you control" → targeted DoublePT
-    if after_mode.starts_with("target ") {
+    if after_mode.strip_prefix("target ").is_some() {
         let (target, _) = parse_target(after_mode);
         return Some(Effect::DoublePT { mode, target });
     }

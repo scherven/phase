@@ -19,16 +19,15 @@ pub(super) fn try_parse_token(_lower: &str, text: &str) -> Option<Effect> {
     if lower.contains("token that's a copy of") || lower.contains("token thats a copy of") {
         let tp = TextPair::new(&text, &lower);
         let after_copy_tp = tp.strip_after("copy of ").unwrap_or(tp);
-        let after_copy = after_copy_tp.original;
         // Handle "another target ..." — strip "another" prefix and add FilterProp::Another
-        let (mut target, _) = if after_copy_tp.starts_with("another ") {
-            let rest = &after_copy["another ".len()..];
-            parse_target(rest)
+        let has_another = after_copy_tp.lower.strip_prefix("another ").is_some();
+        let target_text = if has_another {
+            after_copy_tp.strip_prefix("another ").unwrap().original
         } else {
-            parse_target(after_copy)
+            after_copy_tp.original
         };
-        // If "another" was present, add the Another property to the filter.
-        if after_copy_tp.starts_with("another ") {
+        let (mut target, _) = parse_target(target_text);
+        if has_another {
             if let TargetFilter::Typed(ref mut typed) = target {
                 if !typed.properties.contains(&FilterProp::Another) {
                     typed.properties.push(FilterProp::Another);

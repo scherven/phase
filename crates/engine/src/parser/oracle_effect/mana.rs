@@ -9,11 +9,10 @@ use super::super::oracle_util::{parse_mana_production, parse_number, TextPair};
 pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
     let trimmed = text.trim();
     let lower = trimmed.to_lowercase();
-    if !lower.starts_with("add ") {
-        return None;
-    }
-
-    let clause = trimmed[4..].trim();
+    let clause = match lower.strip_prefix("add ") {
+        Some(_) => trimmed[4..].trim(),
+        None => return None,
+    };
     let clause_lower = clause.to_lowercase();
     let clause_tp = TextPair::new(clause, &clause_lower);
     let (without_where_x, where_x_expression) = super::strip_trailing_where_x(clause_tp);
@@ -40,8 +39,8 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
         let rest = rest.trim().trim_end_matches(['.', '"']).trim();
         let rest_lower = rest.to_lowercase();
 
-        if rest_lower.starts_with("mana of any one color")
-            || rest_lower.starts_with("mana of any color")
+        if rest_lower.strip_prefix("mana of any one color").is_some()
+            || rest_lower.strip_prefix("mana of any color").is_some()
         {
             return Some(Effect::Mana {
                 produced: ManaProduction::AnyOneColor {
@@ -53,7 +52,10 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             });
         }
 
-        if rest_lower.starts_with("mana in any combination of colors") {
+        if rest_lower
+            .strip_prefix("mana in any combination of colors")
+            .is_some()
+        {
             return Some(Effect::Mana {
                 produced: ManaProduction::AnyCombination {
                     count,
@@ -64,8 +66,10 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             });
         }
 
-        if rest_lower.starts_with("mana of the chosen color")
-            || rest_lower.starts_with("mana of that color")
+        if rest_lower
+            .strip_prefix("mana of the chosen color")
+            .is_some()
+            || rest_lower.strip_prefix("mana of that color").is_some()
         {
             return Some(Effect::Mana {
                 produced: ManaProduction::ChosenColor { count },
@@ -92,9 +96,9 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             }
         }
 
-        const ANY_COMBINATION_PREFIX: &str = "mana in any combination of ";
-        if rest_lower.starts_with(ANY_COMBINATION_PREFIX) {
-            let color_set_text = rest[ANY_COMBINATION_PREFIX.len()..].trim();
+        if let Some(after_combo) = rest_lower.strip_prefix("mana in any combination of ") {
+            let offset = rest.len() - after_combo.len();
+            let color_set_text = rest[offset..].trim();
             if let Some(color_options) = parse_mana_color_set(color_set_text) {
                 return Some(Effect::Mana {
                     produced: ManaProduction::AnyCombination {
@@ -156,12 +160,7 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
 pub(super) fn try_parse_activate_only_condition(text: &str) -> Option<Effect> {
     let trimmed = text.trim().trim_end_matches('.');
     let lower = trimmed.to_ascii_lowercase();
-    let prefix = "activate only if you control ";
-    if !lower.starts_with(prefix) {
-        return None;
-    }
-
-    let raw = &lower[prefix.len()..];
+    let raw = lower.strip_prefix("activate only if you control ")?;
     let mut subtypes = Vec::new();
     for part in raw.split(" or ") {
         let token = part
@@ -446,12 +445,12 @@ pub(crate) fn parse_mana_spend_restriction(lower: &str) -> Option<ManaSpendRestr
     let base = base.trim_end_matches(['.', '"']);
 
     // "spend this mana only to activate abilities" — activation-only
-    if base.starts_with("to activate abilities") {
+    if base.strip_prefix("to activate abilities").is_some() {
         return Some(ManaSpendRestriction::ActivateOnly);
     }
 
     // "spend this mana only on costs that include {x}" — X-cost restriction
-    if base.starts_with("on costs that include") {
+    if base.strip_prefix("on costs that include").is_some() {
         return Some(ManaSpendRestriction::XCostOnly);
     }
 
