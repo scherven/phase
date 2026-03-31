@@ -8,7 +8,11 @@
 
 use std::str::FromStr;
 
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use super::oracle_nom::quantity as nom_quantity;
 use crate::parser::oracle_effect::counter::normalize_counter_type;
@@ -43,53 +47,42 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
         .strip_suffix(" counters on ~")
         .or_else(|| trimmed.strip_suffix(" counters on it"))
     {
-        let raw_type = rest.strip_prefix("the number of ").unwrap_or(rest).trim();
+        let raw_type = tag::<_, _, VerboseError<&str>>("the number of ")
+            .parse(rest)
+            .map_or(rest, |(r, _)| r)
+            .trim();
         let counter_type = normalize_counter_type(raw_type);
         if !counter_type.is_empty() {
             return Some(QuantityRef::CountersOnSelf { counter_type });
         }
     }
 
-    // "the greatest power among {type phrase}" → Aggregate { Max, Power, filter }
-    if let Some(rest) = trimmed.strip_prefix("the greatest power among ") {
+    // Aggregate patterns: "the greatest X among" / "the total power of"
+    if let Ok((rest, (func, prop))) = alt((
+        value(
+            (AggregateFunction::Max, ObjectProperty::Power),
+            tag::<_, _, VerboseError<&str>>("the greatest power among "),
+        ),
+        value(
+            (AggregateFunction::Max, ObjectProperty::Toughness),
+            tag("the greatest toughness among "),
+        ),
+        value(
+            (AggregateFunction::Max, ObjectProperty::ManaValue),
+            tag("the greatest mana value among "),
+        ),
+        value(
+            (AggregateFunction::Sum, ObjectProperty::Power),
+            tag("the total power of "),
+        ),
+    ))
+    .parse(trimmed)
+    {
         let (filter, _) = parse_type_phrase(rest);
         if !matches!(filter, TargetFilter::Any) {
             return Some(QuantityRef::Aggregate {
-                function: AggregateFunction::Max,
-                property: ObjectProperty::Power,
-                filter,
-            });
-        }
-    }
-    // "the greatest toughness among {type phrase}"
-    if let Some(rest) = trimmed.strip_prefix("the greatest toughness among ") {
-        let (filter, _) = parse_type_phrase(rest);
-        if !matches!(filter, TargetFilter::Any) {
-            return Some(QuantityRef::Aggregate {
-                function: AggregateFunction::Max,
-                property: ObjectProperty::Toughness,
-                filter,
-            });
-        }
-    }
-    // "the greatest mana value among {type phrase}"
-    if let Some(rest) = trimmed.strip_prefix("the greatest mana value among ") {
-        let (filter, _) = parse_type_phrase(rest);
-        if !matches!(filter, TargetFilter::Any) {
-            return Some(QuantityRef::Aggregate {
-                function: AggregateFunction::Max,
-                property: ObjectProperty::ManaValue,
-                filter,
-            });
-        }
-    }
-    // "the total power of {type phrase}"
-    if let Some(rest) = trimmed.strip_prefix("the total power of ") {
-        let (filter, _) = parse_type_phrase(rest);
-        if !matches!(filter, TargetFilter::Any) {
-            return Some(QuantityRef::Aggregate {
-                function: AggregateFunction::Sum,
-                property: ObjectProperty::Power,
+                function: func,
+                property: prop,
                 filter,
             });
         }
@@ -97,7 +90,7 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
 
     // "the number of {type} you control" → ObjectCount { filter }
     // "the number of opponents you have" → PlayerCount { Opponent }
-    if let Some(rest) = trimmed.strip_prefix("the number of ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("the number of ").parse(trimmed) {
         if rest == "opponents you have" || rest == "opponent you have" {
             return Some(QuantityRef::PlayerCount {
                 filter: PlayerFilter::Opponent,
@@ -109,7 +102,7 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
         }
     }
     // "your devotion to {color}" / "your devotion to {color} and {color}"
-    if let Some(rest) = trimmed.strip_prefix("your devotion to ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("your devotion to ").parse(trimmed) {
         let colors = parse_devotion_colors(rest);
         if !colors.is_empty() {
             return Some(QuantityRef::Devotion { colors });
@@ -149,21 +142,16 @@ pub(crate) fn capitalize_first(s: &str) -> String {
 pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
     let text = text.trim().trim_end_matches('.');
 
-    // "twice [inner]" → Multiply { factor: 2, inner }
-    if let Some(rest) = text.strip_prefix("twice ") {
+    // "twice [inner]" or "three times [inner]" → Multiply { factor, inner }
+    if let Ok((rest, factor)) = alt((
+        value(2i32, tag::<_, _, VerboseError<&str>>("twice ")),
+        value(3, tag("three times ")),
+    ))
+    .parse(text)
+    {
         if let Some(inner) = parse_cda_quantity(rest) {
             return Some(QuantityExpr::Multiply {
-                factor: 2,
-                inner: Box::new(inner),
-            });
-        }
-    }
-
-    // "three times [inner]" → Multiply { factor: 3, inner }
-    if let Some(rest) = text.strip_prefix("three times ") {
-        if let Some(inner) = parse_cda_quantity(rest) {
-            return Some(QuantityExpr::Multiply {
-                factor: 3,
+                factor,
                 inner: Box::new(inner),
             });
         }
@@ -235,7 +223,7 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
     // "the number of {type} cards in your graveyard" — MUST be checked before the
     // untyped "cards in your graveyard" pattern to avoid matching "instant and sorcery
     // cards in your graveyard" as untyped.
-    if let Some(rest) = text.strip_prefix("the number of ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("the number of ").parse(text) {
         if let Some(type_text) = rest.strip_suffix(" cards in your graveyard") {
             if let Some(card_types) = parse_cda_type_filters(type_text) {
                 return Some(QuantityExpr::Ref {
@@ -286,7 +274,7 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
 
     // "the number of noncreature spells they've cast this turn"
     // "the number of spells they've cast this turn"
-    if let Some(rest) = text.strip_prefix("the number of ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("the number of ").parse(text) {
         // Note: "this turn" may already be stripped by strip_trailing_duration at the clause
         // level, so we also match the bare " they've cast" / " that player has cast" suffixes.
         if let Some(spell_part) = rest
@@ -399,7 +387,9 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
     // Strip leading "the " article before matching.
     // Exclude target-referent variants (TargetPower, TargetLifeTotal) — these
     // reference a targeting selection, not an event-context source object.
-    let stripped = lower.strip_prefix("the ").unwrap_or(lower);
+    let stripped = tag::<_, _, VerboseError<&str>>("the ")
+        .parse(lower)
+        .map_or(lower, |(r, _)| r);
     if let Some(qty) = parse_quantity_ref(stripped) {
         if !matches!(qty, QuantityRef::TargetPower | QuantityRef::TargetLifeTotal) {
             return Some(QuantityExpr::Ref { qty });

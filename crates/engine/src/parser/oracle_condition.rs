@@ -1,6 +1,9 @@
 use std::str::FromStr;
 
+use nom::branch::alt;
+use nom::bytes::complete::tag;
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use super::oracle_nom::primitives as nom_primitives;
 use crate::game::game_object::{parse_counter_type, CounterType};
@@ -48,7 +51,7 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
     }
     // "an opponent [action] this turn" — decompose via strip_prefix + verb phrase matching.
     // CR 602.5b: Covers the full class of opponent-event-based activation conditions.
-    if let Some(verb_phrase) = text.strip_prefix("an opponent ") {
+    if let Ok((verb_phrase, _)) = tag::<_, _, VerboseError<&str>>("an opponent ").parse(text) {
         if verb_phrase == "lost life this turn" {
             return Some(ParsedCondition::PlayerCountAtLeast {
                 filter: PlayerFilter::OpponentLostLife,
@@ -170,7 +173,7 @@ fn parse_source_condition(text: &str) -> Option<ParsedCondition> {
     }
     // "enchanted [type] is untapped"
     if text.contains("is untapped") {
-        if let Some(rest) = text.strip_prefix("enchanted ") {
+        if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("enchanted ").parse(text) {
             if let Some(type_text) = rest.strip_suffix(" is untapped") {
                 if let Some(core_type) = parse_core_type_word(type_text) {
                     return Some(ParsedCondition::SourceUntappedAttachedTo {
@@ -181,14 +184,16 @@ fn parse_source_condition(text: &str) -> Option<ParsedCondition> {
         }
     }
     // "this creature doesn't have [keyword]"
-    if let Some(keyword_text) = text.strip_prefix("this creature doesn't have ") {
+    if let Ok((keyword_text, _)) =
+        tag::<_, _, VerboseError<&str>>("this creature doesn't have ").parse(text)
+    {
         let keyword: Keyword = keyword_text.trim().parse().unwrap();
         if !matches!(keyword, Keyword::Unknown(_)) {
             return Some(ParsedCondition::SourceLacksKeyword { keyword });
         }
     }
     // "this creature is [color]"
-    if let Some(color_text) = text.strip_prefix("this creature is ") {
+    if let Ok((color_text, _)) = tag::<_, _, VerboseError<&str>>("this creature is ").parse(text) {
         if let Some(color) = parse_color_word(color_text) {
             return Some(ParsedCondition::SourceIsColor { color });
         }
@@ -214,7 +219,7 @@ fn parse_source_condition(text: &str) -> Option<ParsedCondition> {
 fn parse_you_control_condition(text: &str) -> Option<ParsedCondition> {
     // "you control a [subtype] or there is a [subtype] card in your graveyard"
     if text.contains(" or there is a ") && text.contains(" card in your graveyard") {
-        if let Some(rest) = text.strip_prefix("you control a ") {
+        if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("you control a ").parse(text) {
             if let Some(subtype) = rest.split(" or ").next() {
                 return Some(ParsedCondition::YouControlSubtypeOrGraveyardCardSubtype {
                     subtype: subtype.to_string(),
@@ -253,7 +258,7 @@ fn parse_you_control_condition(text: &str) -> Option<ParsedCondition> {
         return Some(ParsedCondition::YouControlSnowPermanentCountAtLeast { count });
     }
     // "you control N or more [color] permanents" / "you control N or more [core type]s"
-    if let Some(rest) = text.strip_prefix("you control ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("you control ").parse(text) {
         if let Some((count_text, type_text)) = rest.split_once(" or more ") {
             if let Some(count) = parse_count_word(count_text) {
                 let type_text = type_text.trim().trim_end_matches('.');
@@ -283,9 +288,11 @@ fn parse_you_control_condition(text: &str) -> Option<ParsedCondition> {
         return Some(ParsedCondition::YouControlCreatureWithPt { power, toughness });
     }
     // "you control a creature with [keyword]"
-    if let Some(keyword_text) = text
-        .strip_prefix("you control a creature with ")
-        .or_else(|| text.strip_prefix("you control a creature that has "))
+    if let Ok((keyword_text, _)) = alt((
+        tag::<_, _, VerboseError<&str>>("you control a creature with "),
+        tag("you control a creature that has "),
+    ))
+    .parse(text)
     {
         let keyword: Keyword = keyword_text.trim().parse().unwrap();
         if !matches!(keyword, Keyword::Unknown(_)) {
@@ -316,18 +323,23 @@ fn parse_you_control_condition(text: &str) -> Option<ParsedCondition> {
     if text.starts_with("you control no creatures") {
         return Some(ParsedCondition::YouControlNoCreatures);
     }
-    if let Some(name) = text
-        .strip_prefix("you control an ")
-        .or_else(|| text.strip_prefix("you control a "))
-        .and_then(|rest| rest.strip_suffix(" planeswalker"))
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, VerboseError<&str>>("you control an "),
+        tag("you control a "),
+    ))
+    .parse(text)
     {
-        return Some(ParsedCondition::YouControlNamedPlaneswalker {
-            name: capitalize_condition_word(name),
-        });
+        if let Some(name) = rest.strip_suffix(" planeswalker") {
+            return Some(ParsedCondition::YouControlNamedPlaneswalker {
+                name: capitalize_condition_word(name),
+            });
+        }
     }
-    if let Some(rest) = text
-        .strip_prefix("you control an ")
-        .or_else(|| text.strip_prefix("you control a "))
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, VerboseError<&str>>("you control an "),
+        tag("you control a "),
+    ))
+    .parse(text)
     {
         if let Some(core_type) = parse_core_type_word(rest) {
             return Some(ParsedCondition::YouControlCoreTypeCountAtLeast {
@@ -356,18 +368,20 @@ fn parse_graveyard_condition(text: &str) -> Option<ParsedCondition> {
     ) {
         return Some(ParsedCondition::GraveyardCardTypeCountAtLeast { count });
     }
-    if let Some(subtype) = text
-        .strip_prefix("there is an ")
-        .and_then(|rest| rest.strip_suffix(" card in your graveyard"))
+    if let Some(subtype) = tag::<_, _, VerboseError<&str>>("there is an ")
+        .parse(text)
+        .ok()
+        .and_then(|(rest, _)| rest.strip_suffix(" card in your graveyard"))
     {
         return Some(ParsedCondition::GraveyardSubtypeCardCountAtLeast {
             subtype: subtype.to_string(),
             count: 1,
         });
     }
-    if let Some(subtype) = text
-        .strip_prefix("two or more ")
-        .and_then(|rest| rest.strip_suffix(" cards are in your graveyard"))
+    if let Some(subtype) = tag::<_, _, VerboseError<&str>>("two or more ")
+        .parse(text)
+        .ok()
+        .and_then(|(rest, _)| rest.strip_suffix(" cards are in your graveyard"))
     {
         return Some(ParsedCondition::GraveyardSubtypeCardCountAtLeast {
             subtype: subtype.trim_end_matches('s').to_string(),
@@ -394,9 +408,10 @@ fn parse_hand_condition(text: &str) -> Option<ParsedCondition> {
         });
     }
     // "you have exactly N or M cards in hand"
-    if let Some(rest) = text
-        .strip_prefix("you have exactly ")
-        .and_then(|r| r.strip_suffix(" cards in hand"))
+    if let Some(rest) = tag::<_, _, VerboseError<&str>>("you have exactly ")
+        .parse(text)
+        .ok()
+        .and_then(|(rest, _)| rest.strip_suffix(" cards in hand"))
     {
         if rest.contains(" or ") {
             let counts: Vec<usize> = rest
@@ -452,18 +467,22 @@ fn parse_color_word(text: &str) -> Option<ManaColor> {
 }
 
 fn parse_creature_pt_condition(text: &str) -> Option<(i32, i32)> {
-    let stats = text
-        .strip_prefix("you control a ")
-        .and_then(|rest| rest.strip_suffix(" creature"))?;
+    let stats = tag::<_, _, VerboseError<&str>>("you control a ")
+        .parse(text)
+        .ok()
+        .and_then(|(rest, _)| rest.strip_suffix(" creature"))?;
     let (power, toughness) = stats.split_once('/')?;
     Some((power.parse().ok()?, toughness.parse().ok()?))
 }
 
 fn parse_counter_requirement(text: &str) -> Option<(CounterType, u32)> {
-    if let Some(counter_name) = text
-        .strip_prefix("this artifact has ")
-        .or_else(|| text.strip_prefix("this enchantment has "))
-        .and_then(|rest| rest.strip_suffix(" counters on it"))
+    if let Some(counter_name) = alt((
+        tag::<_, _, VerboseError<&str>>("this artifact has "),
+        tag("this enchantment has "),
+    ))
+    .parse(text)
+    .ok()
+    .and_then(|(rest, _)| rest.strip_suffix(" counters on it"))
     {
         let (count_text, counter_name) = counter_name.split_once(" or more ")?;
         return Some((
@@ -471,9 +490,10 @@ fn parse_counter_requirement(text: &str) -> Option<(CounterType, u32)> {
             parse_count_word(count_text)? as u32,
         ));
     }
-    if let Some(counter_name) = text
-        .strip_prefix("there are ")
-        .and_then(|rest| rest.strip_suffix(" counters on this artifact"))
+    if let Some(counter_name) = tag::<_, _, VerboseError<&str>>("there are ")
+        .parse(text)
+        .ok()
+        .and_then(|(rest, _)| rest.strip_suffix(" counters on this artifact"))
     {
         let (count_text, counter_name) = counter_name.split_once(" or more ")?;
         return Some((
@@ -485,18 +505,21 @@ fn parse_counter_requirement(text: &str) -> Option<(CounterType, u32)> {
 }
 
 fn parse_counter_absence_requirement(text: &str) -> Option<CounterType> {
-    text.strip_prefix("there are no ")
-        .and_then(|rest| rest.strip_suffix(" counters on this artifact"))
+    tag::<_, _, VerboseError<&str>>("there are no ")
+        .parse(text)
+        .ok()
+        .and_then(|(rest, _)| rest.strip_suffix(" counters on this artifact"))
         .map(parse_counter_type)
 }
 
 fn parse_you_control_land_subtypes(text: &str) -> Option<Vec<String>> {
-    if !text.starts_with("you control an ") && !text.starts_with("you control a ") {
-        return None;
-    }
-    let rest = text
-        .strip_prefix("you control an ")
-        .or_else(|| text.strip_prefix("you control a "))?;
+    let rest = alt((
+        tag::<_, _, VerboseError<&str>>("you control an "),
+        tag("you control a "),
+    ))
+    .parse(text)
+    .ok()
+    .map(|(rest, _)| rest)?;
     if !rest.contains(" or ") {
         return None;
     }
@@ -525,8 +548,9 @@ fn parse_you_control_land_subtypes(text: &str) -> Option<Vec<String>> {
 }
 
 fn parse_you_control_subtype_count(text: &str) -> Option<(usize, String)> {
-    let prefix = "you control ";
-    let rest = text.strip_prefix(prefix)?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("you control ")
+        .parse(text)
+        .ok()?;
     let (minimum_text, subtype_text) = rest.split_once(" or more ")?;
     let minimum = parse_count_word(minimum_text)?;
 

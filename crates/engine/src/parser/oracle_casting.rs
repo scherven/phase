@@ -1,4 +1,8 @@
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use super::oracle_cost::parse_oracle_cost;
 use super::oracle_nom::primitives as nom_primitives;
@@ -37,13 +41,13 @@ pub fn parse_additional_cost_line(lower: &str, _raw: &str) -> Option<AdditionalC
     }
 
     // Strip the standard additional-cost prefix and trailing period.
-    let body = lower
-        .strip_prefix("as an additional cost to cast this spell, ")
-        .unwrap_or(lower)
+    let body = tag::<_, _, VerboseError<&str>>("as an additional cost to cast this spell, ")
+        .parse(lower)
+        .map_or(lower, |(rest, _)| rest)
         .trim_end_matches('.');
 
     // "waterbend {N}" as mandatory additional cost
-    if let Some(rest) = body.strip_prefix("waterbend ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("waterbend ").parse(body) {
         if let Some((mana_cost, _)) = parse_mana_symbols(rest.trim()) {
             return Some(AdditionalCost::Required(AbilityCost::Waterbend {
                 cost: mana_cost,
@@ -92,7 +96,10 @@ pub(crate) fn parse_spell_casting_option_line(
 fn split_leading_if_clause(text: &str) -> (Option<&str>, &str) {
     let trimmed = text.trim();
     let lower = trimmed.to_lowercase();
-    if lower.strip_prefix("if ").is_none() {
+    if tag::<_, _, VerboseError<&str>>("if ")
+        .parse(lower.as_str())
+        .is_err()
+    {
         return (None, trimmed);
     }
 
@@ -123,23 +130,21 @@ fn parse_self_flash_option(
         return Some(option);
     }
 
-    if let Some(cost_text) = rest
-        .strip_prefix("if you pay ")
-        .and_then(|rest| rest.strip_suffix(" more to cast it"))
-    {
-        option = option.cost(parse_oracle_cost(cost_text));
-        return Some(option);
+    if let Ok((after, _)) = tag::<_, _, VerboseError<&str>>("if you pay ").parse(rest) {
+        if let Some(cost_text) = after.strip_suffix(" more to cast it") {
+            option = option.cost(parse_oracle_cost(cost_text));
+            return Some(option);
+        }
     }
 
-    if let Some(cost_text) = rest
-        .strip_prefix("by ")
-        .and_then(|rest| rest.strip_suffix(" in addition to paying its other costs"))
-    {
-        option = option.cost(parse_oracle_cost(cost_text));
-        return Some(option);
+    if let Ok((after, _)) = tag::<_, _, VerboseError<&str>>("by ").parse(rest) {
+        if let Some(cost_text) = after.strip_suffix(" in addition to paying its other costs") {
+            option = option.cost(parse_oracle_cost(cost_text));
+            return Some(option);
+        }
     }
 
-    if let Some(condition_text) = rest.strip_prefix("if ") {
+    if let Ok((condition_text, _)) = tag::<_, _, VerboseError<&str>>("if ").parse(rest) {
         if let Some(parsed) = parse_restriction_condition(condition_text.trim()) {
             option = option.condition(parsed);
         }
@@ -225,12 +230,18 @@ fn extract_alternative_cost_with_trailing_condition<'a>(
 
 fn self_spell_phrase(lower: &str, card_name: &str) -> Option<String> {
     let card_name_lower = card_name.to_lowercase();
-    if lower.strip_prefix("you may cast this spell ").is_some() {
-        return Some("this spell".to_string());
+    if let Ok((_, phrase)) = alt((
+        value(
+            "this spell",
+            tag::<_, _, VerboseError<&str>>("you may cast this spell "),
+        ),
+        value("it", tag("you may cast it ")),
+    ))
+    .parse(lower)
+    {
+        return Some(phrase.to_string());
     }
-    if lower.strip_prefix("you may cast it ").is_some() {
-        return Some("it".to_string());
-    }
+    // Dynamic card name prefix — must use strip_prefix (runtime string)
     let card_prefix = format!("you may cast {card_name_lower} ");
     if lower.strip_prefix(&*card_prefix).is_some() {
         return Some(card_name_lower);
@@ -244,16 +255,20 @@ fn self_spell_phrase(lower: &str, card_name: &str) -> Option<String> {
 pub(crate) fn parse_casting_restriction_line(text: &str) -> Option<Vec<CastingRestriction>> {
     let trimmed = text.trim().trim_end_matches('.');
     // Try direct match first, then fall back to stripping ability word prefix
-    let effective = if trimmed
-        .to_lowercase()
-        .strip_prefix("cast this spell only ")
-        .is_some()
+    let trimmed_lower = trimmed.to_lowercase();
+    let effective = if tag::<_, _, VerboseError<&str>>("cast this spell only ")
+        .parse(trimmed_lower.as_str())
+        .is_ok()
     {
         trimmed.to_lowercase()
     } else {
         super::oracle_modal::strip_ability_word(trimmed)?.to_lowercase()
     };
-    let rest = effective.strip_prefix("cast this spell only ")?;
+    let rest =
+        match tag::<_, _, VerboseError<&str>>("cast this spell only ").parse(effective.as_str()) {
+            Ok((r, _)) => r,
+            Err(_) => return None,
+        };
     let mut restrictions = Vec::new();
 
     if rest.contains("as a sorcery") {
@@ -314,13 +329,9 @@ pub(crate) fn parse_casting_restriction_line(text: &str) -> Option<Vec<CastingRe
         restrictions.push(CastingRestriction::AfterCombat);
     }
 
-    if let Some(condition) = rest.strip_prefix("if ") {
-        let condition_text = strip_casting_condition_suffixes(condition);
-        restrictions.push(CastingRestriction::RequiresCondition {
-            condition: parse_restriction_condition(condition_text),
-        });
-    }
-    if let Some(condition) = rest.strip_prefix("only if ") {
+    if let Ok((condition, _)) =
+        alt((tag::<_, _, VerboseError<&str>>("only if "), tag("if "))).parse(rest)
+    {
         let condition_text = strip_casting_condition_suffixes(condition);
         restrictions.push(CastingRestriction::RequiresCondition {
             condition: parse_restriction_condition(condition_text),
