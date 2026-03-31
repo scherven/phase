@@ -2,6 +2,7 @@ use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::value;
 use nom::Parser;
+use nom_language::error::VerboseError;
 use serde::{Deserialize, Serialize};
 
 use crate::types::ability::{
@@ -368,13 +369,13 @@ pub fn parse_oracle_text(
         }
 
         // Priority 2: "Enchant {filter}" — skip (handled externally)
-        if lower.starts_with("enchant ") && !lower.starts_with("enchanted ") {
+        if lower_starts_with(&lower, "enchant ") && !lower_starts_with(&lower, "enchanted ") {
             i += 1;
             continue;
         }
 
         // Priority 3: "Equip {cost}" / "Equip — {cost}" (but not "Equipped ...")
-        if lower.starts_with("equip") && !lower.starts_with("equipped") {
+        if lower_starts_with(&lower, "equip") && !lower_starts_with(&lower, "equipped") {
             if let Some(ability) = try_parse_equip(&line) {
                 result.abilities.push(ability);
                 i += 1;
@@ -540,8 +541,7 @@ pub fn parse_oracle_text(
         }
 
         // Priority 5-6: Triggered abilities — starts with When/Whenever/At
-        if lower.starts_with("when ") || lower.starts_with("whenever ") || lower.starts_with("at ")
-        {
+        if has_trigger_prefix(&lower) {
             let mut trigger = parse_trigger_line(&line, card_name);
             i += 1;
             // CR 706: If the trigger's effect ends with "roll a dN", consume
@@ -561,10 +561,7 @@ pub fn parse_oracle_text(
         // "prevent" in the effect text and misroute the line.
         if let Some((aw_name, effect_text)) = strip_ability_word_with_name(&line) {
             let effect_lower = effect_text.to_lowercase();
-            if effect_lower.starts_with("when ")
-                || effect_lower.starts_with("whenever ")
-                || effect_lower.starts_with("at ")
-            {
+            if has_trigger_prefix(&effect_lower) {
                 let mut trigger = parse_trigger_line(&effect_text, card_name);
                 // B7: Attach ability-word condition as fallback when extract_if_condition
                 // doesn't recognize the intervening-if pattern.
@@ -595,7 +592,7 @@ pub fn parse_oracle_text(
             // guard for any edge cases that reach Priority 7.
             let is_ability_word_trigger = strip_ability_word(&line).is_some_and(|stripped| {
                 let sl = stripped.to_lowercase();
-                sl.starts_with("when ") || sl.starts_with("whenever ") || sl.starts_with("at ")
+                has_trigger_prefix(&sl)
             });
             let defer_to_effect_parser =
                 is_ability_word_trigger || (is_spell && should_defer_spell_to_effect(&lower));
@@ -709,7 +706,7 @@ pub fn parse_oracle_text(
         }
 
         // Priority 8b: "As an additional cost to cast this spell"
-        if lower.starts_with("as an additional cost") {
+        if lower_starts_with(&lower, "as an additional cost") {
             result.additional_cost = parse_additional_cost_line(&lower, &line);
             i += 1;
             continue;
@@ -721,7 +718,7 @@ pub fn parse_oracle_text(
         if result.strive_cost.is_some() {
             if let Some(effect_text) = strip_ability_word(&line) {
                 let effect_lower = effect_text.to_lowercase();
-                if effect_lower.starts_with("this spell costs ")
+                if lower_starts_with(&effect_lower, "this spell costs ")
                     && effect_lower.contains("more to cast for each target beyond the first")
                 {
                     i += 1;
@@ -767,7 +764,7 @@ pub fn parse_oracle_text(
         // Format: "Harmonize {cost} (reminder text)" — space-separated.
         // Note: When MTGJSON provides "Harmonize" in keywords, extract_keyword_line at
         // priority 1b already handles this. This is a fallback for test/edge cases.
-        if lower.starts_with("harmonize ") {
+        if lower_starts_with(&lower, "harmonize ") {
             if let Some(harmonize_kw) = parse_harmonize_keyword(&line) {
                 result.extracted_keywords.push(harmonize_kw);
                 i += 1;
@@ -822,7 +819,7 @@ pub fn parse_oracle_text(
         }
 
         // CR 702.49d: Commander ninjutsu is not in MTGJSON keywords — extract explicitly.
-        if lower.starts_with("commander ninjutsu ") {
+        if lower_starts_with(&lower, "commander ninjutsu ") {
             if let Some(kw) = parse_keyword_from_oracle(&lower) {
                 result.extracted_keywords.push(kw);
                 i += 1;
@@ -832,7 +829,7 @@ pub fn parse_oracle_text(
 
         // CR 702.138: Escape — parse cost and exile count from Oracle text.
         // Must run before is_keyword_cost_line so the em-dash format is intercepted.
-        if lower.starts_with("escape") && line.contains('\u{2014}') {
+        if lower_starts_with(&lower, "escape") && line.contains('\u{2014}') {
             if let Some(escape_kw) = parse_escape_keyword(&line) {
                 result.extracted_keywords.push(escape_kw);
                 i += 1;
@@ -847,7 +844,13 @@ pub fn parse_oracle_text(
         }
 
         // Priority 13b: Kicker/Multikicker — skip (handled by keywords)
-        if lower.starts_with("kicker") || lower.starts_with("multikicker") {
+        if alt((
+            tag::<_, _, VerboseError<&str>>("kicker"),
+            tag("multikicker"),
+        ))
+        .parse(lower.as_str())
+        .is_ok()
+        {
             i += 1;
             continue;
         }
@@ -859,7 +862,7 @@ pub fn parse_oracle_text(
         }
 
         // Priority 13d: "Activate only..." constraint — skip
-        if lower.starts_with("activate ") || lower.starts_with("activate only") {
+        if lower_starts_with(&lower, "activate ") {
             i += 1;
             continue;
         }
@@ -872,10 +875,7 @@ pub fn parse_oracle_text(
             let effect_lower = effect_text.to_lowercase();
 
             // Try as trigger
-            if effect_lower.starts_with("when ")
-                || effect_lower.starts_with("whenever ")
-                || effect_lower.starts_with("at ")
-            {
+            if has_trigger_prefix(&effect_lower) {
                 let mut trigger = parse_trigger_line(&effect_text, card_name);
                 i += 1;
                 // CR 706: Consume subsequent d20 table lines for triggered die rolls.
@@ -1449,6 +1449,23 @@ fn has_roll_die_pattern(lower: &str) -> bool {
     lower.contains("roll a d")
 }
 
+/// Check if lowercased text starts with a trigger prefix ("when ", "whenever ", "at ").
+fn has_trigger_prefix(lower: &str) -> bool {
+    alt((
+        tag::<_, _, VerboseError<&str>>("when "),
+        tag("whenever "),
+        tag("at "),
+    ))
+    .parse(lower)
+    .is_ok()
+}
+
+/// Nom-based prefix check on lowercase text. Replaces `lower.starts_with("x")` with
+/// a combinator that participates in the nom parser ecosystem.
+fn lower_starts_with(lower: &str, prefix: &str) -> bool {
+    tag::<_, _, VerboseError<&str>>(prefix).parse(lower).is_ok()
+}
+
 /// Check if line matches the "flashback cost is equal to its mana cost" pattern.
 fn is_flashback_equal_mana_cost(lower: &str) -> bool {
     lower.contains("flashback cost") && lower.contains("equal to") && lower.contains("mana cost")
@@ -1457,7 +1474,7 @@ fn is_flashback_equal_mana_cost(lower: &str) -> bool {
 /// Check if line matches the defiler cycle guard: "as an additional cost to cast [color]
 /// permanent spells, you may pay N life" (but NOT "this spell").
 fn is_defiler_cost_pattern(lower: &str) -> bool {
-    lower.starts_with("as an additional cost to cast ")
+    lower_starts_with(lower, "as an additional cost to cast ")
         && !lower.contains("this spell")
         && lower.contains("you may pay")
         && lower.contains(" life")
@@ -1595,7 +1612,7 @@ const STATIC_PREFIX_PATTERNS: &[&str] = &[
 pub(super) fn is_static_pattern(lower: &str) -> bool {
     // Spell effects targeting creatures/players are never static abilities.
     // They must reach the effect parser (Priority 9) for proper handling.
-    if lower.starts_with("target") {
+    if lower_starts_with(lower, "target") {
         return false;
     }
 
@@ -1623,7 +1640,7 @@ pub(super) fn is_static_pattern(lower: &str) -> bool {
 /// Separated to keep the main function focused on table-driven matching.
 fn is_static_compound_pattern(lower: &str) -> bool {
     // CR 702.8d: Flash-granting statics (exclude self-cast options)
-    if lower.contains("as though it had flash") && !lower.starts_with("you may cast") {
+    if lower.contains("as though it had flash") && !lower_starts_with(lower, "you may cast") {
         return true;
     }
     // "enters with" but not counter-related (which is replacement)
@@ -1631,13 +1648,18 @@ fn is_static_compound_pattern(lower: &str) -> bool {
         return true;
     }
     // "creatures your opponents control" but not "enter tapped" (which is replacement)
-    if lower.starts_with("creatures your opponents control ")
+    if lower_starts_with(lower, "creatures your opponents control ")
         && !lower.trim_end_matches('.').ends_with("enter tapped")
     {
         return true;
     }
     // CR 604.2 + CR 601.2a: Graveyard cast/play permission
-    if (lower.starts_with("you may play") || lower.starts_with("you may cast"))
+    if alt((
+        tag::<_, _, VerboseError<&str>>("you may play"),
+        tag("you may cast"),
+    ))
+    .parse(lower)
+    .is_ok()
         && lower.contains("from your graveyard")
     {
         return true;
@@ -1759,10 +1781,7 @@ fn dispatch_line_nom(line: &str, _static_line: &str, card_name: &str) -> Effect 
     // Lines that reach here failed real parsing — classify their shape
     // for informative Unimplemented descriptions.
     let lower_trimmed = lower.trim_start();
-    if lower_trimmed.starts_with("when ")
-        || lower_trimmed.starts_with("whenever ")
-        || lower_trimmed.starts_with("at ")
-    {
+    if has_trigger_prefix(lower_trimmed) {
         return Effect::Unimplemented {
             name: "trigger_structure".into(),
             description: Some(format!(
