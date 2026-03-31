@@ -92,7 +92,7 @@ pub(crate) fn parse_spell_casting_option_line(
 fn split_leading_if_clause(text: &str) -> (Option<&str>, &str) {
     let trimmed = text.trim();
     let lower = trimmed.to_lowercase();
-    if !lower.starts_with("if ") {
+    if lower.strip_prefix("if ").is_none() {
         return (None, trimmed);
     }
 
@@ -113,11 +113,10 @@ fn parse_self_flash_option(
 ) -> Option<SpellCastingOption> {
     let self_ref = self_spell_phrase(body_lower, card_name)?;
     let prefix = format!("you may cast {self_ref} as though it had flash");
-    if !body_lower.starts_with(&prefix) {
-        return None;
-    }
-
-    let rest = body[prefix.len()..].trim();
+    let rest = match body_lower.strip_prefix(&*prefix) {
+        Some(r) => body[body.len() - r.len()..].trim(),
+        None => return None,
+    };
     let mut option = SpellCastingOption::as_though_had_flash();
 
     if rest.is_empty() {
@@ -186,8 +185,8 @@ fn parse_self_alternative_cost_option(
         }
 
         let for_cost = format!("you may cast {self_ref} for ");
-        if body_lower.starts_with(&for_cost) {
-            let cost_text = body[for_cost.len()..].trim();
+        if let Some(rest) = body_lower.strip_prefix(&*for_cost) {
+            let cost_text = body[body.len() - rest.len()..].trim();
             return Some(SpellCastingOption::alternative_cost(parse_oracle_cost(
                 cost_text,
             )));
@@ -203,12 +202,10 @@ fn extract_alternative_cost<'a>(
     prefix: &str,
     suffix: &str,
 ) -> Option<&'a str> {
-    if lower.starts_with(prefix) && lower.ends_with(suffix) {
-        let cost_end = raw.len() - suffix.len();
-        return Some(raw[prefix.len()..cost_end].trim());
-    }
-
-    None
+    let after_prefix = lower.strip_prefix(prefix)?;
+    after_prefix.strip_suffix(suffix)?;
+    let cost_end = raw.len() - suffix.len();
+    Some(raw[prefix.len()..cost_end].trim())
 }
 
 fn extract_alternative_cost_with_trailing_condition<'a>(
@@ -217,9 +214,7 @@ fn extract_alternative_cost_with_trailing_condition<'a>(
     prefix: &str,
     marker: &str,
 ) -> Option<(&'a str, &'a str)> {
-    if !lower.starts_with(prefix) {
-        return None;
-    }
+    lower.strip_prefix(prefix)?;
 
     let tp = TextPair::new(raw, lower);
     let marker_pos = tp.find(marker)?;
@@ -230,13 +225,14 @@ fn extract_alternative_cost_with_trailing_condition<'a>(
 
 fn self_spell_phrase(lower: &str, card_name: &str) -> Option<String> {
     let card_name_lower = card_name.to_lowercase();
-    if lower.starts_with("you may cast this spell ") {
+    if lower.strip_prefix("you may cast this spell ").is_some() {
         return Some("this spell".to_string());
     }
-    if lower.starts_with("you may cast it ") {
+    if lower.strip_prefix("you may cast it ").is_some() {
         return Some("it".to_string());
     }
-    if lower.starts_with(&format!("you may cast {card_name_lower} ")) {
+    let card_prefix = format!("you may cast {card_name_lower} ");
+    if lower.strip_prefix(&*card_prefix).is_some() {
         return Some(card_name_lower);
     }
 
@@ -248,7 +244,11 @@ fn self_spell_phrase(lower: &str, card_name: &str) -> Option<String> {
 pub(crate) fn parse_casting_restriction_line(text: &str) -> Option<Vec<CastingRestriction>> {
     let trimmed = text.trim().trim_end_matches('.');
     // Try direct match first, then fall back to stripping ability word prefix
-    let effective = if trimmed.to_lowercase().starts_with("cast this spell only ") {
+    let effective = if trimmed
+        .to_lowercase()
+        .strip_prefix("cast this spell only ")
+        .is_some()
+    {
         trimmed.to_lowercase()
     } else {
         super::oracle_modal::strip_ability_word(trimmed)?.to_lowercase()
