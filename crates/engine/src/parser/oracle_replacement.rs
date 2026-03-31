@@ -1,4 +1,7 @@
+use nom::branch::alt;
+use nom::bytes::complete::tag;
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use super::oracle_effect::{parse_effect_chain, try_parse_named_choice};
 use super::oracle_nom::primitives as nom_primitives;
@@ -320,11 +323,13 @@ fn parse_clone_replacement(norm_lower: &str, original_text: &str) -> Option<Repl
 
     let after_copy = &norm_lower[copy_idx + "enter as a copy of ".len()..];
     // Strip "any " / "a " / "an " article before the type phrase
-    let type_text = after_copy
-        .strip_prefix("any ")
-        .or_else(|| after_copy.strip_prefix("a "))
-        .or_else(|| after_copy.strip_prefix("an "))
-        .unwrap_or(after_copy);
+    let type_text = alt((
+        tag::<_, _, VerboseError<&str>>("any "),
+        tag("a "),
+        tag("an "),
+    ))
+    .parse(after_copy)
+    .map_or(after_copy, |(rest, _)| rest);
 
     // Strip trailing "on the battlefield" and punctuation
     let type_text = type_text
@@ -430,7 +435,9 @@ fn parse_fast_condition(norm_lower: &str) -> Option<ReplacementCondition> {
     // Parse "two or fewer other lands." → count=2, remainder="or fewer other lands."
     let (nom_rest, count) = nom_primitives::parse_number.parse(rest).ok()?;
     let after_number = nom_rest.trim_start();
-    let after_or_fewer = after_number.trim_start().strip_prefix("or fewer ")?;
+    let (after_or_fewer, _) = tag::<_, _, VerboseError<&str>>("or fewer ")
+        .parse(after_number.trim_start())
+        .ok()?;
     let type_text = after_or_fewer.trim_end_matches('.');
 
     // parse_type_phrase handles "other lands" → TypedFilter { Land, [Another] }
@@ -505,7 +512,9 @@ fn parse_controls_typed_condition(norm_lower: &str) -> Option<ReplacementConditi
 /// Delegates to `nom_primitives::parse_number` for the count (input already lowercase).
 fn try_parse_quantity_prefix(text: &str) -> Option<(u32, &str)> {
     let (nom_rest, n) = nom_primitives::parse_number.parse(text).ok()?;
-    let type_text = nom_rest.trim_start().strip_prefix("or more ")?;
+    let (type_text, _) = tag::<_, _, VerboseError<&str>>("or more ")
+        .parse(nom_rest.trim_start())
+        .ok()?;
     Some((n, type_text))
 }
 
@@ -545,10 +554,12 @@ fn parse_enters_with_counters(
     // Find "with [N] [type] counter" to extract count and counter type
     let after_with = strip_after(norm_lower, "with ")?;
     // Skip "an additional" if present
-    let after_additional = after_with
-        .strip_prefix("an additional ")
-        .or_else(|| after_with.strip_prefix("additional "))
-        .unwrap_or(after_with);
+    let after_additional = alt((
+        tag::<_, _, VerboseError<&str>>("an additional "),
+        tag("additional "),
+    ))
+    .parse(after_with)
+    .map_or(after_with, |(rest, _)| rest);
     // Uses oracle_util::parse_number (not nom directly) because it handles "X" → 0
     // for X-cost cards like Endless One, Walking Ballista, Hangarback Walker, etc.
     let (count, rest) = parse_number(after_additional).unwrap_or((1, after_additional));
@@ -575,10 +586,14 @@ fn parse_enters_with_counters(
     // Determine valid_card filter: self vs other creatures
     // Strip "each other " or "other " prefix, then delegate to parse_type_phrase
     // which handles non-X, controller, "of the chosen type", etc.
-    let subject = norm_lower
-        .strip_prefix("each other ")
-        .or_else(|| norm_lower.strip_prefix("other "))
-        .filter(|s| s.contains("creature") || s.contains("permanent"));
+    let subject = alt((
+        tag::<_, _, VerboseError<&str>>("each other "),
+        tag("other "),
+    ))
+    .parse(norm_lower)
+    .ok()
+    .map(|(rest, _)| rest)
+    .filter(|s| s.contains("creature") || s.contains("permanent"));
     let valid_card = if let Some(subject_text) = subject {
         let (filter, _) = parse_type_phrase(subject_text);
         // Inject Another since we stripped "other" above
@@ -782,10 +797,9 @@ fn parse_damage_source_filter(norm_lower: &str) -> Option<TargetFilter> {
     }
 
     // Strip leading "a " or "an "
-    let subject = subject
-        .strip_prefix("a ")
-        .or_else(|| subject.strip_prefix("an "))
-        .unwrap_or(subject)
+    let subject = alt((tag::<_, _, VerboseError<&str>>("a "), tag("an ")))
+        .parse(subject)
+        .map_or(subject, |(rest, _)| rest)
         .trim();
 
     // "source you control" with optional qualifiers
@@ -799,7 +813,8 @@ fn parse_damage_source_filter(norm_lower: &str) -> Option<TargetFilter> {
             let qualifier = if prefix == "another" {
                 props.push(FilterProp::Another);
                 ""
-            } else if let Some(rest) = prefix.strip_prefix("another ") {
+            } else if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("another ").parse(prefix)
+            {
                 props.push(FilterProp::Another);
                 rest.trim()
             } else {
@@ -811,7 +826,7 @@ fn parse_damage_source_filter(norm_lower: &str) -> Option<TargetFilter> {
                 props.push(FilterProp::HasColor { color });
             }
             // CR 205.4b: "noncreature" qualifier — negation via TypeFilter::Non
-            else if let Some(rest) = qualifier.strip_prefix("non") {
+            else if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("non").parse(qualifier) {
                 let inner = match rest {
                     "creature" => TypeFilter::Creature,
                     "land" => TypeFilter::Land,
@@ -1163,8 +1178,12 @@ fn parse_player_life_condition(norm_lower: &str) -> Option<ReplacementCondition>
     // Delegate to nom_primitives::parse_number (input already lowercase)
     let (nom_rest, amount) = nom_primitives::parse_number.parse(rest).ok()?;
     let remainder = nom_rest.trim_start();
-    if remainder.trim().strip_prefix("or less life").is_none()
-        && remainder.trim().strip_prefix("or fewer life").is_none()
+    if alt((
+        tag::<_, _, VerboseError<&str>>("or less life"),
+        tag("or fewer life"),
+    ))
+    .parse(remainder.trim())
+    .is_err()
     {
         return None;
     }
@@ -1205,12 +1224,14 @@ fn parse_turn_of_game_condition(norm_lower: &str) -> Option<ReplacementCondition
         // Strip optional separator: ", or ", ", ", " or ", "or "
         // parse_ordinal trims leading space, so after parsing "first" from
         // "first or second", remaining is "or second" (no leading space).
-        remaining = remaining
-            .strip_prefix(", or ")
-            .or_else(|| remaining.strip_prefix(", "))
-            .or_else(|| remaining.strip_prefix(" or "))
-            .or_else(|| remaining.strip_prefix("or "))
-            .unwrap_or(remaining);
+        remaining = alt((
+            tag::<_, _, VerboseError<&str>>(", or "),
+            tag(", "),
+            tag(" or "),
+            tag("or "),
+        ))
+        .parse(remaining)
+        .map_or(remaining, |(rest, _)| rest);
         if let Some((val, rest)) = parse_ordinal(remaining) {
             max_ordinal = max_ordinal.max(val);
             remaining = rest;
@@ -1222,7 +1243,9 @@ fn parse_turn_of_game_condition(norm_lower: &str) -> Option<ReplacementCondition
         return None;
     }
     // Expect "turn" (optionally followed by "of the game")
-    remaining.strip_prefix("turn")?;
+    tag::<_, _, VerboseError<&str>>("turn")
+        .parse(remaining)
+        .ok()?;
     Some(ReplacementCondition::UnlessQuantity {
         lhs: QuantityExpr::Ref {
             qty: QuantityRef::TurnsTaken,

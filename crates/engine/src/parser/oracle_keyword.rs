@@ -1,6 +1,10 @@
 use std::borrow::Cow;
 
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use super::oracle_nom::primitives as nom_primitives;
 use crate::types::keywords::{Keyword, WardCost};
@@ -13,8 +17,12 @@ pub(crate) fn expand_protection_parts<'a>(parts: &[&'a str]) -> Vec<Cow<'a, str>
     if !parts.iter().any(|p| {
         let l = p.to_ascii_lowercase();
         l.contains(" and from ")
-            || l.strip_prefix("from ").is_some()
-            || l.strip_prefix("and from ").is_some()
+            || tag::<_, _, VerboseError<&str>>("from ")
+                .parse(l.as_str())
+                .is_ok()
+            || tag::<_, _, VerboseError<&str>>("and from ")
+                .parse(l.as_str())
+                .is_ok()
     }) {
         return parts.iter().map(|&p| Cow::Borrowed(p)).collect();
     }
@@ -28,13 +36,16 @@ pub(crate) fn expand_protection_parts<'a>(parts: &[&'a str]) -> Vec<Cow<'a, str>
 
         // Check for "protection from X and from Y" or "hexproof from X and from Y"
         // (prefix_with_space, emit_prefix_no_space) — strip the prefix+space, emit prefix without space
-        let prefix_match = if lower.strip_prefix("protection from ").is_some() {
-            Some("protection from")
-        } else if lower.strip_prefix("hexproof from ").is_some() {
-            Some("hexproof from")
-        } else {
-            None
-        };
+        let prefix_match: Option<&str> = alt((
+            value(
+                "protection from",
+                tag::<_, _, VerboseError<&str>>("protection from "),
+            ),
+            value("hexproof from", tag("hexproof from ")),
+        ))
+        .parse(lower.as_str())
+        .ok()
+        .map(|(_, v)| v);
 
         if let Some(prefix) = prefix_match {
             // Strip "protection from " or "hexproof from " (prefix + space)
@@ -45,11 +56,10 @@ pub(crate) fn expand_protection_parts<'a>(parts: &[&'a str]) -> Vec<Cow<'a, str>
             }
             active_prefix = Some(prefix);
         } else if let Some(pfx) = active_prefix {
-            if let Some(rest) = lower.strip_prefix("and from ") {
-                // ", and from Zombies" — Oxford comma continuation
-                expanded.push(Cow::Owned(format!("{pfx} {}", rest.trim())));
-            } else if let Some(rest) = lower.strip_prefix("from ") {
-                // ", from Werewolves" — comma continuation
+            if let Ok((rest, _)) = alt((tag::<_, _, VerboseError<&str>>("and from "), tag("from ")))
+                .parse(lower.as_str())
+            {
+                // ", and from Zombies" or ", from Werewolves" — continuation
                 expanded.push(Cow::Owned(format!("{pfx} {}", rest.trim())));
             } else {
                 active_prefix = None;
@@ -98,7 +108,9 @@ pub(crate) fn extract_keyword_line(
         let mtgjson_match = mtgjson_keyword_names.iter().any(|name| {
             lower == *name
                 || lower.strip_prefix(name.as_str()).is_some_and(|rest| {
-                    rest.strip_prefix(' ').is_some() || rest.strip_prefix('\u{2014}').is_some()
+                    alt((tag::<_, _, VerboseError<&str>>(" "), tag("\u{2014}")))
+                        .parse(rest)
+                        .is_ok()
                 })
         });
 
@@ -170,7 +182,7 @@ fn parse_ward_cost(cost_text: &str) -> Option<Keyword> {
 /// Parse a single ward cost component (not compound).
 fn parse_ward_cost_single(lower: &str) -> Option<WardCost> {
     // "pay N life"
-    if let Some(rest) = lower.strip_prefix("pay ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("pay ").parse(lower) {
         if let Some(life_str) = rest.strip_suffix(" life") {
             if let Ok(n) = life_str.trim().parse::<i32>() {
                 return Some(WardCost::PayLife(n));
@@ -179,17 +191,23 @@ fn parse_ward_cost_single(lower: &str) -> Option<WardCost> {
     }
 
     // "discard a card" / "discard two cards" etc.
-    if lower.strip_prefix("discard").is_some() {
+    if tag::<_, _, VerboseError<&str>>("discard")
+        .parse(lower)
+        .is_ok()
+    {
         return Some(WardCost::DiscardCard);
     }
 
     // "sacrifice a permanent" / "sacrifice a creature" / etc.
-    if lower.strip_prefix("sacrifice").is_some() {
+    if tag::<_, _, VerboseError<&str>>("sacrifice")
+        .parse(lower)
+        .is_ok()
+    {
         return Some(WardCost::SacrificeAPermanent);
     }
 
     // CR 702.21a + CR 701.67: "waterbend {N}" — ward cost paid via waterbend mechanic.
-    if let Some(rest) = lower.strip_prefix("waterbend") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("waterbend").parse(lower) {
         let cost = crate::database::mtgjson::parse_mtgjson_mana_cost(rest.trim());
         return Some(WardCost::Waterbend(cost));
     }
@@ -233,33 +251,31 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     // CR 702.124: Partner variant keywords — must come BEFORE generic "partner" match.
     // MTGJSON sends Character Select, Friends Forever, and generic Partner all as keyword "Partner".
     // Oracle text em-dash suffix disambiguates them.
-    if text
-        .strip_prefix("partner\u{2014}character select")
-        .is_some()
+    if let Ok((_, result)) = alt((
+        value(
+            Some(Keyword::Partner(PartnerType::CharacterSelect)),
+            tag::<_, _, VerboseError<&str>>("partner\u{2014}character select"),
+        ),
+        value(
+            Some(Keyword::Partner(PartnerType::FriendsForever)),
+            tag("partner\u{2014}friends forever"),
+        ),
+        value(
+            Some(Keyword::Partner(PartnerType::ChooseABackground)),
+            tag("choose a background"),
+        ),
+        value(
+            Some(Keyword::Partner(PartnerType::DoctorsCompanion)),
+            alt((tag("doctor\u{2019}s companion"), tag("doctor's companion"))),
+        ),
+        // CR 702.124c: "Partner with [Name]" — handled at the build_oracle_face level
+        // via MTGJSON keyword detection. Skip here to avoid producing a duplicate with
+        // incorrect casing from the lowered oracle text.
+        value(None, tag("partner with ")),
+    ))
+    .parse(text)
     {
-        return Some(Keyword::Partner(PartnerType::CharacterSelect));
-    }
-    if text
-        .strip_prefix("partner\u{2014}friends forever")
-        .is_some()
-    {
-        return Some(Keyword::Partner(PartnerType::FriendsForever));
-    }
-    if text.strip_prefix("choose a background").is_some() {
-        return Some(Keyword::Partner(PartnerType::ChooseABackground));
-    }
-    if text
-        .strip_prefix("doctor\u{2019}s companion")
-        .or_else(|| text.strip_prefix("doctor's companion"))
-        .is_some()
-    {
-        return Some(Keyword::Partner(PartnerType::DoctorsCompanion));
-    }
-    // CR 702.124c: "Partner with [Name]" — handled at the build_oracle_face level
-    // via MTGJSON keyword detection. Skip here to avoid producing a duplicate with
-    // incorrect casing from the lowered oracle text.
-    if text.strip_prefix("partner with ").is_some() {
-        return None;
+        return result;
     }
 
     // First try direct parse (handles simple keywords like "flying")
@@ -270,7 +286,7 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
 
     // CR 702.29e: "basic landcycling {cost}" — multi-word typecycling variant.
     // Must be checked before the single-word typecycling guard below.
-    if let Some(rest) = text.strip_prefix("basic landcycling") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("basic landcycling").parse(text) {
         let cost_str = rest.trim();
         if !cost_str.is_empty() {
             let colon_form = format!("typecycling:Basic Land:{cost_str}");
@@ -301,13 +317,13 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
 
     // CR 702.21a: Ward with non-mana costs uses em-dash separator (U+2014).
     // "ward—pay N life", "ward—discard a card", "ward—sacrifice a permanent"
-    if let Some(rest) = text.strip_prefix("ward\u{2014}") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("ward\u{2014}").parse(text) {
         return parse_ward_cost(rest);
     }
 
     // CR 702.74a: "hideaway N" — parameterized keyword.
     // Delegates to nom combinator for number parsing.
-    if let Some(rest) = text.strip_prefix("hideaway ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("hideaway ").parse(text) {
         if let Ok((rem, n)) = nom_primitives::parse_number.parse(rest.trim()) {
             if rem.is_empty() {
                 return Some(Keyword::Hideaway(n));
@@ -316,7 +332,7 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     }
 
     // CR 702.87a: "level up {cost}" — two-word keyword name.
-    if let Some(rest) = text.strip_prefix("level up ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("level up ").parse(text) {
         let cost_str = rest.trim();
         if !cost_str.is_empty() {
             let cost = crate::database::mtgjson::parse_mtgjson_mana_cost(cost_str);
@@ -326,7 +342,7 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
 
     // CR 701.57a: "discover N"
     // Delegates to nom combinator for number parsing.
-    if let Some(rest) = text.strip_prefix("discover ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("discover ").parse(text) {
         if let Ok((rem, n)) = nom_primitives::parse_number.parse(rest.trim()) {
             if rem.is_empty() {
                 return Some(Keyword::Discover(n));
@@ -335,7 +351,7 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     }
 
     // Gift keyword: "gift a card", "gift a treasure", "gift a food", "gift a tapped fish"
-    if let Some(rest) = text.strip_prefix("gift a ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("gift a ").parse(text) {
         use crate::types::keywords::GiftKind;
         let kind = match rest.trim() {
             "card" => GiftKind::Card,
@@ -348,7 +364,7 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     }
 
     // CR 702.49d: Commander ninjutsu — multi-word keyword name (like "level up").
-    if let Some(rest) = text.strip_prefix("commander ninjutsu ") {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("commander ninjutsu ").parse(text) {
         let cost_str = rest.trim();
         if !cost_str.is_empty() {
             let cost = crate::database::mtgjson::parse_mtgjson_mana_cost(cost_str);
@@ -364,7 +380,9 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     let rest = text[space_idx + 1..].trim();
 
     // Strip "from" preposition (used by protection keywords)
-    let param = rest.strip_prefix("from ").unwrap_or(rest);
+    let param = tag::<_, _, VerboseError<&str>>("from ")
+        .parse(rest)
+        .map_or(rest, |(rem, _)| rem);
 
     let colon_form = format!("{name}:{param}");
     let parsed: Keyword = colon_form.parse().unwrap();
@@ -655,12 +673,16 @@ pub(crate) fn is_keyword_cost_line(lower: &str) -> bool {
         "devoid",
     ];
     keyword_costs.iter().any(|kw| {
-        lower.strip_prefix(kw).is_some_and(|rest| {
-            rest.is_empty()
-                || rest.as_bytes().first() == Some(&b' ')
-                || rest.as_bytes().first() == Some(&b'\t')
-                || rest.strip_prefix('\u{2014}').is_some()
-        })
+        tag::<_, _, VerboseError<&str>>(*kw)
+            .parse(lower)
+            .is_ok_and(|(rest, _)| {
+                rest.is_empty()
+                    || rest.as_bytes().first() == Some(&b' ')
+                    || rest.as_bytes().first() == Some(&b'\t')
+                    || tag::<_, _, VerboseError<&str>>("\u{2014}")
+                        .parse(rest)
+                        .is_ok()
+            })
     })
         // CR 702.29: Typecycling — first word ends in "cycling" but isn't "cycling" itself
         || lower
