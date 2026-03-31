@@ -166,6 +166,12 @@ pub enum GameEvent {
         object_id: ObjectId,
         source_id: ObjectId,
     },
+    /// CR 702.122d: A Vehicle's crew ability resolved.
+    /// Carries creature list for trigger conditions that reference "creatures that crewed it".
+    VehicleCrewed {
+        vehicle_id: ObjectId,
+        creatures: Vec<ObjectId>,
+    },
     ReplacementApplied {
         source_id: ObjectId,
         event_type: String,

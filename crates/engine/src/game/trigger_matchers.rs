@@ -186,7 +186,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
         TriggerMode::LosesGame,
         TriggerMode::Championed,
         TriggerMode::Exerted,
-        TriggerMode::Crewed,
+        // TriggerMode::Crewed — moved to real matcher below
         TriggerMode::Saddled,
         TriggerMode::Evolved,
         TriggerMode::Enlisted,
@@ -224,7 +224,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
         TriggerMode::Trains,
         TriggerMode::UnlockDoor,
         TriggerMode::VisitAttraction,
-        TriggerMode::BecomesCrewed,
+        // TriggerMode::BecomesCrewed — moved to real matcher below
         TriggerMode::BecomesPlotted,
         TriggerMode::BecomesSaddled,
     ];
@@ -232,6 +232,10 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
     for mode in unimplemented_modes {
         r.insert(mode, match_unimplemented);
     }
+
+    // CR 702.122d: Crew trigger matchers
+    r.insert(TriggerMode::Crewed, match_vehicle_crewed);
+    r.insert(TriggerMode::BecomesCrewed, match_vehicle_crewed);
 
     // Avatar crossover: bending trigger matchers
     r.insert(TriggerMode::Firebend, match_firebend);
@@ -1580,6 +1584,22 @@ pub(super) fn match_unimplemented(
     _state: &GameState,
 ) -> bool {
     false
+}
+
+// ---------------------------------------------------------------------------
+// CR 702.122d: Crew trigger matchers
+// ---------------------------------------------------------------------------
+
+/// CR 702.122d: Matches when a Vehicle's crew ability resolves.
+/// Both `Crewed` and `BecomesCrewed` are semantically identical — different Oracle text
+/// phrasings for the same trigger condition.
+pub(super) fn match_vehicle_crewed(
+    event: &GameEvent,
+    _trigger: &TriggerDefinition,
+    source_id: ObjectId,
+    _state: &GameState,
+) -> bool {
+    matches!(event, GameEvent::VehicleCrewed { vehicle_id, .. } if *vehicle_id == source_id)
 }
 
 // ---------------------------------------------------------------------------

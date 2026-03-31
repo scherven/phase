@@ -25,6 +25,7 @@ type ExileFromGraveyardForCost = Extract<WaitingFor, { type: "ExileFromGraveyard
 type HarmonizeTapChoice = Extract<WaitingFor, { type: "HarmonizeTapChoice" }>;
 type ChooseLegend = Extract<WaitingFor, { type: "ChooseLegend" }>;
 type ManifestDreadChoice = Extract<WaitingFor, { type: "ManifestDreadChoice" }>;
+type CrewVehicle = Extract<WaitingFor, { type: "CrewVehicle" }>;
 const CHOICE_CARD_IMAGE_CLASS = "";
 const SCRY_CARD_IMAGE_CLASS = "";
 
@@ -69,6 +70,9 @@ export function CardChoiceModal() {
     case "SacrificeForCost":
       if (waitingFor.data.player !== playerId) return null;
       return <SacrificeModal data={waitingFor.data} />;
+    case "CrewVehicle":
+      if (waitingFor.data.player !== playerId) return null;
+      return <CrewModal data={waitingFor.data} />;
     case "ExileFromGraveyardForCost":
       if (waitingFor.data.player !== playerId) return null;
       return <ExileFromGraveyardModal data={waitingFor.data} />;
@@ -686,6 +690,89 @@ function SacrificeModal({ data }: { data: SacrificeForCost["data"] }) {
                 <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-red-500/20">
                   <span className="rounded-full bg-red-500/90 px-3 py-1 text-xs font-bold text-white">
                     Sacrifice
+                  </span>
+                </div>
+              )}
+            </motion.button>
+          );
+        })}
+      </ScrollableCardStrip>
+    </ChoiceOverlay>
+  );
+}
+
+// ── Crew Vehicle Modal ──────────────────────────────────────────────────────
+
+function CrewModal({ data }: { data: CrewVehicle["data"] }) {
+  const dispatch = useGameDispatch();
+  const objects = useGameStore((s) => s.gameState?.objects);
+  const inspectObject = useUiStore((s) => s.inspectObject);
+  const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
+
+  const toggleSelect = useCallback((id: ObjectId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const totalPower = Array.from(selected).reduce((sum, id) => {
+    const obj = objects?.[id];
+    return sum + Math.max(obj?.power ?? 0, 0);
+  }, 0);
+
+  const handleConfirm = useCallback(() => {
+    dispatch({
+      type: "CrewVehicle",
+      data: { vehicle_id: data.vehicle_id, creature_ids: Array.from(selected) },
+    });
+  }, [dispatch, data.vehicle_id, selected]);
+
+  if (!objects) return null;
+
+  const isReady = totalPower >= data.crew_power;
+
+  return (
+    <ChoiceOverlay
+      title="Crew Vehicle"
+      subtitle={`Tap creatures with total power ${data.crew_power} or greater`}
+      footer={<ConfirmButton onClick={handleConfirm} disabled={!isReady} label={`Crew (${totalPower}/${data.crew_power})`} />}
+    >
+      <ScrollableCardStrip>
+        {data.eligible_creatures.map((id, index) => {
+          const obj = objects[id];
+          if (!obj) return null;
+          const isSelected = selected.has(id);
+          return (
+            <motion.button
+              key={id}
+              className={`relative rounded-lg transition ${
+                isSelected
+                  ? "z-10 ring-2 ring-blue-400/80"
+                  : "hover:shadow-[0_0_16px_rgba(200,200,255,0.3)]"
+              }`}
+              initial={{ opacity: 0, y: 60, scale: 0.85 }}
+              animate={{ opacity: isSelected ? 1 : 0.7, y: 0, scale: 1 }}
+              transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
+              whileHover={{ scale: 1.05, y: -6 }}
+              onClick={() => toggleSelect(id)}
+              onMouseEnter={() => inspectObject(id)}
+              onMouseLeave={() => inspectObject(null)}
+            >
+              <CardImage
+                cardName={obj.name}
+                size="normal"
+                className={CHOICE_CARD_IMAGE_CLASS}
+              />
+              {isSelected && (
+                <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-blue-500/20">
+                  <span className="rounded-full bg-blue-500/90 px-3 py-1 text-xs font-bold text-white">
+                    Crew ({obj.power ?? 0})
                   </span>
                 </div>
               )}

@@ -9,6 +9,7 @@ use crate::game::mana_sources;
 use crate::types::ability::ChoiceType;
 use crate::types::ability::TargetRef;
 use crate::types::actions::{GameAction, LearnOption};
+use crate::types::card::LayoutKind;
 use crate::types::card_type::CoreType;
 use crate::types::game_state::{ConvokeMode, GameState, TargetSelectionSlot, WaitingFor};
 use crate::types::match_config::DeckCardCount;
@@ -157,6 +158,13 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        // CR 702.122a: Generate valid creature subsets whose total power >= crew_power.
+        WaitingFor::CrewVehicle {
+            player,
+            vehicle_id,
+            crew_power,
+            eligible_creatures,
+        } => crew_vehicle_candidates(state, *player, *vehicle_id, *crew_power, eligible_creatures),
         WaitingFor::DiscoverChoice { player, .. } => vec![
             candidate(
                 GameAction::DiscoverChoice { cast: true },
@@ -600,6 +608,19 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
                 Some(*player),
             ),
         ],
+        // CR 712.12: Both MDFC land faces are playable — offer front or back
+        WaitingFor::ModalFaceChoice { player, .. } => vec![
+            candidate(
+                GameAction::ChooseModalFace { back_face: false },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+            candidate(
+                GameAction::ChooseModalFace { back_face: true },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+        ],
         WaitingFor::WarpCostChoice { player, .. } => vec![
             candidate(
                 GameAction::ChooseWarpCost { use_warp: true },
@@ -912,7 +933,13 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
     {
         for &obj_id in &p.hand {
             if let Some(obj) = state.objects.get(&obj_id) {
-                if obj.card_types.core_types.contains(&CoreType::Land) {
+                // CR 712.12: Also detect MDFCs where the back face is a land
+                let is_playable_land = obj.card_types.core_types.contains(&CoreType::Land)
+                    || obj.back_face.as_ref().is_some_and(|bf| {
+                        bf.layout_kind == Some(LayoutKind::Modal)
+                            && bf.card_types.core_types.contains(&CoreType::Land)
+                    });
+                if is_playable_land {
                     actions.push(candidate(
                         GameAction::PlayLand {
                             object_id: obj_id,
@@ -996,6 +1023,39 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
                             TacticalClass::Ability,
                             Some(player),
                         ));
+                    }
+                }
+            }
+        }
+    }
+
+    // CR 702.122a: Crew actions for Vehicles (keyword action, not ActivateAbility).
+    // Unlike Equip/Saddle, Crew has no "Activate only as a sorcery" restriction —
+    // it can be activated any time the controller has priority.
+    for &obj_id in &state.battlefield {
+        if let Some(obj) = state.objects.get(&obj_id) {
+            if obj.controller == player {
+                for kw in &obj.keywords {
+                    if let crate::types::keywords::Keyword::Crew(_) = kw {
+                        let has_eligible = state.battlefield.iter().any(|&cid| {
+                            cid != obj_id
+                                && state.objects.get(&cid).is_some_and(|c| {
+                                    c.controller == player
+                                        && !c.tapped
+                                        && c.card_types.core_types.contains(&CoreType::Creature)
+                                })
+                        });
+                        if has_eligible {
+                            actions.push(candidate(
+                                GameAction::CrewVehicle {
+                                    vehicle_id: obj_id,
+                                    creature_ids: vec![],
+                                },
+                                TacticalClass::Utility,
+                                Some(player),
+                            ));
+                        }
+                        break; // One crew action per Vehicle
                     }
                 }
             }
@@ -1434,6 +1494,60 @@ fn mana_payment_actions(
     }
     actions
 }
+/// CR 702.122a: Generate valid creature subsets whose total power >= crew_power.
+/// Iterates by increasing subset size, preferring smaller subsets (fewer creatures tapped).
+/// Capped at 50 candidates to avoid combinatorial explosion.
+fn crew_vehicle_candidates(
+    state: &GameState,
+    player: PlayerId,
+    vehicle_id: crate::types::identifiers::ObjectId,
+    crew_power: u32,
+    eligible_creatures: &[crate::types::identifiers::ObjectId],
+) -> Vec<CandidateAction> {
+    let mut actions = Vec::new();
+    let creatures_with_power: Vec<(crate::types::identifiers::ObjectId, i32)> = eligible_creatures
+        .iter()
+        .filter_map(|&id| {
+            state
+                .objects
+                .get(&id)
+                .map(|o| (id, o.power.unwrap_or(0).max(0)))
+        })
+        .collect();
+
+    let ids: Vec<crate::types::identifiers::ObjectId> =
+        creatures_with_power.iter().map(|&(id, _)| id).collect();
+    let threshold = crew_power as i32;
+
+    'outer: for size in 1..=creatures_with_power.len() {
+        for combo in combinations(&ids, size) {
+            let total: i32 = combo
+                .iter()
+                .filter_map(|id| {
+                    creatures_with_power
+                        .iter()
+                        .find(|(cid, _)| cid == id)
+                        .map(|(_, p)| *p)
+                })
+                .sum();
+            if total >= threshold {
+                actions.push(candidate(
+                    GameAction::CrewVehicle {
+                        vehicle_id,
+                        creature_ids: combo,
+                    },
+                    TacticalClass::Utility,
+                    Some(player),
+                ));
+                if actions.len() >= 50 {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    actions
+}
+
 fn combinations(
     items: &[crate::types::identifiers::ObjectId],
     k: usize,

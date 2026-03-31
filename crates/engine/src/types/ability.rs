@@ -3030,6 +3030,8 @@ pub enum EffectKind {
     Unimplemented,
     /// Engine-level equip action (not via an Effect handler).
     Equip,
+    /// CR 702.122a: Engine-level crew action (not via an Effect handler).
+    Crew,
     /// Trigger-condition placeholders — emitters not yet implemented.
     Reveal,
     Transform,

@@ -360,6 +360,37 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             creature,
             &mut events,
         )?,
+        // CR 712.12: Player chooses which face of an MDFC to play as a land.
+        (
+            WaitingFor::ModalFaceChoice {
+                player: _,
+                object_id,
+                card_id,
+            },
+            GameAction::ChooseModalFace { back_face },
+        ) => {
+            if let Some(obj) = state.objects.get_mut(object_id) {
+                if back_face {
+                    // Swap to back face using existing primitives
+                    let back = obj.back_face.take().expect("MDFC has back face");
+                    let front_snapshot = super::printed_cards::snapshot_object_face(obj);
+                    super::printed_cards::apply_back_face_to_object(obj, back);
+                    obj.back_face = Some(front_snapshot);
+                    // Do NOT set obj.transformed — MDFC face choice ≠ transform
+                } else {
+                    // Front face chosen — clear layout_kind so the MDFC intercept
+                    // won't re-fire on re-entry into handle_play_land.
+                    if let Some(ref mut bf) = obj.back_face {
+                        bf.layout_kind = None;
+                    }
+                }
+            }
+            // Re-enter handle_play_land. After swap, the new back_face (from
+            // snapshot_object_face) has layout_kind: None. After front-face choice,
+            // layout_kind is explicitly cleared. Either way, the both-faces-land
+            // intercept won't re-fire.
+            handle_play_land(state, *object_id, *card_id, &mut events)?
+        }
         // Player chooses normal cast or Warp cast from hand.
         (
             WaitingFor::WarpCostChoice {
@@ -1609,6 +1640,32 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             let p = *player;
             handle_equip_activation(state, p, equipment_id, &mut events)?
         }
+        // CR 702.122a: Crew activation from Priority
+        (WaitingFor::Priority { player }, GameAction::CrewVehicle { vehicle_id, .. }) => {
+            let p = *player;
+            handle_crew_activation(state, p, vehicle_id, &mut events)?
+        }
+        // CR 702.122a: Crew creature selection from CrewVehicle state
+        (
+            WaitingFor::CrewVehicle {
+                player,
+                vehicle_id,
+                crew_power,
+                eligible_creatures,
+            },
+            GameAction::CrewVehicle {
+                vehicle_id: _vid,
+                creature_ids,
+            },
+        ) => handle_crew_resolution(
+            state,
+            *player,
+            *vehicle_id,
+            *crew_power,
+            eligible_creatures,
+            &creature_ids,
+            &mut events,
+        )?,
         (WaitingFor::Priority { player }, GameAction::Transform { object_id }) => {
             let p = *player;
             let obj = state
@@ -3635,6 +3692,43 @@ fn handle_play_land(
         ));
     }
 
+    // CR 712.12: MDFC land face selection
+    if let Some(obj) = state.objects.get(&object_id) {
+        let is_modal = obj
+            .back_face
+            .as_ref()
+            .is_some_and(|bf| bf.layout_kind == Some(crate::types::card::LayoutKind::Modal));
+        let front_is_land = obj
+            .card_types
+            .core_types
+            .contains(&crate::types::card_type::CoreType::Land);
+        let back_is_land = obj.back_face.as_ref().is_some_and(|bf| {
+            bf.card_types
+                .core_types
+                .contains(&crate::types::card_type::CoreType::Land)
+        });
+
+        if is_modal && front_is_land && back_is_land {
+            // Both faces are lands — player must choose which face to put into play
+            return Ok(WaitingFor::ModalFaceChoice {
+                player: state.priority_player,
+                object_id,
+                card_id,
+            });
+        }
+
+        if is_modal && !front_is_land && back_is_land {
+            // CR 712.12: Only back face is a land — auto-swap (player already chose "play as land")
+            let obj = state.objects.get_mut(&object_id).unwrap();
+            let back = obj.back_face.take().expect("MDFC has back face");
+            let front_snapshot = super::printed_cards::snapshot_object_face(obj);
+            super::printed_cards::apply_back_face_to_object(obj, back);
+            obj.back_face = Some(front_snapshot);
+            // Do NOT set obj.transformed — MDFC face selection is not transformation.
+            // zones.rs:38-46 reverts transformed permanents on zone exit; MDFCs must not trigger this.
+        }
+    }
+
     // Determine origin zone for the zone change event
     let origin_zone = if in_hand { Zone::Hand } else { Zone::Graveyard };
 
@@ -3953,6 +4047,198 @@ fn handle_equip_activation(
         equipment_id,
         valid_targets,
     })
+}
+
+/// CR 702.122a: Activate a Vehicle's crew ability from Priority.
+/// Unlike Equip (CR 702.6a) and Saddle (CR 702.171a), Crew has NO "Activate only as a
+/// sorcery" restriction — it can be activated any time the controller has priority.
+fn handle_crew_activation(
+    state: &mut GameState,
+    player: PlayerId,
+    vehicle_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let obj = state
+        .objects
+        .get(&vehicle_id)
+        .ok_or_else(|| EngineError::InvalidAction("Vehicle not found".to_string()))?;
+
+    // Validate it's a Vehicle on the battlefield controlled by player
+    if obj.zone != Zone::Battlefield {
+        return Err(EngineError::InvalidAction(
+            "Vehicle is not on the battlefield".to_string(),
+        ));
+    }
+    if obj.controller != player {
+        return Err(EngineError::InvalidAction(
+            "You don't control this Vehicle".to_string(),
+        ));
+    }
+    if !obj.card_types.subtypes.contains(&"Vehicle".to_string()) {
+        return Err(EngineError::InvalidAction(
+            "Object is not a Vehicle".to_string(),
+        ));
+    }
+
+    // Extract crew power from keywords
+    let crew_power = obj
+        .keywords
+        .iter()
+        .find_map(|kw| {
+            if let crate::types::keywords::Keyword::Crew(n) = kw {
+                Some(*n)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| EngineError::InvalidAction("Vehicle has no Crew keyword".to_string()))?;
+
+    // Find eligible creatures: untapped creatures controlled by player, excluding the Vehicle
+    // TODO: CR 702.122c — filter out creatures with "can't crew Vehicles" restriction when implemented
+    let eligible_creatures: Vec<ObjectId> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|&id| {
+            id != vehicle_id
+                && state
+                    .objects
+                    .get(&id)
+                    .map(|o| {
+                        o.controller == player
+                            && !o.tapped
+                            && o.card_types
+                                .core_types
+                                .contains(&crate::types::card_type::CoreType::Creature)
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    // Validate total power of all eligible creatures can meet the threshold
+    let total_power: i32 = eligible_creatures
+        .iter()
+        .filter_map(|id| state.objects.get(id))
+        .map(|o| o.power.unwrap_or(0).max(0))
+        .sum();
+
+    if total_power < crew_power as i32 {
+        return Err(EngineError::ActionNotAllowed(
+            "Not enough total power among eligible creatures to crew".to_string(),
+        ));
+    }
+
+    let _ = events; // No events emitted during activation
+    state.priority_passes.clear();
+    state.priority_pass_count = 0;
+    Ok(WaitingFor::CrewVehicle {
+        player,
+        vehicle_id,
+        crew_power,
+        eligible_creatures,
+    })
+}
+
+/// CR 702.122a: Resolve crew by tapping selected creatures and animating the Vehicle.
+fn handle_crew_resolution(
+    state: &mut GameState,
+    player: PlayerId,
+    vehicle_id: ObjectId,
+    crew_power: u32,
+    eligible_creatures: &[ObjectId],
+    creature_ids: &[ObjectId],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if creature_ids.is_empty() {
+        return Err(EngineError::InvalidAction(
+            "Must select at least one creature to crew".to_string(),
+        ));
+    }
+
+    // Validate Vehicle is still on battlefield and controlled by player
+    let vehicle = state
+        .objects
+        .get(&vehicle_id)
+        .ok_or_else(|| EngineError::InvalidAction("Vehicle no longer exists".to_string()))?;
+    if vehicle.zone != Zone::Battlefield || vehicle.controller != player {
+        return Err(EngineError::InvalidAction(
+            "Vehicle is no longer valid for crewing".to_string(),
+        ));
+    }
+
+    // Validate all creature_ids are in eligible_creatures
+    for &cid in creature_ids {
+        if !eligible_creatures.contains(&cid) {
+            return Err(EngineError::InvalidAction(
+                "Creature not in eligible list".to_string(),
+            ));
+        }
+    }
+
+    // Re-validate and read power of each creature BEFORE tapping (HarmonizeTap idiom)
+    let mut total_power: i32 = 0;
+    for &cid in creature_ids {
+        let obj = state
+            .objects
+            .get(&cid)
+            .ok_or_else(|| EngineError::InvalidAction("Creature no longer exists".to_string()))?;
+        if obj.zone != Zone::Battlefield || obj.tapped {
+            return Err(EngineError::InvalidAction(
+                "Creature is no longer eligible for crewing".to_string(),
+            ));
+        }
+        total_power += obj.power.unwrap_or(0).max(0);
+    }
+
+    // CR 702.122a: Total power must meet threshold
+    if total_power < crew_power as i32 {
+        return Err(EngineError::InvalidAction(
+            "Selected creatures' total power is less than crew requirement".to_string(),
+        ));
+    }
+
+    // Tap each creature — CR 702.122b: creature "crews" the Vehicle
+    for &cid in creature_ids {
+        if let Some(obj) = state.objects.get_mut(&cid) {
+            obj.tapped = true;
+        }
+        events.push(GameEvent::PermanentTapped {
+            object_id: cid,
+            caused_by: None,
+        });
+    }
+
+    // CR 702.122a: "This permanent becomes an artifact creature until end of turn."
+    // Validate Vehicle still exists before applying animation (animate.rs:92-93 pattern)
+    if !state.objects.contains_key(&vehicle_id) {
+        return Err(EngineError::InvalidAction(
+            "Vehicle no longer exists after tapping creatures".to_string(),
+        ));
+    }
+    state.add_transient_continuous_effect(
+        vehicle_id,
+        player,
+        crate::types::ability::Duration::UntilEndOfTurn,
+        TargetFilter::SpecificObject { id: vehicle_id },
+        vec![crate::types::ability::ContinuousModification::AddType {
+            core_type: crate::types::card_type::CoreType::Creature,
+        }],
+        None,
+    );
+
+    // CR 702.122d: Emit crewed event for trigger matching
+    events.push(GameEvent::VehicleCrewed {
+        vehicle_id,
+        creatures: creature_ids.to_vec(),
+    });
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::Crew,
+        source_id: vehicle_id,
+    });
+
+    state.priority_passes.clear();
+    state.priority_pass_count = 0;
+    Ok(WaitingFor::Priority { player })
 }
 
 pub fn new_game(seed: u64) -> GameState {
@@ -8436,5 +8722,702 @@ mod phase_trigger_regression_tests {
             },
         );
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod crew_tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::card_type::CoreType;
+    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::player::PlayerId;
+    use crate::types::zones::Zone;
+
+    fn setup_game_at_main_phase() -> GameState {
+        let mut state = new_game(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        state
+    }
+
+    /// Set up a Vehicle (Crew 3) and creatures for crew tests.
+    fn setup_crew_scenario() -> (GameState, ObjectId, ObjectId, ObjectId) {
+        let mut state = setup_game_at_main_phase();
+
+        // Create a Vehicle with Crew 3 and 6/5 P/T
+        let vehicle_id = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Test Vehicle".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&vehicle_id).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Artifact);
+            obj.card_types.subtypes.push("Vehicle".to_string());
+            obj.keywords.push(crate::types::keywords::Keyword::Crew(3));
+            obj.base_power = Some(6);
+            obj.base_toughness = Some(5);
+            obj.power = Some(6);
+            obj.toughness = Some(5);
+        }
+
+        // Create a 3/3 creature
+        let creature_a = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(0),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&creature_a).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(3);
+            obj.toughness = Some(3);
+            obj.base_power = Some(3);
+            obj.base_toughness = Some(3);
+        }
+
+        // Create a 2/2 creature
+        let creature_b = create_object(
+            &mut state,
+            CardId(202),
+            PlayerId(0),
+            "Squire".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&creature_b).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            obj.base_power = Some(2);
+            obj.base_toughness = Some(2);
+        }
+
+        (state, vehicle_id, creature_a, creature_b)
+    }
+
+    #[test]
+    fn test_crew_activation_enters_crew_vehicle_state() {
+        let (mut state, vehicle_id, creature_a, creature_b) = setup_crew_scenario();
+
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        match result.waiting_for {
+            WaitingFor::CrewVehicle {
+                player,
+                vehicle_id: vid,
+                crew_power,
+                eligible_creatures,
+            } => {
+                assert_eq!(player, PlayerId(0));
+                assert_eq!(vid, vehicle_id);
+                assert_eq!(crew_power, 3);
+                assert!(eligible_creatures.contains(&creature_a));
+                assert!(eligible_creatures.contains(&creature_b));
+            }
+            other => panic!("Expected CrewVehicle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_crew_resolution_single_creature_meets_threshold() {
+        let (mut state, vehicle_id, creature_a, _creature_b) = setup_crew_scenario();
+
+        // Activate crew
+        apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        // Resolve with creature_a (power 3 >= crew 3)
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![creature_a],
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::Priority {
+                player: PlayerId(0)
+            }
+        ));
+
+        // Creature should be tapped
+        assert!(state.objects.get(&creature_a).unwrap().tapped);
+
+        // Vehicle should still exist on battlefield
+        let vehicle = state.objects.get(&vehicle_id).unwrap();
+        assert_eq!(vehicle.zone, Zone::Battlefield);
+
+        // Events should include VehicleCrewed
+        assert!(result.events.iter().any(|e| matches!(
+            e,
+            GameEvent::VehicleCrewed {
+                vehicle_id: vid,
+                creatures,
+            } if *vid == vehicle_id && creatures == &[creature_a]
+        )));
+    }
+
+    #[test]
+    fn test_crew_resolution_multiple_creatures_sum_power() {
+        let (mut state, vehicle_id, creature_a, creature_b) = setup_crew_scenario();
+
+        // Make creature_a only power 2 so both are needed
+        state.objects.get_mut(&creature_a).unwrap().power = Some(2);
+        state.objects.get_mut(&creature_a).unwrap().base_power = Some(2);
+
+        // Activate crew
+        apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        // Resolve with both creatures (2 + 2 = 4 >= 3)
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![creature_a, creature_b],
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.objects.get(&creature_a).unwrap().tapped);
+        assert!(state.objects.get(&creature_b).unwrap().tapped);
+    }
+
+    #[test]
+    fn test_crew_fails_insufficient_power() {
+        let (mut state, vehicle_id, _creature_a, creature_b) = setup_crew_scenario();
+
+        // Activate crew
+        apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        // creature_b has power 2, threshold is 3
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![creature_b],
+            },
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_crew_succeeds_at_instant_speed() {
+        // CR 702.122a: Crew has no "Activate only as a sorcery" restriction —
+        // unlike Equip (CR 702.6a) and Saddle (CR 702.171a).
+        let (mut state, vehicle_id, creature_a, _creature_b) = setup_crew_scenario();
+        state.phase = Phase::BeginCombat;
+
+        // Activation should succeed during combat
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(result.waiting_for, WaitingFor::CrewVehicle { .. }));
+
+        // Resolution should also succeed
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![creature_a],
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.objects.get(&creature_a).unwrap().tapped);
+    }
+
+    #[test]
+    fn test_crew_fails_not_a_vehicle() {
+        let mut state = setup_game_at_main_phase();
+
+        // Create a non-Vehicle artifact
+        let artifact_id = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Not A Vehicle".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&artifact_id).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Artifact);
+            obj.keywords.push(crate::types::keywords::Keyword::Crew(1));
+        }
+
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id: artifact_id,
+                creature_ids: vec![],
+            },
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_crew_vehicle_excludes_itself_from_eligible() {
+        let (mut state, vehicle_id, _creature_a, _creature_b) = setup_crew_scenario();
+
+        // Make the Vehicle also a creature (e.g., from a prior crew)
+        state
+            .objects
+            .get_mut(&vehicle_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let result = apply(
+            &mut state,
+            GameAction::CrewVehicle {
+                vehicle_id,
+                creature_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        match result.waiting_for {
+            WaitingFor::CrewVehicle {
+                eligible_creatures, ..
+            } => {
+                // Vehicle should NOT be in eligible creatures even though it's a creature
+                assert!(!eligible_creatures.contains(&vehicle_id));
+            }
+            other => panic!("Expected CrewVehicle, got {:?}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod mdfc_land_tests {
+    use super::*;
+    use crate::game::game_object::BackFaceData;
+    use crate::game::zones::create_object;
+    use crate::types::card::LayoutKind;
+    use crate::types::card_type::{CardType, CoreType};
+    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::mana::ManaCost;
+
+    fn setup_game_at_main_phase() -> GameState {
+        let mut state = new_game(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        state
+    }
+
+    fn make_land_type() -> CardType {
+        CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Land],
+            subtypes: vec![],
+        }
+    }
+
+    fn make_creature_type() -> CardType {
+        CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Creature],
+            subtypes: vec![],
+        }
+    }
+
+    fn make_back_face(
+        name: &str,
+        card_types: CardType,
+        layout_kind: Option<LayoutKind>,
+    ) -> BackFaceData {
+        BackFaceData {
+            name: name.to_string(),
+            power: None,
+            toughness: None,
+            loyalty: None,
+            card_types,
+            mana_cost: ManaCost::default(),
+            keywords: Vec::new(),
+            abilities: Vec::new(),
+            trigger_definitions: Vec::new(),
+            replacement_definitions: Vec::new(),
+            static_definitions: Vec::new(),
+            color: Vec::new(),
+            printed_ref: None,
+            modal: None,
+            additional_cost: None,
+            strive_cost: None,
+            casting_restrictions: Vec::new(),
+            casting_options: Vec::new(),
+            layout_kind,
+        }
+    }
+
+    /// Create an MDFC in hand with the given front and back card types.
+    fn create_mdfc_in_hand(
+        state: &mut GameState,
+        front_name: &str,
+        front_types: CardType,
+        back_name: &str,
+        back_types: CardType,
+    ) -> (ObjectId, CardId) {
+        let obj_id = create_object(
+            state,
+            CardId(100),
+            PlayerId(0),
+            front_name.to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types = front_types;
+        obj.back_face = Some(make_back_face(
+            back_name,
+            back_types,
+            Some(LayoutKind::Modal),
+        ));
+        (obj_id, CardId(100))
+    }
+
+    // CR 712.12: MDFC Land/Land should return ModalFaceChoice
+    #[test]
+    fn mdfc_land_land_returns_modal_face_choice() {
+        let mut state = setup_game_at_main_phase();
+        let (obj_id, card_id) = create_mdfc_in_hand(
+            &mut state,
+            "Branchloft Pathway",
+            make_land_type(),
+            "Boulderloft Pathway",
+            make_land_type(),
+        );
+
+        let result = apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: obj_id,
+                card_id,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            matches!(
+                result.waiting_for,
+                WaitingFor::ModalFaceChoice {
+                    player: PlayerId(0),
+                    ..
+                }
+            ),
+            "Expected ModalFaceChoice, got {:?}",
+            result.waiting_for
+        );
+    }
+
+    // CR 712.12: Choosing back face enters with back-face characteristics
+    #[test]
+    fn mdfc_choose_back_face_enters_with_back_characteristics() {
+        let mut state = setup_game_at_main_phase();
+        let (obj_id, card_id) = create_mdfc_in_hand(
+            &mut state,
+            "Branchloft Pathway",
+            make_land_type(),
+            "Boulderloft Pathway",
+            make_land_type(),
+        );
+
+        // Trigger ModalFaceChoice
+        let result = apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: obj_id,
+                card_id,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::ModalFaceChoice { .. }
+        ));
+
+        // Choose back face
+        let result = apply(&mut state, GameAction::ChooseModalFace { back_face: true }).unwrap();
+
+        // Should return to priority (not another ModalFaceChoice)
+        assert!(
+            matches!(result.waiting_for, WaitingFor::Priority { .. }),
+            "Expected Priority after face choice, got {:?}",
+            result.waiting_for
+        );
+
+        // Object should be on battlefield with back-face name
+        let obj = state.objects.get(&obj_id).unwrap();
+        assert_eq!(obj.zone, Zone::Battlefield);
+        assert_eq!(obj.name, "Boulderloft Pathway");
+        assert!(
+            !obj.transformed,
+            "MDFC face choice must not set transformed"
+        );
+    }
+
+    // CR 712.12: Choosing front face enters normally
+    #[test]
+    fn mdfc_choose_front_face_enters_normally() {
+        let mut state = setup_game_at_main_phase();
+        let (obj_id, card_id) = create_mdfc_in_hand(
+            &mut state,
+            "Branchloft Pathway",
+            make_land_type(),
+            "Boulderloft Pathway",
+            make_land_type(),
+        );
+
+        apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: obj_id,
+                card_id,
+            },
+        )
+        .unwrap();
+
+        let result = apply(&mut state, GameAction::ChooseModalFace { back_face: false }).unwrap();
+
+        assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
+        let obj = state.objects.get(&obj_id).unwrap();
+        assert_eq!(obj.zone, Zone::Battlefield);
+        assert_eq!(obj.name, "Branchloft Pathway");
+    }
+
+    // CR 712.12: MDFC Creature/Land auto-swaps to land face without choice dialog
+    #[test]
+    fn mdfc_creature_land_auto_swaps_to_land_face() {
+        let mut state = setup_game_at_main_phase();
+        let (obj_id, card_id) = create_mdfc_in_hand(
+            &mut state,
+            "Kazandu Mammoth",
+            make_creature_type(),
+            "Kazandu Valley",
+            make_land_type(),
+        );
+
+        let result = apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: obj_id,
+                card_id,
+            },
+        )
+        .unwrap();
+
+        // Should go directly to Priority (no ModalFaceChoice)
+        assert!(
+            matches!(result.waiting_for, WaitingFor::Priority { .. }),
+            "Expected Priority (auto-swap), got {:?}",
+            result.waiting_for
+        );
+
+        // Object enters with back-face (land) characteristics
+        let obj = state.objects.get(&obj_id).unwrap();
+        assert_eq!(obj.zone, Zone::Battlefield);
+        assert_eq!(obj.name, "Kazandu Valley");
+        assert!(!obj.transformed);
+    }
+
+    // CR 712.12: MDFC Land/Creature plays front face normally, no choice needed
+    #[test]
+    fn mdfc_land_creature_plays_front_face_normally() {
+        let mut state = setup_game_at_main_phase();
+        let (obj_id, card_id) = create_mdfc_in_hand(
+            &mut state,
+            "Hagra Mauling",
+            make_land_type(),
+            "Hagra Broodpit",
+            make_creature_type(),
+        );
+        // Set layout_kind on back face to Modal
+        if let Some(obj) = state.objects.get_mut(&obj_id) {
+            if let Some(ref mut bf) = obj.back_face {
+                bf.layout_kind = Some(LayoutKind::Modal);
+            }
+        }
+
+        let result = apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: obj_id,
+                card_id,
+            },
+        )
+        .unwrap();
+
+        // Should go directly to Priority (front is Land, back is Creature, no choice)
+        assert!(
+            matches!(result.waiting_for, WaitingFor::Priority { .. }),
+            "Expected Priority, got {:?}",
+            result.waiting_for
+        );
+        let obj = state.objects.get(&obj_id).unwrap();
+        assert_eq!(obj.name, "Hagra Mauling");
+    }
+
+    // Transform DFC with Land back should NOT trigger ModalFaceChoice
+    #[test]
+    fn transform_dfc_land_back_no_modal_face_choice() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Westvale Abbey".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types = make_land_type();
+        obj.back_face = Some(make_back_face(
+            "Ormendahl",
+            make_land_type(),
+            Some(LayoutKind::Transform), // Transform, not Modal
+        ));
+
+        let result = apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: obj_id,
+                card_id: CardId(200),
+            },
+        )
+        .unwrap();
+
+        // Should NOT produce ModalFaceChoice — only Modal layout triggers it
+        assert!(
+            matches!(result.waiting_for, WaitingFor::Priority { .. }),
+            "Transform DFC should not trigger ModalFaceChoice, got {:?}",
+            result.waiting_for
+        );
+    }
+
+    // AI candidates: both ChooseModalFace options generated for ModalFaceChoice
+    #[test]
+    fn ai_generates_both_modal_face_candidates() {
+        let mut state = setup_game_at_main_phase();
+        let (obj_id, card_id) = create_mdfc_in_hand(
+            &mut state,
+            "Branchloft Pathway",
+            make_land_type(),
+            "Boulderloft Pathway",
+            make_land_type(),
+        );
+
+        // Trigger ModalFaceChoice via PlayLand
+        let result = apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: obj_id,
+                card_id,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::ModalFaceChoice { .. }
+        ));
+
+        let candidates = crate::ai_support::legal_actions(&state);
+        let modal_actions: Vec<_> = candidates
+            .iter()
+            .filter(|c| matches!(c, GameAction::ChooseModalFace { .. }))
+            .collect();
+
+        assert_eq!(
+            modal_actions.len(),
+            2,
+            "Expected 2 ChooseModalFace candidates"
+        );
+    }
+
+    // CR 712.8a: MDFC Creature/Land in graveyard — front face only, NOT a land
+    #[test]
+    fn mdfc_creature_land_in_graveyard_not_offered_as_land() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Kazandu Mammoth".to_string(),
+            Zone::Graveyard,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types = make_creature_type();
+        obj.back_face = Some(make_back_face(
+            "Kazandu Valley",
+            make_land_type(),
+            Some(LayoutKind::Modal),
+        ));
+
+        let candidates = crate::ai_support::legal_actions(&state);
+        let land_actions: Vec<_> = candidates
+            .iter()
+            .filter(|c| matches!(c, GameAction::PlayLand { object_id, .. } if *object_id == obj_id))
+            .collect();
+
+        assert!(
+            land_actions.is_empty(),
+            "CR 712.8a: MDFC Creature/Land in graveyard should not be offered as PlayLand"
+        );
     }
 }

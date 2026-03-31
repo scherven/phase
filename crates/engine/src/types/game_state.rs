@@ -370,6 +370,15 @@ pub enum WaitingFor {
         equipment_id: ObjectId,
         valid_targets: Vec<ObjectId>,
     },
+    /// CR 702.122a: Player must tap creatures with total power >= crew_power.
+    CrewVehicle {
+        player: PlayerId,
+        vehicle_id: ObjectId,
+        /// The crew N value from the keyword.
+        crew_power: u32,
+        /// Untapped creatures the player controls (excluding the Vehicle itself).
+        eligible_creatures: Vec<ObjectId>,
+    },
     ScryChoice {
         player: PlayerId,
         cards: Vec<ObjectId>,
@@ -525,6 +534,13 @@ pub enum WaitingFor {
     /// CR 715.3a: Player chooses creature face vs Adventure half when casting
     /// an Adventure card from hand (or exile with permission).
     AdventureCastChoice {
+        player: PlayerId,
+        object_id: ObjectId,
+        card_id: CardId,
+    },
+    /// CR 712.12: Player chooses which face of an MDFC to play as a land
+    /// when both faces have the Land type.
+    ModalFaceChoice {
         player: PlayerId,
         object_id: ObjectId,
         card_id: CardId,
@@ -812,6 +828,7 @@ impl WaitingFor {
             | WaitingFor::CopyTargetChoice { player, .. }
             | WaitingFor::ExploreChoice { player, .. }
             | WaitingFor::EquipTarget { player, .. }
+            | WaitingFor::CrewVehicle { player, .. }
             | WaitingFor::ScryChoice { player, .. }
             | WaitingFor::DigChoice { player, .. }
             | WaitingFor::SurveilChoice { player, .. }
@@ -831,6 +848,7 @@ impl WaitingFor {
             | WaitingFor::AbilityModeChoice { player, .. }
             | WaitingFor::MultiTargetSelection { player, .. }
             | WaitingFor::AdventureCastChoice { player, .. }
+            | WaitingFor::ModalFaceChoice { player, .. }
             | WaitingFor::WarpCostChoice { player, .. }
             | WaitingFor::ChooseRingBearer { player, .. }
             | WaitingFor::DiscardForCost { player, .. }

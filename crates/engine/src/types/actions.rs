@@ -57,6 +57,13 @@ pub enum GameAction {
         equipment_id: ObjectId,
         target_id: ObjectId,
     },
+    /// CR 702.122a: Crew a Vehicle by tapping creatures with total power >= N.
+    /// During Priority: creature_ids is empty (triggers state transition).
+    /// During CrewVehicle: creature_ids contains the selected creatures.
+    CrewVehicle {
+        vehicle_id: ObjectId,
+        creature_ids: Vec<ObjectId>,
+    },
     Transform {
         object_id: ObjectId,
     },
@@ -86,6 +93,10 @@ pub enum GameAction {
     /// CR 715.3a: Choose creature face (true) or Adventure half (false).
     ChooseAdventureFace {
         creature: bool,
+    },
+    /// CR 712.12: Choose front face (false) or back face (true) for MDFC land play.
+    ChooseModalFace {
+        back_face: bool,
     },
     /// Choose normal cast (false) or Warp cast (true) from hand.
     ChooseWarpCost {

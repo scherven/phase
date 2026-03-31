@@ -550,6 +550,9 @@ pub fn synthesize_entwine(face: &mut CardFace) {
 pub fn synthesize_all(face: &mut CardFace) {
     synthesize_basic_land_mana(face);
     synthesize_equip(face);
+    // CR 702.122a: Crew has no synthesized ability — activation is handled by
+    // GameAction::CrewVehicle directly, not through ActivateAbility dispatch.
+    // The Keyword::Crew(N) on the card provides display information.
     synthesize_ninjutsu_family(face);
     synthesize_changeling_cda(face);
     synthesize_kicker(face);

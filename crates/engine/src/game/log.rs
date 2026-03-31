@@ -139,7 +139,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::CaseSolved { .. }
         | GameEvent::ClassLevelGained { .. }
         | GameEvent::DayNightChanged { .. }
-        | GameEvent::PowerToughnessChanged { .. } => LogCategory::State,
+        | GameEvent::PowerToughnessChanged { .. }
+        | GameEvent::VehicleCrewed { .. } => LogCategory::State,
 
         GameEvent::SpeedChanged { .. } => LogCategory::Special,
 
@@ -703,6 +704,20 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
                 power, toughness, power_delta, toughness_delta
             )),
         ],
+
+        GameEvent::VehicleCrewed {
+            vehicle_id,
+            creatures,
+        } => {
+            let mut segs = vec![card_seg(state, *vehicle_id), text(" crewed by ")];
+            for (i, cid) in creatures.iter().enumerate() {
+                if i > 0 {
+                    segs.push(text(", "));
+                }
+                segs.push(card_seg(state, *cid));
+            }
+            segs
+        }
     }
 }
 

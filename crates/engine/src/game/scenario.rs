@@ -1050,6 +1050,7 @@ impl GameRunner {
             WaitingFor::OptionalCostChoice { .. } => "OptionalCostChoice",
             WaitingFor::DefilerPayment { .. } => "DefilerPayment",
             WaitingFor::AdventureCastChoice { .. } => "AdventureCastChoice",
+            WaitingFor::ModalFaceChoice { .. } => "ModalFaceChoice",
             WaitingFor::WarpCostChoice { .. } => "WarpCostChoice",
             WaitingFor::MultiTargetSelection { .. } => "MultiTargetSelection",
             WaitingFor::AbilityModeChoice { .. } => "AbilityModeChoice",
@@ -1074,6 +1075,7 @@ impl GameRunner {
             WaitingFor::WardDiscardChoice { .. } => "WardDiscardChoice",
             WaitingFor::WardSacrificeChoice { .. } => "WardSacrificeChoice",
             WaitingFor::LearnChoice { .. } => "LearnChoice",
+            WaitingFor::CrewVehicle { .. } => "CrewVehicle",
         }
     }
 
