@@ -397,9 +397,13 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
     // Fall back to parse_quantity_ref for named quantity patterns
     // (e.g., "the life you've lost this turn" → LifeLostThisTurn).
     // Strip leading "the " article before matching.
+    // Exclude target-referent variants (TargetPower, TargetLifeTotal) — these
+    // reference a targeting selection, not an event-context source object.
     let stripped = lower.strip_prefix("the ").unwrap_or(lower);
     if let Some(qty) = parse_quantity_ref(stripped) {
-        return Some(QuantityExpr::Ref { qty });
+        if !matches!(qty, QuantityRef::TargetPower | QuantityRef::TargetLifeTotal) {
+            return Some(QuantityExpr::Ref { qty });
+        }
     }
 
     None
