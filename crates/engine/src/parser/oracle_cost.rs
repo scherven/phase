@@ -99,12 +99,13 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Sacrifice ~" / "Sacrifice a/an/N {filter}"
-    if lower.starts_with("sacrifice ") {
-        let rest = &text[10..].trim();
+    if let Some(sac_rest) = lower.strip_prefix("sacrifice ") {
+        let rest_offset = text.len() - sac_rest.len();
+        let rest = text[rest_offset..].trim();
         let rest_lower = rest.to_lowercase();
-        if rest_lower.starts_with('~')
-            || rest_lower.starts_with("cardname")
-            || rest_lower.starts_with("this ")
+        if rest_lower.strip_prefix('~').is_some()
+            || rest_lower.strip_prefix("cardname").is_some()
+            || rest_lower.strip_prefix("this ").is_some()
         {
             return AbilityCost::Sacrifice {
                 target: TargetFilter::SelfRef,
@@ -119,24 +120,20 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
                     (count, rest_after_count.trim().to_string())
                 } else {
                     // Count was 1 — treat as single sacrifice with article stripping
-                    let stripped = if rest_lower.starts_with("a ") {
-                        &rest[2..]
-                    } else if rest_lower.starts_with("an ") {
-                        &rest[3..]
-                    } else {
-                        rest
-                    };
+                    let stripped = rest_lower
+                        .strip_prefix("a ")
+                        .or_else(|| rest_lower.strip_prefix("an "))
+                        .map(|r| &rest[rest.len() - r.len()..])
+                        .unwrap_or(rest);
                     (1, stripped.to_string())
                 }
             } else {
                 // No number found — strip article
-                let stripped = if rest_lower.starts_with("a ") {
-                    &rest[2..]
-                } else if rest_lower.starts_with("an ") {
-                    &rest[3..]
-                } else {
-                    rest
-                };
+                let stripped = rest_lower
+                    .strip_prefix("a ")
+                    .or_else(|| rest_lower.strip_prefix("an "))
+                    .map(|r| &rest[rest.len() - r.len()..])
+                    .unwrap_or(rest);
                 (1, stripped.to_string())
             };
         let (filter, _) = parse_target(&format!("target {}", filter_text));
@@ -147,9 +144,14 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Pay N life" / "N life"
-    if (lower.starts_with("pay ") || lower.ends_with(" life")) && lower.contains("life") {
-        let rest = lower.strip_prefix("pay ").unwrap_or(&lower);
-        if let Some((n, _)) = parse_number(rest) {
+    if let Some(rest) = lower.strip_prefix("pay ") {
+        if rest.contains("life") {
+            if let Some((n, _)) = parse_number(rest) {
+                return AbilityCost::PayLife { amount: n };
+            }
+        }
+    } else if lower.ends_with(" life") {
+        if let Some((n, _)) = parse_number(&lower) {
             return AbilityCost::PayLife { amount: n };
         }
     }
@@ -188,7 +190,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
                 self_ref: true,
             };
         }
-        if rest.starts_with("a card") {
+        if rest.strip_prefix("a card").is_some() {
             return AbilityCost::Discard {
                 count: 1,
                 filter: None,
@@ -253,25 +255,26 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Remove N {type} counter(s) from ~"
-    if lower.starts_with("remove ") && lower.contains("counter") {
-        let after_remove = &lower["remove ".len()..];
-        if let Some((count, rest)) = parse_number(after_remove) {
-            let counter_type = rest.split_whitespace().next().unwrap_or("").to_string();
-            return AbilityCost::RemoveCounter {
-                count,
-                counter_type,
-                target: None,
-            };
-        }
-        // Fallback: "remove a/an {type} counter from ~"
-        let words: Vec<&str> = text.split_whitespace().collect();
-        if words.len() >= 4 {
-            let counter_type = words[2].to_string();
-            return AbilityCost::RemoveCounter {
-                count: 1,
-                counter_type,
-                target: None,
-            };
+    if let Some(after_remove) = lower.strip_prefix("remove ") {
+        if after_remove.contains("counter") {
+            if let Some((count, rest)) = parse_number(after_remove) {
+                let counter_type = rest.split_whitespace().next().unwrap_or("").to_string();
+                return AbilityCost::RemoveCounter {
+                    count,
+                    counter_type,
+                    target: None,
+                };
+            }
+            // Fallback: "remove a/an {type} counter from ~"
+            let words: Vec<&str> = text.split_whitespace().collect();
+            if words.len() >= 4 {
+                let counter_type = words[2].to_string();
+                return AbilityCost::RemoveCounter {
+                    count: 1,
+                    counter_type,
+                    target: None,
+                };
+            }
         }
     }
 
@@ -336,17 +339,15 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Reveal this card from your hand" — reveal self cost
-    if lower == "reveal this card from your hand"
-        || lower.starts_with("reveal this card from your hand")
+    if lower
+        .strip_prefix("reveal this card from your hand")
+        .is_some()
     {
         return AbilityCost::Reveal { count: 1 };
     }
 
     // "Exert this creature" / "Exert ~" — exert cost (CR 701.43)
-    if lower.starts_with("exert this ")
-        || lower.starts_with("exert ~")
-        || lower == "exert this creature"
-    {
+    if lower.strip_prefix("exert this ").is_some() || lower.strip_prefix("exert ~").is_some() {
         return AbilityCost::Exert;
     }
 
@@ -363,7 +364,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     // "Pay {N}{W}" — mana cost with "pay" prefix
     if let Some(mana_text) = lower.strip_prefix("pay ") {
         let mana_text = mana_text.trim();
-        if mana_text.starts_with('{') {
+        if mana_text.strip_prefix('{').is_some() {
             if let Some((cost, rest)) = parse_mana_symbols(mana_text) {
                 if rest.trim().is_empty() {
                     return AbilityCost::Mana { cost };
@@ -405,7 +406,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // Mana cost: {N}{W}{U} etc. — delegate to nom combinator for uppercase input.
-    if text.starts_with('{') {
+    if lower.strip_prefix('{').is_some() {
         let upper = text.to_ascii_uppercase();
         if let Ok((rest, cost)) = nom_primitives::parse_mana_cost.parse(&upper) {
             if rest.trim().is_empty() {
@@ -483,7 +484,7 @@ fn strip_count_article_prefix(text: &str) -> &str {
 /// Also handles `~` (normalized card name) variants.
 fn try_parse_self_exile_cost(rest: &str) -> Option<Option<Zone>> {
     let rest = rest.trim();
-    let is_self = rest.starts_with("this ") || rest.starts_with("~ ");
+    let is_self = rest.strip_prefix("this ").is_some() || rest.strip_prefix("~ ").is_some();
     // "~ from your graveyard" / "this card from your graveyard"
     if is_self && rest.ends_with("from your graveyard") {
         return Some(Some(Zone::Graveyard));
@@ -513,11 +514,15 @@ fn try_parse_self_exile_cost(rest: &str) -> Option<Option<Zone>> {
 /// Parse "the top card of your library" / "the top N cards of your library".
 fn try_parse_exile_top_library(rest: &str) -> Option<u32> {
     let rest = rest.strip_prefix("the top ")?.trim();
-    if rest.starts_with("card of your library") {
+    if rest.strip_prefix("card of your library").is_some() {
         return Some(1);
     }
     if let Some((n, remainder)) = parse_number(rest) {
-        if remainder.trim().starts_with("cards of your library") {
+        if remainder
+            .trim()
+            .strip_prefix("cards of your library")
+            .is_some()
+        {
             return Some(n);
         }
     }
@@ -585,7 +590,7 @@ fn try_strip_ability_word_cost(text: &str) -> Option<AbilityCost> {
         }
     }
     // Ticket costs: "{TK}{TK} — {T}", "{TK}{TK}{TK} — {3}"
-    if lower.starts_with("{tk}") {
+    if lower.strip_prefix("{tk}").is_some() {
         if let Some(dash_pos) = text
             .find(" — ")
             .or_else(|| text.find(" — "))

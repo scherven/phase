@@ -12,7 +12,9 @@ pub(crate) fn expand_protection_parts<'a>(parts: &[&'a str]) -> Vec<Cow<'a, str>
     // Fast path: skip allocation when no expansion is needed
     if !parts.iter().any(|p| {
         let l = p.to_ascii_lowercase();
-        l.contains(" and from ") || l.starts_with("from ") || l.starts_with("and from ")
+        l.contains(" and from ")
+            || l.strip_prefix("from ").is_some()
+            || l.strip_prefix("and from ").is_some()
     }) {
         return parts.iter().map(|&p| Cow::Borrowed(p)).collect();
     }
@@ -26,9 +28,9 @@ pub(crate) fn expand_protection_parts<'a>(parts: &[&'a str]) -> Vec<Cow<'a, str>
 
         // Check for "protection from X and from Y" or "hexproof from X and from Y"
         // (prefix_with_space, emit_prefix_no_space) — strip the prefix+space, emit prefix without space
-        let prefix_match = if lower.starts_with("protection from ") {
+        let prefix_match = if lower.strip_prefix("protection from ").is_some() {
             Some("protection from")
-        } else if lower.starts_with("hexproof from ") {
+        } else if lower.strip_prefix("hexproof from ").is_some() {
             Some("hexproof from")
         } else {
             None
@@ -95,8 +97,9 @@ pub(crate) fn extract_keyword_line(
         // Prefix match: "protection from multicolored" starts with "protection"
         let mtgjson_match = mtgjson_keyword_names.iter().any(|name| {
             lower == *name
-                || lower.starts_with(&format!("{name} "))
-                || lower.starts_with(&format!("{name}\u{2014}"))
+                || lower.strip_prefix(name.as_str()).is_some_and(|rest| {
+                    rest.strip_prefix(' ').is_some() || rest.strip_prefix('\u{2014}').is_some()
+                })
         });
 
         if mtgjson_match {
@@ -176,12 +179,12 @@ fn parse_ward_cost_single(lower: &str) -> Option<WardCost> {
     }
 
     // "discard a card" / "discard two cards" etc.
-    if lower.starts_with("discard") {
+    if lower.strip_prefix("discard").is_some() {
         return Some(WardCost::DiscardCard);
     }
 
     // "sacrifice a permanent" / "sacrifice a creature" / etc.
-    if lower.starts_with("sacrifice") {
+    if lower.strip_prefix("sacrifice").is_some() {
         return Some(WardCost::SacrificeAPermanent);
     }
 
@@ -230,22 +233,32 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     // CR 702.124: Partner variant keywords — must come BEFORE generic "partner" match.
     // MTGJSON sends Character Select, Friends Forever, and generic Partner all as keyword "Partner".
     // Oracle text em-dash suffix disambiguates them.
-    if text.starts_with("partner\u{2014}character select") {
+    if text
+        .strip_prefix("partner\u{2014}character select")
+        .is_some()
+    {
         return Some(Keyword::Partner(PartnerType::CharacterSelect));
     }
-    if text.starts_with("partner\u{2014}friends forever") {
+    if text
+        .strip_prefix("partner\u{2014}friends forever")
+        .is_some()
+    {
         return Some(Keyword::Partner(PartnerType::FriendsForever));
     }
-    if text.starts_with("choose a background") {
+    if text.strip_prefix("choose a background").is_some() {
         return Some(Keyword::Partner(PartnerType::ChooseABackground));
     }
-    if text.starts_with("doctor\u{2019}s companion") || text.starts_with("doctor's companion") {
+    if text
+        .strip_prefix("doctor\u{2019}s companion")
+        .or_else(|| text.strip_prefix("doctor's companion"))
+        .is_some()
+    {
         return Some(Keyword::Partner(PartnerType::DoctorsCompanion));
     }
     // CR 702.124c: "Partner with [Name]" — handled at the build_oracle_face level
     // via MTGJSON keyword detection. Skip here to avoid producing a duplicate with
     // incorrect casing from the lowered oracle text.
-    if text.starts_with("partner with ") {
+    if text.strip_prefix("partner with ").is_some() {
         return None;
     }
 
@@ -642,11 +655,12 @@ pub(crate) fn is_keyword_cost_line(lower: &str) -> bool {
         "devoid",
     ];
     keyword_costs.iter().any(|kw| {
-        lower.starts_with(kw)
-            && (lower.len() == kw.len()
-                || lower.as_bytes().get(kw.len()) == Some(&b' ')
-                || lower.as_bytes().get(kw.len()) == Some(&b'\t')
-                || lower[kw.len()..].starts_with('\u{2014}'))
+        lower.strip_prefix(kw).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.as_bytes().first() == Some(&b' ')
+                || rest.as_bytes().first() == Some(&b'\t')
+                || rest.strip_prefix('\u{2014}').is_some()
+        })
     })
         // CR 702.29: Typecycling — first word ends in "cycling" but isn't "cycling" itself
         || lower

@@ -256,10 +256,10 @@ pub fn parse_number(text: &str) -> Option<(u32, &str)> {
 
     // "X" → 0 for callers that genuinely want numeric-only (P/T, costs, counters).
     // For effect quantities, use `parse_count_expr` which returns Variable("X") instead.
-    if lower.starts_with('x') {
-        let rest = &text[1..];
+    if let Some(rest) = lower.strip_prefix('x') {
+        let rest_orig = &text[1..];
         if rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace()) {
-            return Some((0, rest.trim_start()));
+            return Some((0, rest_orig.trim_start()));
         }
     }
     None
@@ -300,9 +300,9 @@ pub fn parse_count_expr(text: &str) -> Option<(QuantityExpr, &str)> {
     // CR 107.3a: "X" in Oracle text represents a variable determined at cast time.
     // Accept X followed by whitespace, comma, period, or end-of-string — all valid
     // Oracle text boundaries (e.g., "X cards", "X, rounded up", "X.").
-    if lower.starts_with('x') {
+    if let Some(rest_lower) = lower.strip_prefix('x') {
         let rest = &text[1..];
-        if rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()) {
+        if rest_lower.is_empty() || rest_lower.starts_with(|c: char| !c.is_alphanumeric()) {
             return Some((
                 QuantityExpr::Ref {
                     qty: QuantityRef::Variable {
@@ -346,9 +346,9 @@ pub fn parse_ordinal(text: &str) -> Option<(u32, &str)> {
     ];
     let lower = text.to_lowercase();
     for &(word, val) in ordinals {
-        if lower.starts_with(word) {
-            let rest = &text[word.len()..];
-            return Some((val, rest.trim_start()));
+        if let Some(rest_lower) = lower.strip_prefix(word) {
+            let consumed = lower.len() - rest_lower.len();
+            return Some((val, text[consumed..].trim_start()));
         }
     }
     None
@@ -361,9 +361,7 @@ pub fn parse_ordinal(text: &str) -> Option<(u32, &str)> {
 /// Handles case-insensitive symbols by uppercasing before parsing.
 pub fn parse_mana_symbols(text: &str) -> Option<(ManaCost, &str)> {
     let text = text.trim_start();
-    if !text.starts_with('{') {
-        return None;
-    }
+    text.strip_prefix('{')?;
 
     // The nom combinator expects uppercase symbols. Uppercase the braced portions
     // for matching, then compute the remainder from the original text.
@@ -485,14 +483,12 @@ pub fn contains_object_pronoun(text: &str, prefix: &str, suffix: &str) -> bool {
 /// Parse mana production symbols like `{G}` into Vec<ManaColor>.
 pub fn parse_mana_production(text: &str) -> Option<(Vec<ManaColor>, &str)> {
     let text = text.trim_start();
-    if !text.starts_with('{') {
-        return None;
-    }
+    text.strip_prefix('{')?;
 
     let mut colors = Vec::new();
     let mut pos = 0;
 
-    while pos < text.len() && text[pos..].starts_with('{') {
+    while pos < text.len() && text[pos..].strip_prefix('{').is_some() {
         let end = match text[pos..].find('}') {
             Some(e) => e + pos,
             None => break,
