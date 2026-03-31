@@ -1,10 +1,15 @@
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use super::counter::{try_parse_double_effect, try_parse_put_counter, try_parse_remove_counter};
 use super::mana::{try_parse_activate_only_condition, try_parse_add_mana_effect};
 use super::token::try_parse_token;
 use super::types::*;
 use super::{resolve_it_pronoun, ParseContext};
+use crate::parser::oracle_nom::bridge::nom_on_lower;
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_static::parse_continuous_modifications;
 use crate::types::ability::{
@@ -51,8 +56,12 @@ pub(super) fn parse_earthbend_params(text: &str, lower_rest: &str) -> (TargetFil
         let trimmed =
             target_text.trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
         !trimmed.is_empty()
-            && trimmed.strip_prefix("then ").is_none()
-            && trimmed.strip_prefix("and ").is_none()
+            && tag::<_, _, VerboseError<&str>>("then ")
+                .parse(trimmed)
+                .is_err()
+            && tag::<_, _, VerboseError<&str>>("and ")
+                .parse(trimmed)
+                .is_err()
     };
     let target = if has_explicit_target {
         let (t, _) = parse_target(&text[text.len() - target_text.len()..]);
@@ -67,8 +76,9 @@ pub(super) fn parse_numeric_imperative_ast(
     text: &str,
     lower: &str,
 ) -> Option<NumericImperativeAst> {
-    if lower.strip_prefix("draw ").is_some() {
-        let count = parse_count_expr(&text[5..])
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| value((), tag("draw ")).parse(input))
+    {
+        let count = parse_count_expr(rest)
             .map(|(q, _)| q)
             .unwrap_or(QuantityExpr::Fixed { value: 1 });
         return Some(NumericImperativeAst::Draw { count });
@@ -85,13 +95,11 @@ pub(super) fn parse_numeric_imperative_ast(
                 return Some(NumericImperativeAst::GainLife { amount: qty });
             }
         }
-        let after_gain = if lower.strip_prefix("you gain ").is_some() {
-            &text[9..]
-        } else if lower.strip_prefix("gain ").is_some() {
-            &text[5..]
-        } else {
-            ""
-        };
+        let after_gain = nom_on_lower(text, lower, |input| {
+            value((), alt((tag("you gain "), tag("gain ")))).parse(input)
+        })
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
         if !after_gain.is_empty() {
             let amount = parse_count_expr(after_gain)
                 .map(|(q, _)| q)
@@ -142,23 +150,24 @@ pub(super) fn parse_numeric_imperative_ast(
         }
     }
 
-    if lower.strip_prefix("scry ").is_some() {
-        let count = parse_count_expr(&text[5..])
+    // Keyword action verbs with numeric count: scry N, surveil N, mill N
+    if let Some((verb, rest)) = nom_on_lower(text, lower, |input| {
+        alt((
+            value("scry", tag("scry ")),
+            value("surveil", tag("surveil ")),
+            value("mill", tag("mill ")),
+        ))
+        .parse(input)
+    }) {
+        let count = parse_count_expr(rest)
             .map(|(q, _)| q)
             .unwrap_or(QuantityExpr::Fixed { value: 1 });
-        return Some(NumericImperativeAst::Scry { count });
-    }
-    if lower.strip_prefix("surveil ").is_some() {
-        let count = parse_count_expr(&text[8..])
-            .map(|(q, _)| q)
-            .unwrap_or(QuantityExpr::Fixed { value: 1 });
-        return Some(NumericImperativeAst::Surveil { count });
-    }
-    if lower.strip_prefix("mill ").is_some() {
-        let count = parse_count_expr(&text[5..])
-            .map(|(q, _)| q)
-            .unwrap_or(QuantityExpr::Fixed { value: 1 });
-        return Some(NumericImperativeAst::Mill { count });
+        return match verb {
+            "scry" => Some(NumericImperativeAst::Scry { count }),
+            "surveil" => Some(NumericImperativeAst::Surveil { count }),
+            "mill" => Some(NumericImperativeAst::Mill { count }),
+            _ => unreachable!(),
+        };
     }
 
     None
@@ -168,19 +177,28 @@ pub(super) fn parse_numeric_imperative_ast(
 /// General building block for halving life total expressions.
 fn try_parse_half_life_amount(lower: &str) -> Option<QuantityExpr> {
     // Match "lose half their life, rounded up" / "lose half your life, rounded up"
-    let after_lose = lower
-        .strip_prefix("lose ")
-        .or_else(|| lower.strip_prefix("loses "))?
-        .trim();
-    let after_half = after_lose.strip_prefix("half ")?;
+    let (_, after_lose) = alt((tag::<_, _, VerboseError<&str>>("lose "), tag("loses ")))
+        .parse(lower)
+        .ok()?;
+    let (_, after_half) = tag::<_, _, VerboseError<&str>>("half ")
+        .parse(after_lose.trim())
+        .ok()?;
 
     // Determine whose life total
-    let qty = if after_half.strip_prefix("their life").is_some()
-        || after_half.strip_prefix("that player's life").is_some()
+    let qty = if alt((
+        tag::<_, _, VerboseError<&str>>("their life"),
+        tag("that player's life"),
+    ))
+    .parse(after_half)
+    .is_ok()
     {
         QuantityRef::TargetLifeTotal
-    } else if after_half.strip_prefix("your life").is_some()
-        || after_half.strip_prefix("his or her life").is_some()
+    } else if alt((
+        tag::<_, _, VerboseError<&str>>("your life"),
+        tag("his or her life"),
+    ))
+    .parse(after_half)
+    .is_ok()
     {
         QuantityRef::LifeTotal
     } else {
@@ -231,13 +249,11 @@ pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect 
 /// Follows the same pattern used by `oracle_cost.rs` for sacrifice cost parsing.
 fn strip_article(text: &str) -> &str {
     let lower = text.to_lowercase();
-    if lower.strip_prefix("a ").is_some() {
-        &text[2..]
-    } else if lower.strip_prefix("an ").is_some() {
-        &text[3..]
-    } else {
-        text
-    }
+    nom_on_lower(text, &lower, |input| {
+        value((), alt((tag("a "), tag("an ")))).parse(input)
+    })
+    .map(|(_, rest)| rest)
+    .unwrap_or(text)
 }
 
 /// CR 608.2c: Extract "unless you discard a [type] card" suffix from discard text.
@@ -274,46 +290,56 @@ fn parse_discard_unless_filter<'a>(
 /// When adding a new targeted verb here, check if it also needs to be added there
 /// (for compound action splitting like "tap target creature and put a counter on it").
 pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<TargetedImperativeAst> {
-    if lower.strip_prefix("tap ").is_some() {
-        let (target_text, _) = super::strip_optional_target_prefix(strip_article(&text[4..]));
+    // Simple targeted verbs: tap, untap, sacrifice — parse target after verb prefix
+    if let Some((verb, rest)) = nom_on_lower(text, lower, |input| {
+        alt((
+            value("tap", tag("tap ")),
+            value("untap", tag("untap ")),
+            value("sacrifice", tag("sacrifice ")),
+        ))
+        .parse(input)
+    }) {
+        let (target_text, _) = super::strip_optional_target_prefix(strip_article(rest));
         let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
-        return Some(TargetedImperativeAst::Tap { target });
+        return match verb {
+            "tap" => Some(TargetedImperativeAst::Tap { target }),
+            "untap" => Some(TargetedImperativeAst::Untap { target }),
+            "sacrifice" => Some(TargetedImperativeAst::Sacrifice { target }),
+            _ => unreachable!(),
+        };
     }
-    if lower.strip_prefix("untap ").is_some() {
-        let (target_text, _) = super::strip_optional_target_prefix(strip_article(&text[6..]));
-        let (target, _rem) = parse_target(target_text);
-        #[cfg(debug_assertions)]
-        super::types::assert_no_compound_remainder(_rem, text);
-        return Some(TargetedImperativeAst::Untap { target });
-    }
-    if lower.strip_prefix("sacrifice ").is_some() {
-        let (target_text, _) = super::strip_optional_target_prefix(strip_article(&text[10..]));
-        let (target, _rem) = parse_target(target_text);
-        #[cfg(debug_assertions)]
-        super::types::assert_no_compound_remainder(_rem, text);
-        return Some(TargetedImperativeAst::Sacrifice { target });
-    }
-    if let Some(after_discard) = lower.strip_prefix("discard ") {
+    if let Some((_, after_discard_orig)) =
+        nom_on_lower(text, lower, |input| value((), tag("discard ")).parse(input))
+    {
+        let after_discard = &lower[lower.len() - after_discard_orig.len()..];
         // CR 701.9a: Detect "at random" suffix for random discard effects.
         let random = after_discard.contains(" at random");
         // CR 701.9b: Detect "up to" prefix for optional partial discard.
-        let (after_discard, up_to) = match after_discard.strip_prefix("up to ") {
-            Some(rest) => (rest, true),
-            None => (after_discard, false),
-        };
+        let (after_discard, up_to) =
+            match tag::<_, _, VerboseError<&str>>("up to ").parse(after_discard) {
+                Ok((rest, _)) => (rest, true),
+                Err(_) => (after_discard, false),
+            };
         // Strip "all the cards in " / "all cards in " prefix compositionally for
         // patterns like "discard all the cards in your hand" / "discards all cards in their hand".
-        let after_discard = after_discard
-            .strip_prefix("all the cards in ")
-            .or_else(|| after_discard.strip_prefix("all cards in "))
-            .unwrap_or(after_discard);
+        let after_discard = alt((
+            tag::<_, _, VerboseError<&str>>("all the cards in "),
+            tag("all cards in "),
+        ))
+        .parse(after_discard)
+        .map(|(rest, _)| rest)
+        .unwrap_or(after_discard);
         // Detect whole-hand discard patterns before falling through to count parsing.
-        // Uses starts_with (not contains) to avoid matching "discard a card from your hand".
-        if after_discard.strip_prefix("your hand").is_some()
-            || after_discard.strip_prefix("their hand").is_some()
-            || after_discard.strip_prefix("his or her hand").is_some()
+        // Uses tag prefix (not contains) to avoid matching "discard a card from your hand".
+        if alt((
+            tag::<_, _, VerboseError<&str>>("your hand"),
+            tag("their hand"),
+            tag("his or her hand"),
+        ))
+        .parse(after_discard)
+        .is_ok()
         {
             return Some(TargetedImperativeAst::Discard {
                 count: QuantityExpr::Ref {
@@ -341,8 +367,9 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
             unless_filter,
         });
     }
-    if lower.strip_prefix("return ").is_some() {
-        let rest = &text[7..];
+    if let Some((_, rest)) =
+        nom_on_lower(text, lower, |input| value((), tag("return ")).parse(input))
+    {
         let (target_text, dest) = super::strip_return_destination_ext(rest);
         let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
@@ -364,23 +391,30 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
             None => Some(TargetedImperativeAst::Return { target }),
         };
     }
-    if lower.strip_prefix("fight ").is_some() {
-        let (target_text, _) = super::strip_optional_target_prefix(&text[6..]);
+    if let Some((_, rest)) =
+        nom_on_lower(text, lower, |input| value((), tag("fight ")).parse(input))
+    {
+        let (target_text, _) = super::strip_optional_target_prefix(rest);
         let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::Fight { target });
     }
-    if lower.strip_prefix("gain control of ").is_some() {
-        let (target_text, _) = super::strip_optional_target_prefix(&text[16..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), tag("gain control of ")).parse(input)
+    }) {
+        let (target_text, _) = super::strip_optional_target_prefix(rest);
         let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::GainControl { target });
     }
     // Earthbend: "earthbend [N] [target <type>]" → Animate with haste + is_earthbend
-    if let Some(rest) = lower.strip_prefix("earthbend ") {
-        let (target, power, toughness) = parse_earthbend_params(text, rest);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), tag("earthbend ")).parse(input)
+    }) {
+        let rest_lower = &lower[lower.len() - rest.len()..];
+        let (target, power, toughness) = parse_earthbend_params(text, rest_lower);
         return Some(TargetedImperativeAst::Earthbend {
             target,
             power,
@@ -388,8 +422,9 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         });
     }
     // Airbend: "airbend target <type> <mana_cost>" → GrantCastingPermission(ExileWithAltCost)
-    if let Some(rest) = lower.strip_prefix("airbend ") {
-        let original_rest = &text[text.len() - rest.len()..];
+    if let Some((_, original_rest)) =
+        nom_on_lower(text, lower, |input| value((), tag("airbend ")).parse(input))
+    {
         let (target_text, _) = super::strip_optional_target_prefix(original_rest);
         let (target, after_target) = parse_target(target_text);
         let cost = parse_mana_symbols(after_target.trim_start())
@@ -486,7 +521,7 @@ pub(super) fn parse_search_and_creation_ast(
     text: &str,
     lower: &str,
 ) -> Option<SearchCreationImperativeAst> {
-    if lower.strip_prefix("seek ").is_some() {
+    if let Some((_, _)) = nom_on_lower(text, lower, |input| value((), tag("seek ")).parse(input)) {
         let details = super::parse_seek_details(lower);
         return Some(SearchCreationImperativeAst::Seek {
             filter: details.filter,
@@ -503,15 +538,18 @@ pub(super) fn parse_search_and_creation_ast(
             reveal: details.reveal,
         });
     }
-    if let Some(after_top) = lower.strip_prefix("look at the top ") {
-        // Delegate to nom combinator (input already lowercase from lower).
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), tag("look at the top ")).parse(input)
+    }) {
+        let rest_lower = &lower[lower.len() - rest.len()..];
         let count = nom_primitives::parse_number
-            .parse(after_top)
+            .parse(rest_lower)
             .map(|(_, n)| n)
             .unwrap_or(1);
         return Some(SearchCreationImperativeAst::Dig { count });
     }
-    if lower.strip_prefix("create ").is_some() {
+    if let Some((_, _)) = nom_on_lower(text, lower, |input| value((), tag("create ")).parse(input))
+    {
         return match try_parse_token(lower, text) {
             Some(Effect::CopyTokenOf { target, .. }) => {
                 Some(SearchCreationImperativeAst::CopyTokenOf { target })
@@ -600,7 +638,9 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
 }
 
 pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevealImperativeAst> {
-    if lower.strip_prefix("look at ").is_some() && lower.contains("hand") {
+    if nom_on_lower(text, lower, |input| value((), tag("look at ")).parse(input)).is_some()
+        && lower.contains("hand")
+    {
         if contains_possessive(lower, "look at", "hand") {
             // CR 603.7c: "that player's hand" resolves to the player from the triggering event.
             let target = if lower.contains("that player's hand") {
@@ -611,14 +651,15 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
             return Some(HandRevealImperativeAst::LookAtHand { target });
         }
 
-        let after_look_at = &text[8..];
+        let (_, after_look_at) =
+            nom_on_lower(text, lower, |input| value((), tag("look at ")).parse(input))?;
         let (target, _) = parse_target(after_look_at);
         return Some(HandRevealImperativeAst::LookAtHand { target });
     }
 
-    if lower.strip_prefix("reveal ").is_none() && lower.strip_prefix("reveals ").is_none() {
-        return None;
-    }
+    nom_on_lower(text, lower, |input| {
+        value((), alt((tag("reveal "), tag("reveals ")))).parse(input)
+    })?;
 
     // CR 701.20a: "reveals a number of cards from their hand equal to X"
     if lower.contains("hand") && lower.contains("equal to ") {
@@ -692,16 +733,18 @@ pub(super) fn lower_hand_reveal_ast(ast: HandRevealImperativeAst) -> Effect {
 }
 
 pub(super) fn parse_choose_ast(text: &str, lower: &str) -> Option<ChooseImperativeAst> {
-    if let Some(rest) = lower.strip_prefix("choose ") {
-        if super::is_choose_as_targeting(rest) {
-            let stripped = &text["choose ".len()..];
-            let inner = super::parse_effect(stripped);
+    if let Some((_, rest)) =
+        nom_on_lower(text, lower, |input| value((), tag("choose ")).parse(input))
+    {
+        let rest_lower = &lower[lower.len() - rest.len()..];
+        if super::is_choose_as_targeting(rest_lower) {
+            let inner = super::parse_effect(rest);
             if !matches!(inner, Effect::Unimplemented { .. }) {
                 return Some(ChooseImperativeAst::Reparse {
-                    text: stripped.to_string(),
+                    text: rest.to_string(),
                 });
             }
-            let (target, _) = parse_target(stripped);
+            let (target, _) = parse_target(rest);
             return Some(ChooseImperativeAst::TargetOnly { target });
         }
     }
@@ -710,7 +753,9 @@ pub(super) fn parse_choose_ast(text: &str, lower: &str) -> Option<ChooseImperati
         return Some(ChooseImperativeAst::NamedChoice { choice_type });
     }
 
-    if lower.strip_prefix("choose ").is_some() && lower.contains("card from it") {
+    if nom_on_lower(text, lower, |input| value((), tag("choose ")).parse(input)).is_some()
+        && lower.contains("card from it")
+    {
         return Some(ChooseImperativeAst::RevealHandFilter {
             card_filter: super::parse_choose_filter(lower),
         });
@@ -739,21 +784,30 @@ pub(super) fn parse_utility_imperative_ast(
     text: &str,
     lower: &str,
 ) -> Option<UtilityImperativeAst> {
-    if lower.strip_prefix("prevent ").is_some() {
-        return Some(UtilityImperativeAst::Prevent {
-            text: text.to_string(),
-        });
-    }
-    if lower.strip_prefix("regenerate ").is_some() {
-        return Some(UtilityImperativeAst::Regenerate {
-            text: text.to_string(),
-        });
-    }
-    if lower.strip_prefix("copy ").is_some() {
-        let (target, _rem) = parse_target(&text[5..]);
-        #[cfg(debug_assertions)]
-        super::types::assert_no_compound_remainder(_rem, text);
-        return Some(UtilityImperativeAst::Copy { target });
+    // Simple verb dispatch: prevent, regenerate, copy
+    if let Some((verb, rest)) = nom_on_lower(text, lower, |input| {
+        alt((
+            value("prevent", tag("prevent ")),
+            value("regenerate", tag("regenerate ")),
+            value("copy", tag("copy ")),
+        ))
+        .parse(input)
+    }) {
+        return match verb {
+            "prevent" => Some(UtilityImperativeAst::Prevent {
+                text: text.to_string(),
+            }),
+            "regenerate" => Some(UtilityImperativeAst::Regenerate {
+                text: text.to_string(),
+            }),
+            "copy" => {
+                let (target, _rem) = parse_target(rest);
+                #[cfg(debug_assertions)]
+                super::types::assert_no_compound_remainder(_rem, text);
+                Some(UtilityImperativeAst::Copy { target })
+            }
+            _ => unreachable!(),
+        };
     }
     if matches!(
         lower,
@@ -769,19 +823,19 @@ pub(super) fn parse_utility_imperative_ast(
             target: TargetFilter::SelfRef,
         });
     }
-    if lower.strip_prefix("transform ").is_some() {
-        let rest = &text["transform ".len()..];
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), tag("transform ")).parse(input)
+    }) {
         let (target, _) = parse_target(rest);
         if !matches!(target, TargetFilter::Any) {
             return Some(UtilityImperativeAst::Transform { target });
         }
     }
-    if lower.strip_prefix("attach ").is_some() {
+    if let Some((_, rest)) =
+        nom_on_lower(text, lower, |input| value((), tag("attach ")).parse(input))
+    {
         let tp = TextPair::new(text, lower);
-        let after_to = tp
-            .strip_after(" to ")
-            .map(|tp| tp.original)
-            .unwrap_or(&text[7..]);
+        let after_to = tp.strip_after(" to ").map(|tp| tp.original).unwrap_or(rest);
         let (target, _rem) = parse_target(after_to);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
@@ -795,7 +849,10 @@ pub(super) fn lower_utility_imperative_ast(ast: UtilityImperativeAst) -> Effect 
         UtilityImperativeAst::Prevent { text } => parse_prevent_effect(&text),
         UtilityImperativeAst::Regenerate { text } => {
             let lower = text.to_lowercase();
-            let rest = lower.strip_prefix("regenerate ").unwrap_or(&lower);
+            let rest = tag::<_, _, VerboseError<&str>>("regenerate ")
+                .parse(&*lower)
+                .map(|(r, _)| r)
+                .unwrap_or(&lower);
             let (target, _) = parse_target(rest);
             Effect::Regenerate { target }
         }
@@ -814,7 +871,10 @@ pub(super) fn lower_utility_imperative_ast(ast: UtilityImperativeAst) -> Effect 
 /// - "prevent the next N damage that would be dealt to target creature"
 fn parse_prevent_effect(text: &str) -> Effect {
     let lower = text.to_lowercase();
-    let rest = lower.strip_prefix("prevent ").unwrap_or(&lower);
+    let rest = tag::<_, _, VerboseError<&str>>("prevent ")
+        .parse(&*lower)
+        .map(|(r, _)| r)
+        .unwrap_or(&lower);
 
     // Determine scope: combat damage only vs all damage
     let scope = if rest.contains("combat damage") {
@@ -824,10 +884,9 @@ fn parse_prevent_effect(text: &str) -> Effect {
     };
 
     // Determine amount: "all damage" vs "the next N damage"
-    // Delegate to nom combinator (input already lowercase from text.to_lowercase()).
-    let amount = if rest.strip_prefix("all ").is_some() {
+    let amount = if tag::<_, _, VerboseError<&str>>("all ").parse(rest).is_ok() {
         PreventionAmount::All
-    } else if let Some(after_next) = rest.strip_prefix("the next ") {
+    } else if let Ok((after_next, _)) = tag::<_, _, VerboseError<&str>>("the next ").parse(rest) {
         let n = nom_primitives::parse_number
             .parse(after_next)
             .map(|(_, n)| n)
@@ -915,28 +974,23 @@ pub(super) fn lower_imperative_ast(ast: ImperativeAst) -> Effect {
 }
 
 pub(super) fn parse_put_ast(text: &str, lower: &str) -> Option<PutImperativeAst> {
-    lower.strip_prefix("put ")?;
+    tag::<_, _, VerboseError<&str>>("put ").parse(lower).ok()?;
 
-    if let Some(after) = lower
-        .strip_prefix("put the top ")
-        .filter(|_| lower.contains("graveyard"))
-    {
-        // Delegate to nom combinator (input already lowercase from lower).
-        let count = nom_primitives::parse_number
-            .parse(after)
-            .map(|(_, n)| n)
-            .unwrap_or(1);
-        return Some(PutImperativeAst::Mill { count });
+    if let Ok((after, _)) = tag::<_, _, VerboseError<&str>>("put the top ").parse(lower) {
+        if lower.contains("graveyard") {
+            let count = nom_primitives::parse_number
+                .parse(after)
+                .map(|(_, n)| n)
+                .unwrap_or(1);
+            return Some(PutImperativeAst::Mill { count });
+        }
     }
 
     // CR 701.24g: "put X on top of Y's library" — specific position, no auto-shuffle.
     // Must check before try_parse_put_zone_change which would emit ChangeZone (auto-shuffles).
     // Only matches forms WITHOUT an explicit origin zone ("from your hand") — those
     // specify a real zone transfer and should go through try_parse_put_zone_change.
-    if lower.strip_prefix("put ").is_some()
-        && lower.contains("on top of")
-        && lower.contains("library")
-    {
+    if lower.contains("on top of") && lower.contains("library") {
         let has_origin = lower.contains(" from ");
         if !has_origin {
             return Some(PutImperativeAst::TopOfLibrary);
@@ -945,17 +999,14 @@ pub(super) fn parse_put_ast(text: &str, lower: &str) -> Option<PutImperativeAst>
 
     // CR 701.24g: "put that card on top" / "put it on top" / "put them on top" —
     // abbreviated form used after "shuffle" in search-and-put-on-top tutors (41 cards).
-    if lower.strip_prefix("put ").is_some() && lower.ends_with("on top") {
+    if lower.ends_with("on top") {
         return Some(PutImperativeAst::TopOfLibrary);
     }
 
     // CR 701.24g: "put X on the bottom of Y's library" — specific position without
     // explicit origin zone. Forms with "from" (e.g. "from your hand") go through
     // try_parse_put_zone_change for proper ChangeZone handling.
-    if lower.strip_prefix("put ").is_some()
-        && lower.contains("on the bottom of")
-        && lower.contains("library")
-    {
+    if lower.contains("on the bottom of") && lower.contains("library") {
         let has_origin = lower.contains(" from ");
         if !has_origin {
             return Some(PutImperativeAst::BottomOfLibrary);
@@ -964,13 +1015,13 @@ pub(super) fn parse_put_ast(text: &str, lower: &str) -> Option<PutImperativeAst>
 
     // CR 701.24g: "put that card on the bottom" / "put it on the bottom" —
     // abbreviated form without "of Y's library".
-    if lower.strip_prefix("put ").is_some() && lower.ends_with("on the bottom") {
+    if lower.ends_with("on the bottom") {
         return Some(PutImperativeAst::BottomOfLibrary);
     }
 
     // CR 701.24g: "put X into Y's library Nth from the top" —
     // specific positional placement (God-Eternals, Approach, Bury in Books).
-    if lower.strip_prefix("put ").is_some() && lower.contains("from the top") {
+    if lower.contains("from the top") {
         if let Some(pos) = lower.find("from the top") {
             // Look backwards from "from the top" to find the ordinal
             let before = lower[..pos].trim_end();
@@ -1064,7 +1115,9 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
 /// CR 120.1: "that many" references the amount from the triggering event (e.g., damage dealt).
 /// Produces PutCounter with count=0 as a sentinel for event-context resolution.
 fn try_parse_that_many_counters(lower: &str, ctx: &ParseContext) -> Option<Effect> {
-    let rest = lower.strip_prefix("put that many ")?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("put that many ")
+        .parse(lower)
+        .ok()?;
     // Next word(s) are counter type: "+1/+1", "charge", "loyalty", etc.
     let type_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
     let raw_type = &rest[..type_end];
@@ -1072,26 +1125,33 @@ fn try_parse_that_many_counters(lower: &str, ctx: &ParseContext) -> Option<Effec
 
     // Skip "counter" or "counters" keyword
     let after_type = rest[type_end..].trim_start();
-    let after_counter = after_type
-        .strip_prefix("counters")
-        .or_else(|| after_type.strip_prefix("counter"))
+    let after_counter = alt((tag::<_, _, VerboseError<&str>>("counters"), tag("counter")))
+        .parse(after_type)
+        .map(|(r, _)| r)
         .unwrap_or(after_type)
         .trim_start();
 
     // Parse target after "on"
-    let target = if let Some(on_rest) = after_counter.strip_prefix("on ") {
-        if on_rest.strip_prefix("~").is_some() || on_rest.strip_prefix("this ").is_some() {
-            TargetFilter::SelfRef
-        } else if on_rest.strip_prefix("it").is_some() || on_rest.strip_prefix("itself").is_some() {
-            // CR 608.2k: Bare pronoun — context-dependent
-            resolve_it_pronoun(ctx)
+    let target =
+        if let Ok((on_rest, _)) = tag::<_, _, VerboseError<&str>>("on ").parse(after_counter) {
+            if alt((tag::<_, _, VerboseError<&str>>("~"), tag("this ")))
+                .parse(on_rest)
+                .is_ok()
+            {
+                TargetFilter::SelfRef
+            } else if alt((tag::<_, _, VerboseError<&str>>("it"), tag("itself")))
+                .parse(on_rest)
+                .is_ok()
+            {
+                // CR 608.2k: Bare pronoun — context-dependent
+                resolve_it_pronoun(ctx)
+            } else {
+                let (t, _) = parse_target(on_rest);
+                t
+            }
         } else {
-            let (t, _) = parse_target(on_rest);
-            t
-        }
-    } else {
-        TargetFilter::SelfRef
-    };
+            TargetFilter::SelfRef
+        };
 
     // CR 603.7c: "that many" — resolve from trigger event context at runtime.
     Some(Effect::PutCounter {
@@ -1121,15 +1181,21 @@ pub(super) fn parse_shuffle_ast(text: &str, lower: &str) -> Option<ShuffleImpera
             target: TargetFilter::Player,
         });
     }
-    if lower.strip_prefix("shuffle").is_none() || !lower.contains("library") {
+    if tag::<_, _, VerboseError<&str>>("shuffle")
+        .parse(lower)
+        .is_err()
+        || !lower.contains("library")
+    {
         return None;
     }
 
     // "shuffle {possessive} library" — extract the possessive word to determine the target.
     // Only matches the exact form "shuffle your library" / "shuffle their library" etc.;
     // compound forms like "shuffle your graveyard into your library" fall through.
-    if let Some(possessive) = lower
-        .strip_prefix("shuffle ")
+    if let Some(possessive) = tag::<_, _, VerboseError<&str>>("shuffle ")
+        .parse(lower)
+        .ok()
+        .map(|(rest, _)| rest)
         .and_then(|s| s.strip_suffix(" library"))
     {
         let target = match possessive {
@@ -1157,23 +1223,22 @@ pub(super) fn parse_shuffle_ast(text: &str, lower: &str) -> Option<ShuffleImpera
     // CR 701.24a: "shuffle target card from your graveyard into your library" —
     // targeted zone change (origin → library) + implicit shuffle.
     // Placed after possessive checks to avoid matching "shuffle your graveyard into library".
-    if lower.strip_prefix("shuffle ").is_some()
-        && lower.contains(" into ")
-        && lower.contains("library")
-        && lower.contains(" from ")
+    if let Some((_, after_shuffle)) =
+        nom_on_lower(text, lower, |input| value((), tag("shuffle ")).parse(input))
     {
-        let after_shuffle = &text["shuffle ".len()..];
-        let (target, _) = parse_target(after_shuffle);
-        let origin = if lower.contains("graveyard") {
-            Some(Zone::Graveyard)
-        } else if lower.contains("from your hand") {
-            Some(Zone::Hand)
-        } else if lower.contains("from exile") {
-            Some(Zone::Exile)
-        } else {
-            None
-        };
-        return Some(ShuffleImperativeAst::TargetedChangeZoneToLibrary { target, origin });
+        if lower.contains(" into ") && lower.contains("library") && lower.contains(" from ") {
+            let (target, _) = parse_target(after_shuffle);
+            let origin = if lower.contains("graveyard") {
+                Some(Zone::Graveyard)
+            } else if lower.contains("from your hand") {
+                Some(Zone::Hand)
+            } else if lower.contains("from exile") {
+                Some(Zone::Exile)
+            } else {
+                None
+            };
+            return Some(ShuffleImperativeAst::TargetedChangeZoneToLibrary { target, origin });
+        }
     }
 
     Some(ShuffleImperativeAst::Unimplemented {
@@ -1249,15 +1314,21 @@ fn with_shuffle_sub_ability(effect: Effect) -> ParsedEffectClause {
 }
 
 pub(super) fn parse_destroy_ast(text: &str, lower: &str) -> Option<ZoneCounterImperativeAst> {
-    if lower.strip_prefix("destroy all ").is_some() || lower.strip_prefix("destroy each ").is_some()
+    if nom_on_lower(text, lower, |input| {
+        value((), alt((tag("destroy all "), tag("destroy each ")))).parse(input)
+    })
+    .is_some()
     {
-        let (target, _rem) = parse_target(&text[8..]);
+        let (_, rest) = nom_on_lower(text, lower, |input| value((), tag("destroy ")).parse(input))?;
+        let (target, _rem) = parse_target(rest);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(ZoneCounterImperativeAst::Destroy { target, all: true });
     }
-    if lower.strip_prefix("destroy ").is_some() {
-        let (target, _rem) = parse_target(&text[8..]);
+    if let Some((_, rest)) =
+        nom_on_lower(text, lower, |input| value((), tag("destroy ")).parse(input))
+    {
+        let (target, _rem) = parse_target(rest);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(ZoneCounterImperativeAst::Destroy { target, all: false });
@@ -1266,16 +1337,19 @@ pub(super) fn parse_destroy_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
 }
 
 pub(super) fn parse_exile_ast(text: &str, lower: &str) -> Option<ZoneCounterImperativeAst> {
-    if let Some(rest) = lower.strip_prefix("exile the top ") {
-        // Delegate to nom combinator (input already lowercase from lower).
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("exile the top ").parse(lower) {
         let (count, remainder) = nom_primitives::parse_number
             .parse(rest)
             .map(|(rem, n)| (n, rem.trim_start()))
             .unwrap_or((1, rest));
         // Only handles "your library" (TargetFilter::Controller). Opponent/any-player
         // targeting ("target player's library") falls through to ChangeZone handling.
-        if remainder.strip_prefix("card of your library").is_some()
-            || remainder.strip_prefix("cards of your library").is_some()
+        if alt((
+            tag::<_, _, VerboseError<&str>>("card of your library"),
+            tag("cards of your library"),
+        ))
+        .parse(remainder)
+        .is_ok()
         {
             return Some(ZoneCounterImperativeAst::ExileTop {
                 player: TargetFilter::Controller,
@@ -1284,9 +1358,11 @@ pub(super) fn parse_exile_ast(text: &str, lower: &str) -> Option<ZoneCounterImpe
         }
     }
 
-    if lower.strip_prefix("exile all ").is_some() || lower.strip_prefix("exile each ").is_some() {
-        let rest_lower = &lower[6..]; // after "exile "
-        let (parsed_target, _rem) = parse_target(&text[6..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), alt((tag("exile all "), tag("exile each ")))).parse(input)
+    }) {
+        let rest_lower = &lower[lower.len() - rest.len()..];
+        let (parsed_target, _rem) = parse_target(rest);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         // CR 701.5a: "exile all spells" must constrain to the stack.
@@ -1303,7 +1379,8 @@ pub(super) fn parse_exile_ast(text: &str, lower: &str) -> Option<ZoneCounterImpe
         });
     }
 
-    let rest_lower = lower.strip_prefix("exile ")?;
+    let (_, rest_text) = nom_on_lower(text, lower, |input| value((), tag("exile ")).parse(input))?;
+    let rest_lower = &lower[lower.len() - rest_text.len()..];
 
     // CR 400.12: "exile their graveyard" acts on all cards in that zone.
     // Bare possessive zone references have same semantics as "exile all/each".
@@ -1311,7 +1388,7 @@ pub(super) fn parse_exile_ast(text: &str, lower: &str) -> Option<ZoneCounterImpe
         || starts_with_possessive(rest_lower, "", "library")
         || starts_with_possessive(rest_lower, "", "hand")
     {
-        let (target, _rem) = parse_target(&text[6..]);
+        let (target, _rem) = parse_target(rest_text);
         #[cfg(debug_assertions)]
         super::types::assert_no_compound_remainder(_rem, text);
         let origin = super::infer_origin_zone(rest_lower);
@@ -1322,7 +1399,7 @@ pub(super) fn parse_exile_ast(text: &str, lower: &str) -> Option<ZoneCounterImpe
         });
     }
 
-    let (parsed_target, _rem) = parse_target(&text[6..]);
+    let (parsed_target, _rem) = parse_target(rest_text);
     #[cfg(debug_assertions)]
     super::types::assert_no_compound_remainder(_rem, text);
     // CR 701.5a: "exile target spell" must constrain targeting to the stack,
@@ -1341,7 +1418,12 @@ pub(super) fn parse_exile_ast(text: &str, lower: &str) -> Option<ZoneCounterImpe
 }
 
 pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterImperativeAst> {
-    let rest = lower.strip_prefix("counter ")?;
+    let (rest_orig, rest) = {
+        let (_, rest_orig) =
+            nom_on_lower(text, lower, |input| value((), tag("counter ")).parse(input))?;
+        let rest_lower = &lower[lower.len() - rest_orig.len()..];
+        (rest_orig, rest_lower)
+    };
     if rest.contains("activated or triggered ability") {
         // CR 118.12: Parse "unless pays" even for ability counters.
         let unless_payment = super::parse_unless_payment(rest);
@@ -1352,7 +1434,7 @@ pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
         });
     }
 
-    let (target, _rem) = parse_target(&text[8..]);
+    let (target, _rem) = parse_target(rest_orig);
     #[cfg(debug_assertions)]
     super::types::assert_no_compound_remainder(_rem, text);
     let target = if rest.contains("spell") {
@@ -1386,10 +1468,12 @@ pub(super) fn parse_cost_resource_ast(
             );
         }
     }
-    if let Some(rest) = lower.strip_prefix("pay ") {
+    if let Some((_, rest_orig)) =
+        nom_on_lower(text, lower, |input| value((), tag("pay ")).parse(input))
+    {
+        let rest = &lower[lower.len() - rest_orig.len()..];
         // "pay N life" → PaymentCost::Life (CR 118.2)
         if let Some(life_rest) = rest.strip_suffix(" life") {
-            // Delegate to nom combinator (input already lowercase from lower).
             if let Ok((_, n)) = nom_primitives::parse_number.parse(life_rest) {
                 return Some(CostResourceImperativeAst::Pay {
                     cost: PaymentCost::Life { amount: n },
@@ -1397,15 +1481,13 @@ pub(super) fn parse_cost_resource_ast(
             }
         }
         // "pay {2}{B}" → PaymentCost::Mana (CR 117.1)
-        let offset = text.len() - rest.len();
-        let rest_original = &text[offset..];
-        if let Some((mana_cost, _)) = parse_mana_symbols(rest_original.trim()) {
+        if let Some((mana_cost, _)) = parse_mana_symbols(rest_orig.trim()) {
             return Some(CostResourceImperativeAst::Pay {
                 cost: PaymentCost::Mana { cost: mana_cost },
             });
         }
     }
-    if lower.strip_prefix("add ").is_some() {
+    if nom_on_lower(text, lower, |input| value((), tag("add ")).parse(input)).is_some() {
         return match try_parse_add_mana_effect(text) {
             Some(Effect::Mana {
                 produced,
@@ -1604,10 +1686,10 @@ pub(super) fn parse_imperative_family_ast(
         }
         // Blight N as an effect (e.g. trigger effect "blight 1")
         "blight" => {
-            let rest = lower
-                .strip_prefix("blight ")
-                .unwrap_or(lower.strip_prefix("blight").unwrap_or(""));
-            // Delegate to nom combinator (input already lowercase from lower).
+            let rest = alt((tag::<_, _, VerboseError<&str>>("blight "), tag("blight")))
+                .parse(lower)
+                .map(|(r, _)| r)
+                .unwrap_or("");
             let count = nom_primitives::parse_number
                 .parse(rest.trim())
                 .map(|(_, n)| n)
@@ -1621,8 +1703,8 @@ pub(super) fn parse_imperative_family_ast(
         "forage" => Some(ImperativeFamilyAst::GainKeyword(Effect::Forage)),
         // Collect evidence N keyword action (CR 702.163a)
         "collect" => {
-            if let Some(rest) = lower.strip_prefix("collect evidence ") {
-                // Delegate to nom combinator (input already lowercase from lower).
+            if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("collect evidence ").parse(lower)
+            {
                 let count = nom_primitives::parse_number
                     .parse(rest.trim())
                     .map(|(_, n)| n)
@@ -1636,11 +1718,10 @@ pub(super) fn parse_imperative_family_ast(
         }
         // Endure N keyword action
         "endure" | "endures" => {
-            let rest = lower
-                .strip_prefix("endure ")
-                .or_else(|| lower.strip_prefix("endures "))
+            let rest = alt((tag::<_, _, VerboseError<&str>>("endure "), tag("endures ")))
+                .parse(lower)
+                .map(|(r, _)| r)
                 .unwrap_or("");
-            // Delegate to nom combinator (input already lowercase from lower).
             let count = nom_primitives::parse_number
                 .parse(rest.trim())
                 .map(|(_, n)| n)
@@ -1712,7 +1793,10 @@ pub(super) fn parse_imperative_family_ast(
 
         // CR 701.12a: "exchange control of target [type] and target [type]"
         "exchange" => {
-            if lower.strip_prefix("exchange control of ").is_some() {
+            if tag::<_, _, VerboseError<&str>>("exchange control of ")
+                .parse(lower)
+                .is_ok()
+            {
                 Some(ImperativeFamilyAst::ExchangeControl)
             } else {
                 None
@@ -1733,7 +1817,7 @@ pub(super) fn parse_imperative_family_ast(
         }
         // CR 509.1c: "must be blocked [this turn] [if able]"
         "must" => {
-            if let Some(rest) = lower.strip_prefix("must be blocked") {
+            if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("must be blocked").parse(lower) {
                 let rest = rest.trim();
                 if rest.is_empty()
                     || rest == "this turn if able"
@@ -1833,11 +1917,11 @@ pub(super) fn parse_imperative_family_ast(
         }
 
         // "you may" → optional wrapper
-        "you" => text
-            .strip_prefix("you may ")
-            .map(|stripped| ImperativeFamilyAst::YouMay {
+        "you" => nom_on_lower(text, lower, |input| value((), tag("you may ")).parse(input)).map(
+            |(_, stripped)| ImperativeFamilyAst::YouMay {
                 text: stripped.to_string(),
-            }),
+            },
+        ),
 
         // Unknown first word — try position-agnostic parsers that use `contains`/`find`
         // rather than `starts_with`. This handles cases where the verb isn't the first
@@ -1870,9 +1954,9 @@ pub(super) fn parse_imperative_family_ast(
 /// - "get ten rad counters"
 fn try_parse_player_counter(lower: &str) -> Option<ImperativeFamilyAst> {
     // Strip "get/gets " prefix
-    let rest = lower
-        .strip_prefix("gets ")
-        .or_else(|| lower.strip_prefix("get "))?;
+    let (rest, _) = alt((tag::<_, _, VerboseError<&str>>("gets "), tag("get ")))
+        .parse(lower)
+        .ok()?;
 
     // Must end with "counter" or "counters"
     let (before_counter, plural) = if let Some(s) = rest.strip_suffix(" counters") {
@@ -1885,11 +1969,10 @@ fn try_parse_player_counter(lower: &str) -> Option<ImperativeFamilyAst> {
 
     // Parse quantity + counter kind from the remaining text.
     // Patterns: "a poison" / "an experience" / "two rad" / "10 poison"
-    let (count, counter_kind) = if let Some(kind) = before_counter.strip_prefix("a ") {
+    let (count, counter_kind) = if let Ok((kind, _)) =
+        alt((tag::<_, _, VerboseError<&str>>("a "), tag("an "))).parse(before_counter)
+    {
         (1u32, kind.trim())
-    } else if let Some(kind) = before_counter.strip_prefix("an ") {
-        (1u32, kind.trim())
-    // Delegate to nom combinator (input already lowercase from lower parameter).
     } else if let Ok((rest, n)) = nom_primitives::parse_number.parse(before_counter) {
         (n, rest.trim())
     } else {
@@ -1924,29 +2007,41 @@ fn try_parse_player_counter(lower: &str) -> Option<ImperativeFamilyAst> {
 /// CR 706: Parse die side count from "roll a dN" / "roll a six-sided die" patterns.
 fn try_parse_roll_die_sides(lower: &str) -> Option<u8> {
     // "roll a d20", "roll a d6", "roll a d4"
-    let rest = lower
-        .strip_prefix("roll a d")
-        .or_else(|| lower.strip_prefix("rolls a d"))?;
+    let (rest, _) = alt((
+        tag::<_, _, VerboseError<&str>>("roll a d"),
+        tag("rolls a d"),
+    ))
+    .parse(lower)
+    .ok()?;
     if let Ok(sides) = rest.parse::<u8>() {
         return Some(sides);
     }
     // Word-form: "roll a six-sided die", "roll a four-sided die"
-    match rest {
-        _ if rest.strip_prefix("four-sided").is_some()
-            || rest.strip_prefix("4-sided").is_some() =>
-        {
-            Some(4)
-        }
-        _ if rest.strip_prefix("six-sided").is_some() || rest.strip_prefix("6-sided").is_some() => {
-            Some(6)
-        }
-        _ if rest.strip_prefix("twenty-sided").is_some()
-            || rest.strip_prefix("20-sided").is_some() =>
-        {
-            Some(20)
-        }
-        _ => None,
+    if alt((
+        tag::<_, _, VerboseError<&str>>("four-sided"),
+        tag("4-sided"),
+    ))
+    .parse(rest)
+    .is_ok()
+    {
+        return Some(4);
     }
+    if alt((tag::<_, _, VerboseError<&str>>("six-sided"), tag("6-sided")))
+        .parse(rest)
+        .is_ok()
+    {
+        return Some(6);
+    }
+    if alt((
+        tag::<_, _, VerboseError<&str>>("twenty-sided"),
+        tag("20-sided"),
+    ))
+    .parse(rest)
+    .is_ok()
+    {
+        return Some(20);
+    }
+    None
 }
 
 /// CR 706.2: Try to parse a d20 result table line like "1—9 | Draw two cards"
@@ -2081,7 +2176,7 @@ pub(super) fn parse_zone_counter_ast(
     if let Some(ast) = parse_counter_ast(text, lower) {
         return Some(ast);
     }
-    if lower.strip_prefix("put ").is_some() && lower.contains("counter") {
+    if tag::<_, _, VerboseError<&str>>("put ").parse(lower).is_ok() && lower.contains("counter") {
         // Try move-counters first ("put its counters on ...")
         if let Some((
             Effect::MoveCounters {
@@ -2131,7 +2226,11 @@ pub(super) fn parse_zone_counter_ast(
             _ => None,
         };
     }
-    if lower.strip_prefix("remove ").is_some() && lower.contains("counter") {
+    if tag::<_, _, VerboseError<&str>>("remove ")
+        .parse(lower)
+        .is_ok()
+        && lower.contains("counter")
+    {
         return match try_parse_remove_counter(lower, ctx) {
             Some(Effect::RemoveCounter {
                 counter_type,
@@ -2246,7 +2345,10 @@ pub(super) fn lower_zone_counter_ast(ast: ZoneCounterImperativeAst) -> Effect {
 /// Handles all subtypes generically. The subtype is canonicalized from plural
 /// to singular form (e.g., "Zombies" -> "Zombie") via `parse_subtype`.
 fn try_parse_amass(text: &str, lower: &str) -> Option<Effect> {
-    let rest = lower.strip_prefix("amass ")?.trim();
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("amass ")
+        .parse(lower)
+        .ok()?;
+    let rest = rest.trim();
     if rest.is_empty() {
         return None;
     }
@@ -2268,10 +2370,10 @@ fn try_parse_amass(text: &str, lower: &str) -> Option<Effect> {
 ///
 /// Used inside activated ability effect text (after the colon).
 fn try_parse_monstrosity(lower: &str) -> Option<Effect> {
-    let rest = lower
-        .strip_prefix("monstrosity ")?
-        .trim()
-        .trim_end_matches('.');
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("monstrosity ")
+        .parse(lower)
+        .ok()?;
+    let rest = rest.trim().trim_end_matches('.');
 
     let count = parse_count_expr(rest).map(|(q, _)| q)?;
 
@@ -2282,7 +2384,10 @@ fn try_parse_monstrosity(lower: &str) -> Option<Effect> {
 ///
 /// Used inside activated ability effect text (after the colon).
 fn try_parse_adapt(lower: &str) -> Option<Effect> {
-    let rest = lower.strip_prefix("adapt ")?.trim().trim_end_matches('.');
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("adapt ")
+        .parse(lower)
+        .ok()?;
+    let rest = rest.trim().trim_end_matches('.');
 
     let count = parse_count_expr(rest).map(|(q, _)| q)?;
 
@@ -2320,7 +2425,10 @@ fn try_parse_subjectless_cant(lower: &str) -> Option<ImperativeFamilyAst> {
 
 /// CR 701.39a: Parse "bolster N" from Oracle text.
 fn try_parse_bolster(lower: &str) -> Option<Effect> {
-    let rest = lower.strip_prefix("bolster ")?.trim().trim_end_matches('.');
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("bolster ")
+        .parse(lower)
+        .ok()?;
+    let rest = rest.trim().trim_end_matches('.');
 
     let count = parse_count_expr(rest).map(|(q, _)| q)?;
 
