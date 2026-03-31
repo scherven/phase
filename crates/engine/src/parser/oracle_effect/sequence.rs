@@ -1,4 +1,8 @@
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_target::parse_target;
@@ -13,16 +17,21 @@ use crate::types::zones::Zone;
 /// Handles all chooser prefix forms: "choose ", "you choose ", "an opponent chooses ",
 /// "target opponent chooses ".
 fn parse_choose_count_from_text(lower: &str) -> u32 {
-    let rest = lower
-        .strip_prefix("an opponent chooses ")
-        .or_else(|| lower.strip_prefix("target opponent chooses "))
-        .unwrap_or_else(|| {
-            let s = lower.strip_prefix("you ").unwrap_or(lower);
-            s.strip_prefix("choose ")
-                .or(s.strip_prefix("chooses "))
+    // Strip chooser prefix using nom combinators (input already lowercase).
+    let rest = alt((tag("an opponent chooses "), tag("target opponent chooses ")))
+        .parse(lower)
+        .map(|(rest, _)| rest)
+        .unwrap_or_else(|_: nom::Err<VerboseError<&str>>| {
+            let s = tag::<_, _, VerboseError<&str>>("you ")
+                .parse(lower)
+                .map(|(rest, _)| rest)
+                .unwrap_or(lower);
+            alt((tag::<_, _, VerboseError<&str>>("choose "), tag("chooses ")))
+                .parse(s)
+                .map(|(rest, _)| rest)
                 .unwrap_or(s)
         });
-    // Delegate to nom combinator (input already lowercase from lower parameter).
+    // Delegate to nom combinator for the number.
     nom_primitives::parse_number
         .parse(rest)
         .map(|(_, n)| n)
@@ -106,7 +115,9 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                     // parser can retarget continuation clauses like
                     // "tap target creature ... and put a stun counter on it".
                     let targeted_compound_continuation = before_lower.contains("target ")
-                        && remainder_trimmed.strip_prefix("put ").is_some();
+                        && tag::<_, _, VerboseError<&str>>("put ")
+                            .parse(remainder_trimmed)
+                            .is_ok();
                     let suppress = before_lower.contains("from among")
                         || is_inside_temporal_prefix(&before_lower)
                         || targeted_compound_continuation;
@@ -136,22 +147,31 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
     // CR 701.18a: "search [library] for X, put/reveal Y" is a single compound action.
     // The search verb may follow a sequence connector like "Then" from a prior sentence.
     // CR 701.18a: Enumerated "search" prefixes — do NOT use contains(" search ").
-    let search_start = current_lower.strip_prefix("search ").is_some()
-        || current_lower.strip_prefix("then search ").is_some()
-        || current_lower.strip_prefix("you may search ").is_some()
-        || current_lower.strip_prefix("you search ").is_some()
-        || current_lower.strip_prefix("then you may search ").is_some()
-        || current_lower.strip_prefix("then you search ").is_some();
+    let search_start = alt((
+        tag::<_, _, VerboseError<&str>>("search "),
+        tag("then search "),
+        tag("you may search "),
+        tag("you search "),
+        tag("then you may search "),
+        tag("then you search "),
+    ))
+    .parse(current_lower.as_str())
+    .is_ok();
     if search_start
-        && (trimmed_lower.strip_prefix("reveal ").is_some()
-            || trimmed_lower.strip_prefix("put ").is_some())
+        && alt((tag::<_, _, VerboseError<&str>>("reveal "), tag("put ")))
+            .parse(trimmed_lower.as_str())
+            .is_ok()
     {
         return None;
     }
 
-    if let Some(after_then) = trimmed.strip_prefix("then ") {
-        let after_then_lower = after_then.to_ascii_lowercase();
-        if starts_clause_text(after_then) || starts_with_damage_clause(&after_then_lower) {
+    if tag::<_, _, VerboseError<&str>>("then ")
+        .parse(trimmed_lower.as_str())
+        .is_ok()
+    {
+        let after_then = &trimmed["then ".len()..];
+        let after_then_lower = &trimmed_lower["then ".len()..];
+        if starts_clause_text(after_then) || starts_with_damage_clause(after_then_lower) {
             return Some((ClauseBoundary::Then, whitespace_len + "then ".len()));
         }
     }
@@ -162,7 +182,9 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
 
     // Strip "and " connector before checking clause start
     // Handles patterns like ", and get {E}{E}" or ", and draw a card"
-    if let Some(after_and) = trimmed_lower.strip_prefix("and ") {
+    if let Ok((after_and, _)) =
+        tag::<_, _, VerboseError<&str>>("and ").parse(trimmed_lower.as_str())
+    {
         if starts_clause_text(after_and) || starts_with_damage_clause(after_and) {
             return Some((ClauseBoundary::Comma, whitespace_len));
         }
@@ -172,18 +194,22 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
 }
 
 fn starts_prefix_clause(current_lower: &str) -> bool {
-    current_lower.strip_prefix("until ").is_some()
-        || current_lower.strip_prefix("if ").is_some()
-        || current_lower.strip_prefix("when ").is_some()
-        || current_lower.strip_prefix("whenever ").is_some()
-        || current_lower.strip_prefix("for each ").is_some()
-        || current_lower.strip_prefix("then if ").is_some()
-        || current_lower.strip_prefix("otherwise").is_some()
-        || current_lower.strip_prefix("if not").is_some()
-        // CR 603.7a: Temporal prefix clauses must not be split on their internal comma.
-        || current_lower.strip_prefix("at the beginning ").is_some()
-        // CR 611.2b: "For as long as [condition], [effect]" — duration prefix clause.
-        || current_lower.strip_prefix("for as long as ").is_some()
+    // CR 603.7a: Temporal prefix clauses must not be split on their internal comma.
+    // CR 611.2b: "For as long as [condition], [effect]" — duration prefix clause.
+    alt((
+        tag::<_, _, VerboseError<&str>>("until "),
+        tag("if "),
+        tag("when "),
+        tag("whenever "),
+        tag("for each "),
+        tag("then if "),
+        tag("otherwise"),
+        tag("if not"),
+        tag("at the beginning "),
+        tag("for as long as "),
+    ))
+    .parse(current_lower)
+    .is_ok()
 }
 
 /// Check whether `text` begins with an imperative verb or pronoun that can start
@@ -199,59 +225,69 @@ fn starts_prefix_clause(current_lower: &str) -> bool {
 ///   `"shuffle"`.
 pub(super) fn starts_clause_text(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    let prefixes = [
-        "add ",
-        "all ",
-        "attach ",
-        "airbend ",
-        "cast ",
-        "counter ",
-        "create ",
-        "deal ",
-        "destroy ",
-        "discard ",
-        "draw ",
-        "earthbend ",
-        "each ",
-        "each player ",
-        "each opponent ",
-        "exile ",
-        "explore",
-        "fight ",
-        "flip ",
-        "investigate",
-        "gain control ",
-        "gain ",
-        "get ",
-        "have ",
-        "look at ",
-        "lose ",
-        "mill ",
-        "proliferate",
-        "put ",
-        "return ",
-        "reveal ",
-        "roll ",
-        "sacrifice ",
-        "scry ",
-        "search ",
-        "shuffle",
-        "surveil ",
-        "tap ",
-        "that ",
-        "this ",
-        "those ",
-        "they ",
-        "target ",
-        "untap ",
-        "you may ",
-        "you ",
-        "it ",
-    ];
+    starts_clause_text_lower(&lower)
+}
 
-    prefixes
-        .iter()
-        .any(|prefix| lower.strip_prefix(prefix).is_some())
+/// Inner implementation operating on pre-lowercased input.
+fn starts_clause_text_lower(s: &str) -> bool {
+    // Table-driven prefix check via nom tag() — try all imperative verbs and
+    // pronoun/determiner clause starters.  Split into multiple alt() groups
+    // chained with .or() to stay within nom's 21-tuple limit.
+    alt((
+        value((), tag::<_, _, VerboseError<&str>>("add ")),
+        value((), tag("all ")),
+        value((), tag("attach ")),
+        value((), tag("airbend ")),
+        value((), tag("cast ")),
+        value((), tag("counter ")),
+        value((), tag("create ")),
+        value((), tag("deal ")),
+        value((), tag("destroy ")),
+        value((), tag("discard ")),
+        value((), tag("draw ")),
+        value((), tag("earthbend ")),
+        value((), tag("each player ")),
+        value((), tag("each opponent ")),
+        value((), tag("each ")),
+        value((), tag("exile ")),
+        value((), tag("explore")),
+        value((), tag("fight ")),
+        value((), tag("flip ")),
+        value((), tag("investigate")),
+        value((), tag("gain control ")),
+    ))
+    .or(alt((
+        value((), tag("gain ")),
+        value((), tag("get ")),
+        value((), tag("have ")),
+        value((), tag("look at ")),
+        value((), tag("lose ")),
+        value((), tag("mill ")),
+        value((), tag("proliferate")),
+        value((), tag("put ")),
+        value((), tag("return ")),
+        value((), tag("reveal ")),
+        value((), tag("roll ")),
+        value((), tag("sacrifice ")),
+        value((), tag("scry ")),
+        value((), tag("search ")),
+        value((), tag("shuffle")),
+        value((), tag("surveil ")),
+        value((), tag("tap ")),
+        value((), tag("that ")),
+        value((), tag("this ")),
+        value((), tag("those ")),
+        value((), tag("they ")),
+    )))
+    .or(alt((
+        value((), tag("target ")),
+        value((), tag("untap ")),
+        value((), tag("you may ")),
+        value((), tag("you ")),
+        value((), tag("it ")),
+    )))
+    .parse(s)
+    .is_ok()
 }
 
 /// CR 603.7a: Check if accumulated clause text begins with a temporal prefix
@@ -263,13 +299,13 @@ fn is_inside_temporal_prefix(lower: &str) -> bool {
     // Check the raw accumulated text (which may include a leading comma+space
     // from a prior clause boundary). The temporal prefix starts the clause.
     let trimmed = lower.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
-    trimmed
-        .strip_prefix("at the beginning of the next ")
-        .is_some()
-        || trimmed
-            .strip_prefix("at the beginning of your next ")
-            .is_some()
-        || trimmed.strip_prefix("at the end of ").is_some()
+    alt((
+        tag::<_, _, VerboseError<&str>>("at the beginning of the next "),
+        tag("at the beginning of your next "),
+        tag("at the end of "),
+    ))
+    .parse(trimmed)
+    .is_ok()
 }
 
 /// Restricted clause-start check for bare " and " splitting (not after comma).
@@ -282,62 +318,68 @@ fn is_inside_temporal_prefix(lower: &str) -> bool {
 /// "you" + verb is never a noun phrase — it always starts an independent clause.
 pub(super) fn starts_bare_and_clause(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    let prefixes = [
-        "create ",
-        "destroy ",
-        "draw ",
-        "discard ",
-        "exile ",
-        // "gain " / "lose " — only the base form (imperative), NOT the conjugated
-        // "gains"/"loses" form which is a shared-subject continuation
-        // (e.g., "gets +2/+2 and gains flying" must NOT split at "gains").
-        "gain control ",
-        "have ",
-        "mill ",
-        "put ",
-        "return ",
-        "sacrifice ",
-        "scry ",
-        "search ",
-        "shuffle",
-        "surveil ",
-        "tap ",
-        "untap ",
+    starts_bare_and_clause_lower(&lower)
+}
+
+/// Inner implementation operating on pre-lowercased input.
+fn starts_bare_and_clause_lower(s: &str) -> bool {
+    // Split into multiple alt() groups chained with .or() for nom's tuple limit.
+    let has_verb_prefix = alt((
+        value((), tag::<_, _, VerboseError<&str>>("create ")),
+        value((), tag("destroy ")),
+        value((), tag("draw ")),
+        value((), tag("discard ")),
+        value((), tag("exile ")),
+        value((), tag("gain control ")),
+        value((), tag("have ")),
+        value((), tag("mill ")),
+        value((), tag("put ")),
+        value((), tag("return ")),
+        value((), tag("sacrifice ")),
+        value((), tag("scry ")),
+        value((), tag("search ")),
+        value((), tag("shuffle")),
+        value((), tag("surveil ")),
+        value((), tag("tap ")),
+        value((), tag("untap ")),
+    ))
+    .or(alt((
         // CR 608.2c: Subject-prefixed verb patterns — "you [verb]" is always a clause start.
-        "you gain ",
-        "you lose ",
-        "you draw ",
-        "you create ",
-        "you mill ",
-        "you scry ",
-        "you put ",
-        "you exile ",
-        "you return ",
-        "you sacrifice ",
-        "you search ",
-        "you surveil ",
-        "you get ",
-        "you may ",
-        "its controller ",
-        "their controller ",
-        // Sword trigger patterns: "and you untap all creatures", "and that player mills three"
-        "you untap ",
-        "that player ",
-    ];
-    if prefixes
-        .iter()
-        .any(|prefix| lower.strip_prefix(prefix).is_some())
-    {
+        value((), tag("you gain ")),
+        value((), tag("you lose ")),
+        value((), tag("you draw ")),
+        value((), tag("you create ")),
+        value((), tag("you mill ")),
+        value((), tag("you scry ")),
+        value((), tag("you put ")),
+        value((), tag("you exile ")),
+        value((), tag("you return ")),
+        value((), tag("you sacrifice ")),
+        value((), tag("you search ")),
+        value((), tag("you surveil ")),
+        value((), tag("you get ")),
+        value((), tag("you may ")),
+        value((), tag("its controller ")),
+        value((), tag("their controller ")),
+        // Sword trigger patterns
+        value((), tag("you untap ")),
+        value((), tag("that player ")),
+    )))
+    .parse(s)
+    .is_ok();
+    if has_verb_prefix {
         return true;
     }
     // "gain N" / "lose N" — imperative with numeric argument (e.g., "gain 3 life",
     // "lose 2 life") is a clause start, but conjugated "gains"/"loses" is NOT.
-    if (lower.strip_prefix("gain ").is_some() && lower.strip_prefix("gains ").is_none())
-        || (lower.strip_prefix("lose ").is_some() && lower.strip_prefix("loses ").is_none())
+    if (tag::<_, _, VerboseError<&str>>("gain ").parse(s).is_ok()
+        && tag::<_, _, VerboseError<&str>>("gains ").parse(s).is_err())
+        || (tag::<_, _, VerboseError<&str>>("lose ").parse(s).is_ok()
+            && tag::<_, _, VerboseError<&str>>("loses ").parse(s).is_err())
     {
         return true;
     }
-    starts_with_damage_clause(&lower)
+    starts_with_damage_clause(s)
 }
 
 /// Checks if text starts with a subject-prefixed damage verb.
@@ -351,8 +393,12 @@ fn starts_with_damage_clause(lower: &str) -> bool {
         subject.is_empty() // bare "deals N damage"
             || subject == "it" // "it deals N damage"
             || subject == "~" // "~ deals N damage"
-            || subject.strip_prefix("this ").is_some() // "this creature/enchantment/token deals"
-            || subject.strip_prefix("that ").is_some() // "that creature deals"
+            || alt((
+                tag::<_, _, VerboseError<&str>>("this "),
+                tag("that "),
+            ))
+            .parse(subject)
+            .is_ok()
     } else {
         false
     }
@@ -616,7 +662,10 @@ pub(super) fn parse_intrinsic_continuation_ast(
             #[cfg(debug_assertions)]
             if let Some(then_pos) = lower.rfind(", then ") {
                 let after_then = lower[then_pos + ", then ".len()..].trim_end_matches('.');
-                if after_then.strip_prefix("shuffle").is_none() {
+                if tag::<_, _, VerboseError<&str>>("shuffle")
+                    .parse(after_then)
+                    .is_err()
+                {
                     debug_assert!(
                         !starts_clause_text(after_then),
                         "Unsplit clause boundary in SearchLibrary continuation: \
@@ -659,22 +708,23 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
     // Must be checked BEFORE the "from among" path since "of them" appears in both forms.
     if let Some(of_them_pos) = lower.find(" of them") {
         let before_of = lower[..of_them_pos].trim();
-        let after_put = before_of
-            .strip_prefix("you may put ")
-            .or_else(|| before_of.strip_prefix("put "))
+        let after_put = alt((tag::<_, _, VerboseError<&str>>("you may put "), tag("put ")))
+            .parse(before_of)
+            .map(|(rest, _)| rest)
             .unwrap_or(before_of);
 
         // Delegate to nom combinator (input already lowercase from lower).
-        let (count, up_to) = if let Some(rest) = after_put.strip_prefix("up to ") {
-            nom_primitives::parse_number
-                .parse(rest)
-                .map_or((1, true), |(_, n)| (n, true))
-        } else if let Ok((_, n)) = nom_primitives::parse_number.parse(after_put) {
-            (n, false)
-        } else {
-            // "a/an" or unrecognized → treat as up_to 1
-            (1, true)
-        };
+        let (count, up_to) =
+            if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("up to ").parse(after_put) {
+                nom_primitives::parse_number
+                    .parse(rest)
+                    .map_or((1, true), |(_, n)| (n, true))
+            } else if let Ok((_, n)) = nom_primitives::parse_number.parse(after_put) {
+                (n, false)
+            } else {
+                // "a/an" or unrecognized → treat as up_to 1
+                (1, true)
+            };
 
         // Detect rest destination from "and the rest on the bottom/into graveyard" suffix.
         let rest_destination = parse_of_them_rest_destination(lower);
@@ -692,31 +742,35 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
     let from_among_pos = lower.find("from among")?;
     let before_from = &lower[..from_among_pos].trim();
 
-    // Strip leading "put " or "you may reveal "
-    let after_put = before_from
-        .strip_prefix("you may put ")
-        .or_else(|| before_from.strip_prefix("you may reveal "))
-        .or_else(|| before_from.strip_prefix("put "))
-        .or_else(|| before_from.strip_prefix("reveal "))
-        .unwrap_or(before_from);
+    // Strip leading "put " or "you may reveal " using nom combinators.
+    let after_put = alt((
+        tag::<_, _, VerboseError<&str>>("you may put "),
+        tag("you may reveal "),
+        tag("put "),
+        tag("reveal "),
+    ))
+    .parse(*before_from)
+    .map(|(rest, _)| rest)
+    .unwrap_or(before_from);
 
     // Parse "up to N" or "a/an" or just a number
     // Delegate to nom combinator (input already lowercase from lower).
-    let (count, up_to, filter_text) = if let Some(rest) = after_put.strip_prefix("up to ") {
+    let (count, up_to, filter_text) = if let Ok((rest, _)) =
+        tag::<_, _, VerboseError<&str>>("up to ").parse(after_put)
+    {
         if let Ok((remainder, n)) = nom_primitives::parse_number.parse(rest) {
             (n, true, remainder.trim())
         } else {
             (1, true, rest)
         }
-    } else if let Some(rest) = after_put.strip_prefix("any number of ") {
+    } else if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("any number of ").parse(after_put)
+    {
         // "any number of creatures" → up_to with a high cap
         (255, true, rest)
-    } else if after_put.strip_prefix("a ").is_some() || after_put.strip_prefix("an ").is_some() {
+    } else if let Ok((rest, _)) =
+        alt((tag::<_, _, VerboseError<&str>>("a "), tag("an "))).parse(after_put)
+    {
         // "a creature card" / "an artifact card" — up_to 1 (player may choose none)
-        let rest = after_put
-            .strip_prefix("a ")
-            .or_else(|| after_put.strip_prefix("an "))
-            .unwrap_or(after_put);
         (1, true, rest)
     } else if let Ok((remainder, n)) = nom_primitives::parse_number.parse(after_put) {
         // Explicit numeric count: "two creature cards" → exactly 2
@@ -773,8 +827,12 @@ pub(super) fn parse_followup_continuation_ast(
                 || lower.contains("one of them")
                 || lower.contains("one of those") =>
         {
-            let card_filter = if lower.strip_prefix("you choose ").is_some()
-                || lower.strip_prefix("choose ").is_some()
+            let card_filter = if alt((
+                tag::<_, _, VerboseError<&str>>("you choose "),
+                tag("choose "),
+            ))
+            .parse(lower.as_str())
+            .is_ok()
             {
                 super::parse_choose_filter(&lower)
             } else {
@@ -813,7 +871,11 @@ pub(super) fn parse_followup_continuation_ast(
             Some(ContinuationAst::PutRest { destination })
         }
         // "create a ... token and suspect it" → chain suspect on last created token
-        Effect::Token { .. } if lower.strip_prefix("suspect ").is_some() => {
+        Effect::Token { .. }
+            if tag::<_, _, VerboseError<&str>>("suspect ")
+                .parse(lower.as_str())
+                .is_ok() =>
+        {
             Some(ContinuationAst::SuspectLastCreated)
         }
         // CR 701.19c + CR 608.2c: "It can't be regenerated" prevents regeneration shields;
@@ -828,14 +890,22 @@ pub(super) fn parse_followup_continuation_ast(
         // of them/those" after ChangeZone or ExileTop → ChooseFromZone building block
         Effect::ChangeZone { .. } | Effect::ExileTop { .. }
             if (lower.contains("of them") || lower.contains("of those"))
-                && (lower.strip_prefix("choose ").is_some()
-                    || lower.strip_prefix("you choose ").is_some()
-                    || lower.strip_prefix("an opponent chooses ").is_some()
-                    || lower.strip_prefix("target opponent chooses ").is_some()) =>
+                && alt((
+                    tag::<_, _, VerboseError<&str>>("choose "),
+                    tag("you choose "),
+                    tag("an opponent chooses "),
+                    tag("target opponent chooses "),
+                ))
+                .parse(lower.as_str())
+                .is_ok() =>
         {
             let count = parse_choose_count_from_text(&lower);
-            let chooser = if lower.strip_prefix("an opponent chooses ").is_some()
-                || lower.strip_prefix("target opponent chooses ").is_some()
+            let chooser = if alt((
+                tag::<_, _, VerboseError<&str>>("an opponent chooses "),
+                tag("target opponent chooses "),
+            ))
+            .parse(lower.as_str())
+            .is_ok()
             {
                 Chooser::Opponent
             } else {

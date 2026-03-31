@@ -1,3 +1,9 @@
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
+use nom::Parser;
+use nom_language::error::VerboseError;
+
 use super::animation::{animation_modifications, parse_animation_spec};
 use super::types::*;
 use super::{resolve_it_pronoun, ParseContext};
@@ -135,7 +141,10 @@ fn try_parse_subject_become_clause(text: &str, ctx: &ParseContext) -> Option<Par
     let verb_start = find_predicate_start(text)?;
     let subject = text[..verb_start].trim();
     let predicate = deconjugate_verb(text[verb_start..].trim());
-    predicate.to_lowercase().strip_prefix("become ")?;
+    let predicate_lower = predicate.to_lowercase();
+    tag::<_, _, VerboseError<&str>>("become ")
+        .parse(predicate_lower.as_str())
+        .ok()?;
     let application = parse_subject_application(subject, ctx)?;
     build_become_clause(application, &predicate)
 }
@@ -199,16 +208,25 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
 
     // CR 115.10a: "another target X" — target with Another filter property,
     // excluding the source object from legal targets.
-    if lower.strip_prefix("another target ").is_some() {
+    if tag::<_, _, VerboseError<&str>>("another target ")
+        .parse(lower.as_str())
+        .is_ok()
+    {
         let (filter, _) = parse_target(&subject["another ".len()..]);
         let filter = add_another_property(filter);
         return subject_filter_application(filter, true);
     }
-    if lower.strip_prefix("target ").is_some() {
+    if tag::<_, _, VerboseError<&str>>("target ")
+        .parse(lower.as_str())
+        .is_ok()
+    {
         let (filter, _) = parse_target(subject);
         return subject_filter_application(filter, true);
     }
-    if lower.strip_prefix("up to ").is_some() {
+    if tag::<_, _, VerboseError<&str>>("up to ")
+        .parse(lower.as_str())
+        .is_ok()
+    {
         let (target_text, multi_target) = super::strip_optional_target_prefix(subject);
         if multi_target.is_some() {
             let (filter, _) = parse_target(target_text);
@@ -220,9 +238,13 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
     // "each of your opponents" / "each of those creatures" / "each of them" — variant of
     // "each" with an interposed "of" that parse_target doesn't handle directly.
     // Must check before "each " to avoid the generic "each" path swallowing "each of".
-    if let Some(remainder) = lower.strip_prefix("each of ") {
-        if remainder.strip_prefix("your opponents").is_some()
-            || remainder.strip_prefix("your opponent").is_some()
+    if let Ok((remainder, _)) = tag::<_, _, VerboseError<&str>>("each of ").parse(lower.as_str()) {
+        if alt((
+            tag::<_, _, VerboseError<&str>>("your opponents"),
+            tag("your opponent"),
+        ))
+        .parse(remainder)
+        .is_ok()
         {
             return subject_filter_application(
                 TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
@@ -231,7 +253,10 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         }
         // "each of those [creatures/players/...]" / "each of them" — anaphoric reference
         // to the targets declared in the parent ability's sub_ability chain.
-        if remainder.strip_prefix("those ").is_some() || remainder.strip_prefix("them").is_some() {
+        if alt((tag::<_, _, VerboseError<&str>>("those "), tag("them")))
+            .parse(remainder)
+            .is_ok()
+        {
             return subject_filter_application(TargetFilter::ParentTarget, false);
         }
         // Fallback: strip "of " and re-route through parse_target as "each <remainder>"
@@ -239,18 +264,22 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         let (filter, _) = parse_target(&normalized);
         return subject_filter_application(filter, false);
     }
-    if let Some(phrase) = lower
-        .strip_prefix("all ")
-        .map(|_| &subject[4..])
-        .or_else(|| lower.strip_prefix("each ").map(|_| &subject[5..]))
+    if let Ok((rest_lower, _)) =
+        alt((tag::<_, _, VerboseError<&str>>("all "), tag("each "))).parse(lower.as_str())
     {
+        let consumed = lower.len() - rest_lower.len();
+        let phrase = &subject[consumed..];
         let (filter, rest) = parse_type_phrase(phrase);
         let filter = merge_partial_type_phrase_filter(filter, rest.trim());
         return subject_filter_application(filter, false);
     }
-    if lower.strip_prefix("enchanted creature").is_some()
-        || lower.strip_prefix("enchanted permanent").is_some()
-        || lower.strip_prefix("equipped creature").is_some()
+    if alt((
+        tag::<_, _, VerboseError<&str>>("enchanted creature"),
+        tag("enchanted permanent"),
+        tag("equipped creature"),
+    ))
+    .parse(lower.as_str())
+    .is_ok()
     {
         let (filter, _) = parse_target(subject);
         return Some(SubjectApplication {
@@ -262,14 +291,19 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
     }
     // Bare plural noun phrase subjects ("creatures you control", "other creatures you control")
     // are implicit "all X" forms — strip any "other " prefix and route through parse_target.
-    let (had_other, noun_subject) = if let Some(rest) = lower.strip_prefix("other ") {
-        (true, rest)
-    } else {
-        (false, lower.as_str())
-    };
-    if noun_subject.strip_prefix("target ").is_none()
-        && noun_subject.strip_prefix("all ").is_none()
-        && noun_subject.strip_prefix("each ").is_none()
+    let (had_other, noun_subject) =
+        if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("other ").parse(lower.as_str()) {
+            (true, rest)
+        } else {
+            (false, lower.as_str())
+        };
+    if alt((
+        tag::<_, _, VerboseError<&str>>("target "),
+        tag("all "),
+        tag("each "),
+    ))
+    .parse(noun_subject)
+    .is_err()
     {
         let normalized = format!("all {noun_subject}");
         let (filter, rest) = parse_target(&normalized);
@@ -300,7 +334,10 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         });
     }
     // "an opponent" as subject — single opponent (two-player: equivalent to "each opponent").
-    if lower.strip_prefix("an opponent").is_some() {
+    if tag::<_, _, VerboseError<&str>>("an opponent")
+        .parse(lower.as_str())
+        .is_ok()
+    {
         return subject_filter_application(
             TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
             false,
@@ -356,11 +393,12 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
     // CR 608.2c: "that creature/permanent/land" — anaphoric back-reference to a
     // previously mentioned object in the same effect sequence. Strip "that " and parse
     // the remainder as a type phrase. Covers all "that [type]" patterns generically.
-    if let Some(rest_subject) = lower.strip_prefix("that ") {
+    if let Ok((rest_subject, _)) = tag::<_, _, VerboseError<&str>>("that ").parse(lower.as_str()) {
         // CR 608.2c: "that creature/permanent/land" — anaphoric back-reference to a
         // previously mentioned object in the same effect sequence. Strip "that " and parse
         // the remainder as a type phrase. Covers all "that [type]" patterns generically.
-        let original_rest = &subject[subject.len() - rest_subject.len()..];
+        let consumed = lower.len() - rest_subject.len();
+        let original_rest = &subject[consumed..];
         let (filter, rem) = parse_type_phrase(original_rest);
         if rem.trim().is_empty() && !matches!(filter, TargetFilter::Any) {
             return Some(SubjectApplication {
@@ -496,7 +534,9 @@ fn build_continuous_clause(
     // B15: Guard against "becomes" predicates routing through continuous clause parsing.
     // Creature-land animations ("becomes a 3/3 Dinosaur creature with trample") must
     // fall through to try_parse_subject_become_clause for correct animation handling.
-    if normalized.strip_prefix("become ").is_some() || normalized.strip_prefix("become\n").is_some()
+    if alt((tag::<_, _, VerboseError<&str>>("become "), tag("become\n")))
+        .parse(normalized.as_str())
+        .is_ok()
     {
         return None;
     }
@@ -560,12 +600,17 @@ fn build_become_clause(
     let normalized = deconjugate_verb(predicate);
     let (predicate, duration) = super::strip_trailing_duration(&normalized);
     // CR 722: "become the monarch" — special keyword action, not an animation.
-    if predicate.strip_prefix("become ")?.trim() == "the monarch" {
+    let predicate_lower = predicate.to_lowercase();
+    let (become_rest, _) = tag::<_, _, VerboseError<&str>>("become ")
+        .parse(predicate_lower.as_str())
+        .ok()?;
+    let consumed = predicate_lower.len() - become_rest.len();
+    let become_text = predicate[consumed..].trim();
+    if become_text.eq_ignore_ascii_case("the monarch") {
         return Some(super::parsed_clause(Effect::BecomeMonarch));
     }
     // CR 611.2b: "Becomes" effects without explicit duration are permanent
     let duration = duration.or(Some(Duration::Permanent));
-    let become_text = predicate.strip_prefix("become ")?.trim();
 
     // CR 119.5: "life total becomes N" — set life total to a specific number.
     // Must intercept before parse_animation_spec which tokenizes each word as a subtype.
@@ -638,35 +683,36 @@ fn try_parse_set_life_total(
     let lower = become_text.to_lowercase();
 
     // Parse the amount expression
-    let amount = if let Some(rest) = lower.strip_prefix("half ") {
-        // "half their starting life total" / "half that player's starting life total"
-        if rest.contains("starting life total") {
-            QuantityExpr::HalfRounded {
-                inner: Box::new(QuantityExpr::Ref {
-                    qty: QuantityRef::StartingLifeTotal,
-                }),
-                rounding: RoundingMode::Down,
+    let amount =
+        if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("half ").parse(lower.as_str()) {
+            // "half their starting life total" / "half that player's starting life total"
+            if rest.contains("starting life total") {
+                QuantityExpr::HalfRounded {
+                    inner: Box::new(QuantityExpr::Ref {
+                        qty: QuantityRef::StartingLifeTotal,
+                    }),
+                    rounding: RoundingMode::Down,
+                }
+            } else {
+                return None;
             }
+        } else if lower.contains("starting life total") {
+            QuantityExpr::Ref {
+                qty: QuantityRef::StartingLifeTotal,
+            }
+        } else if let Some((n, rest)) = parse_number(&lower) {
+            // Guard: reject if substantial text remains after the number.
+            // "a 3/3 red goblin creature" matches "a" as 1 but the rest
+            // "3/3 red goblin creature" indicates this is an animation, not
+            // a life total. Genuine life total patterns: "10", "1", bare numbers.
+            let rest_trimmed = rest.trim().trim_end_matches('.');
+            if !rest_trimmed.is_empty() {
+                return None;
+            }
+            QuantityExpr::Fixed { value: n as i32 }
         } else {
             return None;
-        }
-    } else if lower.contains("starting life total") {
-        QuantityExpr::Ref {
-            qty: QuantityRef::StartingLifeTotal,
-        }
-    } else if let Some((n, rest)) = parse_number(&lower) {
-        // Guard: reject if substantial text remains after the number.
-        // "a 3/3 red goblin creature" matches "a" as 1 but the rest
-        // "3/3 red goblin creature" indicates this is an animation, not
-        // a life total. Genuine life total patterns: "10", "1", bare numbers.
-        let rest_trimmed = rest.trim().trim_end_matches('.');
-        if !rest_trimmed.is_empty() {
-            return None;
-        }
-        QuantityExpr::Fixed { value: n as i32 }
-    } else {
-        return None;
-    };
+        };
 
     Some(ParsedEffectClause {
         effect: Effect::SetLifeTotal {
@@ -815,17 +861,23 @@ pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
         return Some(vec![StaticMode::CantBlock, StaticMode::CantBeBlocked]);
     }
     // CR 509.1c: "can't be blocked except by ..." — evasion restriction
-    if let Some(except_text) = lower
-        .strip_prefix("can't be blocked except by ")
-        .or_else(|| lower.strip_prefix("cannot be blocked except by "))
+    if let Ok((except_text, _)) = alt((
+        tag::<_, _, VerboseError<&str>>("can't be blocked except by "),
+        tag("cannot be blocked except by "),
+    ))
+    .parse(lower)
     {
         return Some(vec![StaticMode::CantBeBlockedExceptBy {
             filter: except_text.to_string(),
         }]);
     }
     // CR 115.4: "can't be the target of ..." — hexproof variant
-    if lower.strip_prefix("can't be the target of ").is_some()
-        || lower.strip_prefix("cannot be the target of ").is_some()
+    if alt((
+        tag::<_, _, VerboseError<&str>>("can't be the target of "),
+        tag("cannot be the target of "),
+    ))
+    .parse(lower)
+    .is_ok()
     {
         return Some(vec![StaticMode::CantBeTargeted]);
     }
@@ -834,7 +886,12 @@ pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
         return Some(vec![StaticMode::CantGainLife]);
     }
     // CR 302.6: "doesn't untap during [controller's] untap step"
-    if lower.strip_prefix("doesn't untap").is_some() || lower.strip_prefix("don't untap").is_some()
+    if alt((
+        tag::<_, _, VerboseError<&str>>("doesn't untap"),
+        tag("don't untap"),
+    ))
+    .parse(lower)
+    .is_ok()
     {
         return Some(vec![StaticMode::CantUntap]);
     }
@@ -867,7 +924,9 @@ fn extract_pump_modifiers(
 /// the targeted permanent's controller gains life based on the permanent's stats.
 pub(super) fn try_parse_targeted_controller_gain_life(text: &str) -> Option<ParsedEffectClause> {
     let lower = text.to_lowercase();
-    lower.strip_prefix("its controller ")?;
+    tag::<_, _, VerboseError<&str>>("its controller ")
+        .parse(lower.as_str())
+        .ok()?;
     if !lower.contains("gain") || !lower.contains("life") {
         return None;
     }
@@ -878,9 +937,9 @@ pub(super) fn try_parse_targeted_controller_gain_life(text: &str) -> Option<Pars
     } else {
         // Try to parse a fixed amount: "its controller gains 3 life"
         let after = &lower["its controller ".len()..];
-        let after = after
-            .strip_prefix("gains ")
-            .or_else(|| after.strip_prefix("gain "))
+        let after = alt((tag::<_, _, VerboseError<&str>>("gains "), tag("gain ")))
+            .parse(after)
+            .map(|(rest, _)| rest)
             .unwrap_or(after);
         QuantityExpr::Fixed {
             value: parse_number(after).map(|(n, _)| n as i32).unwrap_or(1),
@@ -918,30 +977,30 @@ pub(super) fn deconjugate_verb(text: &str) -> String {
 }
 
 pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
-    [
-        "all ",
-        "an opponent ",
-        "defending player ",
-        "each of ",
-        "each ",
-        "each opponent ",
-        "each player ",
-        "enchanted ",
-        "equipped ",
-        "it ",
-        "its controller ",
-        "target ",
-        "that ",
-        "the chosen ",
-        "the player ",
-        "they ",
-        "this ",
-        "those ",
-        "up to ",
-        "you ",
-    ]
-    .iter()
-    .any(|prefix| lower.strip_prefix(prefix).is_some())
+    alt((
+        value((), tag::<_, _, VerboseError<&str>>("all ")),
+        value((), tag("an opponent ")),
+        value((), tag("defending player ")),
+        value((), tag("each of ")),
+        value((), tag("each opponent ")),
+        value((), tag("each player ")),
+        value((), tag("each ")),
+        value((), tag("enchanted ")),
+        value((), tag("equipped ")),
+        value((), tag("it ")),
+        value((), tag("its controller ")),
+        value((), tag("target ")),
+        value((), tag("that ")),
+        value((), tag("the chosen ")),
+        value((), tag("the player ")),
+        value((), tag("they ")),
+        value((), tag("this ")),
+        value((), tag("those ")),
+        value((), tag("up to ")),
+        value((), tag("you ")),
+    ))
+    .parse(lower)
+    .is_ok()
 }
 
 /// Verbs recognized for subject-predicate splitting in Oracle text.
