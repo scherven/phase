@@ -3686,9 +3686,8 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
         .parse(lower.as_str())
         .is_ok()
     {
-        if let Some((_, (_, rest))) = nom_primitives::split_once_on(lower.as_str(), " wasn't kicked, ")
+        if let Ok((_, (_, rest))) = nom_primitives::split_once_on(lower.as_str(), " wasn't kicked, ")
             .or_else(|_| nom_primitives::split_once_on(lower.as_str(), " wasn't bargained, "))
-            .ok()
         {
             let offset = text.len() - rest.len();
             return (
@@ -6105,18 +6104,18 @@ fn try_parse_change_targets(lower: &str) -> Option<Effect> {
 
     // Handle "spell or ability" specially since "ability" is not a card type in parse_target.
     // CR 115.7: "spell or ability" matches any spell or any activated/triggered ability on the stack.
-    let mut target = if scan_contains_phrase(&spell_phrase_clean, "spell or ability")
-        || scan_contains_phrase(&spell_phrase_clean, "spell and/or ability")
+    let mut target = if scan_contains_phrase(spell_phrase_clean, "spell or ability")
+        || scan_contains_phrase(spell_phrase_clean, "spell and/or ability")
     {
         // Both spells and abilities on the stack
         TargetFilter::Or {
             filters: vec![TargetFilter::StackSpell, TargetFilter::StackAbility],
         }
-    } else if scan_contains_phrase(&spell_phrase_clean, "activated or triggered ability")
-        || scan_contains_phrase(&spell_phrase_clean, "activated ability")
+    } else if scan_contains_phrase(spell_phrase_clean, "activated or triggered ability")
+        || scan_contains_phrase(spell_phrase_clean, "activated ability")
     {
         TargetFilter::StackAbility
-    } else if scan_contains_phrase(&spell_phrase_clean, "spell") {
+    } else if scan_contains_phrase(spell_phrase_clean, "spell") {
         // Parse with parse_target for type-specific spells (e.g. "instant or sorcery spell")
         let (parsed, _) = parse_target(spell_phrase_clean);
         constrain_filter_to_stack(parsed)
