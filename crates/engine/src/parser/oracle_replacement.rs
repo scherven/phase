@@ -1,5 +1,6 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
+use nom::combinator::value;
 use nom::Parser;
 use nom_language::error::VerboseError;
 
@@ -725,45 +726,16 @@ fn parse_damage_modification_replacement(
     original_text: &str,
 ) -> Option<ReplacementDefinition> {
     // --- 1. Extract modification formula from the result clause ---
-    let modification = if norm_lower.contains("double that damage")
-        || norm_lower.contains("deals double that damage")
-    {
-        DamageModification::Double
-    } else if norm_lower.contains("triple that damage")
-        || norm_lower.contains("deals triple that damage")
-    {
-        DamageModification::Triple
-    } else if let Some(rest) = strip_after(norm_lower, "that much damage plus ") {
-        // Delegate to nom_primitives::parse_number (input already lowercase)
-        let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
-        DamageModification::Plus { value }
-    } else if let Some(rest) = strip_after(norm_lower, "that much damage minus ") {
-        let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
-        DamageModification::Minus { value }
-    } else if norm_lower.contains("damage equal to ~'s power instead")
-        || norm_lower.contains("deals damage equal to ~'s power")
-    {
-        // CR 614.1a: Conditional — "deals damage equal to ~'s power instead."
-        // The "less than ~'s power" condition is checked at application time.
-        DamageModification::SetToSourcePower
-    } else {
-        return None; // Exotic pattern — fall through to stub
-    };
+    // Scan for the modification formula at word boundaries using nom combinators.
+    let modification = scan_damage_modification(norm_lower)?;
 
     // --- 2. Extract source filter from the subject clause (before "would deal") ---
     let source_filter = parse_damage_source_filter(norm_lower);
 
     // --- 3. Extract combat scope ---
-    // Check for "noncombat damage" / "combat damage" anywhere — some patterns insert
-    // additional words between "would deal" and the scope (e.g., "an amount of noncombat damage").
-    // "noncombat" checked first since "combat damage" is a substring of "noncombat damage".
-    let combat_scope = if norm_lower.contains("noncombat damage") {
-        Some(CombatDamageScope::NoncombatOnly)
-    } else if norm_lower.contains("combat damage") {
-        Some(CombatDamageScope::CombatOnly)
-    } else {
-        None
-    };
+    // Scan for "noncombat damage" / "combat damage" at word boundaries.
+    // "noncombat" is tried first since "combat damage" is a substring of "noncombat damage".
+    let combat_scope = scan_combat_scope(norm_lower);
 
     // --- 4. Extract target filter ---
     let target_filter = parse_damage_target_filter(norm_lower);
@@ -866,22 +838,125 @@ fn parse_damage_source_filter(norm_lower: &str) -> Option<TargetFilter> {
 }
 
 /// Parse the damage target filter from the clause after "damage".
+/// Uses word-boundary scanning with nom combinators for target phrase matching.
 fn parse_damage_target_filter(norm_lower: &str) -> Option<DamageTargetFilter> {
-    if norm_lower.contains("to an opponent or a permanent an opponent controls") {
-        return Some(DamageTargetFilter::OpponentOrTheirPermanents);
+    // Most specific first: "to an opponent or a permanent an opponent controls"
+    // must precede bare "to an opponent".
+    let mut remaining = norm_lower;
+    while !remaining.is_empty() {
+        if let Ok((_, filter)) = parse_damage_target_phrase(remaining) {
+            // Guard: opponent-only and player-only exclude "permanent" from the full text
+            match filter {
+                DamageTargetFilter::OpponentOnly | DamageTargetFilter::PlayerOnly
+                    if norm_lower.contains("permanent") =>
+                {
+                    // Skip — "permanent" present means this is OpponentOrTheirPermanents (already tried)
+                }
+                _ => return Some(filter),
+            }
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
     }
-    if norm_lower.contains("to a creature") || norm_lower.contains("to that creature") {
-        return Some(DamageTargetFilter::CreatureOnly);
+    None
+}
+
+/// Nom combinator for damage target phrases. Most specific tags first.
+fn parse_damage_target_phrase(
+    input: &str,
+) -> nom::IResult<&str, DamageTargetFilter, VerboseError<&str>> {
+    alt((
+        value(
+            DamageTargetFilter::OpponentOrTheirPermanents,
+            tag("to an opponent or a permanent an opponent controls"),
+        ),
+        value(
+            DamageTargetFilter::CreatureOnly,
+            alt((tag("to a creature"), tag("to that creature"))),
+        ),
+        value(
+            DamageTargetFilter::OpponentOnly,
+            tag("to an opponent"),
+        ),
+        value(
+            DamageTargetFilter::PlayerOnly,
+            alt((tag("to a player"), tag("to that player"))),
+        ),
+    ))
+    .parse(input)
+}
+
+// ---------------------------------------------------------------------------
+// Damage replacement combinators
+// ---------------------------------------------------------------------------
+
+/// Scan for damage modification formula at word boundaries using nom combinators.
+fn scan_damage_modification(text: &str) -> Option<DamageModification> {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((_, modification)) = parse_damage_modification_phrase(remaining) {
+            return Some(modification);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
     }
-    // "to an opponent" (without "or a permanent") — opponent-only, not including permanents.
-    // Must be checked before PlayerOnly to avoid matching the broader pattern.
-    if norm_lower.contains("to an opponent") && !norm_lower.contains("permanent") {
-        return Some(DamageTargetFilter::OpponentOnly);
+    // Fallback: "that much damage plus/minus N" uses strip_after for the number
+    if let Some(rest) = strip_after(text, "that much damage plus ") {
+        let (_rem, val) = nom_primitives::parse_number.parse(rest).ok()?;
+        return Some(DamageModification::Plus { value: val });
     }
-    if (norm_lower.contains("to a player") || norm_lower.contains("to that player"))
-        && !norm_lower.contains("permanent")
-    {
-        return Some(DamageTargetFilter::PlayerOnly);
+    if let Some(rest) = strip_after(text, "that much damage minus ") {
+        let (_rem, val) = nom_primitives::parse_number.parse(rest).ok()?;
+        return Some(DamageModification::Minus { value: val });
+    }
+    None
+}
+
+/// Nom combinator for damage modification phrases.
+fn parse_damage_modification_phrase(
+    input: &str,
+) -> nom::IResult<&str, DamageModification, VerboseError<&str>> {
+    alt((
+        value(
+            DamageModification::Double,
+            alt((tag("double that damage"), tag("deals double that damage"))),
+        ),
+        value(
+            DamageModification::Triple,
+            alt((tag("triple that damage"), tag("deals triple that damage"))),
+        ),
+        value(
+            DamageModification::SetToSourcePower,
+            alt((
+                tag("damage equal to ~'s power instead"),
+                tag("deals damage equal to ~'s power"),
+            )),
+        ),
+    ))
+    .parse(input)
+}
+
+/// Scan for combat damage scope at word boundaries.
+/// "noncombat" tried first since "combat damage" is a substring.
+fn scan_combat_scope(text: &str) -> Option<CombatDamageScope> {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((_, scope)) = alt((
+            value(
+                CombatDamageScope::NoncombatOnly,
+                tag::<_, _, VerboseError<&str>>("noncombat damage"),
+            ),
+            value(CombatDamageScope::CombatOnly, tag("combat damage")),
+        ))
+        .parse(remaining)
+        {
+            return Some(scope);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
     }
     None
 }

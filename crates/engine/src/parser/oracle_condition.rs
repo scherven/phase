@@ -2,8 +2,10 @@ use std::str::FromStr;
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
+use nom::combinator::value;
+use nom::sequence::terminated;
 use nom::Parser;
-use nom_language::error::VerboseError;
+use nom_language::error::{VerboseError, VerboseErrorKind};
 
 use super::oracle_nom::primitives as nom_primitives;
 use crate::game::game_object::{parse_counter_type, CounterType};
@@ -39,70 +41,9 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
         return Some(condition);
     }
 
-    // Event-based conditions: decompose using prefix/keyword matching where feasible.
-    if text.contains("first spell") && text.contains("cast this game") {
-        return Some(ParsedCondition::FirstSpellThisGame);
-    }
-    if text.starts_with("an opponent") && text.contains("searched") && text.contains("library") {
-        return Some(ParsedCondition::OpponentSearchedLibraryThisTurn);
-    }
-    if text.contains("been attacked") && text.contains("this step") {
-        return Some(ParsedCondition::BeenAttackedThisStep);
-    }
-    // "an opponent [action] this turn" — decompose via strip_prefix + verb phrase matching.
-    // CR 602.5b: Covers the full class of opponent-event-based activation conditions.
-    if let Ok((verb_phrase, _)) = tag::<_, _, VerboseError<&str>>("an opponent ").parse(text) {
-        if verb_phrase == "lost life this turn" {
-            return Some(ParsedCondition::PlayerCountAtLeast {
-                filter: PlayerFilter::OpponentLostLife,
-                minimum: 1,
-            });
-        }
-        if verb_phrase == "gained life this turn" {
-            return Some(ParsedCondition::PlayerCountAtLeast {
-                filter: PlayerFilter::OpponentGainedLife,
-                minimum: 1,
-            });
-        }
-    }
-    if text.starts_with("an opponent") && text.contains("poison counters") {
-        if let Some(count) =
-            parse_numeric_threshold(text, "an opponent has ", " or more poison counters")
-        {
-            return Some(ParsedCondition::OpponentPoisonAtLeast {
-                count: count as u32,
-            });
-        }
-    }
-    if text.starts_with("you attacked") && text.ends_with("this turn") && !text.contains("with") {
-        return Some(ParsedCondition::YouAttackedThisTurn);
-    }
-    if text.starts_with("you gained life") && text.ends_with("this turn") {
-        return Some(ParsedCondition::YouGainedLifeThisTurn);
-    }
-    if text.starts_with("you created a token") && text.ends_with("this turn") {
-        return Some(ParsedCondition::YouCreatedTokenThisTurn);
-    }
-    if text.starts_with("a creature died") && text.ends_with("this turn") {
-        return Some(ParsedCondition::CreatureDiedThisTurn);
-    }
-    if text.contains("cast a noncreature spell") && text.ends_with("this turn") {
-        return Some(ParsedCondition::YouCastNoncreatureSpellThisTurn);
-    }
-    if text.contains("discarded a card") && text.ends_with("this turn") {
-        return Some(ParsedCondition::YouDiscardedCardThisTurn);
-    }
-    if text.contains("sacrificed an artifact") && text.ends_with("this turn") {
-        return Some(ParsedCondition::YouSacrificedArtifactThisTurn);
-    }
-    if text.contains("creature enter the battlefield under your control this turn") {
-        return Some(ParsedCondition::YouHadCreatureEnterThisTurn);
-    }
-    if text.contains("angel or berserker enter the battlefield under your control this turn") {
-        return Some(ParsedCondition::YouHadAngelOrBerserkerEnterThisTurn);
-    }
-    if text.contains("artifact entered the battlefield under your control this turn") {
-        return Some(ParsedCondition::YouHadArtifactEnterThisTurn);
+    // Event-based conditions: structured nom matching for event phrases.
+    if let Some(condition) = parse_event_condition(text) {
+        return Some(condition);
     }
 
     if let Some(count) = parse_numeric_threshold(text, "you attacked with ", " creatures this turn")
@@ -136,40 +77,35 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
 
 fn parse_source_condition(text: &str) -> Option<ParsedCondition> {
     // Source conditions require "this creature/permanent/card/land" or "enchanted" or "from your"
-    // as a prefix — reject bare "~" or unrecognized subjects.
-    let is_source_ref = text.starts_with("this ")
-        || text.starts_with("enchanted ")
-        || text.starts_with("from your ");
-    if !is_source_ref {
+    // as a prefix — reject bare "~" or unrecognized subjects via nom prefix check.
+    if alt((
+        tag::<_, _, VerboseError<&str>>("this "),
+        tag("enchanted "),
+        tag("from your "),
+    ))
+    .parse(text)
+    .is_err()
+    {
         return None;
     }
-    // Zone-based source conditions
-    if text.contains("graveyard")
-        && (text.starts_with("from your") || text.contains("in your graveyard"))
+    // Zone-based source conditions: "from your graveyard" or "[subject] in your graveyard"
+    if tag::<_, _, VerboseError<&str>>("from your")
+        .parse(text)
+        .is_ok()
+        && text.contains("graveyard")
     {
         return Some(ParsedCondition::SourceInZone {
             zone: Zone::Graveyard,
         });
     }
-    if text.contains("suspended") {
-        return Some(ParsedCondition::SourceInZone { zone: Zone::Exile });
+    if text.contains("in your graveyard") {
+        return Some(ParsedCondition::SourceInZone {
+            zone: Zone::Graveyard,
+        });
     }
-    // Combat state conditions
-    if text.contains("attacking or blocking") {
-        return Some(ParsedCondition::SourceIsAttackingOrBlocking);
-    }
-    if text.contains("is attacking") {
-        return Some(ParsedCondition::SourceIsAttacking);
-    }
-    if text.contains("is blocked") {
-        return Some(ParsedCondition::SourceIsBlocked);
-    }
-    // Type/state checks
-    if text.contains("is a creature") {
-        return Some(ParsedCondition::SourceIsCreature);
-    }
-    if text.contains("entered this turn") {
-        return Some(ParsedCondition::SourceEnteredThisTurn);
+    // Source state: scan for state keywords after the subject using nom at word boundaries
+    if let Ok((_, condition)) = scan_source_state(text) {
+        return Some(condition);
     }
     // "enchanted [type] is untapped"
     if text.contains("is untapped") {
@@ -299,16 +235,20 @@ fn parse_you_control_condition(text: &str) -> Option<ParsedCondition> {
             return Some(ParsedCondition::YouControlCreatureWithKeyword { keyword });
         }
     }
-    // "you control a legendary creature"
-    if text.starts_with("you control") && text.contains("legendary creature") {
-        return Some(ParsedCondition::YouControlLegendaryCreature);
-    }
-    // "you control another colorless creature"
-    if text.starts_with("you control") && text.contains("colorless creature") {
-        return Some(ParsedCondition::YouControlAnotherColorlessCreature);
+    // "you control a/another legendary creature"
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("you control ").parse(text) {
+        if rest.contains("legendary creature") {
+            return Some(ParsedCondition::YouControlLegendaryCreature);
+        }
+        if rest.contains("colorless creature") {
+            return Some(ParsedCondition::YouControlAnotherColorlessCreature);
+        }
     }
     // "you control fewer creatures than each opponent"
-    if text.starts_with("you control fewer creatures than") {
+    if tag::<_, _, VerboseError<&str>>("you control fewer creatures than")
+        .parse(text)
+        .is_ok()
+    {
         return Some(ParsedCondition::QuantityVsEachOpponent {
             lhs: QuantityRef::ObjectCount {
                 filter: TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
@@ -320,7 +260,10 @@ fn parse_you_control_condition(text: &str) -> Option<ParsedCondition> {
         });
     }
     // "you control no creatures"
-    if text.starts_with("you control no creatures") {
+    if tag::<_, _, VerboseError<&str>>("you control no creatures")
+        .parse(text)
+        .is_ok()
+    {
         return Some(ParsedCondition::YouControlNoCreatures);
     }
     if let Ok((rest, _)) = alt((
@@ -392,15 +335,22 @@ fn parse_graveyard_condition(text: &str) -> Option<ParsedCondition> {
 }
 
 fn parse_hand_condition(text: &str) -> Option<ParsedCondition> {
-    if !text.contains("cards in hand") && !text.contains("hand") {
+    // Quick reject: must reference "hand" somewhere
+    if !text.contains("hand") {
         return None;
     }
     // "you have no cards in hand"
-    if text.starts_with("you have no cards") {
+    if tag::<_, _, VerboseError<&str>>("you have no cards")
+        .parse(text)
+        .is_ok()
+    {
         return Some(ParsedCondition::HandSizeExact { count: 0 });
     }
     // "you have more cards in hand than each opponent"
-    if text.contains("more cards in hand than") {
+    if tag::<_, _, VerboseError<&str>>("you have more cards in hand than")
+        .parse(text)
+        .is_ok()
+    {
         return Some(ParsedCondition::QuantityVsEachOpponent {
             lhs: QuantityRef::HandSize,
             comparator: Comparator::GT,
@@ -427,6 +377,267 @@ fn parse_hand_condition(text: &str) -> Option<ParsedCondition> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Event condition combinators
+// ---------------------------------------------------------------------------
+
+/// Parse event-based conditions using nom combinators.
+///
+/// Categories:
+/// - Exact phrase: `terminated(tag("prefix"), tag(" this turn"))` — precise structural matching
+/// - Multi-keyword: `tag("an opponent ") + verb dispatch` — prefix dispatch with verb matching
+/// - ETB tracking: `preceded()` with battlefield entry phrases
+fn parse_event_condition(text: &str) -> Option<ParsedCondition> {
+    // "this spell is the first spell you've cast this game" — scan for keyword co-occurrence.
+    // The subject varies ("this spell is", "this is") so scan for "first spell" + suffix check.
+    if scan_contains_tag(text, "first spell") && text.ends_with("cast this game") {
+        return Some(ParsedCondition::FirstSpellThisGame);
+    }
+
+    // "an opponent [verb phrase]" — prefix dispatch
+    if let Ok((verb_phrase, _)) = tag::<_, _, VerboseError<&str>>("an opponent ").parse(text) {
+        if let Ok((_, condition)) = parse_opponent_event(verb_phrase) {
+            return Some(condition);
+        }
+        // "an opponent has N or more poison counters"
+        if let Some(count) =
+            parse_numeric_threshold(text, "an opponent has ", " or more poison counters")
+        {
+            return Some(ParsedCondition::OpponentPoisonAtLeast {
+                count: count as u32,
+            });
+        }
+    }
+
+    // "you've been attacked this step"
+    if let Ok((_, _)) = alt((
+        terminated(
+            tag::<_, _, VerboseError<&str>>("you've been attacked"),
+            tag(" this step"),
+        ),
+        terminated(tag("been attacked"), tag(" this step")),
+    ))
+    .parse(text)
+    {
+        return Some(ParsedCondition::BeenAttackedThisStep);
+    }
+
+    // "you [action] this turn" — exact structural matches using terminated()
+    if let Ok((_, condition)) = parse_you_event_this_turn(text) {
+        return Some(condition);
+    }
+
+    // "you/you've cast a noncreature spell this turn"
+    if alt((
+        value(
+            (),
+            terminated(
+                tag::<_, _, VerboseError<&str>>("you cast a noncreature spell"),
+                tag(" this turn"),
+            ),
+        ),
+        value(
+            (),
+            terminated(
+                tag("you've cast a noncreature spell"),
+                tag(" this turn"),
+            ),
+        ),
+    ))
+    .parse(text)
+    .is_ok()
+    {
+        return Some(ParsedCondition::YouCastNoncreatureSpellThisTurn);
+    }
+
+    // "you/you've discarded a card this turn"
+    if alt((
+        value(
+            (),
+            terminated(
+                tag::<_, _, VerboseError<&str>>("you discarded a card"),
+                tag(" this turn"),
+            ),
+        ),
+        value(
+            (),
+            terminated(tag("you've discarded a card"), tag(" this turn")),
+        ),
+    ))
+    .parse(text)
+    .is_ok()
+    {
+        return Some(ParsedCondition::YouDiscardedCardThisTurn);
+    }
+
+    // "you/you've sacrificed an artifact this turn"
+    if alt((
+        value(
+            (),
+            terminated(
+                tag::<_, _, VerboseError<&str>>("you sacrificed an artifact"),
+                tag(" this turn"),
+            ),
+        ),
+        value(
+            (),
+            terminated(
+                tag("you've sacrificed an artifact"),
+                tag(" this turn"),
+            ),
+        ),
+    ))
+    .parse(text)
+    .is_ok()
+    {
+        return Some(ParsedCondition::YouSacrificedArtifactThisTurn);
+    }
+
+    // Battlefield entry tracking: "[type] enter(ed) the battlefield under your control this turn"
+    if let Ok((_, condition)) = parse_etb_this_turn_condition(text) {
+        return Some(condition);
+    }
+
+    None
+}
+
+/// "an opponent [verb phrase]" → typed condition
+fn parse_opponent_event(
+    verb_phrase: &str,
+) -> nom::IResult<&str, ParsedCondition, VerboseError<&str>> {
+    alt((
+        value(
+            ParsedCondition::PlayerCountAtLeast {
+                filter: PlayerFilter::OpponentLostLife,
+                minimum: 1,
+            },
+            tag("lost life this turn"),
+        ),
+        value(
+            ParsedCondition::PlayerCountAtLeast {
+                filter: PlayerFilter::OpponentGainedLife,
+                minimum: 1,
+            },
+            tag("gained life this turn"),
+        ),
+        value(
+            ParsedCondition::OpponentSearchedLibraryThisTurn,
+            alt((
+                tag("searched their library this turn"),
+                tag("searched a library this turn"),
+                tag("has searched their library this turn"),
+            )),
+        ),
+    ))
+    .parse(verb_phrase)
+}
+
+/// "you [action] this turn" — exact structural matching with terminated()
+fn parse_you_event_this_turn(
+    text: &str,
+) -> nom::IResult<&str, ParsedCondition, VerboseError<&str>> {
+    alt((
+        value(
+            ParsedCondition::YouAttackedThisTurn,
+            terminated(tag("you attacked"), tag(" this turn")),
+        ),
+        value(
+            ParsedCondition::YouGainedLifeThisTurn,
+            terminated(tag("you gained life"), tag(" this turn")),
+        ),
+        value(
+            ParsedCondition::YouCreatedTokenThisTurn,
+            terminated(tag("you created a token"), tag(" this turn")),
+        ),
+        value(
+            ParsedCondition::CreatureDiedThisTurn,
+            terminated(tag("a creature died"), tag(" this turn")),
+        ),
+    ))
+    .parse(text)
+}
+
+/// "[type] enter(ed) the battlefield under your control this turn"
+fn parse_etb_this_turn_condition(
+    text: &str,
+) -> nom::IResult<&str, ParsedCondition, VerboseError<&str>> {
+    alt((
+        value(
+            ParsedCondition::YouHadCreatureEnterThisTurn,
+            alt((
+                tag("a creature entered the battlefield under your control this turn"),
+                tag("creature enter the battlefield under your control this turn"),
+            )),
+        ),
+        value(
+            ParsedCondition::YouHadAngelOrBerserkerEnterThisTurn,
+            tag("angel or berserker enter the battlefield under your control this turn"),
+        ),
+        value(
+            ParsedCondition::YouHadArtifactEnterThisTurn,
+            alt((
+                tag("an artifact entered the battlefield under your control this turn"),
+                tag("artifact entered the battlefield under your control this turn"),
+            )),
+        ),
+    ))
+    .parse(text)
+}
+
+/// Check if `text` contains `phrase` at any word boundary using nom tag matching.
+/// More precise than `str::contains()` — matches at word starts, not arbitrary positions.
+fn scan_contains_tag(text: &str, phrase: &str) -> bool {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if tag::<_, _, VerboseError<&str>>(phrase)
+            .parse(remaining)
+            .is_ok()
+        {
+            return true;
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    false
+}
+
+/// Scan source condition text for state keywords at word boundaries using nom.
+/// Matches "[subject] is attacking", "[subject] is blocked", "[subject] suspended", etc.
+fn scan_source_state(text: &str) -> nom::IResult<&str, ParsedCondition, VerboseError<&str>> {
+    // Try the combinator at each word boundary in the text
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok(result) = parse_source_state_keyword(remaining) {
+            return Ok(result);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    Err(nom::Err::Error(VerboseError {
+        errors: vec![(text, VerboseErrorKind::Context("no source state"))],
+    }))
+}
+
+/// Nom combinator: match source state keywords at the current position.
+fn parse_source_state_keyword(
+    input: &str,
+) -> nom::IResult<&str, ParsedCondition, VerboseError<&str>> {
+    alt((
+        value(ParsedCondition::SourceIsAttackingOrBlocking, tag("attacking or blocking")),
+        value(ParsedCondition::SourceIsAttacking, tag("is attacking")),
+        value(ParsedCondition::SourceIsBlocked, tag("is blocked")),
+        value(ParsedCondition::SourceIsCreature, tag("is a creature")),
+        value(ParsedCondition::SourceEnteredThisTurn, tag("entered this turn")),
+        value(
+            ParsedCondition::SourceInZone { zone: Zone::Exile },
+            tag("suspended"),
+        ),
+    ))
+    .parse(input)
 }
 
 // ---------------------------------------------------------------------------

@@ -302,6 +302,146 @@ fn strip_casting_condition_suffixes(text: &str) -> &str {
         .trim()
 }
 
+/// Nom combinator: parse a single timing restriction phrase from the current position.
+///
+/// Structured by prefix dispatch: `during` → sub-dispatch by possessive/phase,
+/// `before`/`after`/`on`/`as` each dispatch independently. This avoids redundant
+/// prefix matching across the 15 timing variants.
+fn parse_timing_restriction(
+    input: &str,
+) -> nom::IResult<&str, CastingRestriction, VerboseError<&str>> {
+    use nom::sequence::preceded;
+    alt((
+        preceded(tag("during "), parse_during_phrase),
+        preceded(tag("before "), parse_before_phrase),
+        preceded(
+            tag("on "),
+            alt((
+                parse_opponent_possessive_turn,
+                value(CastingRestriction::DuringYourTurn, tag("your turn")),
+            )),
+        ),
+        value(CastingRestriction::AfterCombat, tag("after combat")),
+        value(CastingRestriction::AsSorcery, tag("as a sorcery")),
+    ))
+    .parse(input)
+}
+
+/// Sub-dispatch for "during [rest]" — declare steps, opponent/your phases, combat, upkeep.
+fn parse_during_phrase(
+    input: &str,
+) -> nom::IResult<&str, CastingRestriction, VerboseError<&str>> {
+    use nom::sequence::preceded;
+    alt((
+        // Declare steps (most specific combat sub-phases)
+        value(
+            CastingRestriction::DeclareAttackersStep,
+            alt((
+                tag("the declare attackers step"),
+                tag("your declare attackers step"),
+                tag("declare attackers step"),
+            )),
+        ),
+        value(
+            CastingRestriction::DeclareBlockersStep,
+            alt((
+                tag("the declare blockers step"),
+                tag("your declare blockers step"),
+                tag("declare blockers step"),
+            )),
+        ),
+        // Opponent phases: "during an opponent's [phase]" — dispatch on phase after possessive
+        preceded(parse_opponent_possessive, parse_opponent_phase),
+        // Your phases (must try specific phases before generic "your turn")
+        value(CastingRestriction::DuringYourUpkeep, tag("your upkeep")),
+        value(CastingRestriction::DuringYourEndStep, tag("your end step")),
+        value(CastingRestriction::DuringYourTurn, tag("your turn")),
+        // Generic upkeep (any player)
+        value(
+            CastingRestriction::DuringAnyUpkeep,
+            alt((tag("any upkeep step"), tag("any upkeep"))),
+        ),
+        value(CastingRestriction::DuringCombat, tag("combat")),
+    ))
+    .parse(input)
+}
+
+/// Match "an opponent's " / "an opponents " possessive prefix (handles curly apostrophe).
+fn parse_opponent_possessive(input: &str) -> nom::IResult<&str, &str, VerboseError<&str>> {
+    alt((
+        tag("an opponent\u{2019}s "),
+        tag("an opponent's "),
+        tag("an opponents "),
+    ))
+    .parse(input)
+}
+
+/// After "an opponent's", dispatch on the phase keyword.
+fn parse_opponent_phase(
+    input: &str,
+) -> nom::IResult<&str, CastingRestriction, VerboseError<&str>> {
+    alt((
+        value(CastingRestriction::DuringOpponentsUpkeep, tag("upkeep")),
+        value(CastingRestriction::DuringOpponentsEndStep, tag("end step")),
+        value(CastingRestriction::DuringOpponentsTurn, tag("turn")),
+    ))
+    .parse(input)
+}
+
+/// "on an opponent's turn" — reuses the opponent possessive combinator.
+fn parse_opponent_possessive_turn(
+    input: &str,
+) -> nom::IResult<&str, CastingRestriction, VerboseError<&str>> {
+    use nom::sequence::preceded;
+    value(
+        CastingRestriction::DuringOpponentsTurn,
+        preceded(parse_opponent_possessive, tag("turn")),
+    )
+    .parse(input)
+}
+
+/// Sub-dispatch for "before [rest]" — attackers, blockers, combat damage.
+fn parse_before_phrase(
+    input: &str,
+) -> nom::IResult<&str, CastingRestriction, VerboseError<&str>> {
+    alt((
+        value(
+            CastingRestriction::BeforeAttackersDeclared,
+            tag("attackers are declared"),
+        ),
+        value(
+            CastingRestriction::BeforeBlockersDeclared,
+            tag("blockers are declared"),
+        ),
+        value(
+            CastingRestriction::BeforeCombatDamage,
+            alt((tag("the combat damage step"), tag("combat damage"))),
+        ),
+    ))
+    .parse(input)
+}
+
+/// Walk `text` word-by-word, collecting all timing restrictions found via nom combinators.
+/// Tries `parse_timing_restriction` at each word boundary — on match, consumes the phrase
+/// and advances; on miss, skips to the next word.
+fn scan_timing_restrictions(text: &str) -> Vec<CastingRestriction> {
+    let mut results = Vec::new();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((rest, restriction)) = parse_timing_restriction(remaining) {
+            if !results.contains(&restriction) {
+                results.push(restriction);
+            }
+            remaining = rest.trim_start();
+        } else {
+            // Advance past the current word to the next word boundary
+            remaining = remaining
+                .find(' ')
+                .map_or("", |i| remaining[i + 1..].trim_start());
+        }
+    }
+    results
+}
 
 #[cfg(test)]
 mod tests {

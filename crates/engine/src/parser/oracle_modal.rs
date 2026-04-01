@@ -1,3 +1,9 @@
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
+use nom::Parser;
+use nom_language::error::VerboseError;
+
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, Effect, ModalChoice, ModalSelectionConstraint,
 };
@@ -75,9 +81,14 @@ pub(crate) fn parse_oracle_block(lines: &[&str], start: usize) -> Option<(Oracle
     let lower = candidate.to_lowercase();
 
     if let Some(header) = parse_modal_header_ast(&candidate) {
-        if !lower.starts_with("when ")
-            && !lower.starts_with("whenever ")
-            && !lower.starts_with("at ")
+        // Reject trigger prefixes — these are triggered modals, not plain modals
+        if alt((
+            tag::<_, _, VerboseError<&str>>("when "),
+            tag("whenever "),
+            tag("at "),
+        ))
+        .parse(lower.as_str())
+        .is_err()
         {
             return Some((OracleBlockAst::Modal { header, modes }, next));
         }
@@ -188,9 +199,16 @@ pub(super) fn split_short_label_prefix(text: &str, max_words: usize) -> Option<(
 
 fn is_modal_header_text(lower: &str) -> bool {
     let lower = lower.trim();
-    lower.starts_with("choose ")
-        || lower.starts_with("you may choose ")
-        || (lower.starts_with("if ") && lower.contains("choose "))
+    alt((
+        tag::<_, _, VerboseError<&str>>("choose "),
+        tag("you may choose "),
+    ))
+    .parse(lower)
+    .is_ok()
+        || (tag::<_, _, VerboseError<&str>>("if ")
+            .parse(lower)
+            .is_ok()
+            && lower.contains("choose "))
 }
 
 pub(crate) fn parse_modal_header_ast(text: &str) -> Option<ModalHeaderAst> {
@@ -341,23 +359,9 @@ pub(crate) fn parse_modal_choose_count(lower: &str) -> (usize, usize) {
     let lower = lower.trim();
     let lower = lower.strip_prefix("you may ").unwrap_or(lower).trim_start();
 
-    if lower.contains("choose any number instead") {
-        return (1, usize::MAX);
-    }
-    if lower.contains("choose both instead") {
-        return (1, 2);
-    }
-    if lower.contains("choose two instead") {
-        return (1, 2);
-    }
-    if lower.contains("choose three instead") {
-        return (1, 3);
-    }
-    if lower.contains("one or both") {
-        return (1, 2);
-    }
-    if lower.contains("one or more") || lower.contains("any number") {
-        return (1, usize::MAX);
+    // Scan for override phrases at word boundaries using nom combinators.
+    if let Some(count) = scan_modal_count_override(lower) {
+        return count;
     }
     // Extract the number word after "choose " using the shared nom combinator.
     if let Some(rest) = lower.strip_prefix("choose ") {
@@ -381,6 +385,30 @@ pub(super) fn strip_ability_word(line: &str) -> Option<String> {
 /// Used for mapping known ability words to typed conditions (B7).
 pub(super) fn strip_ability_word_with_name(line: &str) -> Option<(String, String)> {
     split_short_label_prefix(line, 4).map(|(name, rest)| (name.to_lowercase(), rest.to_string()))
+}
+
+/// Scan for modal count override phrases at word boundaries using nom combinators.
+/// Returns (min_choices, max_choices) for matching phrases.
+fn scan_modal_count_override(text: &str) -> Option<(usize, usize)> {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((_, count)) = alt((
+            value((1, usize::MAX), tag::<_, _, VerboseError<&str>>("choose any number instead")),
+            value((1, 2), tag("choose both instead")),
+            value((1, 2), tag("choose two instead")),
+            value((1, 3), tag("choose three instead")),
+            value((1, 2), tag("one or both")),
+            value((1, usize::MAX), alt((tag("one or more"), tag("any number")))),
+        ))
+        .parse(remaining)
+        {
+            return Some(count);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    None
 }
 
 #[cfg(test)]

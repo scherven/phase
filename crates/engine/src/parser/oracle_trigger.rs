@@ -380,10 +380,21 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
             })
         }
 
+        // CR 724.1: Monarch status bridges directly.
+        StaticCondition::IsMonarch => Some(TriggerCondition::IsMonarch),
+        // CR 702.131a: City's Blessing bridges directly.
+        StaticCondition::HasCityBlessing => Some(TriggerCondition::HasCityBlessing),
+        // CR 611.2b: Source tapped state bridges for trigger conditions like
+        // "At the beginning of your upkeep, if this land is tapped, ..."
+        StaticCondition::SourceIsTapped => Some(TriggerCondition::SourceIsTapped),
+        // CR 113.6b: Source zone bridges for trigger conditions like
+        // "At the beginning of your upkeep, if this card is in your graveyard, ..."
+        StaticCondition::SourceInZone { zone } => {
+            Some(TriggerCondition::SourceInZone { zone: *zone })
+        }
+
         // Variants with no TriggerCondition equivalent (combat-only / source-state).
         StaticCondition::SourceEnteredThisTurn
-        | StaticCondition::SourceIsTapped
-        | StaticCondition::SourceInZone { .. }
         | StaticCondition::IsRingBearer
         | StaticCondition::RingLevelAtLeast { .. }
         | StaticCondition::DevotionGE { .. }
@@ -438,8 +449,34 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
                 "if an opponent lost life during their last turn",
                 TriggerCondition::LostLifeLastTurn,
             ),
+            // CR 702.104b: Tribute mechanic — "if tribute wasn't paid"
+            (
+                "if tribute wasn't paid",
+                TriggerCondition::TributeNotPaid,
+            ),
+            // CR 207.2c: Addendum — "if you cast this spell during your main phase"
+            (
+                "if you cast this spell during your main phase",
+                TriggerCondition::CastDuringMainPhase,
+            ),
+            // CR 400.7: "if it had counters on it" — past-state counter check
+            (
+                "if it had counters on it",
+                TriggerCondition::HadCounters { counter_type: None },
+            ),
         ],
     ) {
+        return result;
+    }
+
+    // CR 400.7: "if it had a +1/+1 counter on it" — typed counter past-state check.
+    // Dynamic: parses counter type from "if it had a [type] counter on it".
+    if let Some(result) = try_extract_had_counter_condition(&tp, &lower, text) {
+        return result;
+    }
+
+    // CR 207.2c: Adamant — "if at least N [color] mana was spent to cast this/it"
+    if let Some(result) = try_extract_adamant_condition(&tp, &lower, text) {
         return result;
     }
 
@@ -562,6 +599,73 @@ fn try_extract_simple_condition(
         }
     }
     None
+}
+
+/// CR 400.7: Extract "if it had a [type] counter on it" conditions.
+///
+/// Uses nom `tag()` + `take_until()` to extract the counter type dynamically.
+fn try_extract_had_counter_condition(
+    tp: &TextPair<'_>,
+    lower: &str,
+    text: &str,
+) -> Option<(String, Option<TriggerCondition>)> {
+    use nom::bytes::complete::take_until;
+    let prefix = "if it had a ";
+    let pos = tp.find(prefix)?;
+    let after = &lower[pos + prefix.len()..];
+    // Parse: "[counter_type] counter on it"
+    let (rest, counter_type_text) =
+        take_until::<_, _, VerboseError<&str>>(" counter on it").parse(after).ok()?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>(" counter on it").parse(rest).ok()?;
+    let clause_len = prefix.len() + (after.len() - rest.len());
+    Some((
+        strip_condition_clause(text, pos, clause_len),
+        Some(TriggerCondition::HadCounters {
+            counter_type: Some(counter_type_text.to_string()),
+        }),
+    ))
+}
+
+/// CR 207.2c: Extract Adamant conditions — "if at least N [color] mana was spent to cast"
+///
+/// Uses nom combinators to parse the mana color and minimum count.
+fn try_extract_adamant_condition(
+    tp: &TextPair<'_>,
+    lower: &str,
+    text: &str,
+) -> Option<(String, Option<TriggerCondition>)> {
+    use crate::types::mana::ManaColor;
+    let prefix = "if at least ";
+    let pos = tp.find(prefix)?;
+    let after = &lower[pos + prefix.len()..];
+    // Parse: "N [color] mana was spent to cast [this spell/it]"
+    let (rest, _) = nom_primitives::parse_number(after).ok()?;
+    let rest = rest.trim_start();
+    let (rest, color) = alt((
+        value(ManaColor::White, tag::<_, _, VerboseError<&str>>("white")),
+        value(ManaColor::Blue, tag("blue")),
+        value(ManaColor::Black, tag("black")),
+        value(ManaColor::Red, tag("red")),
+        value(ManaColor::Green, tag("green")),
+    ))
+    .parse(rest)
+    .ok()?;
+    let (rest, _) = alt((
+        tag::<_, _, VerboseError<&str>>(" mana was spent to cast this spell"),
+        tag(" mana was spent to cast it"),
+    ))
+    .parse(rest)
+    .ok()?;
+    // Re-parse N from the original to get the number
+    let (_, n) = nom_primitives::parse_number(&lower[pos + prefix.len()..]).ok()?;
+    let clause_len = prefix.len() + (after.len() - rest.len());
+    Some((
+        strip_condition_clause(text, pos, clause_len),
+        Some(TriggerCondition::ManaColorSpent {
+            color,
+            minimum: n,
+        }),
+    ))
 }
 
 /// Strip a condition clause from text, joining the before and after portions.
@@ -1950,33 +2054,12 @@ fn try_parse_phase_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinitio
     let phase_text = stripped.trim();
     let mut def = make_base();
     def.mode = TriggerMode::Phase;
-    if phase_text.contains("upkeep") {
-        def.phase = Some(Phase::Upkeep);
-    } else if phase_text.contains("end step") {
-        // CR 513.1: End step triggers fire at the beginning of the end step.
-        def.phase = Some(Phase::End);
-    } else if phase_text.contains("postcombat main phase")
-        || phase_text.contains("second main phase")
-    {
-        // CR 505.1: Postcombat main phase follows the combat phase.
-        def.phase = Some(Phase::PostCombatMain);
-    } else if phase_text.contains("precombat main phase") || phase_text.contains("first main phase")
-    {
-        // CR 505.1: Precombat main phase precedes the combat phase.
-        def.phase = Some(Phase::PreCombatMain);
-    } else if phase_text.contains("combat") {
-        def.phase = Some(Phase::BeginCombat);
-    } else if phase_text.contains("draw step") {
-        def.phase = Some(Phase::Draw);
-    }
+    def.phase = scan_for_phase(phase_text);
 
-    // CR 503.1a / CR 507.1: Parse possessive qualifier for turn constraint.
-    // IMPORTANT: Check "opponent" before bare "your" — "your opponents'" contains "your"
-    if phase_text.contains("each opponent") || phase_text.contains("your opponent") {
-        def.constraint = Some(TriggerConstraint::OnlyDuringOpponentsTurn);
-    } else if phase_text.contains("your") {
-        def.constraint = Some(TriggerConstraint::OnlyDuringYourTurn);
-    }
+    // CR 503.1a / CR 507.1: Parse possessive qualifier and trailing suffix for turn constraint.
+    // Uses nom prefix dispatch: opponent possessives checked before bare "your" to avoid
+    // "your opponent's" matching as "your".
+    def.constraint = parse_turn_constraint(phase_text);
     // "each player's upkeep" / "each upkeep" / "the end step" → no constraint (fires every turn)
 
     Some((TriggerMode::Phase, def))
@@ -2965,6 +3048,87 @@ fn try_parse_discard_trigger(
     let _ = after_verb; // remainder available for future type-filter parsing
 
     Some((TriggerMode::Discarded, def))
+}
+
+// ---------------------------------------------------------------------------
+// Phase trigger combinators
+// ---------------------------------------------------------------------------
+
+/// Nom combinator: parse a phase keyword from the current position.
+/// More specific phases (postcombat main, draw step) are tried before generic ones
+/// (combat, upkeep) to avoid prefix matches.
+fn parse_phase_keyword(input: &str) -> nom::IResult<&str, Phase, VerboseError<&str>> {
+    alt((
+        // CR 505.1: Main phases — specific variants before generic
+        value(
+            Phase::PostCombatMain,
+            alt((tag("postcombat main phase"), tag("second main phase"))),
+        ),
+        value(
+            Phase::PreCombatMain,
+            alt((tag("precombat main phase"), tag("first main phase"))),
+        ),
+        // CR 513.1: End step triggers fire at the beginning of the end step.
+        value(Phase::End, tag("end step")),
+        value(Phase::Draw, tag("draw step")),
+        value(Phase::Upkeep, tag("upkeep")),
+        // Generic "combat" — must be last to avoid matching "postcombat"
+        value(Phase::BeginCombat, tag("combat")),
+    ))
+    .parse(input)
+}
+
+/// Scan phase_text for a phase keyword at each word boundary using nom combinators.
+fn scan_for_phase(text: &str) -> Option<Phase> {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((_, phase)) = parse_phase_keyword(remaining) {
+            return Some(phase);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    None
+}
+
+/// CR 503.1a / CR 507.1: Parse turn constraint from phase text using nom prefix dispatch.
+///
+/// Tries opponent possessives first (more specific) before bare "your" to avoid
+/// the substring ambiguity where "your opponent's" would match "your".
+/// Also checks for trailing "on your turn" suffix.
+fn parse_turn_constraint(phase_text: &str) -> Option<TriggerConstraint> {
+    // Prefix-based: try at the start of the text
+    if alt((
+        tag::<_, _, VerboseError<&str>>("each opponent's "),
+        tag("each opponents\u{2019} "),
+        tag("each opponents' "),
+        tag("your opponent's "),
+        tag("your opponents\u{2019} "),
+        tag("your opponents' "),
+    ))
+    .parse(phase_text)
+    .is_ok()
+    {
+        return Some(TriggerConstraint::OnlyDuringOpponentsTurn);
+    }
+    if tag::<_, _, VerboseError<&str>>("your ").parse(phase_text).is_ok() {
+        return Some(TriggerConstraint::OnlyDuringYourTurn);
+    }
+    // Suffix-based: "combat on your turn", "each combat on your turn"
+    let mut remaining = phase_text;
+    while !remaining.is_empty() {
+        if tag::<_, _, VerboseError<&str>>("on your turn")
+            .parse(remaining)
+            .is_ok()
+        {
+            return Some(TriggerConstraint::OnlyDuringYourTurn);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    None
 }
 
 #[cfg(test)]
@@ -6004,7 +6168,7 @@ mod tests {
         let sc = StaticCondition::And {
             conditions: vec![
                 StaticCondition::HasMaxSpeed,
-                StaticCondition::SourceIsTapped, // unmappable
+                StaticCondition::IsRingBearer, // unmappable
             ],
         };
         assert!(static_condition_to_trigger_condition(&sc).is_none());
@@ -6012,12 +6176,48 @@ mod tests {
 
     #[test]
     fn bridge_unmappable_variants_return_none() {
-        assert!(static_condition_to_trigger_condition(&StaticCondition::SourceIsTapped).is_none());
         assert!(
             static_condition_to_trigger_condition(&StaticCondition::SourceEnteredThisTurn)
                 .is_none()
         );
         assert!(static_condition_to_trigger_condition(&StaticCondition::IsRingBearer).is_none());
+    }
+
+    #[test]
+    fn bridge_monarch() {
+        assert_eq!(
+            static_condition_to_trigger_condition(&StaticCondition::IsMonarch),
+            Some(TriggerCondition::IsMonarch),
+        );
+    }
+
+    #[test]
+    fn bridge_city_blessing() {
+        assert_eq!(
+            static_condition_to_trigger_condition(&StaticCondition::HasCityBlessing),
+            Some(TriggerCondition::HasCityBlessing),
+        );
+    }
+
+    #[test]
+    fn bridge_source_is_tapped() {
+        assert_eq!(
+            static_condition_to_trigger_condition(&StaticCondition::SourceIsTapped),
+            Some(TriggerCondition::SourceIsTapped),
+        );
+    }
+
+    #[test]
+    fn bridge_source_in_zone() {
+        use crate::types::zones::Zone;
+        assert_eq!(
+            static_condition_to_trigger_condition(&StaticCondition::SourceInZone {
+                zone: Zone::Graveyard,
+            }),
+            Some(TriggerCondition::SourceInZone {
+                zone: Zone::Graveyard,
+            }),
+        );
     }
 
     // -- Nom bridge fallback integration tests --
@@ -6106,5 +6306,79 @@ mod tests {
                 rhs: QuantityExpr::Fixed { value: 5 },
             }
         );
+    }
+
+    // -- Source-referential condition extraction tests --
+
+    #[test]
+    fn extract_tribute_not_paid() {
+        let (cleaned, cond) =
+            extract_if_condition("put two +1/+1 counters on it if tribute wasn't paid");
+        assert_eq!(cleaned, "put two +1/+1 counters on it");
+        assert_eq!(cond.unwrap(), TriggerCondition::TributeNotPaid);
+    }
+
+    #[test]
+    fn extract_addendum_main_phase() {
+        let (cleaned, cond) = extract_if_condition(
+            "draw a card if you cast this spell during your main phase",
+        );
+        assert_eq!(cleaned, "draw a card");
+        assert_eq!(cond.unwrap(), TriggerCondition::CastDuringMainPhase);
+    }
+
+    #[test]
+    fn extract_adamant_three_red() {
+        let (cleaned, cond) = extract_if_condition(
+            "it deals 4 damage instead if at least three red mana was spent to cast this spell",
+        );
+        assert_eq!(cleaned, "it deals 4 damage instead");
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::ManaColorSpent {
+                color: crate::types::mana::ManaColor::Red,
+                minimum: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn extract_had_counter_typed() {
+        let (cleaned, cond) =
+            extract_if_condition("return it to the battlefield if it had a +1/+1 counter on it");
+        assert_eq!(cleaned, "return it to the battlefield");
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::HadCounters {
+                counter_type: Some("+1/+1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn extract_had_counters_untyped() {
+        let (cleaned, cond) =
+            extract_if_condition("draw a card if it had counters on it");
+        assert_eq!(cleaned, "draw a card");
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::HadCounters { counter_type: None },
+        );
+    }
+
+    #[test]
+    fn bridge_monarch_from_trigger_text() {
+        let (cleaned, cond) =
+            extract_if_condition("draw a card if you're the monarch");
+        assert_eq!(cleaned, "draw a card");
+        assert_eq!(cond.unwrap(), TriggerCondition::IsMonarch);
+    }
+
+    #[test]
+    fn bridge_source_tapped_from_trigger_text() {
+        let (cleaned, cond) =
+            extract_if_condition("put a storage counter on it if this land is tapped");
+        assert!(cleaned.contains("put a storage counter"));
+        assert_eq!(cond.unwrap(), TriggerCondition::SourceIsTapped);
     }
 }

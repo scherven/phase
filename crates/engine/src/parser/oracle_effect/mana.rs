@@ -146,42 +146,13 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
     let fallback_count =
         apply_where_x_count_expression(fallback_count, where_x_expression.as_deref());
 
-    if clause_lower.contains("mana of any one color") || clause_lower.contains("mana of any color")
-    {
-        return Some(Effect::Mana {
-            produced: ManaProduction::AnyOneColor {
-                count: fallback_count,
-                color_options: all_mana_colors(),
-            },
-            restrictions: vec![],
-            expiry: None,
-        });
-    }
-
-    if clause_lower.contains("mana in any combination of colors") {
-        return Some(Effect::Mana {
-            produced: ManaProduction::AnyCombination {
-                count: fallback_count,
-                color_options: all_mana_colors(),
-            },
-            restrictions: vec![],
-            expiry: None,
-        });
-    }
-
-    if clause_lower.contains("mana of the chosen color")
-        || clause_lower.contains("mana of that color")
-    {
-        return Some(Effect::Mana {
-            produced: ManaProduction::ChosenColor {
-                count: fallback_count,
-            },
-            restrictions: vec![],
-            expiry: None,
-        });
-    }
-
-    None
+    // Scan for mana production type at word boundaries using nom combinators.
+    let produced = scan_mana_production_type(&clause_lower, fallback_count.clone())?;
+    Some(Effect::Mana {
+        produced,
+        restrictions: vec![],
+        expiry: None,
+    })
 }
 
 pub(super) fn try_parse_activate_only_condition(text: &str) -> Option<Effect> {
@@ -469,6 +440,50 @@ pub(super) fn parse_mana_color_symbol_set(symbol: &str) -> Option<Vec<ManaColor>
     } else {
         Some(colors)
     }
+}
+
+/// Scan for mana production type at word boundaries using nom combinators.
+fn scan_mana_production_type(text: &str, count: QuantityExpr) -> Option<ManaProduction> {
+    use nom_language::error::VerboseError;
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((_, production)) = alt((
+            value(
+                ManaProduction::AnyOneColor {
+                    count: count.clone(),
+                    color_options: all_mana_colors(),
+                },
+                alt((
+                    tag::<_, _, VerboseError<&str>>("mana of any one color"),
+                    tag("mana of any color"),
+                )),
+            ),
+            value(
+                ManaProduction::AnyCombination {
+                    count: count.clone(),
+                    color_options: all_mana_colors(),
+                },
+                tag("mana in any combination of colors"),
+            ),
+            value(
+                ManaProduction::ChosenColor {
+                    count: count.clone(),
+                },
+                alt((
+                    tag("mana of the chosen color"),
+                    tag("mana of that color"),
+                )),
+            ),
+        ))
+        .parse(remaining)
+        {
+            return Some(production);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    None
 }
 
 pub(super) fn all_mana_colors() -> Vec<ManaColor> {
