@@ -3493,9 +3493,9 @@ fn strip_leading_general_conditional(text: &str) -> (Option<AbilityCondition>, S
         .unwrap_or(&condition_fragment)
         .trim();
 
-        if let Some(condition) = parse_condition_text(cond_text)
+        if let Some(condition) = try_nom_condition_as_ability_condition(cond_text)
+            .or_else(|| parse_condition_text(cond_text))
             .or_else(|| parse_control_count_as_ability_condition(cond_text))
-            .or_else(|| try_nom_condition_as_ability_condition(cond_text))
         {
             return (Some(condition), body);
         }
@@ -4152,9 +4152,9 @@ fn strip_suffix_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     }
 
     // Try to parse the condition text into a typed AbilityCondition.
-    if let Some(condition) = parse_condition_text(condition_text)
+    if let Some(condition) = try_nom_condition_as_ability_condition(condition_text)
+        .or_else(|| parse_condition_text(condition_text))
         .or_else(|| parse_control_count_as_ability_condition(condition_text))
-        .or_else(|| try_nom_condition_as_ability_condition(condition_text))
     {
         let effect_text = text[..if_pos].trim().to_string();
         return (Some(condition), effect_text);
@@ -4231,10 +4231,12 @@ fn try_parse_generic_instead_clause(text: &str, kind: AbilityKind) -> Option<Abi
     let effect_text = effect_text.trim_end_matches('.').trim();
     let effect_text = effect_text.strip_suffix(" instead")?.trim();
 
-    // Try parsing condition as quantity comparison first, then control-count, then nom bridge
-    let condition = parse_condition_text(condition_text)
-        .or_else(|| parse_control_count_as_ability_condition(condition_text))
-        .or_else(|| try_nom_condition_as_ability_condition(condition_text))?;
+    // Try nom condition combinator first (covers control-count, control-presence,
+    // quantity thresholds, turn conditions, etc.), then "{lhs} is {cmp} {rhs}" patterns,
+    // then opponent-comparison fallback.
+    let condition = try_nom_condition_as_ability_condition(condition_text)
+        .or_else(|| parse_condition_text(condition_text))
+        .or_else(|| parse_control_count_as_ability_condition(condition_text))?;
 
     // Parse the replacement effect
     let instead_def = parse_effect_chain(effect_text, kind);
@@ -4243,85 +4245,22 @@ fn try_parse_generic_instead_clause(text: &str, kind: AbilityKind) -> Option<Abi
     Some(result)
 }
 
-/// Parse "you control ..." as an `AbilityCondition::QuantityCheck`.
+/// Parse "you control fewer [type] than an opponent" as AbilityCondition::QuantityCheck.
 ///
-/// Handles three grammatical forms:
-/// - "you control N or more [type]" → ObjectCount >= N
-/// - "you control a/an [type]" → ObjectCount >= 1 (existential)
-/// - "you control no [type]" → ObjectCount == 0 (absence)
-/// - "you control fewer [type] than an opponent" → ObjectCount < OpponentObjectCount
+/// This is the only "you control" pattern NOT handled by the shared nom combinator,
+/// because it involves opponent-comparison (ObjectCount < OpponentObjectCount).
+/// All other "you control" patterns (N or more, a/an, another, no, N or fewer)
+/// are handled by `oracle_nom/condition.rs` and bridged via `try_nom_condition_as_ability_condition`.
 fn parse_control_count_as_ability_condition(text: &str) -> Option<AbilityCondition> {
     let text = text.trim();
     let (rest, _) = tag::<_, _, VerboseError<&str>>("you control ")
         .parse(text)
         .ok()?;
 
-    // Pattern 1: "N or more [type]"
-    if let Ok((after_n, n)) = nom_primitives::parse_number.parse(rest) {
-        if let Ok((type_text, _)) =
-            tag::<_, _, VerboseError<&str>>("or more ").parse(after_n.trim_start())
-        {
-            return build_control_quantity_check(type_text, Comparator::GE, n as i32);
-        }
-        // "N or fewer [type]"
-        if let Ok((type_text, _)) =
-            tag::<_, _, VerboseError<&str>>("or fewer ").parse(after_n.trim_start())
-        {
-            return build_control_quantity_check(type_text, Comparator::LE, n as i32);
-        }
-    }
-
-    // Pattern 2: "a/an [type]" → existential (>= 1)
-    if let Ok((type_text, _)) = alt((
-        tag::<_, _, VerboseError<&str>>("a "),
-        tag("an "),
-        tag("another "),
-    ))
-    .parse(rest)
-    {
-        return build_control_quantity_check(type_text, Comparator::GE, 1);
-    }
-
-    // Pattern 3: "no [type]" → absence (== 0)
-    if let Ok((type_text, _)) = tag::<_, _, VerboseError<&str>>("no ").parse(rest) {
-        return build_control_quantity_check(type_text, Comparator::EQ, 0);
-    }
-
-    // Pattern 4: "fewer [type] than an opponent"
-    if let Ok((type_rest, _)) = tag::<_, _, VerboseError<&str>>("fewer ").parse(rest) {
-        if let Some(pos) = type_rest.find(" than ") {
-            let type_text = &type_rest[..pos];
-            let (mut filter, leftover) = parse_type_phrase(type_text);
-            if filter != TargetFilter::Any && leftover.trim().is_empty() {
-                if let TargetFilter::Typed(ref mut tf) = filter {
-                    tf.controller = Some(ControllerRef::You);
-                }
-                let mut opp_filter = filter.clone();
-                if let TargetFilter::Typed(ref mut tf) = opp_filter {
-                    tf.controller = Some(ControllerRef::Opponent);
-                }
-                return Some(AbilityCondition::QuantityCheck {
-                    lhs: QuantityExpr::Ref {
-                        qty: QuantityRef::ObjectCount { filter },
-                    },
-                    comparator: Comparator::LT,
-                    rhs: QuantityExpr::Ref {
-                        qty: QuantityRef::ObjectCount { filter: opp_filter },
-                    },
-                });
-            }
-        }
-    }
-
-    None
-}
-
-/// Build a QuantityCheck for "you control [comparator] [value] [type]" patterns.
-fn build_control_quantity_check(
-    type_text: &str,
-    comparator: Comparator,
-    value: i32,
-) -> Option<AbilityCondition> {
+    // "fewer [type] than an opponent"
+    let (type_rest, _) = tag::<_, _, VerboseError<&str>>("fewer ").parse(rest).ok()?;
+    let pos = type_rest.find(" than ")?;
+    let type_text = &type_rest[..pos];
     let (mut filter, leftover) = parse_type_phrase(type_text);
     if filter == TargetFilter::Any || !leftover.trim().is_empty() {
         return None;
@@ -4329,12 +4268,18 @@ fn build_control_quantity_check(
     if let TargetFilter::Typed(ref mut tf) = filter {
         tf.controller = Some(ControllerRef::You);
     }
+    let mut opp_filter = filter.clone();
+    if let TargetFilter::Typed(ref mut tf) = opp_filter {
+        tf.controller = Some(ControllerRef::Opponent);
+    }
     Some(AbilityCondition::QuantityCheck {
         lhs: QuantityExpr::Ref {
             qty: QuantityRef::ObjectCount { filter },
         },
-        comparator,
-        rhs: QuantityExpr::Fixed { value },
+        comparator: Comparator::LT,
+        rhs: QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount { filter: opp_filter },
+        },
     })
 }
 
@@ -4406,6 +4351,13 @@ fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<Ability
             }
             _ => None,
         },
+
+        // CR 608.2c: Source type/subtype check bridges directly.
+        StaticCondition::SourceMatchesFilter { filter } => {
+            Some(AbilityCondition::SourceMatchesFilter {
+                filter: filter.clone(),
+            })
+        }
 
         // Variants with no AbilityCondition equivalent.
         StaticCondition::DevotionGE { .. }

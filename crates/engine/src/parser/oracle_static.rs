@@ -17,8 +17,8 @@ use super::oracle_util::{
 };
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, BasicLandType, CardPlayMode, ChosenSubtypeKind, Comparator,
-    ContinuousModification, ControllerRef, CountScope, FilterProp, QuantityExpr, QuantityRef,
-    StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
+    ContinuousModification, ControllerRef, FilterProp, QuantityExpr, QuantityRef, StaticCondition,
+    StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::Supertype;
 use crate::types::keywords::Keyword;
@@ -1325,23 +1325,6 @@ fn parse_conditional_static(text: &str) -> Option<StaticDefinition> {
 /// Returns a typed `StaticCondition` for known patterns, or `None` if the
 /// condition text is not recognized. Callers may fall back to `Unrecognized`.
 ///
-/// CR 113.6b: Parse "~ is in your graveyard" / "this card is in your graveyard" /
-/// "~ is in your hand" → `SourceInZone { zone }`.
-fn parse_source_in_zone_condition(lower: &str) -> Option<StaticCondition> {
-    // Strip self-reference prefix via nom tag: "~ is in your " or "this card is in your "
-    let after = nom_tag_lower(lower, lower, "~ is in your ")
-        .or_else(|| nom_tag_lower(lower, lower, "this card is in your "))?;
-
-    let zone = match after.trim_end_matches('.').trim() {
-        "graveyard" => Zone::Graveyard,
-        "hand" => Zone::Hand,
-        "library" => Zone::Library,
-        "exile" => Zone::Exile,
-        _ => return None,
-    };
-    Some(StaticCondition::SourceInZone { zone })
-}
-
 /// Try splitting a condition on " and " into compound `StaticCondition::And`.
 /// Only succeeds when BOTH halves parse as valid conditions — prevents false splits
 /// on noun phrases like "artifacts and creatures".
@@ -1375,17 +1358,13 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
 
-    // Try the shared nom condition combinator first for common patterns
-    // ("if it's your turn", "as long as ~ is tapped/untapped", etc.).
-    if let Ok((rest, condition)) = nom_condition::parse_condition(&lower) {
+    // Delegate to shared nom condition combinator (prefix already stripped by callers).
+    // Callers like parse_conditional_static strip "As long as " before calling us,
+    // so we use parse_inner_condition (no prefix required), not parse_condition.
+    if let Ok((rest, condition)) = nom_condition::parse_inner_condition(&lower) {
         if rest.trim().is_empty() {
             return Some(condition);
         }
-    }
-
-    // CR 113.6b: "~ is in your graveyard" / "this card is in your graveyard" / "~ is in your hand"
-    if let Some(condition) = parse_source_in_zone_condition(tp.lower) {
-        return Some(condition);
     }
 
     // Compound " and " splitting: try splitting on " and ", parse both halves recursively.
@@ -1413,11 +1392,6 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
         }
     }
 
-    // "it's your turn"
-    if tp.lower == "it's your turn" {
-        return Some(StaticCondition::DuringYourTurn);
-    }
-
     if tp.lower == "you have max speed" || tp.lower == "have max speed" {
         return Some(StaticCondition::HasMaxSpeed);
     }
@@ -1443,107 +1417,15 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
         return Some(condition);
     }
 
-    // "you control a/an [type]" → IsPresent
+    // Fallback: "you control a/an [type]" for patterns the nom combinator doesn't handle
+    // (color-based presence like "a blue creature", "a token", named planeswalkers, etc.)
     if let Some(condition) = parse_control_presence_condition(tp.lower) {
         return Some(condition);
-    }
-
-    // CR 118.4: "you've lost life this turn" → QuantityComparison(LifeLostThisTurn >= 1)
-    if tp.lower == "you've lost life this turn" {
-        return Some(StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::LifeLostThisTurn,
-            },
-            comparator: Comparator::GE,
-            rhs: QuantityExpr::Fixed { value: 1 },
-        });
-    }
-
-    // CR 611.2b: "~ is untapped" → Not(SourceIsTapped), "~ is tapped" → SourceIsTapped
-    if tp.lower == "~ is untapped" || tp.lower == "this creature is untapped" {
-        return Some(StaticCondition::Not {
-            condition: Box::new(StaticCondition::SourceIsTapped),
-        });
-    }
-    if tp.lower == "~ is tapped" || tp.lower == "this creature is tapped" {
-        return Some(StaticCondition::SourceIsTapped);
-    }
-
-    // CR 400.7: "this aura/permanent entered this turn" → SourceEnteredThisTurn
-    if let Some(rest) = nom_tag_lower(tp.lower, tp.lower, "this ") {
-        if rest.ends_with(" entered this turn") || rest == "entered this turn" {
-            return Some(StaticCondition::SourceEnteredThisTurn);
-        }
     }
 
     // "the number of [quantity] is [comparator] [quantity]"
     if let Some(condition) = parse_quantity_comparison(tp.lower) {
         return Some(condition);
-    }
-
-    // "there are N or more [thing] in your graveyard" — threshold/delirium conditions
-    if let Some(condition) = parse_graveyard_threshold_condition(tp.lower) {
-        return Some(condition);
-    }
-
-    // "you control N or more [type]" — quantity threshold.
-    // Delegates to canonical combinator in oracle_nom/condition.rs.
-    if let Ok((_, condition)) =
-        crate::parser::oracle_nom::condition::parse_control_count_ge(tp.lower)
-    {
-        return Some(condition);
-    }
-
-    // "N or more [type/card] entered the battlefield under your control this turn"
-    if let Some(condition) = parse_entered_this_turn_condition(tp.lower) {
-        return Some(condition);
-    }
-
-    // "an [type] entered the battlefield under your control this turn"
-    if let Some(condition) = parse_single_entered_this_turn_condition(tp.lower) {
-        return Some(condition);
-    }
-
-    // "you've committed a crime this turn" / "you've gained life this turn"
-    if let Some(condition) = parse_youve_this_turn_condition(tp.lower) {
-        return Some(condition);
-    }
-
-    // "you have N or more life" → QuantityComparison(LifeTotal >= N)
-    if let Some(rest) = nom_tag_lower(tp.lower, tp.lower, "you have ") {
-        if let Some(life_text) = rest.strip_suffix(" or more life") {
-            if let Some((n, remainder)) = parse_number(life_text) {
-                if remainder.trim().is_empty() {
-                    return Some(StaticCondition::QuantityComparison {
-                        lhs: QuantityExpr::Ref {
-                            qty: QuantityRef::LifeTotal,
-                        },
-                        comparator: Comparator::GE,
-                        rhs: QuantityExpr::Fixed { value: n as i32 },
-                    });
-                }
-            }
-        }
-    }
-
-    // CR 110.5: "~ is untapped" → Not(SourceIsTapped)
-    // Also handles "this creature is untapped", "this permanent is untapped"
-    {
-        let is_untapped_self_ref = tp.lower.ends_with("is untapped")
-            && (nom_tag_lower(tp.lower, tp.lower, "~ ").is_some()
-                || tp.lower.contains(" is untapped"));
-        if is_untapped_self_ref {
-            return Some(StaticCondition::Not {
-                condition: Box::new(StaticCondition::SourceIsTapped),
-            });
-        }
-    }
-
-    // CR 611.2b: "~ is tapped" → SourceIsTapped (direct, no negation needed)
-    if tp.lower.ends_with("is tapped")
-        && (nom_tag_lower(tp.lower, tp.lower, "~ ").is_some() || tp.lower.contains(" is tapped"))
-    {
-        return Some(StaticCondition::SourceIsTapped);
     }
 
     // "the chosen color is [color]"
@@ -1591,12 +1473,12 @@ fn parse_devotion_condition(lower: &str) -> Option<StaticCondition> {
     None
 }
 
-/// Parse "you control a/an [type/subtype]" into IsPresent.
+/// Fallback: parse "you control a/an [type/subtype]" into IsPresent.
+/// Handles patterns the nom combinator doesn't (color-based, tokens, named planeswalkers).
 fn parse_control_presence_condition(lower: &str) -> Option<StaticCondition> {
     let rest = nom_tag_lower(lower, lower, "you control a ")
         .or_else(|| nom_tag_lower(lower, lower, "you control an "))?;
 
-    // Try to parse the rest as a type phrase
     let filter = parse_presence_filter(rest)?;
 
     Some(StaticCondition::IsPresent {
@@ -1605,6 +1487,7 @@ fn parse_control_presence_condition(lower: &str) -> Option<StaticCondition> {
 }
 
 /// Parse a simple type/subtype/color description into a TypedFilter.
+/// Fallback for patterns `parse_type_phrase` doesn't handle.
 fn parse_presence_filter(text: &str) -> Option<TypedFilter> {
     use crate::types::ability::TypeFilter;
 
@@ -1614,13 +1497,11 @@ fn parse_presence_filter(text: &str) -> Option<TypedFilter> {
     if let Some(perm_prefix) = trimmed.strip_suffix(" permanent") {
         let colors: Vec<&str> = perm_prefix.split(" or ").collect();
         if colors.len() >= 2 {
-            // Multiple color options — we'd need an Or filter; for now handle as simple card match
             return Some(TypedFilter::card());
         }
     }
 
     // "creature with power N or greater/less/more"
-    // Reuses parse_number so both digits and words ("four") are handled.
     if let Some(rest) = nom_tag_lower(trimmed, trimmed, "creature with power ") {
         let (n, remainder) = parse_number(rest)?;
         let prop = match remainder.trim() {
@@ -1646,8 +1527,6 @@ fn parse_presence_filter(text: &str) -> Option<TypedFilter> {
     }
 
     // Subtype-based: "you control a Demon", "you control an Elf"
-    // Also handles lowercased input (e.g. from parse_control_presence_condition which
-    // receives pre-lowered text) by capitalizing the first character.
     if !trimmed.is_empty() && trimmed.chars().next().unwrap().is_alphabetic() {
         let subtype = capitalize_first(trimmed);
         return Some(typed_filter_for_subtype(&subtype));
@@ -1703,109 +1582,6 @@ fn parse_quantity_comparison(lower: &str) -> Option<StaticCondition> {
         comparator,
         rhs: QuantityExpr::Ref { qty: rhs },
     })
-}
-
-/// Parse "there are N or more [things] in your graveyard" conditions.
-/// Covers: threshold ("seven or more cards"), delirium ("four or more card types"),
-/// and "permanent cards in your graveyard".
-fn parse_graveyard_threshold_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = nom_tag_lower(lower, lower, "there are ")?;
-    // "four or more card types among cards in your graveyard" (delirium)
-    if rest.contains("card types among cards in your graveyard") {
-        let (n, _) = parse_number(rest)?;
-        return Some(StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::CardTypesInGraveyards {
-                    scope: CountScope::Controller,
-                },
-            },
-            comparator: Comparator::GE,
-            rhs: QuantityExpr::Fixed { value: n as i32 },
-        });
-    }
-    // "N or more cards/permanent cards in your graveyard" (threshold)
-    if rest.contains("in your graveyard") {
-        let (n, _) = parse_number(rest)?;
-        return Some(StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::GraveyardSize,
-            },
-            comparator: Comparator::GE,
-            rhs: QuantityExpr::Fixed { value: n as i32 },
-        });
-    }
-    None
-}
-
-/// Parse "N or more [type] entered the battlefield under your control this turn".
-fn parse_entered_this_turn_condition(lower: &str) -> Option<StaticCondition> {
-    // "[two/three/N] or more [nonland permanents/creatures/etc.] entered the battlefield under your control this turn"
-    let (n, after_n) = parse_number(lower)?;
-    let rest = after_n.trim();
-    let rest = nom_tag_lower(rest, rest, "or more ")?;
-    if rest.contains("entered the battlefield under your control this turn") {
-        let type_text = rest.split(" entered the battlefield").next()?.trim();
-        let (filter, _) = parse_type_phrase(type_text);
-        let filter = match filter {
-            TargetFilter::Typed(tf) => TargetFilter::Typed(tf.controller(ControllerRef::You)),
-            other => other,
-        };
-        return Some(StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::EnteredThisTurn { filter },
-            },
-            comparator: Comparator::GE,
-            rhs: QuantityExpr::Fixed { value: n as i32 },
-        });
-    }
-    None
-}
-
-/// Parse "an [type] entered the battlefield under your control this turn".
-fn parse_single_entered_this_turn_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = nom_tag_lower(lower, lower, "a ").or_else(|| nom_tag_lower(lower, lower, "an "))?;
-    if !rest.contains("entered the battlefield under your control this turn") {
-        return None;
-    }
-    let type_text = rest.split(" entered the battlefield").next()?.trim();
-    let (filter, _) = parse_type_phrase(type_text);
-    let filter = match filter {
-        TargetFilter::Typed(tf) => TargetFilter::Typed(tf.controller(ControllerRef::You)),
-        other => other,
-    };
-    Some(StaticCondition::QuantityComparison {
-        lhs: QuantityExpr::Ref {
-            qty: QuantityRef::EnteredThisTurn { filter },
-        },
-        comparator: Comparator::GE,
-        rhs: QuantityExpr::Fixed { value: 1 },
-    })
-}
-
-/// Parse "you've committed a crime this turn" / "you've gained life this turn".
-fn parse_youve_this_turn_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = nom_tag_lower(lower, lower, "you've ")?;
-    // "committed a crime this turn"
-    if nom_tag_lower(rest, rest, "committed a crime this turn").is_some() {
-        return Some(StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::CrimesCommittedThisTurn,
-            },
-            comparator: Comparator::GE,
-            rhs: QuantityExpr::Fixed { value: 1 },
-        });
-    }
-    // "gained life this turn"
-    if nom_tag_lower(rest, rest, "gained life this turn").is_some() {
-        return Some(StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::LifeGainedThisTurn,
-            },
-            comparator: Comparator::GE,
-            rhs: QuantityExpr::Fixed { value: 1 },
-        });
-    }
-    None
 }
 
 fn find_continuous_predicate_start(lower: &str) -> Option<usize> {
@@ -3590,7 +3366,7 @@ fn try_parse_scoped_must_attack_block(lower: &str, text: &str) -> Option<Vec<Sta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::TypeFilter;
+    use crate::types::ability::{CountScope, TypeFilter};
 
     #[test]
     fn static_bonesplitter() {
