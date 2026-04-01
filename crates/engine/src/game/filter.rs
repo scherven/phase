@@ -9,8 +9,8 @@ use crate::game::combat;
 use crate::game::game_object::GameObject;
 use crate::game::quantity::resolve_quantity;
 use crate::types::ability::{
-    ControllerRef, FilterProp, QuantityExpr, SharedQuality, TargetFilter, TargetRef, TypeFilter,
-    TypedFilter,
+    ChosenAttribute, ControllerRef, FilterProp, QuantityExpr, SharedQuality, TargetFilter,
+    TargetRef, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::game_state::{GameState, SpellCastRecord};
@@ -194,6 +194,26 @@ fn filter_inner(
         | TargetFilter::DefendingPlayer => false,
         // ParentTarget/ParentTargetController resolve at resolution time, not via object matching.
         TargetFilter::ParentTarget | TargetFilter::ParentTargetController => false,
+        // "card with the chosen name" — match against source's ChosenAttribute::CardName.
+        TargetFilter::HasChosenName => {
+            let chosen_name = state.objects.get(&source_id).and_then(|obj| {
+                obj.chosen_attributes.iter().find_map(|a| match a {
+                    ChosenAttribute::CardName(n) => Some(n.as_str()),
+                    _ => None,
+                })
+            });
+            chosen_name.is_some_and(|name| {
+                state
+                    .objects
+                    .get(&object_id)
+                    .is_some_and(|obj| obj.name == name)
+            })
+        }
+        // "card named [literal]" — static name match.
+        TargetFilter::Named { name } => state
+            .objects
+            .get(&object_id)
+            .is_some_and(|obj| obj.name == *name),
     }
 }
 
@@ -299,7 +319,9 @@ pub fn spell_record_matches_filter(
         | TargetFilter::TriggeringSource
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetController
-        | TargetFilter::DefendingPlayer => false,
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::HasChosenName
+        | TargetFilter::Named { .. } => false,
     }
 }
 
@@ -733,7 +755,7 @@ pub(crate) fn player_matches_target_filter(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{ControllerRef, FilterProp, TargetFilter};
+    use crate::types::ability::{ChosenAttribute, ControllerRef, FilterProp, TargetFilter};
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::keywords::Keyword;
@@ -1410,5 +1432,63 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn has_chosen_name_matches_object_with_chosen_card_name() {
+        let mut state = setup();
+        let source = add_creature(&mut state, PlayerId(0), "Sorcerer");
+        let bolt = add_creature(&mut state, PlayerId(0), "Lightning Bolt");
+        let growth = add_creature(&mut state, PlayerId(0), "Giant Growth");
+
+        // Set chosen name on source
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .chosen_attributes
+            .push(ChosenAttribute::CardName("Lightning Bolt".to_string()));
+
+        assert!(matches_target_filter(
+            &state,
+            bolt,
+            &TargetFilter::HasChosenName,
+            source,
+        ));
+        assert!(!matches_target_filter(
+            &state,
+            growth,
+            &TargetFilter::HasChosenName,
+            source,
+        ));
+    }
+
+    #[test]
+    fn has_chosen_name_returns_false_when_no_card_name_chosen() {
+        let mut state = setup();
+        let source = add_creature(&mut state, PlayerId(0), "Sorcerer");
+        let bolt = add_creature(&mut state, PlayerId(0), "Lightning Bolt");
+
+        // Source has no chosen attributes
+        assert!(!matches_target_filter(
+            &state,
+            bolt,
+            &TargetFilter::HasChosenName,
+            source,
+        ));
+    }
+
+    #[test]
+    fn named_filter_matches_by_literal_name() {
+        let mut state = setup();
+        let source = add_creature(&mut state, PlayerId(0), "Sorcerer");
+        let bolt = add_creature(&mut state, PlayerId(0), "Lightning Bolt");
+        let growth = add_creature(&mut state, PlayerId(0), "Giant Growth");
+
+        let filter = TargetFilter::Named {
+            name: "Lightning Bolt".to_string(),
+        };
+        assert!(matches_target_filter(&state, bolt, &filter, source));
+        assert!(!matches_target_filter(&state, growth, &filter, source));
     }
 }

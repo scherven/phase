@@ -188,11 +188,54 @@ pub(crate) fn apply_damage_to_target(
                     }
                 }
 
+                // CR 120.10: Compute excess damage beyond lethal for creatures/planeswalkers.
+                let excess = match &t {
+                    TargetRef::Object(obj_id) => {
+                        state
+                            .objects
+                            .get(obj_id)
+                            .and_then(|obj| {
+                                if obj.card_types.core_types.contains(&CoreType::Creature) {
+                                    obj.toughness.map(|toughness| {
+                                        // damage_marked already includes actual_amount (line 158)
+                                        let damage_before =
+                                            obj.damage_marked.saturating_sub(actual_amount);
+                                        let lethal = if ctx.has_deathtouch {
+                                            // CR 702.2c: Any nonzero damage from deathtouch = lethal
+                                            if damage_before == 0 {
+                                                1u32
+                                            } else {
+                                                0
+                                            }
+                                        } else {
+                                            (toughness as u32).saturating_sub(damage_before)
+                                        };
+                                        actual_amount.saturating_sub(lethal)
+                                    })
+                                } else if obj
+                                    .card_types
+                                    .core_types
+                                    .contains(&CoreType::Planeswalker)
+                                {
+                                    // CR 120.10: Excess for planeswalkers = damage beyond pre-hit loyalty.
+                                    // Loyalty was already decremented, so reconstruct pre-hit value.
+                                    let pre_loyalty = obj.loyalty.unwrap_or(0) + actual_amount;
+                                    Some(actual_amount.saturating_sub(pre_loyalty))
+                                } else {
+                                    Some(0)
+                                }
+                            })
+                            .unwrap_or(0)
+                    }
+                    TargetRef::Player(_) => 0,
+                };
+
                 events.push(GameEvent::DamageDealt {
                     source_id: ctx.source_id,
                     target: t.clone(),
                     amount: actual_amount,
                     is_combat,
+                    excess,
                 });
 
                 // CR 702.15b / CR 120.3f: Lifelink — controller gains life equal to damage dealt.
@@ -413,6 +456,10 @@ pub fn resolve_each_player(
                             .unwrap_or(0);
                         p.speed.unwrap_or(0) == highest_speed
                     }
+                    PlayerFilter::ZoneChangedThisWay => state
+                        .last_zone_changed_ids
+                        .iter()
+                        .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
                 }
         })
         .map(|p| p.id)
@@ -796,6 +843,125 @@ mod tests {
 
         // CR 702.2b: Deathtouch tracked even through area damage.
         assert!(state.objects[&target_id].dealt_deathtouch_damage);
+    }
+
+    #[test]
+    fn excess_damage_to_creature() {
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.toughness = Some(2);
+        }
+        let ability = make_ability(5, vec![TargetRef::Object(obj_id)]);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // CR 120.10: 5 damage to 2-toughness creature = 3 excess
+        let dmg_event = events
+            .iter()
+            .find(|e| matches!(e, GameEvent::DamageDealt { .. }))
+            .unwrap();
+        if let GameEvent::DamageDealt { excess, .. } = dmg_event {
+            assert_eq!(*excess, 3);
+        } else {
+            panic!("expected DamageDealt event");
+        }
+    }
+
+    #[test]
+    fn excess_damage_with_deathtouch() {
+        let mut state = GameState::new_two_player(42);
+        let source_id =
+            make_source_with_keyword(&mut state, crate::types::keywords::Keyword::Deathtouch);
+        let target_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Dragon".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&target_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.toughness = Some(5);
+        }
+        let ability = make_ability_with_source(3, vec![TargetRef::Object(target_id)], source_id);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // CR 702.2c: Deathtouch makes 1 damage lethal, so 3 - 1 = 2 excess
+        let dmg_event = events
+            .iter()
+            .find(|e| matches!(e, GameEvent::DamageDealt { .. }))
+            .unwrap();
+        if let GameEvent::DamageDealt { excess, .. } = dmg_event {
+            assert_eq!(*excess, 2);
+        } else {
+            panic!("expected DamageDealt event");
+        }
+    }
+
+    #[test]
+    fn excess_damage_with_preexisting_damage() {
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.toughness = Some(3);
+            obj.damage_marked = 1; // Pre-existing damage
+        }
+        let ability = make_ability(4, vec![TargetRef::Object(obj_id)]);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // CR 120.10: toughness=3, pre-damage=1, lethal=(3-1)=2, excess=4-2=2
+        let dmg_event = events
+            .iter()
+            .find(|e| matches!(e, GameEvent::DamageDealt { .. }))
+            .unwrap();
+        if let GameEvent::DamageDealt { excess, .. } = dmg_event {
+            assert_eq!(*excess, 2);
+        } else {
+            panic!("expected DamageDealt event");
+        }
+    }
+
+    #[test]
+    fn excess_damage_to_player_is_zero() {
+        let mut state = GameState::new_two_player(42);
+        let ability = make_ability(5, vec![TargetRef::Player(PlayerId(1))]);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // Players don't have excess damage
+        let dmg_event = events
+            .iter()
+            .find(|e| matches!(e, GameEvent::DamageDealt { .. }))
+            .unwrap();
+        if let GameEvent::DamageDealt { excess, .. } = dmg_event {
+            assert_eq!(*excess, 0);
+        } else {
+            panic!("expected DamageDealt event");
+        }
     }
 
     #[test]

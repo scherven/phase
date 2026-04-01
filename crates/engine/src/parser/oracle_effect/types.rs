@@ -337,6 +337,12 @@ pub(super) enum TargetedImperativeAst {
     Untap {
         target: TargetFilter,
     },
+    TapAll {
+        target: TargetFilter,
+    },
+    UntapAll {
+        target: TargetFilter,
+    },
     Sacrifice {
         target: TargetFilter,
     },
@@ -481,6 +487,8 @@ pub(super) enum PutImperativeAst {
         target: TargetFilter,
         /// CR 110.2: "under your control" — controller override on ETB.
         under_your_control: bool,
+        /// CR 603.6d: "enters tapped" — enters the battlefield tapped.
+        enter_tapped: bool,
     },
     TopOfLibrary,
     BottomOfLibrary,

@@ -36,6 +36,7 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::DefilerCostReduction { .. }
             | StaticMode::CantCastDuring { .. }
             | StaticMode::PerTurnCastLimit { .. }
+            | StaticMode::PerTurnDrawLimit { .. }
             | StaticMode::GraveyardCastPermission { .. }
     )
 }
@@ -202,6 +203,8 @@ fn fmt_target(filter: &TargetFilter) -> String {
         TargetFilter::SpecificObject { id } => format!("object #{}", id.0),
         TargetFilter::TrackedSet { id } => format!("tracked set #{}", id.0),
         TargetFilter::ExiledBySource => "cards exiled by source".into(),
+        TargetFilter::HasChosenName => "card with the chosen name".into(),
+        TargetFilter::Named { name } => format!("card named {name}"),
         TargetFilter::Not { filter } => format!("not {}", fmt_target(filter)),
         TargetFilter::Or { filters } => filters
             .iter()
@@ -536,6 +539,7 @@ fn fmt_player_filter(pf: &PlayerFilter) -> String {
         PlayerFilter::OpponentGainedLife => "each opponent who gained life this turn",
         PlayerFilter::All => "each player",
         PlayerFilter::HighestSpeed => "each player with the highest speed",
+        PlayerFilter::ZoneChangedThisWay => "each player who changed a card this way",
     }
     .into()
 }
@@ -765,7 +769,10 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::Regenerate { target } => {
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::DestroyAll { target, .. } | Effect::DamageAll { amount: _, target } => {
+        Effect::DestroyAll { target, .. }
+        | Effect::TapAll { target }
+        | Effect::UntapAll { target }
+        | Effect::DamageAll { amount: _, target } => {
             if !matches!(target, TargetFilter::None) {
                 d.push(("filter".into(), fmt_target(target)));
             }
@@ -919,7 +926,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
                 ));
             }
         }
-        Effect::LoseLife { amount } => {
+        Effect::LoseLife { amount, .. } => {
             d.push(("amount".into(), fmt_quantity(amount)));
         }
         Effect::ChangeZone {
@@ -4252,6 +4259,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             }
             StaticMode::MayChooseNotToUntap => effective_lower.contains("may choose not to untap"),
             StaticMode::CantDraw => effective_lower.contains("can't draw"),
+            StaticMode::PerTurnDrawLimit { .. } => effective_lower.contains("can't draw more than"),
             StaticMode::Panharmonicon => {
                 effective_lower.contains("triggers an additional time")
                     || effective_lower.contains("trigger an additional time")
@@ -4308,6 +4316,19 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                     // "don't lose unspent mana" parsed as GenericEffect
                     effective_lower.contains("don't lose unspent")
                 }
+                Effect::LoseTheGame => {
+                    // "You don't lose the game for ..." parsed as LoseTheGame prevention
+                    effective_lower.contains("don't lose the game")
+                        || effective_lower.contains("can't lose the game")
+                }
+                Effect::PayCost { .. } => {
+                    // "You may pay {X} rather than pay ..." — alternative cost patterns
+                    effective_lower.contains("rather than pay")
+                }
+                Effect::TapAll { .. } => {
+                    effective_lower.contains("tap") && !effective_lower.contains("untap")
+                }
+                Effect::UntapAll { .. } => effective_lower.contains("untap"),
                 _ => false,
             };
             ability_tree_any(a, &pred)

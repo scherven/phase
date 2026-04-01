@@ -87,6 +87,10 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
     // Damage: is dealt damage
     r.insert(TriggerMode::DamageReceived, match_damage_received);
 
+    // CR 120.10: Excess damage triggers
+    r.insert(TriggerMode::ExcessDamage, match_excess_damage);
+    r.insert(TriggerMode::ExcessDamageAll, match_excess_damage_all);
+
     // Promoted trigger matchers -- Standard-relevant combat triggers
     r.insert(TriggerMode::AttackerBlocked, match_attacker_blocked);
     r.insert(TriggerMode::AttackerBlockedOnce, match_attacker_blocked);
@@ -172,8 +176,6 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
     // Remaining trigger modes: recognized but not yet matched against events.
     let unimplemented_modes = [
         TriggerMode::DamagePreventedOnce,
-        TriggerMode::ExcessDamage,
-        TriggerMode::ExcessDamageAll,
         TriggerMode::AbilityCast,
         TriggerMode::AbilityResolves,
         TriggerMode::AbilityTriggered,
@@ -352,7 +354,9 @@ pub(super) fn target_filter_matches_object(
         | TargetFilter::AttachedTo
         | TargetFilter::LastCreated
         | TargetFilter::TrackedSet { .. }
-        | TargetFilter::ExiledBySource => {
+        | TargetFilter::ExiledBySource
+        | TargetFilter::HasChosenName
+        | TargetFilter::Named { .. } => {
             super::filter::matches_target_filter(state, object_id, filter, source_id)
         }
     }
@@ -417,8 +421,8 @@ pub(super) fn match_damage_done(
     if let GameEvent::DamageDealt {
         source_id: dmg_source,
         target,
-        amount: _,
         is_combat,
+        ..
     } = event
     {
         // Check if trigger requires damage from a specific source
@@ -1494,6 +1498,27 @@ pub(super) fn match_damage_received(
     }
 }
 
+/// CR 120.10: ExcessDamage — fires when the trigger source deals excess damage to a permanent.
+pub(super) fn match_excess_damage(
+    event: &GameEvent,
+    _trigger: &TriggerDefinition,
+    source_id: ObjectId,
+    _state: &GameState,
+) -> bool {
+    matches!(event, GameEvent::DamageDealt { source_id: src, excess, .. }
+        if *excess > 0 && *src == source_id)
+}
+
+/// CR 120.10: ExcessDamageAll — fires when any source deals excess damage to a permanent.
+pub(super) fn match_excess_damage_all(
+    event: &GameEvent,
+    _trigger: &TriggerDefinition,
+    _source_id: ObjectId,
+    _state: &GameState,
+) -> bool {
+    matches!(event, GameEvent::DamageDealt { excess, .. } if *excess > 0)
+}
+
 /// YouAttack: fires once when the trigger source's controller declares attackers.
 /// Player-centric — fires regardless of which creatures attack.
 pub(super) fn match_you_attack(
@@ -2033,6 +2058,7 @@ mod tests {
             target: crate::types::ability::TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: false,
+            excess: 0,
         };
         assert!(match_damage_done(&event, &trigger, ObjectId(1), &state));
     }
@@ -2939,6 +2965,7 @@ mod tests {
                 target: TargetRef::Player(PlayerId(0)),
                 amount: 3,
                 is_combat,
+                excess: 0,
             };
             assert!(match_damage_done(&event, &trigger, ObjectId(1), &state));
         }
@@ -2955,6 +2982,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: false,
+            excess: 0,
         };
         assert!(!match_damage_done(&event, &trigger, ObjectId(1), &state));
     }
@@ -2970,6 +2998,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: true,
+            excess: 0,
         };
         assert!(!match_damage_done(&event, &trigger, ObjectId(1), &state));
     }
@@ -2985,6 +3014,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: false,
+            excess: 0,
         };
         assert!(match_damage_done(&event, &trigger, ObjectId(1), &state));
     }
@@ -3011,6 +3041,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: false,
+            excess: 0,
         };
         assert!(!match_damage_done(&event, &trigger, source_id, &state));
 
@@ -3020,6 +3051,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(1)),
             amount: 3,
             is_combat: false,
+            excess: 0,
         };
         assert!(match_damage_done(&event_opp, &trigger, source_id, &state));
     }
@@ -3411,6 +3443,93 @@ mod tests {
             &TargetFilter::SelfRef,
             PlayerId(0),
             Some(PlayerId(0))
+        ));
+    }
+
+    // ── ExcessDamage trigger matchers ─────────────────────────────
+
+    #[test]
+    fn excess_damage_matches_own_source() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::ExcessDamage);
+
+        let event = GameEvent::DamageDealt {
+            source_id: ObjectId(1),
+            target: TargetRef::Object(ObjectId(2)),
+            amount: 5,
+            is_combat: false,
+            excess: 3,
+        };
+        assert!(match_excess_damage(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn excess_damage_rejects_different_source() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::ExcessDamage);
+
+        let event = GameEvent::DamageDealt {
+            source_id: ObjectId(2),
+            target: TargetRef::Object(ObjectId(3)),
+            amount: 5,
+            is_combat: false,
+            excess: 3,
+        };
+        assert!(!match_excess_damage(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn excess_damage_rejects_zero_excess() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::ExcessDamage);
+
+        let event = GameEvent::DamageDealt {
+            source_id: ObjectId(1),
+            target: TargetRef::Object(ObjectId(2)),
+            amount: 2,
+            is_combat: false,
+            excess: 0,
+        };
+        assert!(!match_excess_damage(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn excess_damage_all_matches_any_source() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::ExcessDamageAll);
+
+        let event = GameEvent::DamageDealt {
+            source_id: ObjectId(99),
+            target: TargetRef::Object(ObjectId(2)),
+            amount: 5,
+            is_combat: true,
+            excess: 1,
+        };
+        assert!(match_excess_damage_all(
+            &event,
+            &trigger,
+            ObjectId(1),
+            &state
+        ));
+    }
+
+    #[test]
+    fn excess_damage_all_rejects_zero_excess() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::ExcessDamageAll);
+
+        let event = GameEvent::DamageDealt {
+            source_id: ObjectId(99),
+            target: TargetRef::Object(ObjectId(2)),
+            amount: 2,
+            is_combat: false,
+            excess: 0,
+        };
+        assert!(!match_excess_damage_all(
+            &event,
+            &trigger,
+            ObjectId(1),
+            &state
         ));
     }
 }

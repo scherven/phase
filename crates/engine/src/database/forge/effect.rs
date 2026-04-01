@@ -199,7 +199,10 @@ fn translate_lose_life(
     resolver: &mut SvarResolver,
 ) -> Result<Effect, ForgeTranslateError> {
     let amount = resolve_quantity(params, "LifeAmount", resolver);
-    Ok(Effect::LoseLife { amount })
+    Ok(Effect::LoseLife {
+        amount,
+        target: None,
+    })
 }
 
 // CR 613.4c: Modify power/toughness of target creature.

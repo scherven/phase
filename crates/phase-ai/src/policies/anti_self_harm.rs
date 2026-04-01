@@ -156,6 +156,7 @@ fn optional_effect_life_cost(ctx: &PolicyContext<'_>, source_id: ObjectId) -> Op
             while let Some(def) = node {
                 if let Effect::LoseLife {
                     amount: QuantityExpr::Fixed { value },
+                    ..
                 } = &*def.effect
                 {
                     return Some(*value);

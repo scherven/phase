@@ -54,6 +54,20 @@ fn players_for_filter(
                 .map(|player| player.id)
                 .collect()
         }
+        PlayerFilter::ZoneChangedThisWay => state
+            .players
+            .iter()
+            .filter(|player| !player.is_eliminated)
+            .filter(|player| {
+                state.last_zone_changed_ids.iter().any(|id| {
+                    state
+                        .objects
+                        .get(id)
+                        .is_some_and(|obj| obj.owner == player.id)
+                })
+            })
+            .map(|player| player.id)
+            .collect(),
     }
 }
 

@@ -1578,6 +1578,10 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             );
             let _ = effects::resolve_ability_chain(state, &ability, &mut events, 0);
             state.layers_dirty = true;
+            // CR 707.9: Resume interrupted ability chain after copy-replacement resolution.
+            if let Some(cont) = state.pending_continuation.take() {
+                let _ = effects::resolve_ability_chain(state, &cont, &mut events, 0);
+            }
             WaitingFor::Priority {
                 player: state.active_player,
             }
@@ -8674,6 +8678,7 @@ mod phase_trigger_regression_tests {
             AbilityKind::Spell,
             Effect::LoseLife {
                 amount: QuantityExpr::Fixed { value: 2 },
+                target: None,
             },
         ));
 

@@ -579,6 +579,10 @@ pub(crate) fn resolve_player_count(
                             .unwrap_or(0);
                         effective_speed(state, p.id) == highest_speed
                     }
+                    PlayerFilter::ZoneChangedThisWay => state
+                        .last_zone_changed_ids
+                        .iter()
+                        .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
                 }
         })
         .count() as i32
@@ -963,6 +967,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::LoseLife {
                 amount: expr.clone(),
+                target: None,
             },
             vec![TargetRef::Player(PlayerId(1))],
             ObjectId(1),
@@ -1091,6 +1096,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 5,
             is_combat: false,
+            excess: 0,
         });
         let expr = QuantityExpr::Ref {
             qty: QuantityRef::EventContextAmount,
@@ -1124,6 +1130,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(1)),
             amount: 4,
             is_combat: true,
+            excess: 0,
         });
         let expr = QuantityExpr::Ref {
             qty: QuantityRef::EventContextSourcePower,

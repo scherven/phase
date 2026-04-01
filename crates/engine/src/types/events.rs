@@ -123,6 +123,9 @@ pub enum GameEvent {
         target: TargetRef,
         amount: u32,
         is_combat: bool,
+        /// CR 120.10: Excess damage beyond lethal for creatures/planeswalkers/battles.
+        #[serde(default)]
+        excess: u32,
     },
     /// CR 615: Damage was prevented (by a prevention shield or protection).
     /// Enables "when damage is prevented" triggers.
@@ -407,6 +410,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: false,
+            excess: 0,
         };
         let serialized = serde_json::to_string(&event).unwrap();
         let deserialized: GameEvent = serde_json::from_str(&serialized).unwrap();

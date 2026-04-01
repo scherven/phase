@@ -1216,6 +1216,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(1)),
             amount: 3,
             is_combat: true,
+            excess: 0,
         };
         let result = extract_player_from_event(&event, &state);
         // Should return the damaged player (PlayerId(1)), not the source's controller.
@@ -1238,6 +1239,7 @@ mod tests {
             target: TargetRef::Object(creature_id),
             amount: 2,
             is_combat: false,
+            excess: 0,
         };
         let result = extract_player_from_event(&event, &state);
         assert_eq!(result, Some(PlayerId(1)));

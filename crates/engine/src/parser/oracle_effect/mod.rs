@@ -1222,6 +1222,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
                 owner,
                 attach_to,
                 enters_attacking,
+                supertypes,
                 count: _,
             } => Effect::Token {
                 name,
@@ -1234,6 +1235,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
                 owner,
                 attach_to,
                 enters_attacking,
+                supertypes,
                 count: quantity,
             },
             other => other,
@@ -1460,6 +1462,19 @@ fn try_parse_verb_and_target<'a>(
     lower: &str,
     ctx: &ParseContext,
 ) -> Option<(TargetedImperativeAst, &'a str)> {
+    // CR 701.26a/b: Tap/untap all — mass variants must be checked before single-target
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| {
+        value((), alt((tag("tap all "), tag("tap each ")))).parse(i)
+    }) {
+        let (target, rem) = parse_target(rest);
+        return Some((TargetedImperativeAst::TapAll { target }, rem));
+    }
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| {
+        value((), alt((tag("untap all "), tag("untap each ")))).parse(i)
+    }) {
+        let (target, rem) = parse_target(rest);
+        return Some((TargetedImperativeAst::UntapAll { target }, rem));
+    }
     // Simple targeted verbs: parse_target on text after the verb prefix
     if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("tap ")).parse(i)) {
         let (target_text, _) = strip_optional_target_prefix(rest);
@@ -6028,7 +6043,9 @@ fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
                 owner_library: false,
                 enter_transformed: false,
                 under_your_control,
-                enter_tapped: false,
+                // CR 603.6d: "enters tapped" — detect tapped qualifier after battlefield destination.
+                enter_tapped: destination == Zone::Battlefield
+                    && scan_contains_phrase(after_put_tp.lower, "battlefield tapped"),
                 enters_attacking: false,
             });
         }
@@ -6263,8 +6280,8 @@ fn extract_effect_verb(effect: &Effect) -> Option<&'static str> {
             ..
         } => Some("return"),
         Effect::Sacrifice { .. } => Some("sacrifice"),
-        Effect::Tap { .. } => Some("tap"),
-        Effect::Untap { .. } => Some("untap"),
+        Effect::Tap { .. } | Effect::TapAll { .. } => Some("tap"),
+        Effect::Untap { .. } | Effect::UntapAll { .. } => Some("untap"),
         _ => None,
     }
 }

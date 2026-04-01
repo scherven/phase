@@ -4,6 +4,15 @@ export type ObjectId = number;
 export type CardId = number;
 export type PlayerId = number;
 
+// ── Dungeon ─────────────────────────────────────────────────────────────
+
+export type DungeonId =
+  | "LostMineOfPhandelver"
+  | "DungeonOfTheMadMage"
+  | "TombOfAnnihilation"
+  | "Undercity"
+  | "BaldursGateWilderness";
+
 // ── Game Format ─────────────────────────────────────────────────────────
 
 export type GameFormat = "Standard" | "Commander" | "Pioneer" | "Historic" | "Pauper" | "Brawl" | "HistoricBrawl" | "FreeForAll" | "TwoHeadedGiant";
@@ -432,7 +441,9 @@ export type WaitingFor =
   | { type: "DiscardChoice"; data: { player: PlayerId; count: number; cards: ObjectId[]; source_id: ObjectId; effect_kind: string; up_to?: boolean; unless_filter?: TargetFilter } }
   | { type: "ManifestDreadChoice"; data: { player: PlayerId; cards: ObjectId[] } }
   | { type: "LearnChoice"; data: { player: PlayerId; hand_cards: ObjectId[] } }
-  | { type: "ClashCardPlacement"; data: { player: PlayerId; card: ObjectId; remaining: [PlayerId, ObjectId][] } };
+  | { type: "ClashCardPlacement"; data: { player: PlayerId; card: ObjectId; remaining: [PlayerId, ObjectId][] } }
+  | { type: "ChooseDungeon"; data: { player: PlayerId; options: DungeonId[] } }
+  | { type: "ChooseDungeonRoom"; data: { player: PlayerId; dungeon: DungeonId; options: number[]; option_names: string[] } };
 
 // ── Learn ────────────────────────────────────────────────────────────────
 
@@ -532,7 +543,9 @@ export type GameAction =
   | { type: "AssignCombatDamage"; data: { assignments: [ObjectId, number][]; trample_damage: number; controller_damage: number } }
   | { type: "DistributeAmong"; data: { distribution: [TargetRef, number][] } }
   | { type: "RetargetSpell"; data: { new_targets: TargetRef[] } }
-  | { type: "LearnDecision"; data: { choice: LearnOption } };
+  | { type: "LearnDecision"; data: { choice: LearnOption } }
+  | { type: "ChooseDungeon"; data: { dungeon: DungeonId } }
+  | { type: "ChooseDungeonRoom"; data: { room_index: number } };
 
 // ── Game Events (discriminated union, tag="type", content="data") ────────
 
@@ -558,7 +571,7 @@ export type GameEvent =
   | { type: "Discarded"; data: { player_id: PlayerId; object_id: ObjectId } }
   | { type: "DamageCleared"; data: { object_id: ObjectId } }
   | { type: "GameOver"; data: { winner: PlayerId | null } }
-  | { type: "DamageDealt"; data: { source_id: ObjectId; target: TargetRef; amount: number; is_combat: boolean } }
+  | { type: "DamageDealt"; data: { source_id: ObjectId; target: TargetRef; amount: number; is_combat: boolean; excess?: number } }
   | { type: "SpellCountered"; data: { object_id: ObjectId; countered_by: ObjectId } }
   | { type: "CounterAdded"; data: { object_id: ObjectId; counter_type: string; count: number } }
   | { type: "CounterRemoved"; data: { object_id: ObjectId; counter_type: string; count: number } }
@@ -584,7 +597,10 @@ export type GameEvent =
   | { type: "EnergyChanged"; data: { player: PlayerId; delta: number } }
   | { type: "SpeedChanged"; data: { player: PlayerId; old_speed: number | null; new_speed: number | null } }
   | { type: "CreatureExploited"; data: { exploiter: ObjectId; sacrificed: ObjectId } }
-  | { type: "PowerToughnessChanged"; data: { object_id: ObjectId; power: number; toughness: number; power_delta: number; toughness_delta: number } };
+  | { type: "PowerToughnessChanged"; data: { object_id: ObjectId; power: number; toughness: number; power_delta: number; toughness_delta: number } }
+  | { type: "RoomEntered"; data: { player_id: PlayerId; dungeon: DungeonId; room_index: number; room_name: string } }
+  | { type: "DungeonCompleted"; data: { player_id: PlayerId; dungeon: DungeonId } }
+  | { type: "InitiativeTaken"; data: { player_id: PlayerId } };
 
 // ── Game State ───────────────────────────────────────────────────────────
 
@@ -611,6 +627,8 @@ export interface GameState {
   seat_order?: PlayerId[];
   format_config?: FormatConfig;
   eliminated_players?: PlayerId[];
+  dungeon_progress?: Record<string, { current_dungeon: DungeonId | null; current_room: number; completed: DungeonId[] }>;
+  initiative?: PlayerId | null;
   commander_damage?: CommanderDamageEntry[];
   exile_links?: Array<{ exiled_id: ObjectId; source_id: ObjectId }>;
   match_config?: MatchConfig;

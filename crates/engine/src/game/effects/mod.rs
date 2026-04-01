@@ -142,6 +142,8 @@ pub fn resolve_effect(
         Effect::LoseLife { .. } => life::resolve_lose(state, ability, events),
         Effect::Tap { .. } => tap_untap::resolve_tap(state, ability, events),
         Effect::Untap { .. } => tap_untap::resolve_untap(state, ability, events),
+        Effect::TapAll { .. } => tap_untap::resolve_tap_all(state, ability, events),
+        Effect::UntapAll { .. } => tap_untap::resolve_untap_all(state, ability, events),
         Effect::AddCounter { .. } => counters::resolve_add(state, ability, events),
         Effect::RemoveCounter { .. } => counters::resolve_remove(state, ability, events),
         Effect::Sacrifice { .. } => sacrifice::resolve(state, ability, events),
@@ -567,6 +569,12 @@ pub fn resolve_ability_chain(
                                 .unwrap_or(0);
                             p.speed.unwrap_or(0) == highest_speed
                         }
+                        // CR 608.2c: "each player who [verb]ed this way" — scope to
+                        // owners of objects that changed zones in the preceding effect.
+                        PlayerFilter::ZoneChangedThisWay => state
+                            .last_zone_changed_ids
+                            .iter()
+                            .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
                     }
             })
             .map(|p| p.id)
@@ -922,6 +930,20 @@ pub fn resolve_ability_chain(
             let mut sub_with_targets = sub.as_ref().clone();
             sub_with_targets.targets = state
                 .last_revealed_ids
+                .iter()
+                .map(|&id| TargetRef::Object(id))
+                .collect();
+            sub_with_targets.context = ability.context.clone();
+            resolve_ability_chain(state, &sub_with_targets, events, depth + 1)?;
+        } else if sub.targets.is_empty()
+            && !state.last_zone_changed_ids.is_empty()
+            && matches!(ability.effect, Effect::ExileTop { .. })
+        {
+            // CR 309.4c + CR 607.1: Forward exiled card IDs to sub-ability
+            // (linked ability pair — second refers to cards exiled by the first).
+            let mut sub_with_targets = sub.as_ref().clone();
+            sub_with_targets.targets = state
+                .last_zone_changed_ids
                 .iter()
                 .map(|&id| TargetRef::Object(id))
                 .collect();
@@ -2028,5 +2050,127 @@ mod tests {
             1,
             "opponent should have drawn a card"
         );
+    }
+
+    #[test]
+    fn player_scope_zone_changed_this_way_filters_by_owner() {
+        let mut state = GameState::new_two_player(42);
+
+        // Create objects owned by Player 0 in graveyard (simulating milled cards)
+        let obj_a = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "Milled A".to_string(),
+            Zone::Graveyard,
+        );
+        let obj_b = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Milled B".to_string(),
+            Zone::Graveyard,
+        );
+
+        // Simulate that these objects were zone-changed by the preceding effect
+        state.last_zone_changed_ids = vec![obj_a, obj_b];
+
+        // Add library cards so Draw has something to draw
+        create_object(
+            &mut state,
+            CardId(20),
+            PlayerId(0),
+            "Lib A".to_string(),
+            Zone::Library,
+        );
+        create_object(
+            &mut state,
+            CardId(21),
+            PlayerId(1),
+            "Lib B".to_string(),
+            Zone::Library,
+        );
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.player_scope = Some(PlayerFilter::ZoneChangedThisWay);
+
+        let mut events = Vec::new();
+        // Use depth=1 to simulate sub_ability execution — depth=0 clears last_zone_changed_ids
+        resolve_ability_chain(&mut state, &ability, &mut events, 1).unwrap();
+
+        // Only Player 0 owned the zone-changed objects, so only they draw
+        assert_eq!(
+            state.players[0].hand.len(),
+            1,
+            "player 0 should have drawn (owned zone-changed objects)"
+        );
+        assert!(
+            state.players[1].hand.is_empty(),
+            "player 1 should NOT have drawn (no owned zone-changed objects)"
+        );
+    }
+
+    #[test]
+    fn player_scope_zone_changed_this_way_includes_both_when_both_own() {
+        let mut state = GameState::new_two_player(42);
+
+        // Objects owned by different players
+        let obj_p0 = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "P0 Card".to_string(),
+            Zone::Graveyard,
+        );
+        let obj_p1 = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(1),
+            "P1 Card".to_string(),
+            Zone::Graveyard,
+        );
+
+        state.last_zone_changed_ids = vec![obj_p0, obj_p1];
+
+        // Library cards for both
+        create_object(
+            &mut state,
+            CardId(20),
+            PlayerId(0),
+            "Lib A".to_string(),
+            Zone::Library,
+        );
+        create_object(
+            &mut state,
+            CardId(21),
+            PlayerId(1),
+            "Lib B".to_string(),
+            Zone::Library,
+        );
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.player_scope = Some(PlayerFilter::ZoneChangedThisWay);
+
+        let mut events = Vec::new();
+        // Use depth=1 to simulate sub_ability execution — depth=0 clears last_zone_changed_ids
+        resolve_ability_chain(&mut state, &ability, &mut events, 1).unwrap();
+
+        // Both players owned zone-changed objects, so both draw
+        assert_eq!(state.players[0].hand.len(), 1, "player 0 should have drawn");
+        assert_eq!(state.players[1].hand.len(), 1, "player 1 should have drawn");
     }
 }

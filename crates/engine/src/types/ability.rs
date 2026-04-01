@@ -1085,6 +1085,14 @@ pub enum TargetFilter {
     /// CR 506.3d: Resolves to the player being attacked by the source creature.
     /// Looked up from `state.combat.attackers` using the trigger's source_id.
     DefendingPlayer,
+    /// Matches objects whose name equals the source's ChosenAttribute::CardName.
+    /// Used for "card with the chosen name" patterns.
+    HasChosenName,
+    /// Matches objects with a specific hardcoded name.
+    /// Used for "card named [literal]" patterns.
+    Named {
+        name: String,
+    },
 }
 
 /// A dynamic game quantity — a runtime lookup into the game state.
@@ -1213,6 +1221,8 @@ pub enum QuantityRef {
     /// CR 402: Maximum hand count among the controller's opponents.
     /// Used for "an opponent has more cards in hand than you" cross-player comparisons.
     OpponentHandSize,
+    /// CR 309.7: Number of dungeons the controller has completed.
+    DungeonsCompleted,
 }
 
 /// CR 107.2: Rounding direction for "half X" expressions in Magic.
@@ -1254,6 +1264,9 @@ pub enum PlayerFilter {
     All,
     /// CR 702.179f: Each player whose speed is tied for the highest speed among players.
     HighestSpeed,
+    /// "each player who [verb]ed a card this way" — scoped to players who owned objects
+    /// that changed zones in the preceding effect (tracked via `last_zone_changed_ids`).
+    ZoneChangedThisWay,
 }
 
 /// An expression that produces an integer for quantity comparisons.
@@ -1406,6 +1419,9 @@ pub enum StaticCondition {
     IsMonarch,
     /// CR 702.131a: True when the controller has the city's blessing (Ascend).
     HasCityBlessing,
+    /// CR 309.7: True when the controller has completed at least one dungeon.
+    /// Used by "as long as you've completed a dungeon" statics (Nadaar, etc.).
+    CompletedADungeon,
     /// CR 118.12: "unless [player] pays [cost]" — a mana tax condition.
     /// Used for Ghostly Prison, Propaganda, etc. The restriction applies unless the
     /// relevant player pays the specified cost. Evaluated as false (restriction active)
@@ -1958,6 +1974,9 @@ pub enum Effect {
         /// CR 508.4: Token enters the battlefield attacking (not declared as attacker).
         #[serde(default)]
         enters_attacking: bool,
+        /// CR 205.4a: Supertypes for the token (Legendary, Snow, etc.).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        supertypes: Vec<super::card_type::Supertype>,
     },
     GainLife {
         #[serde(default = "default_quantity_one")]
@@ -1969,6 +1988,9 @@ pub enum Effect {
     LoseLife {
         #[serde(default = "default_quantity_one")]
         amount: QuantityExpr,
+        /// CR 119.3 + CR 115.1: Optional player target for directed life loss.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<TargetFilter>,
     },
     Tap {
         #[serde(default = "default_target_filter_any")]
@@ -1976,6 +1998,16 @@ pub enum Effect {
     },
     Untap {
         #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
+    /// CR 701.26a: Tap all permanents matching the filter.
+    TapAll {
+        #[serde(default = "default_target_filter_none")]
+        target: TargetFilter,
+    },
+    /// CR 701.26b: Untap all permanents matching the filter.
+    UntapAll {
+        #[serde(default = "default_target_filter_none")]
         target: TargetFilter,
     },
     AddCounter {
@@ -2867,8 +2899,10 @@ impl Effect {
 
             Effect::ExileTop { player, .. } => Some(player),
 
-            // GenericEffect has Option<TargetFilter>
-            Effect::GenericEffect { target, .. } => target.as_ref(),
+            // GenericEffect and LoseLife have Option<TargetFilter>
+            Effect::GenericEffect { target, .. } | Effect::LoseLife { target, .. } => {
+                target.as_ref()
+            }
 
             // --- Effects with no player-selectable target field ---
             // These use filters, zone-level operations, or have no targeting at all.
@@ -2877,12 +2911,13 @@ impl Effect {
             | Effect::Draw { .. }
             | Effect::Token { .. }
             | Effect::GainLife { .. }
-            | Effect::LoseLife { .. }
             | Effect::Scry { .. }
             | Effect::PumpAll { .. }
             | Effect::DamageAll { .. }
             | Effect::DamageEachPlayer { .. }
             | Effect::DestroyAll { .. }
+            | Effect::TapAll { .. }
+            | Effect::UntapAll { .. }
             | Effect::ChangeZoneAll { .. }
             | Effect::Dig { .. }
             | Effect::Surveil { .. }
@@ -2957,6 +2992,8 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::LoseLife { .. } => "LoseLife",
         Effect::Tap { .. } => "Tap",
         Effect::Untap { .. } => "Untap",
+        Effect::TapAll { .. } => "TapAll",
+        Effect::UntapAll { .. } => "UntapAll",
         Effect::AddCounter { .. } => "AddCounter",
         Effect::RemoveCounter { .. } => "RemoveCounter",
         Effect::Sacrifice { .. } => "Sacrifice",
@@ -3096,6 +3133,8 @@ pub enum EffectKind {
     DamageAll,
     DamageEachPlayer,
     DestroyAll,
+    TapAll,
+    UntapAll,
     ChangeZone,
     ChangeZoneAll,
     Dig,
@@ -3214,6 +3253,8 @@ impl From<&Effect> for EffectKind {
             Effect::LoseLife { .. } => EffectKind::LoseLife,
             Effect::Tap { .. } => EffectKind::Tap,
             Effect::Untap { .. } => EffectKind::Untap,
+            Effect::TapAll { .. } => EffectKind::TapAll,
+            Effect::UntapAll { .. } => EffectKind::UntapAll,
             Effect::AddCounter { .. } => EffectKind::AddCounter,
             Effect::RemoveCounter { .. } => EffectKind::RemoveCounter,
             Effect::Sacrifice { .. } => EffectKind::Sacrifice,
@@ -3865,6 +3906,13 @@ pub enum TriggerCondition {
     IsMonarch,
     /// CR 702.131a: "if you have the city's blessing" — true when the controller has Ascend.
     HasCityBlessing,
+    /// CR 309.7: True when the controller has completed at least one dungeon.
+    CompletedADungeon,
+    /// CR 309.7: True when the controller has NOT completed a specific dungeon.
+    /// Used by Acererak: "if you haven't completed Tomb of Annihilation"
+    NotCompletedDungeon {
+        dungeon: crate::game::dungeon::DungeonId,
+    },
     /// CR 611.2b: "if this [permanent] is tapped" — true when the trigger source is tapped.
     SourceIsTapped,
     /// CR 113.6b: "if this card is in [zone]" — true when the trigger source is in the given zone.
@@ -5235,6 +5283,7 @@ mod tests {
             owner: TargetFilter::Controller,
             attach_to: None,
             enters_attacking: false,
+            supertypes: vec![],
         };
         let json = serde_json::to_string(&effect).unwrap();
         let deserialized: Effect = serde_json::from_str(&json).unwrap();

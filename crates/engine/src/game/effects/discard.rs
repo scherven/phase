@@ -125,9 +125,18 @@ pub fn resolve(
             .hand
             .to_vec();
 
-        let count = (num_cards as usize).min(hand_cards.len());
+        // CR 701.9b: For "up to N" discards, present the full N to the player.
+        // The available cards list naturally constrains actual selection.
+        let count = if up_to {
+            num_cards as usize
+        } else {
+            (num_cards as usize).min(hand_cards.len())
+        };
         if count == 0 && !up_to {
-            // Nothing to discard — skip.
+            // CR 608.2c: Effect resolved as no-op (empty hand) — veto downstream IfYouDo.
+            state.cost_payment_failed_flag = true;
+        } else if hand_cards.is_empty() {
+            // up_to=true with empty hand — choosing 0 is the only option, skip interaction.
         } else if !up_to && hand_cards.len() <= count {
             // Forced discard — no choice needed, discard all eligible cards.
             // When up_to=true, always present the choice (player may discard fewer).
@@ -690,7 +699,8 @@ mod tests {
                 ..
             } => {
                 assert!(*up_to);
-                assert_eq!(*count, 1); // min(2, hand_size=1)
+                // CR 701.9b: up_to presents uncapped count (2), not min(2, hand=1)
+                assert_eq!(*count, 2);
                 assert_eq!(cards.len(), 1);
             }
             other => panic!(
@@ -733,6 +743,66 @@ mod tests {
         assert!(
             result.is_ok(),
             "Zero selection should succeed for up_to discard"
+        );
+    }
+
+    #[test]
+    fn empty_hand_discard_sets_cost_payment_failed_flag() {
+        use crate::types::ability::QuantityExpr;
+
+        let mut state = GameState::new_two_player(42);
+        // No cards in hand — discard should set veto flag
+
+        let ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Any,
+                random: false,
+                up_to: false,
+                unless_filter: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // CR 608.2c: No-op discard vetoes downstream IfYouDo conditions
+        assert!(
+            state.cost_payment_failed_flag,
+            "cost_payment_failed_flag should be set when discard count is 0 (empty hand)"
+        );
+    }
+
+    #[test]
+    fn empty_hand_up_to_discard_does_not_set_failed_flag() {
+        use crate::types::ability::QuantityExpr;
+
+        let mut state = GameState::new_two_player(42);
+        // No cards in hand, but up_to=true — choosing 0 is valid success
+
+        let ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Any,
+                random: false,
+                up_to: true,
+                unless_filter: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // up_to=true with empty hand is not a failure — it's a valid 0 selection
+        assert!(
+            !state.cost_payment_failed_flag,
+            "cost_payment_failed_flag should NOT be set for up_to discard with empty hand"
         );
     }
 }

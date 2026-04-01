@@ -233,7 +233,10 @@ pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect 
             amount,
             player: GainLifePlayer::Controller,
         },
-        NumericImperativeAst::LoseLife { amount } => Effect::LoseLife { amount },
+        NumericImperativeAst::LoseLife { amount } => Effect::LoseLife {
+            amount,
+            target: None,
+        },
         NumericImperativeAst::Pump { power, toughness } => Effect::Pump {
             power,
             toughness,
@@ -295,6 +298,23 @@ fn parse_discard_unless_filter<'a>(
 /// When adding a new targeted verb here, check if it also needs to be added there
 /// (for compound action splitting like "tap target creature and put a counter on it").
 pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<TargetedImperativeAst> {
+    // CR 701.26a/b: Tap/untap all — mass variants must be checked before single-target
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), alt((tag("tap all "), tag("tap each ")))).parse(input)
+    }) {
+        let (target, _rem) = parse_target(rest);
+        #[cfg(debug_assertions)]
+        super::types::assert_no_compound_remainder(_rem, text);
+        return Some(TargetedImperativeAst::TapAll { target });
+    }
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), alt((tag("untap all "), tag("untap each ")))).parse(input)
+    }) {
+        let (target, _rem) = parse_target(rest);
+        #[cfg(debug_assertions)]
+        super::types::assert_no_compound_remainder(_rem, text);
+        return Some(TargetedImperativeAst::UntapAll { target });
+    }
     // Simple targeted verbs: tap, untap, sacrifice — parse target after verb prefix
     if let Some((verb, rest)) = nom_on_lower(text, lower, |input| {
         alt((
@@ -447,6 +467,8 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
     match ast {
         TargetedImperativeAst::Tap { target } => Effect::Tap { target },
         TargetedImperativeAst::Untap { target } => Effect::Untap { target },
+        TargetedImperativeAst::TapAll { target } => Effect::TapAll { target },
+        TargetedImperativeAst::UntapAll { target } => Effect::UntapAll { target },
         TargetedImperativeAst::Sacrifice { target } => Effect::Sacrifice { target },
         TargetedImperativeAst::Discard {
             count,
@@ -627,6 +649,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             owner: TargetFilter::Controller,
             attach_to: token.attach_to,
             enters_attacking: false,
+            supertypes: vec![],
         },
         SearchCreationImperativeAst::Seek {
             filter,
@@ -1077,6 +1100,7 @@ pub(super) fn parse_put_ast(text: &str, lower: &str) -> Option<PutImperativeAst>
         destination,
         target,
         under_your_control,
+        enter_tapped,
         ..
     }) = super::try_parse_put_zone_change(lower, text)
     {
@@ -1085,6 +1109,7 @@ pub(super) fn parse_put_ast(text: &str, lower: &str) -> Option<PutImperativeAst>
             destination,
             target,
             under_your_control,
+            enter_tapped,
         });
     }
 
@@ -1106,6 +1131,7 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
             destination,
             target,
             under_your_control,
+            enter_tapped,
         } => {
             // CR 610.3: Mass filters (ExiledBySource, TrackedSet) act on all matching
             // objects without individual targeting — use ChangeZoneAll.
@@ -1127,7 +1153,7 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
                     owner_library: false,
                     enter_transformed: false,
                     under_your_control,
-                    enter_tapped: false,
+                    enter_tapped,
                     enters_attacking: false,
                 }
             }
@@ -1847,28 +1873,24 @@ pub(super) fn parse_imperative_family_ast(
             }
         }
         // CR 701.49: "venture into the dungeon" / "venture into the Undercity"
-        "venture" => {
-            use nom::bytes::complete::tag;
-            use nom::branch::alt;
-            use nom::combinator::value;
-            use nom::Parser;
-            alt((
-                value(ImperativeFamilyAst::VentureIntoUndercity, tag("venture into the undercity")),
-                value(ImperativeFamilyAst::VentureIntoDungeon, tag("venture into the dungeon")),
-            ))
-            .parse(lower)
-            .ok()
-            .map(|(_, ast)| ast)
-        }
+        "venture" => alt((
+            value(
+                ImperativeFamilyAst::VentureIntoUndercity,
+                tag::<_, _, VerboseError<&str>>("venture into the undercity"),
+            ),
+            value(
+                ImperativeFamilyAst::VentureIntoDungeon,
+                tag("venture into the dungeon"),
+            ),
+        ))
+        .parse(lower)
+        .ok()
+        .map(|(_, ast)| ast),
         // CR 500.7: "take an extra turn after this one"
         // CR 725: "take the initiative"
         "take" | "takes" => {
-            use nom::bytes::complete::tag;
-            use nom::branch::alt;
-            use nom::combinator::value;
-            use nom::Parser;
             if alt((
-                value((), tag::<_, _, nom::error::Error<&str>>("take the initiative")),
+                value((), tag::<_, _, VerboseError<&str>>("take the initiative")),
                 value((), tag("takes the initiative")),
             ))
             .parse(lower)

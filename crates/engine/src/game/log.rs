@@ -334,6 +334,7 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
             target,
             amount,
             is_combat,
+            ..
         } => {
             let combat_text = if *is_combat {
                 " combat damage to "
@@ -771,6 +772,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: false,
+            excess: 0,
         };
         assert_eq!(categorize(&event), LogCategory::Life);
     }
@@ -782,6 +784,7 @@ mod tests {
             target: TargetRef::Player(PlayerId(0)),
             amount: 3,
             is_combat: true,
+            excess: 0,
         };
         assert_eq!(categorize(&event), LogCategory::Combat);
     }

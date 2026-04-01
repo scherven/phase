@@ -264,7 +264,7 @@ fn player_impact(effect: &Effect) -> f64 {
         Effect::Discard { count, .. } => -quantity_weight(count, 1.5),
         Effect::DiscardCard { count, .. } => -(*count as f64 * 1.5),
         Effect::GainLife { amount, .. } => quantity_weight(amount, 0.15),
-        Effect::LoseLife { amount } => -quantity_weight(amount, 0.15),
+        Effect::LoseLife { amount, .. } => -quantity_weight(amount, 0.15),
         _ => match effect_polarity(effect) {
             EffectPolarity::Beneficial => 1.0,
             EffectPolarity::Harmful => -1.0,
