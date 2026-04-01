@@ -2,7 +2,7 @@ use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 
-/// CR 716.5: Set the class level on the source Class enchantment.
+/// CR 716.2a: Set the class level on the source Class enchantment.
 /// Setting the new level happens as part of the level ability's resolution.
 pub fn resolve(
     state: &mut GameState,
@@ -21,7 +21,7 @@ pub fn resolve(
             object_id: source_id,
             level,
         });
-        // CR 716.6: New abilities become active at the new level — recompute layers.
+        // CR 716.2a: New abilities become active at the new level — recompute layers.
         state.layers_dirty = true;
     }
 
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn set_class_level_updates_level_and_marks_dirty() {
-        // CR 716.5: SetClassLevel sets the level and marks layers dirty.
+        // CR 716.2a: SetClassLevel sets the level and marks layers dirty.
         let mut state = GameState::new_two_player(42);
         let obj_id = create_object(
             &mut state,
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn class_level_ge_condition_evaluates_correctly() {
-        // CR 716.6: ClassLevelGE evaluates >= for level-gated abilities.
+        // CR 716.2a: ClassLevelGE evaluates >= for level-gated abilities.
         let mut state = GameState::new_two_player(42);
         let obj_id = create_object(
             &mut state,

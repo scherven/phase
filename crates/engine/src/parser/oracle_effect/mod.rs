@@ -3514,7 +3514,7 @@ fn strip_leading_general_conditional(text: &str) -> (Option<AbilityCondition>, S
 /// Returns `(condition, body_text)` where condition is `AdditionalCostPaid` or
 /// `AdditionalCostPaidInstead` depending on whether the body ends with "instead".
 ///
-/// CR 702.32b + CR 608.2e
+/// CR 702.33d + CR 608.2e
 fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     let lower = text.to_lowercase();
 
@@ -3528,7 +3528,7 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
         );
     }
 
-    // CR 702.32b: Negated kicker: "if it wasn't kicked", "if this spell wasn't kicked",
+    // CR 702.33d: Negated kicker: "if it wasn't kicked", "if this spell wasn't kicked",
     // "then if it wasn't kicked" — produces AdditionalCostNotPaid.
     if alt((tag::<_, _, VerboseError<&str>>("if "), tag("then if ")))
         .parse(lower.as_str())

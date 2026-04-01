@@ -954,7 +954,7 @@ pub(super) fn match_phase(
     }
 }
 
-// CR 114.1a / CR 603.4: Match when the trigger's source becomes the target of a spell or ability.
+// CR 603.4: Match when the trigger's source becomes the target of a spell or ability.
 pub(super) fn match_becomes_target(
     event: &GameEvent,
     trigger: &TriggerDefinition,
@@ -969,7 +969,7 @@ pub(super) fn match_becomes_target(
         return false;
     };
 
-    // CR 114.1a: Check source filter — "of a spell" restricts to StackEntryKind::Spell
+    // CR 115.1a: Check source filter — "of a spell" restricts to StackEntryKind::Spell
     if let Some(TargetFilter::StackSpell) = &trigger.valid_source {
         let is_spell = state
             .stack
@@ -1017,7 +1017,7 @@ pub(super) fn match_case_solved(
     matches!(event, GameEvent::CaseSolved { object_id } if *object_id == source_id)
 }
 
-/// CR 716.5: "When this Class becomes level N" triggers.
+/// CR 716.2a: "When this Class becomes level N" triggers.
 pub(super) fn match_class_level_gained(
     event: &GameEvent,
     _trigger: &TriggerDefinition,

@@ -326,7 +326,7 @@ fn activation_restriction_applies(
         ActivationRestriction::RequiresCondition { condition } => condition
             .as_ref()
             .is_none_or(|cond| evaluate_condition(state, player, source_id, cond)),
-        // CR 719.4: Only activatable while the source Case is solved.
+        // CR 719.3c: Only activatable while the source Case is solved.
         ActivationRestriction::IsSolved => state
             .objects
             .get(&source_id)

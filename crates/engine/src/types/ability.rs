@@ -760,9 +760,9 @@ pub enum DamageKindFilter {
     /// Matches both combat and noncombat damage.
     #[default]
     Any,
-    /// CR 120.1a: Only combat damage.
+    /// CR 120.2a: Only combat damage (dealt as a result of combat).
     CombatOnly,
-    /// CR 120.1b: Only noncombat damage.
+    /// CR 120.2b: Only noncombat damage (dealt as an effect of a spell or ability).
     NoncombatOnly,
 }
 
@@ -1038,7 +1038,7 @@ pub enum TargetFilter {
     /// Used by "counter target activated or triggered ability" effects.
     StackAbility,
     /// Matches spells on the stack (not activated/triggered abilities).
-    /// CR 114.1a: Used by "becomes the target of a spell" triggers to filter source type.
+    /// CR 115.1a: Used by "becomes the target of a spell" triggers to filter source type.
     StackSpell,
     /// Matches a specific permanent by ObjectId.
     /// Used for duration-based statics that target a specific object
@@ -1361,7 +1361,7 @@ pub enum StaticCondition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         maximum: Option<u32>,
     },
-    /// CR 716.6: True when the source Class enchantment is at or above the given level.
+    /// CR 716.2a: True when the source Class enchantment is at or above the given level.
     /// Class level is a dedicated field (not a counter), so proliferate does not interact.
     ClassLevelGE {
         level: u8,
@@ -1384,6 +1384,12 @@ pub enum StaticCondition {
     /// CR 611.2b: True when the source object is tapped.
     /// Used for "for as long as ~ remains tapped" duration conditions.
     SourceIsTapped,
+    /// CR 608.2c: True when the source object matches the filter (type/subtype check).
+    /// Used by leveler-style cards (e.g., Figure of Fable) where each activated ability
+    /// gates on the source's current type. Bridges to `AbilityCondition::SourceMatchesFilter`.
+    SourceMatchesFilter {
+        filter: TargetFilter,
+    },
     /// CR 113.6b: True when the source card is in the specified zone.
     /// Used for "as long as ~ is in your graveyard" / "this card is in your graveyard" conditions.
     SourceInZone {
@@ -1992,7 +1998,7 @@ pub enum Effect {
         /// (not controller's). Used for "shuffle into its owner's library".
         #[serde(default)]
         owner_library: bool,
-        /// CR 711.8: When true, the object enters the battlefield showing its back face.
+        /// CR 712.2: When true, the object enters the battlefield showing its back face.
         #[serde(default)]
         enter_transformed: bool,
         /// CR 110.2: When true, the object enters under the ability controller's control
@@ -2316,7 +2322,7 @@ pub enum Effect {
     },
     /// CR 719.2: Solve the source Case — it becomes solved.
     SolveCase,
-    /// CR 716.5: Set the class level on the source Class enchantment.
+    /// CR 716.2a: Set the class level on the source Class enchantment.
     SetClassLevel {
         level: u8,
     },
@@ -3300,7 +3306,7 @@ pub enum ActivationRestriction {
     RequiresCondition {
         condition: Option<ParsedCondition>,
     },
-    /// CR 719.4: This ability can only be activated while the source Case is solved.
+    /// CR 719.3c: This ability can only be activated while the source Case is solved.
     IsSolved,
     /// CR 716.4: Level N+1 ability can only activate when the source Class is at exactly this level.
     ClassLevelIs {
@@ -3557,7 +3563,7 @@ impl AbilityDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum AbilityCondition {
-    /// CR 702.32b: Kicker — optional additional cost; paid/unpaid state stored in SpellContext.
+    /// CR 702.33d: Kicker — optional additional cost; paid/unpaid state stored in SpellContext.
     AdditionalCostPaid,
     /// CR 608.2e: "Instead" clause — replaces the parent effect when the additional cost was paid.
     /// The resolver swaps the override sub's effect in place of the parent before resolution.
@@ -3693,7 +3699,7 @@ pub enum TriggerCondition {
     /// CR 719.2: Intervening-if for Case auto-solve.
     /// True when the source Case is unsolved AND its solve condition is met.
     SolveConditionMet,
-    /// CR 716.6: True when the source Class enchantment is at or above the given level.
+    /// CR 716.2a: True when the source Class enchantment is at or above the given level.
     /// Used to gate continuous triggers that only become active at higher class levels.
     ClassLevelGE { level: u8 },
 
@@ -3845,7 +3851,7 @@ pub enum TriggerConstraint {
     NthDrawThisTurn { n: u32 },
     /// "At the beginning of each opponent's [phase]"
     OnlyDuringOpponentsTurn,
-    /// CR 716.5: "When this Class becomes level N" — fire only at the specified level.
+    /// CR 716.2a: "When this Class becomes level N" — fire only at the specified level.
     AtClassLevel { level: u8 },
     /// CR 603.4: "This ability triggers only the first N times each turn." — generalizes
     /// OncePerTurn to arbitrary limits. OncePerTurn remains for backward compatibility.

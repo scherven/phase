@@ -139,7 +139,7 @@ pub(crate) fn parse_class_oracle_text(
                 || lower.starts_with("at ")
             {
                 let mut trigger = parse_trigger_line(line, card_name);
-                // CR 716.6: Gate continuous triggers at levels > 1.
+                // CR 716.2a: Gate continuous triggers at levels > 1.
                 if section.level > 1 {
                     trigger.condition = Some(TriggerCondition::ClassLevelGE {
                         level: section.level,
@@ -175,7 +175,7 @@ pub(crate) fn parse_class_oracle_text(
             if is_replacement_pattern(&lower) {
                 if let Some(rep_def) = parse_replacement_line(line, card_name) {
                     // Note: replacement definitions don't have a condition field;
-                    // they fire at all levels once added. This matches CR 716.6.
+                    // they fire at all levels once added. This matches CR 716.2a.
                     result.replacements.push(rep_def);
                     continue;
                 }

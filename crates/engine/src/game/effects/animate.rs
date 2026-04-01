@@ -9,8 +9,8 @@ use crate::types::events::{BendingType, GameEvent};
 use crate::types::game_state::GameState;
 
 /// CR 613.1: Animation — apply type/subtype and P/T changes via the layer system.
-/// Uses `TransientContinuousEffect` so the layer system handles ordering (CR 613.3d,
-/// CR 613.3f, CR 613.4) and automatic cleanup at end-of-turn or when source leaves play.
+/// Uses `TransientContinuousEffect` so the layer system handles ordering (CR 613.1d,
+/// CR 613.1f, CR 613.4) and automatic cleanup at end-of-turn or when source leaves play.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -60,7 +60,7 @@ pub fn resolve(
         modifications.push(ContinuousModification::SetToughness { value: t });
     }
 
-    // CR 613.3d / Layer 4: Add types and subtypes.
+    // CR 613.1d / Layer 4: Add types and subtypes.
     for t in types_list {
         let t = t.trim();
         if let Ok(core) = CoreType::from_str(t) {
@@ -79,7 +79,7 @@ pub fn resolve(
         }
     }
 
-    // CR 613.3f / Layer 6: Add keywords.
+    // CR 613.1f / Layer 6: Add keywords.
     for kw in kw_list {
         modifications.push(ContinuousModification::AddKeyword {
             keyword: kw.clone(),

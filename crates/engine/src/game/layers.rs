@@ -196,6 +196,10 @@ pub(crate) fn evaluate_condition(
             .objects
             .get(&source_id)
             .is_some_and(|obj| obj.zone == *zone),
+        // CR 608.2c: Check if the source object matches a type filter (leveler gates).
+        StaticCondition::SourceMatchesFilter { filter } => {
+            crate::game::filter::matches_target_filter(state, source_id, filter, source_id)
+        }
         StaticCondition::None => true,
     }
 }
@@ -253,7 +257,7 @@ pub fn evaluate_layers(state: &mut GameState) {
                 obj.static_definitions = obj.base_static_definitions.clone();
             }
             obj.color = obj.base_color.clone();
-            // CR 613.2: Reset controller to owner; Layer 2 re-applies control-changing effects.
+            // CR 613.1b: Reset controller to owner; Layer 2 re-applies control-changing effects.
             obj.controller = obj.owner;
             // CR 613: Reset damage-from-toughness flag; re-applied by continuous effects.
             obj.assigns_damage_from_toughness = false;
@@ -776,7 +780,7 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
             ContinuousModification::AssignDamageFromToughness => {
                 obj.assigns_damage_from_toughness = true;
             }
-            // CR 613.2: Change controller to the source permanent's controller.
+            // CR 613.1b: Change controller to the source permanent's controller.
             ContinuousModification::ChangeController => {
                 if let Some(new_controller) = source_controller {
                     obj.controller = new_controller;

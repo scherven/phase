@@ -325,7 +325,7 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         // CR 702.178a: Speed condition.
         StaticCondition::HasMaxSpeed => Some(TriggerCondition::HasMaxSpeed),
 
-        // CR 716.6: Class level condition.
+        // CR 716.2a: Class level condition.
         StaticCondition::ClassLevelGE { level } => {
             Some(TriggerCondition::ClassLevelGE { level: *level })
         }
@@ -394,6 +394,7 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         | StaticCondition::ChosenColorIs { .. }
         | StaticCondition::SpeedGE { .. }
         | StaticCondition::HasCounters { .. }
+        | StaticCondition::SourceMatchesFilter { .. }
         | StaticCondition::Unrecognized { .. }
         | StaticCondition::None => None,
     }
@@ -1510,7 +1511,7 @@ fn try_parse_event(
             value(SimpleEvent::BecomesUntapped, tag("untaps")),
             value(SimpleEvent::TurnFaceUp, tag("is turned face up")),
             value(SimpleEvent::Mutates, tag("mutates")),
-            // CR 702.110c: "exploits a creature" — exploit trigger
+            // CR 702.110b: "exploits a creature" — exploit trigger
             value(SimpleEvent::ExploitsCreature, tag("exploits a creature")),
             value(SimpleEvent::Exploits, tag("exploits")),
             // CR 712.14: "transforms" / "transforms into"
@@ -1646,7 +1647,7 @@ fn try_parse_special_trigger_pattern(lower: &str) -> Option<(TriggerMode, Trigge
         return Some(result);
     }
 
-    // CR 120.1b: "a source you control deals noncombat damage to an opponent"
+    // CR 120.2b: "a source you control deals noncombat damage to an opponent"
     for prefix in [
         "whenever a source you control deals noncombat damage to an opponent",
         "when a source you control deals noncombat damage to an opponent",
@@ -2606,7 +2607,7 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         return Some((TriggerMode::DamageReceived, def));
     }
 
-    // CR 120.1b: "whenever an opponent is dealt noncombat damage"
+    // CR 120.2b: "whenever an opponent is dealt noncombat damage"
     if matches!(
         lower,
         "whenever an opponent is dealt noncombat damage"
@@ -5682,7 +5683,7 @@ mod tests {
 
     #[test]
     fn trigger_opponent_dealt_noncombat_damage() {
-        // CR 120.1b: "whenever an opponent is dealt noncombat damage"
+        // CR 120.2b: "whenever an opponent is dealt noncombat damage"
         let def = parse_trigger_line(
             "Whenever an opponent is dealt noncombat damage, you gain 1 life.",
             "Test Card",

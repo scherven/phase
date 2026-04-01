@@ -31,7 +31,7 @@ pub struct AiActionResult {
 /// * `ai_players` — set of AI-controlled player IDs
 /// * `ai_configs` — per-player AI configuration
 ///
-/// CR 116.3 + CR 116.4: AI players receive and pass priority automatically.
+/// CR 116.3: AI players receive and pass priority automatically.
 /// The loop terminates when a non-AI player receives priority or the game ends.
 pub fn run_ai_actions(
     state: &mut GameState,

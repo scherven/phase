@@ -931,7 +931,7 @@ fn check_trigger_constraint(
                 .find(|p| p.id == drawer)
                 .is_some_and(|p| p.cards_drawn_this_turn == *n)
         }
-        // CR 716.5: "When this Class becomes level N" — fire only at the specified level.
+        // CR 716.2a: "When this Class becomes level N" — fire only at the specified level.
         TriggerConstraint::AtClassLevel { level } => state
             .objects
             .get(&obj_id)
@@ -1006,7 +1006,7 @@ pub(crate) fn check_trigger_condition(
             .and_then(|id| state.objects.get(&id))
             .and_then(|obj| obj.case_state.as_ref())
             .is_some_and(|cs| !cs.is_solved && evaluate_solve_condition(state, cs, controller)),
-        // CR 716.6: True when the source Class is at or above the specified level.
+        // CR 716.2a: True when the source Class is at or above the specified level.
         TriggerCondition::ClassLevelGE { level } => source_id
             .and_then(|id| state.objects.get(&id))
             .and_then(|obj| obj.class_level)

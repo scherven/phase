@@ -212,7 +212,7 @@ fn hexproof_prevents_opponent_targeting() {
     );
 }
 
-/// CR 114.6: Shroud prevents targeting by any player.
+/// CR 702.18a: Shroud prevents targeting by any player.
 ///
 /// A creature with shroud cannot be targeted by any player's spells or abilities,
 /// including its controller.

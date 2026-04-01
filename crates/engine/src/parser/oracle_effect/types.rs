@@ -347,7 +347,7 @@ pub(super) enum TargetedImperativeAst {
     /// CR 400.7: Return to the battlefield (zone change, not bounce).
     ReturnToBattlefield {
         target: TargetFilter,
-        /// CR 711.8: "return ... transformed"
+        /// CR 712.2: "return ... transformed" (DFC entering with back face up)
         enter_transformed: bool,
         /// CR 110.2: "under your control" — controller override.
         under_your_control: bool,

@@ -437,7 +437,7 @@ pub fn parse_oracle_text(
             continue;
         }
 
-        // CR 719.4: Case "Solved — {cost}: {effect}" activated ability.
+        // CR 719.3c: Case "Solved — {cost}: {effect}" activated ability.
         if let Some(((), rest)) = nom_on_lower(&line, &lower, |i| {
             value((), alt((tag("solved \u{2014} "), tag("solved -- ")))).parse(i)
         }) {
@@ -450,7 +450,7 @@ pub fn parse_oracle_text(
                 let mut def = parse_effect_chain(&effect_text, AbilityKind::Activated);
                 def.cost = Some(cost);
                 def.description = Some(line.to_string());
-                // CR 719.4: Solved abilities only activate while Case is solved.
+                // CR 719.3c: Solved abilities only activate while Case is solved.
                 def.activation_restrictions
                     .push(ActivationRestriction::IsSolved);
                 if constraints.sorcery_speed() {
@@ -1578,7 +1578,7 @@ const STATIC_CONTAINS_PATTERNS: &[&str] = &[
     "as though it weren't blocked",
     // CR 702.4b: Vigilance-style statics
     "attacking doesn't cause",
-    // CR 702.8d: Flash-granting (filtered by prefix guard below)
+    // CR 702.8a: Flash-granting (filtered by prefix guard below)
     "as though they had flash",
 ];
 
@@ -1639,7 +1639,7 @@ pub(super) fn is_static_pattern(lower: &str) -> bool {
 /// Compound multi-condition patterns for `is_static_pattern`.
 /// Separated to keep the main function focused on table-driven matching.
 fn is_static_compound_pattern(lower: &str) -> bool {
-    // CR 702.8d: Flash-granting statics (exclude self-cast options)
+    // CR 702.8a: Flash-granting statics (exclude self-cast options)
     if lower.contains("as though it had flash") && !lower_starts_with(lower, "you may cast") {
         return true;
     }

@@ -32,7 +32,7 @@ pub enum ProposedEvent {
         /// and other "enters the battlefield under [player]'s control" effects.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         controller_override: Option<PlayerId>,
-        /// CR 711.8: When true, the object enters the battlefield showing its back face.
+        /// CR 712.2: When true, the object enters the battlefield showing its back face.
         /// Set by "return ... transformed" effects.
         #[serde(default)]
         enter_transformed: bool,

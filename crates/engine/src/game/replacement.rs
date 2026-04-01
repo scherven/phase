@@ -1532,7 +1532,7 @@ fn pipeline_loop(
                 Err(ApplyResult::Modified(_)) => unreachable!(),
             }
         } else {
-            // CR 614.4: If multiple replacement effects apply, the affected player chooses which to apply first.
+            // CR 616.1e: If multiple replacement effects apply, the affected player chooses which to apply first.
             // If all are mandatory, auto-apply the first (APNAP order) and continue the loop —
             // the loop will pick up the remaining candidates on the next iteration.
             let any_optional = candidates.iter().any(|rid| {

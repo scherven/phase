@@ -450,7 +450,7 @@ pub fn resolve_ability_chain(
                 | UnlessCost::DiscardCard
                 | UnlessCost::SacrificeAPermanent => unreachable!(),
             };
-            // CR 118.12d: If the cost is {0}, the player is considered to have paid.
+            // CR 118.5: If the cost is {0}, the player is considered to have paid.
             if resolved_cost != ManaCost::zero() {
                 // Strip unless_pay from the pending effect to prevent re-prompting.
                 let mut pending = ability.clone();
