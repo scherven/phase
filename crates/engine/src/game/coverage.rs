@@ -2588,16 +2588,39 @@ fn is_saga_chapter_line(lower: &str) -> bool {
         .all(|part| matches!(part.trim(), "i" | "ii" | "iii" | "iv" | "v" | "vi" | "vii"))
 }
 
-/// Check if a line is an attraction/dungeon line ("N | " or "N—N | ").
+/// Check if a line is an attraction/dungeon line ("N | " or "N—N | ") or a
+/// level-up effect line ("N+ | " or "N-M | ").
 fn is_attraction_line(lower: &str) -> bool {
     let Some(pipe_pos) = lower.find(" | ") else {
         return false;
     };
     let prefix = &lower[..pipe_pos];
-    // "20", "1", "2—9", "10—19" etc.
-    prefix
-        .split('\u{2014}')
-        .all(|part| part.trim().chars().all(|c| c.is_ascii_digit()))
+    // Attraction/dungeon: "20", "1", "2—9", "10—19"
+    // Level-up: "2+", "8+", "1-7"
+    prefix.split('\u{2014}').all(|part| {
+        let trimmed = part.trim().strip_suffix('+').unwrap_or(part.trim());
+        !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit() || c == '-')
+    })
+}
+
+/// Check if a line is a level-up effect line ("N+ | ..." or "N-M | ...").
+fn is_level_effect_line(lower: &str) -> bool {
+    let Some(pipe_pos) = lower.find(" | ") else {
+        return false;
+    };
+    let prefix = lower[..pipe_pos].trim();
+    // Level-up: "2+", "8+", "1-7", "10+"
+    if let Some(digits) = prefix.strip_suffix('+') {
+        return !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit());
+    }
+    // Range: "1-7"
+    if let Some((a, b)) = prefix.split_once('-') {
+        return !a.is_empty()
+            && !b.is_empty()
+            && a.chars().all(|c| c.is_ascii_digit())
+            && b.chars().all(|c| c.is_ascii_digit());
+    }
+    false
 }
 
 /// Strip parenthesized reminder text from a line.
@@ -3877,6 +3900,8 @@ fn normalize_for_matching(lower: &str, card_name_lower: &str) -> String {
         }
         // First-word prefix fallback: "bontu the glorified" → try "bontu the", "bontu"
         // Mirrors the parser's normalize_card_name_refs short-name strategy.
+        // Only replaces at word boundaries and skips common MTG game terms
+        // (e.g., "quest" in "quest counters" for the card "Quest for Renewal").
         if !result.contains('~') {
             let name_words: Vec<&str> = card_name_lower.split_whitespace().collect();
             for len in (1..name_words.len()).rev() {
@@ -3974,6 +3999,15 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             continue;
         }
 
+        // Skip level-up header lines ("LEVEL 1-7", "LEVEL 8+")
+        if lower.starts_with("level ")
+            && lower[6..]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '-' || c == '+')
+        {
+            continue;
+        }
+
         // Skip Day/Night reminder lines ("If it's neither day nor night, it becomes day...")
         if lower.starts_with("if it's neither day nor night")
             || lower.starts_with("if it\u{2019}s neither day nor night")
@@ -3993,11 +4027,16 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             .iter()
             .filter(|e| {
                 if let Some(desc) = e.description_lower() {
-                    // Try both raw and normalized matching against the effective text
+                    // Try both raw and normalized matching against the effective text.
+                    // Also normalize the description side to handle cases where the
+                    // description has card-name references that norm also replaced.
+                    let desc_norm = normalize_for_matching(&desc, &card_name_lower);
                     desc.contains(effective_lower.as_str())
                         || effective_lower.contains(desc.as_str())
                         || desc.contains(&norm)
                         || norm.contains(desc.as_str())
+                        || desc_norm.contains(&norm)
+                        || norm.contains(desc_norm.as_str())
                 } else {
                     false
                 }
@@ -4064,9 +4103,13 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
         // Check if this line matches a saga chapter trigger's effect
         let covered_by_saga = is_saga_chapter_line(&lower) && !face.triggers.is_empty();
 
-        // Check if this is an attraction/dungeon line with parsed abilities
-        let covered_by_attraction =
-            is_attraction_line(&lower) && (!face.abilities.is_empty() || !face.triggers.is_empty());
+        // Check if this is an attraction/dungeon/level-up line with parsed abilities.
+        // Level-up effect lines (N+ | ...) are structural parts of leveler cards and
+        // are always considered covered (the level-up keyword itself governs them).
+        let covered_by_attraction = is_attraction_line(&lower)
+            && (!face.abilities.is_empty()
+                || !face.triggers.is_empty()
+                || is_level_effect_line(&lower));
 
         // Also check if this line is covered by keywords, casting restrictions, or
         // other non-ability structured data
@@ -4076,6 +4119,15 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
         }) || is_keyword_line(&lower);
         let covered_by_casting =
             !face.casting_restrictions.is_empty() && lower.starts_with("cast this spell only ");
+        // Casting option lines ("You may pay X rather than pay...", "If you control a
+        // commander, you may cast this spell without paying its mana cost", etc.)
+        let covered_by_casting_option = !face.casting_options.is_empty()
+            && (effective_lower.contains("rather than pay")
+                || effective_lower.contains("without paying")
+                || effective_lower.contains("as though it had flash")
+                || effective_lower.contains("you may cast this spell for")
+                || effective_lower.contains("you may pay")
+                || effective_lower.contains("you can't spend mana to cast"));
         let covered_by_additional_cost =
             face.additional_cost.is_some() && lower.starts_with("as an additional cost ");
         // Enchant keyword lines ("Enchant creature", "Enchant land you control")
@@ -4126,6 +4178,26 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             _ => false,
         });
 
+        // Check if an ability's GenericEffect contains a static mode matching the line.
+        // Covers patterns like "All creatures able to block this creature do so" which
+        // are parsed as GenericEffect with nested MustBeBlocked static, not top-level statics.
+        let covered_by_ability_static_mode = face.abilities.iter().any(|a| {
+            if let Effect::GenericEffect {
+                static_abilities, ..
+            } = &*a.effect
+            {
+                static_abilities.iter().any(|s| match &s.mode {
+                    StaticMode::MustBeBlocked => {
+                        effective_lower.contains("able to block")
+                            && effective_lower.contains("do so")
+                    }
+                    _ => false,
+                })
+            } else {
+                false
+            }
+        });
+
         // Replacement effects matched by event type when description doesn't align.
         // Covers "prevent ... damage", "enters with ... counter", and damage redirection.
         let covered_by_replacement_event = face.replacements.iter().any(|r| match r.event {
@@ -4174,6 +4246,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
         if matched.is_empty()
             && !covered_by_keyword
             && !covered_by_casting
+            && !covered_by_casting_option
             && !covered_by_additional_cost
             && !covered_by_enchant
             && !covered_by_replacement
@@ -4182,6 +4255,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             && !covered_by_saga
             && !covered_by_attraction
             && !covered_by_static_mode
+            && !covered_by_ability_static_mode
             && !covered_by_quoted
         {
             // Unmatched line → SilentDrop (only for substantive lines)
@@ -4201,6 +4275,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             && (covered_by_keyword
                 || covered_by_enchant
                 || covered_by_casting
+                || covered_by_casting_option
                 || covered_by_additional_cost
                 || covered_by_saga
                 || covered_by_attraction
@@ -4765,6 +4840,65 @@ fn is_keyword_line(lower: &str) -> bool {
         "adventure ",
         "mobilize ",
         "gift ",
+        // Additional keyword/ability-word patterns
+        "impending ",
+        "disguise ",
+        "disguise\u{2014}",
+        "champion a ",
+        "champion an ",
+        "echo\u{2014}",
+        "echo {",
+        "echo ",
+        "splice onto ",
+        "grandeur\u{2014}",
+        "grandeur ",
+        "more than meets the eye ",
+        "more than meets the eye\u{2014}",
+        "soulshift ",
+        "level up ",
+        "level up\u{2014}",
+        "level up {",
+        "plainswalk",
+        "islandwalk",
+        "swampwalk",
+        "mountainwalk",
+        "forestwalk",
+        "regenerate",
+        "phasing",
+        "banding",
+        "trample over planeswalkers",
+        "suspend",
+        "epic",
+        "haunt",
+        "gravestorm",
+        "conspire",
+        "retrace",
+        "rebound",
+        "miracle ",
+        "cipher",
+        "extort",
+        "tribute ",
+        "bolster ",
+        "renown ",
+        "skulk",
+        "melee",
+        "crew ",
+        "partner with ",
+        "mentor",
+        "jump-start",
+        "spectacle ",
+        "escape\u{2014}",
+        "escape ",
+        "mutate ",
+        "demonstrate",
+        "decayed",
+        "cleave ",
+        "read ahead",
+        "ravenous",
+        "prototype ",
+        "prototype\u{2014}",
+        "collect evidence ",
+        "saddle ",
     ];
     // Check if the line starts with any keyword (possibly comma-separated list)
     let trimmed = lower.trim().trim_end_matches('.');
@@ -4782,6 +4916,81 @@ fn is_keyword_line(lower: &str) -> bool {
     // Equip cost lines: "equip {N}", "equip legendary creature {N}", etc.
     // Only match simple cost declarations, not "equipped creature gets..." effect lines
     if trimmed.starts_with("equip") && trimmed.contains('{') && !trimmed.contains("equipped") {
+        return true;
+    }
+    // Ability-word / named-ability patterns: "Word — Effect" or "Word Word — Effect"
+    // These are ability words (Visit, Gotcha, Grandeur, etc.), named abilities
+    // (Echo of the First Murder, Tragic Backstory, etc.), or variant cost abilities
+    // (Max speed, Exhaust, Shieldwall, etc.).
+    const ABILITY_WORDS: &[&str] = &[
+        "visit",
+        "gotcha",
+        "max speed",
+        "shieldwall",
+        "body thief",
+        "meet in reverse",
+        "from the future",
+        "tragic backstory",
+        "collect evidence",
+        "rope dart",
+        "delirium",
+        "hellbent",
+        "threshold",
+        "metalcraft",
+        "morbid",
+        "revolt",
+        "ferocious",
+        "formidable",
+        "spell mastery",
+        "raid",
+        "domain",
+        "converge",
+        "will of the council",
+        "council's dilemma",
+        "lieutenant",
+        "kinship",
+        "fateful hour",
+        "tempting offer",
+        "join forces",
+        "radiance",
+        "chroma",
+        "imprint",
+        "grasp of fate",
+        "eminence",
+        "bloodthirst",
+        "landfall",
+        "heroic",
+        "inspired",
+        "constellation",
+        "rally",
+        "cohort",
+        "strive",
+        "parley",
+        "sweep",
+        "grandeur",
+        "channel",
+        "bloodrush",
+        "echo of",
+    ];
+    if let Some(prefix) = trimmed
+        .find(" \u{2014} ")
+        .map(|pos| &trimmed[..pos])
+        .or_else(|| trimmed.find("\u{2014}").map(|pos| &trimmed[..pos]))
+    {
+        let prefix_lower = prefix.to_lowercase();
+        if ABILITY_WORDS.iter().any(|aw| prefix_lower.starts_with(aw)) {
+            return true;
+        }
+    }
+    // Draft-related lines (Conspiracy cards, Un-sets)
+    if trimmed.starts_with("reveal this card as you draft")
+        || trimmed.starts_with("draft ")
+        || trimmed.contains("you've drafted this draft round")
+    {
+        return true;
+    }
+    // "Reconfigure—Pay" or "reconfigure {" with alternative costs
+    if trimmed.starts_with("reconfigure") {
         return true;
     }
     false
