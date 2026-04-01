@@ -13,3 +13,8 @@ rules-audit = "run --profile tool --bin rules-audit --features audit --"
 semantic-audit = "run --profile tool --features cli --bin oracle-gen -- semantic-audit"
 scrape-feeds = "run --release -p feed-scraper --"
 tune-ai = "run --release --features tune --bin ai-tune --"
+
+[env]
+# 16 MB stack for test threads — prevents stack overflow when Debug formatting
+# deeply nested recursive types (Effect ↔ AbilityDefinition mutual recursion).
+RUST_MIN_STACK = "16777216"

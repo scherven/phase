@@ -28,10 +28,6 @@ publish = false
 opt-level = 0
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
-codegen-backend = "cranelift"
-
-[profile.dev.build-override]
-codegen-backend = "llvm"
 
 [profile.wasm-dev]
 inherits = "dev"

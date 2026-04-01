@@ -1807,7 +1807,7 @@ pub enum DamageSource {
 
 /// The typed effect enum. Each variant corresponds to an effect handler.
 /// Zero HashMap<String, String> fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, strum::IntoStaticStr)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, strum::IntoStaticStr)]
 #[serde(tag = "type")]
 pub enum Effect {
     /// CR 702.179a: A player starts their engines, setting speed to 1 if they have no speed.
@@ -2698,6 +2698,28 @@ impl TargetFilter {
     }
 }
 
+impl fmt::Debug for Effect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // JSON serialization instead of derived Debug — avoids stack overflow from
+        // Effect ↔ AbilityDefinition mutual recursion and produces structured output
+        // optimized for LLM consumption. Uses Serialize (not Debug) internally,
+        // completely breaking the recursive Debug chain.
+        // Respects the alternate flag: `{:#?}` → pretty JSON, `{:?}` → compact JSON.
+        let json = if f.alternate() {
+            serde_json::to_string_pretty(self)
+        } else {
+            serde_json::to_string(self)
+        };
+        match json {
+            Ok(s) => f.write_str(&s),
+            Err(_) => {
+                let variant: &'static str = self.into();
+                write!(f, "Effect::{variant} {{ .. }}")
+            }
+        }
+    }
+}
+
 impl Effect {
     /// CR 115.1: Returns the target filter for effects that have a player-selectable
     /// `target` field. Returns `None` for effects with no target field, or whose
@@ -3397,69 +3419,23 @@ pub struct AbilityDefinition {
     pub player_scope: Option<PlayerFilter>,
 }
 
-// Thread-local recursion depth counter for AbilityDefinition's Debug impl.
-// Prevents stack overflow when formatting deeply nested ability trees (Effect ↔
-// AbilityDefinition recursion). At depth > 2, recursive children are summarized
-// as `AbilityDefinition { effect: <VariantName>, .. }` instead of fully expanded.
-std::thread_local! {
-    static ABILITY_DEBUG_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
-const ABILITY_DEBUG_MAX_DEPTH: u32 = 2;
-
 impl fmt::Debug for AbilityDefinition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let depth = ABILITY_DEBUG_DEPTH.with(|d| {
-            let current = d.get();
-            d.set(current + 1);
-            current
-        });
-
-        let result = if depth >= ABILITY_DEBUG_MAX_DEPTH {
-            // Summarize: effect variant name + key flags, no recursive expansion.
-            let variant: &'static str = self.effect.as_ref().into();
-            write!(f, "AbilityDefinition {{ effect: {variant}")?;
-            if self.sub_ability.is_some() {
-                write!(f, ", sub_ability: Some(..)")?;
-            }
-            if self.else_ability.is_some() {
-                write!(f, ", else_ability: Some(..)")?;
-            }
-            if self.condition.is_some() {
-                write!(f, ", condition: Some(..)")?;
-            }
-            write!(f, ", .. }}")
+        // JSON serialization instead of field-by-field Debug — avoids stack overflow
+        // from Effect ↔ AbilityDefinition mutual recursion. Uses Serialize (not Debug)
+        // internally, producing structured output optimized for LLM consumption.
+        let json = if f.alternate() {
+            serde_json::to_string_pretty(self)
         } else {
-            // Full debug output — delegate to a debug_struct for all fields
-            f.debug_struct("AbilityDefinition")
-                .field("kind", &self.kind)
-                .field("effect", &self.effect)
-                .field("cost", &self.cost)
-                .field("sub_ability", &self.sub_ability)
-                .field("else_ability", &self.else_ability)
-                .field("duration", &self.duration)
-                .field("description", &self.description)
-                .field("target_prompt", &self.target_prompt)
-                .field("sorcery_speed", &self.sorcery_speed)
-                .field("activation_restrictions", &self.activation_restrictions)
-                .field("activation_zone", &self.activation_zone)
-                .field("condition", &self.condition)
-                .field("optional_targeting", &self.optional_targeting)
-                .field("optional", &self.optional)
-                .field("optional_for", &self.optional_for)
-                .field("multi_target", &self.multi_target)
-                .field("distribute", &self.distribute)
-                .field("modal", &self.modal)
-                .field("mode_abilities", &self.mode_abilities)
-                .field("repeat_for", &self.repeat_for)
-                .field("cost_reduction", &self.cost_reduction)
-                .field("forward_result", &self.forward_result)
-                .field("player_scope", &self.player_scope)
-                .finish()
+            serde_json::to_string(self)
         };
-
-        ABILITY_DEBUG_DEPTH.with(|d| d.set(depth));
-        result
+        match json {
+            Ok(s) => f.write_str(&s),
+            Err(_) => {
+                let variant: &'static str = self.effect.as_ref().into();
+                write!(f, "AbilityDefinition {{ effect: {variant}, .. }}")
+            }
+        }
     }
 }
 
