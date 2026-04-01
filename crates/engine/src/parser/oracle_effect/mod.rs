@@ -1145,17 +1145,35 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
     let base_tp = base_tp.trim_end();
     let for_each_clause = &tp.lower[for_each_idx + "for each ".len()..];
 
-    // Parse the "for each" clause into a QuantityRef
-    let qty = parse_for_each_clause(for_each_clause)?;
+    // Parse the "for each" clause into a QuantityRef.
+    // Strip duration from the for-each clause text first — handles unusual ordering
+    // like "for each card in your hand until end of turn" (Ral's Staticaster).
+    let (for_each_no_duration, for_each_duration) = strip_trailing_duration(for_each_clause);
+    let qty = parse_for_each_clause(for_each_no_duration.trim_end_matches('.'))?;
     let quantity = QuantityExpr::Ref { qty };
+
+    // Strip trailing duration from the base text (e.g., "gets +2/+0 until end of turn"
+    // → "gets +2/+0" with duration=UntilEndOfTurn). Duration often appears between
+    // the base effect and the "for each" clause.
+    let (base_no_duration, base_duration) = strip_trailing_duration(base_tp.original);
+    let duration = base_duration.or(for_each_duration);
+    let base_no_duration_lower = base_no_duration.to_lowercase();
 
     // Delegate to parse_numeric_imperative_ast — it already handles draw, gain/lose life,
     // pump, scry, surveil, mill. Replace fixed counts with the for-each quantity, then
     // thread subject through for effects that carry a target.
-    if let Some(ast) = imperative::parse_numeric_imperative_ast(base_tp.original, base_tp.lower) {
+    if let Some(ast) =
+        imperative::parse_numeric_imperative_ast(base_no_duration, &base_no_duration_lower)
+    {
         let effect = imperative::lower_numeric_imperative_ast(ast.with_for_each_quantity(quantity));
-        let effect = thread_for_each_subject(effect, base_tp.original);
-        return Some(parsed_clause(effect));
+        let effect = thread_for_each_subject(effect, base_no_duration);
+        return Some(ParsedEffectClause {
+            effect,
+            duration,
+            sub_ability: None,
+            distribute: None,
+            multi_target: None,
+        });
     }
 
     // CR 120.1: "[subject] deals N damage to [target] for each X" → DealDamage.
@@ -5587,7 +5605,9 @@ fn parse_pump_clause(predicate: &str) -> Option<(PtValue, PtValue, Option<Durati
     let predicate_lower = predicate.to_lowercase();
     let predicate_tp = TextPair::new(predicate, &predicate_lower);
     let (without_where, where_x_expression) = strip_trailing_where_x(predicate_tp);
-    let (without_duration, duration) = strip_trailing_duration(without_where.original);
+    // Strip "for each [clause]" suffix before duration extraction.
+    let (without_for_each, for_each_qty) = strip_trailing_for_each_clause(without_where.original);
+    let (without_duration, duration) = strip_trailing_duration(without_for_each);
     let lower = without_duration.to_lowercase();
 
     let after = nom_on_lower(without_duration, &lower, |i| {
@@ -5611,7 +5631,51 @@ fn parse_pump_clause(predicate: &str) -> Option<(PtValue, PtValue, Option<Durati
     let power = apply_where_x_expression(power, where_x_expression.as_deref());
     let toughness = apply_where_x_expression(toughness, where_x_expression.as_deref());
 
+    // CR 613.4c: Compose with "for each" quantity to produce dynamic PtValue.
+    let (power, toughness) = if let Some(qty) = for_each_qty {
+        let quantity = QuantityExpr::Ref { qty };
+        (
+            compose_pt_with_for_each(power, &quantity),
+            compose_pt_with_for_each(toughness, &quantity),
+        )
+    } else {
+        (power, toughness)
+    };
+
     Some((power, toughness, duration))
+}
+
+/// Strip a trailing "for each [clause]" from pump text, returning the remaining text
+/// and the parsed QuantityRef (if any). Handles both "until end of turn for each X"
+/// (duration already stripped) and bare "for each X".
+fn strip_trailing_for_each_clause(text: &str) -> (&str, Option<QuantityRef>) {
+    let lower = text.to_lowercase();
+    if let Some(pos) = lower.rfind(" for each ") {
+        let clause_text = lower[pos + " for each ".len()..].trim_end_matches('.');
+        if let Some(qty) = parse_for_each_clause(clause_text) {
+            return (text[..pos].trim(), Some(qty));
+        }
+    }
+    (text, None)
+}
+
+/// CR 613.4c: Compose a fixed P/T value with a "for each" quantity.
+/// +1 × quantity → Quantity(quantity), +N × quantity → Quantity(Multiply { factor: N }),
+/// +0 stays Fixed(0), variable values stay unchanged.
+fn compose_pt_with_for_each(pt: PtValue, quantity: &QuantityExpr) -> PtValue {
+    match pt {
+        PtValue::Fixed(0) => PtValue::Fixed(0),
+        PtValue::Fixed(1) => PtValue::Quantity(quantity.clone()),
+        PtValue::Fixed(-1) => PtValue::Quantity(QuantityExpr::Multiply {
+            factor: -1,
+            inner: Box::new(quantity.clone()),
+        }),
+        PtValue::Fixed(n) => PtValue::Quantity(QuantityExpr::Multiply {
+            factor: n,
+            inner: Box::new(quantity.clone()),
+        }),
+        other => other, // Variable/Quantity values not composed
+    }
 }
 
 pub(crate) fn strip_trailing_where_x<'a>(tp: TextPair<'a>) -> (TextPair<'a>, Option<String>) {
@@ -10134,5 +10198,147 @@ mod tests {
             "expected PumpAll with trigger context, got {:?}",
             def.effect
         );
+    }
+
+    #[test]
+    fn duration_preserved_with_where_x_suffix() {
+        // Craterhoof Behemoth pattern: "creatures you control gain trample and get +X/+X
+        // until end of turn, where X is the number of creatures you control"
+        let def = parse_effect_chain(
+            "creatures you control gain trample and get +X/+X until end of turn, where X is the number of creatures you control",
+            AbilityKind::Spell,
+        );
+        assert_eq!(
+            def.duration,
+            Some(Duration::UntilEndOfTurn),
+            "duration should be UntilEndOfTurn, got {:?}",
+            def.duration
+        );
+    }
+
+    #[test]
+    fn duration_preserved_with_for_each_suffix() {
+        // Goblin Piledriver pattern: "gets +2/+0 until end of turn for each other attacking Goblin"
+        let def = parse_effect_chain(
+            "~ gets +2/+0 until end of turn for each other attacking Goblin",
+            AbilityKind::Spell,
+        );
+        assert_eq!(
+            def.duration,
+            Some(Duration::UntilEndOfTurn),
+            "duration should be UntilEndOfTurn, got {:?}",
+            def.duration
+        );
+    }
+
+    #[test]
+    fn duration_preserved_creatures_you_control_for_each() {
+        // "Creatures you control get +1/+0 until end of turn for each creature you control"
+        let def = parse_effect_chain(
+            "creatures you control get +1/+1 until end of turn for each land you control",
+            AbilityKind::Spell,
+        );
+        assert_eq!(
+            def.duration,
+            Some(Duration::UntilEndOfTurn),
+            "duration should be UntilEndOfTurn, got {:?}",
+            def.duration
+        );
+    }
+
+    #[test]
+    fn duration_preserved_for_each_before_duration() {
+        // Ral's Staticaster: unusual ordering with "for each" before "until end of turn"
+        let def = parse_effect_chain(
+            "~ gets +1/+0 for each card in your hand until end of turn",
+            AbilityKind::Spell,
+        );
+        assert_eq!(
+            def.duration,
+            Some(Duration::UntilEndOfTurn),
+            "duration should be UntilEndOfTurn when 'for each' precedes duration, got {:?}",
+            def.duration
+        );
+    }
+
+    #[test]
+    fn for_each_pump_produces_dynamic_pt_via_pump_clause() {
+        // "gets +1/+1 for each creature you control" should produce Pump with Quantity PtValue
+        // via parse_pump_clause, not fixed AddPower/AddToughness via modifications.
+        let def = parse_effect_chain(
+            "~ gets +1/+1 for each creature you control",
+            AbilityKind::Spell,
+        );
+        match &*def.effect {
+            Effect::Pump {
+                power, toughness, ..
+            } => {
+                assert!(
+                    matches!(power, PtValue::Quantity(..)),
+                    "power should be Quantity, got {:?}",
+                    power
+                );
+                assert!(
+                    matches!(toughness, PtValue::Quantity(..)),
+                    "toughness should be Quantity, got {:?}",
+                    toughness
+                );
+            }
+            other => panic!("expected Pump, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn for_each_pump_asymmetric_plus2_plus0() {
+        // "gets +2/+0 for each attacking Goblin" → power should be Multiply(2, Ref)
+        let def = parse_effect_chain("~ gets +2/+0 for each attacking Goblin", AbilityKind::Spell);
+        match &*def.effect {
+            Effect::Pump {
+                power, toughness, ..
+            } => {
+                assert!(
+                    matches!(
+                        power,
+                        PtValue::Quantity(QuantityExpr::Multiply { factor: 2, .. })
+                    ),
+                    "power should be Multiply(2, ...), got {:?}",
+                    power
+                );
+                assert_eq!(
+                    *toughness,
+                    PtValue::Fixed(0),
+                    "toughness should stay Fixed(0)"
+                );
+            }
+            other => panic!("expected Pump, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn for_each_pump_with_duration_and_quantity() {
+        // "gets +1/+1 until end of turn for each creature you control"
+        // should have both duration AND dynamic PtValue
+        let def = parse_effect_chain(
+            "~ gets +1/+1 until end of turn for each creature you control",
+            AbilityKind::Spell,
+        );
+        assert_eq!(def.duration, Some(Duration::UntilEndOfTurn));
+        match &*def.effect {
+            Effect::Pump {
+                power, toughness, ..
+            } => {
+                assert!(
+                    matches!(power, PtValue::Quantity(..)),
+                    "power should be Quantity, got {:?}",
+                    power
+                );
+                assert!(
+                    matches!(toughness, PtValue::Quantity(..)),
+                    "toughness should be Quantity, got {:?}",
+                    toughness
+                );
+            }
+            other => panic!("expected Pump, got {:?}", other),
+        }
     }
 }

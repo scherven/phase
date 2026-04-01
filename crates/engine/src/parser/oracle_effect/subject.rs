@@ -574,8 +574,20 @@ fn build_continuous_clause(
         return Some(clause);
     }
 
-    let (predicate, duration) = super::strip_trailing_duration(&normalized);
-    let modifications = parse_continuous_modifications(predicate);
+    // Strip "where X is..." and "for each..." suffixes before extracting duration,
+    // so "until end of turn" is found even when followed by these clauses.
+    // The full normalized text is still passed to parse_continuous_modifications
+    // which handles "where X is" and "for each" internally.
+    let norm_lower = normalized.to_lowercase();
+    let norm_tp = TextPair::new(&normalized, &norm_lower);
+    let (without_where, _) = super::strip_trailing_where_x(norm_tp);
+    let duration_source = strip_for_each_for_duration(without_where.original);
+    let (_, duration) = super::strip_trailing_duration(duration_source);
+
+    let (predicate_text, fallback_duration) = super::strip_trailing_duration(&normalized);
+    let duration = duration.or(fallback_duration);
+
+    let modifications = parse_continuous_modifications(predicate_text);
     if modifications.is_empty() {
         return None;
     }
@@ -596,7 +608,7 @@ fn build_continuous_clause(
             static_abilities: vec![StaticDefinition::continuous()
                 .affected(application.affected)
                 .modifications(modifications)
-                .description(predicate.to_string())],
+                .description(predicate_text.to_string())],
             duration: duration.clone(),
             target: application.target,
         },
@@ -605,6 +617,21 @@ fn build_continuous_clause(
         distribute: None,
         multi_target: None,
     })
+}
+
+/// Strip "for each [clause]" suffix from text so that duration extraction can find
+/// "until end of turn" that precedes it. Returns the text up to "for each" (or the
+/// original text if "for each" is not present). Only used for duration extraction —
+/// the full text is still passed to `parse_continuous_modifications` which handles
+/// "for each" clauses internally.
+fn strip_for_each_for_duration(text: &str) -> &str {
+    let lower = text.to_lowercase();
+    // Find " for each " — must have space before to avoid matching "before each"
+    if let Some(pos) = lower.find(" for each ") {
+        text[..pos].trim()
+    } else {
+        text
+    }
 }
 
 fn build_become_clause(
