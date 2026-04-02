@@ -3,8 +3,9 @@ use std::borrow::Cow;
 use crate::game::filter;
 use crate::game::speed::has_max_speed;
 use crate::types::ability::{
-    AbilityCondition, AbilityKind, Effect, EffectError, FilterProp, PlayerFilter, QuantityExpr,
-    QuantityRef, ResolvedAbility, SharedQuality, TargetFilter, TargetRef, TypeFilter, UnlessCost,
+    AbilityCondition, AbilityKind, ControllerRef, Effect, EffectError, FilterProp, PlayerFilter,
+    QuantityExpr, QuantityRef, ResolvedAbility, SharedQuality, TargetFilter, TargetRef, TypeFilter,
+    UnlessCost,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
@@ -373,6 +374,33 @@ pub(crate) fn resolved_object_filter(
     target_filter: &TargetFilter,
 ) -> TargetFilter {
     filter::normalize_contextual_filter(target_filter, &ability.targets)
+}
+
+fn filter_uses_relative_controller_you(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => tf.controller == Some(ControllerRef::You),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().any(filter_uses_relative_controller_you)
+        }
+        TargetFilter::Not { filter } => filter_uses_relative_controller_you(filter),
+        _ => false,
+    }
+}
+
+pub(crate) fn controller_for_relative_filter(
+    ability: &ResolvedAbility,
+    target_filter: &TargetFilter,
+) -> PlayerId {
+    if filter_uses_relative_controller_you(target_filter)
+        && ability
+            .targets
+            .iter()
+            .any(|target| matches!(target, TargetRef::Player(_)))
+    {
+        ability.target_player()
+    } else {
+        ability.controller
+    }
 }
 
 /// CR 603.7c: Extract an event-context target filter from an effect, if present.

@@ -193,6 +193,8 @@ pub fn resolve(
         Effect::ChangeZone { target, .. } => target,
         _ => &TargetFilter::Any,
     };
+    let filter_controller =
+        crate::game::effects::controller_for_relative_filter(ability, target_filter);
 
     // SelfRef with no explicit targets: process the source object through the zone-change pipeline
     // (e.g., "shuffle ~ into its owner's library")
@@ -208,29 +210,34 @@ pub fn resolve(
     } else {
         &self_ref_targets
     };
+    let targeted_objects: Vec<ObjectId> = effective_targets
+        .iter()
+        .filter_map(|target| match target {
+            TargetRef::Object(obj_id) => Some(*obj_id),
+            TargetRef::Player(_) => None,
+        })
+        .collect();
 
-    if effective_targets.is_empty() && origin == Some(Zone::Hand) {
+    if targeted_objects.is_empty() {
+        let scan_zone = origin
+            .or_else(|| target_filter.extract_in_zone())
+            .unwrap_or(Zone::Battlefield);
         let eligible: Vec<ObjectId> = state
-            .players
+            .objects
             .iter()
-            .find(|p| p.id == ability.controller)
-            .map(|player| {
-                player
-                    .hand
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        crate::game::filter::matches_target_filter_controlled(
-                            state,
-                            *id,
-                            target_filter,
-                            ability.source_id,
-                            ability.controller,
-                        )
-                    })
-                    .collect()
+            .filter(|(id, obj)| {
+                obj.zone == scan_zone
+                    && !obj.is_emblem
+                    && crate::game::filter::matches_target_filter_controlled(
+                        state,
+                        **id,
+                        target_filter,
+                        ability.source_id,
+                        filter_controller,
+                    )
             })
-            .unwrap_or_default();
+            .map(|(id, _)| *id)
+            .collect();
 
         if eligible.is_empty() {
             if !up_to {
@@ -252,7 +259,7 @@ pub fn resolve(
             match execute_zone_move(
                 state,
                 eligible[0],
-                Zone::Hand,
+                scan_zone,
                 dest_zone,
                 ability.source_id,
                 ability.duration.as_ref(),
@@ -292,13 +299,13 @@ pub fn resolve(
         }
 
         state.waiting_for = WaitingFor::EffectZoneChoice {
-            player: ability.controller,
+            player: filter_controller,
             cards: eligible,
             count: 1,
             up_to,
             source_id: ability.source_id,
             effect_kind: EffectKind::ChangeZone,
-            zone: Zone::Hand,
+            zone: scan_zone,
             destination: Some(dest_zone),
             enter_tapped: effect_enter_tapped,
             enter_transformed: effect_enter_transformed,
@@ -311,71 +318,69 @@ pub fn resolve(
         return Ok(());
     }
 
-    for target in effective_targets {
-        if let TargetRef::Object(obj_id) = target {
-            // CR 114.5: Emblems cannot be moved between zones
-            if state.objects.get(obj_id).is_some_and(|o| o.is_emblem) {
+    for obj_id in targeted_objects {
+        // CR 114.5: Emblems cannot be moved between zones
+        if state.objects.get(&obj_id).is_some_and(|o| o.is_emblem) {
+            continue;
+        }
+
+        let from_zone = state
+            .objects
+            .get(&obj_id)
+            .map(|o| o.zone)
+            .unwrap_or(Zone::Battlefield);
+
+        // CR 400.7: If an origin zone is specified and the object is no longer
+        // in that zone, the zone change is impossible — skip this object.
+        // Prevents delayed triggers from moving objects that have already left
+        // the expected zone (e.g., Warp creature that died before end step).
+        if let Some(expected_origin) = origin {
+            if from_zone != expected_origin {
                 continue;
             }
+        }
 
-            let from_zone = state
-                .objects
-                .get(obj_id)
-                .map(|o| o.zone)
-                .unwrap_or(Zone::Battlefield);
+        // CR 400.7: When owner_library is true, route to the object's owner's library.
+        // The actual owner routing is handled by zones::move_to_zone which uses
+        // the object's owner for player-owned zones.
+        let effective_dest = dest_zone;
+        let _ = owner_library; // routing handled by move_to_zone
 
-            // CR 400.7: If an origin zone is specified and the object is no longer
-            // in that zone, the zone change is impossible — skip this object.
-            // Prevents delayed triggers from moving objects that have already left
-            // the expected zone (e.g., Warp creature that died before end step).
-            if let Some(expected_origin) = origin {
-                if from_zone != expected_origin {
-                    continue;
+        // CR 110.2a: When under_your_control is true, pass the controller override
+        // into the zone-move pipeline so replacement effects see the correct controller.
+        let ctrl_override = if under_your_control {
+            Some(ability.controller)
+        } else {
+            None
+        };
+
+        match execute_zone_move(
+            state,
+            obj_id,
+            from_zone,
+            effective_dest,
+            ability.source_id,
+            ability.duration.as_ref(),
+            effect_enter_transformed,
+            effect_enter_tapped,
+            ctrl_override,
+            events,
+        ) {
+            ZoneMoveResult::Done => {
+                // CR 508.4: Place on battlefield attacking (not declared as attacker).
+                if effect_enters_attacking && effective_dest == Zone::Battlefield {
+                    crate::game::combat::enter_attacking(
+                        state,
+                        obj_id,
+                        ability.source_id,
+                        ability.controller,
+                    );
                 }
             }
-
-            // CR 400.7: When owner_library is true, route to the object's owner's library.
-            // The actual owner routing is handled by zones::move_to_zone which uses
-            // the object's owner for player-owned zones.
-            let effective_dest = dest_zone;
-            let _ = owner_library; // routing handled by move_to_zone
-
-            // CR 110.2a: When under_your_control is true, pass the controller override
-            // into the zone-move pipeline so replacement effects see the correct controller.
-            let ctrl_override = if under_your_control {
-                Some(ability.controller)
-            } else {
-                None
-            };
-
-            match execute_zone_move(
-                state,
-                *obj_id,
-                from_zone,
-                effective_dest,
-                ability.source_id,
-                ability.duration.as_ref(),
-                effect_enter_transformed,
-                effect_enter_tapped,
-                ctrl_override,
-                events,
-            ) {
-                ZoneMoveResult::Done => {
-                    // CR 508.4: Place on battlefield attacking (not declared as attacker).
-                    if effect_enters_attacking && effective_dest == Zone::Battlefield {
-                        crate::game::combat::enter_attacking(
-                            state,
-                            *obj_id,
-                            ability.source_id,
-                            ability.controller,
-                        );
-                    }
-                }
-                ZoneMoveResult::NeedsChoice(player) => {
-                    state.waiting_for =
-                        crate::game::replacement::replacement_choice_waiting_for(player, state);
-                    return Ok(());
-                }
+            ZoneMoveResult::NeedsChoice(player) => {
+                state.waiting_for =
+                    crate::game::replacement::replacement_choice_waiting_for(player, state);
+                return Ok(());
             }
         }
     }
@@ -416,6 +421,8 @@ pub fn resolve_all(
     } else {
         crate::game::effects::resolved_object_filter(ability, &target_filter)
     };
+    let filter_controller =
+        crate::game::effects::controller_for_relative_filter(ability, &effective_filter);
 
     // Collect matching object IDs from the origin zone
     let matching: Vec<_> = state
@@ -428,7 +435,7 @@ pub fn resolve_all(
                     id,
                     &effective_filter,
                     ability.source_id,
-                    ability.controller,
+                    filter_controller,
                 )
         })
         .map(|(id, _)| *id)
@@ -1278,5 +1285,93 @@ mod tests {
         resolve(&mut state, &ability, &mut events).unwrap();
 
         assert!(state.cost_payment_failed_flag);
+    }
+
+    #[test]
+    fn relative_controller_filter_uses_targeted_player_for_change_zone_effects() {
+        let mut state = GameState::new_two_player(42);
+        let battlefield_creature = create_object(
+            &mut state,
+            CardId(20),
+            PlayerId(1),
+            "Opponent Creature".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&battlefield_creature)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let graveyard_card = create_object(
+            &mut state,
+            CardId(21),
+            PlayerId(1),
+            "Opponent Graveyard Card".to_string(),
+            Zone::Graveyard,
+        );
+
+        let ability = ResolvedAbility::new(
+            Effect::TargetOnly {
+                target: TargetFilter::Typed(
+                    TypedFilter::default()
+                        .controller(crate::types::ability::ControllerRef::Opponent),
+                ),
+            },
+            vec![TargetRef::Player(PlayerId(1))],
+            ObjectId(200),
+            PlayerId(0),
+        )
+        .sub_ability(
+            ResolvedAbility::new(
+                Effect::ChangeZone {
+                    origin: Some(Zone::Battlefield),
+                    destination: Zone::Exile,
+                    target: TargetFilter::Typed(
+                        TypedFilter::creature()
+                            .controller(crate::types::ability::ControllerRef::You),
+                    ),
+                    owner_library: false,
+                    enter_transformed: false,
+                    under_your_control: false,
+                    enter_tapped: false,
+                    enters_attacking: false,
+                    up_to: false,
+                },
+                vec![],
+                ObjectId(200),
+                PlayerId(0),
+            )
+            .sub_ability(ResolvedAbility::new(
+                Effect::ChangeZoneAll {
+                    origin: Some(Zone::Graveyard),
+                    destination: Zone::Exile,
+                    target: TargetFilter::Typed(TypedFilter {
+                        controller: Some(crate::types::ability::ControllerRef::You),
+                        properties: vec![crate::types::ability::FilterProp::InZone {
+                            zone: Zone::Graveyard,
+                        }],
+                        ..Default::default()
+                    }),
+                },
+                vec![],
+                ObjectId(200),
+                PlayerId(0),
+            )),
+        );
+
+        let mut events = Vec::new();
+        crate::game::effects::resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert_eq!(
+            state.objects.get(&battlefield_creature).unwrap().zone,
+            Zone::Exile
+        );
+        assert_eq!(
+            state.objects.get(&graveyard_card).unwrap().zone,
+            Zone::Exile
+        );
     }
 }

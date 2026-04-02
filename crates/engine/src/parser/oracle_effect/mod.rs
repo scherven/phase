@@ -2162,6 +2162,29 @@ fn lower_subject_predicate_ast(
                 });
             }
             let mut clause = lower_imperative_clause(&text, ctx);
+            if let Some(player_target) = subject
+                .target
+                .as_ref()
+                .filter(|filter| target_filter_can_target_player(filter))
+            {
+                if matches!(
+                    clause.effect,
+                    Effect::ChangeZone { .. } | Effect::ChangeZoneAll { .. }
+                ) {
+                    let mut sub_ability =
+                        AbilityDefinition::new(AbilityKind::Spell, clause.effect.clone());
+                    sub_ability.sub_ability = clause.sub_ability;
+                    return ParsedEffectClause {
+                        effect: Effect::TargetOnly {
+                            target: player_target.clone(),
+                        },
+                        duration: clause.duration,
+                        sub_ability: Some(Box::new(sub_ability)),
+                        distribute: None,
+                        multi_target: subject.multi_target,
+                    };
+                }
+            }
             if matches!(clause.effect, Effect::Explore) {
                 let subject_filter = if subject.inherits_parent {
                     TargetFilter::ParentTarget
@@ -2206,6 +2229,24 @@ fn lower_subject_predicate_ast(
             }
             clause
         }
+    }
+}
+
+fn target_filter_can_target_player(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::ParentTargetController => true,
+        TargetFilter::Typed(tf) => tf.type_filters.is_empty(),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().any(target_filter_can_target_player)
+        }
+        TargetFilter::Not { filter } => target_filter_can_target_player(filter),
+        _ => false,
     }
 }
 
@@ -8708,6 +8749,37 @@ mod tests {
             def.sub_ability.is_some(),
             "Expected sub_ability for discard continuation"
         );
+    }
+
+    #[test]
+    fn target_opponent_exiles_relative_creature_and_graveyard_uses_target_only_chain() {
+        let def = parse_effect_chain(
+            "Target opponent exiles a creature they control and their graveyard.",
+            AbilityKind::Spell,
+        );
+        assert!(matches!(
+            *def.effect,
+            Effect::TargetOnly {
+                target: TargetFilter::Typed(ref tf)
+            } if tf.type_filters.is_empty() && tf.controller == Some(ControllerRef::Opponent)
+        ));
+        let sub = def
+            .sub_ability
+            .as_ref()
+            .expect("expected targeted exile sub ability");
+        assert!(matches!(*sub.effect, Effect::ChangeZone { .. }));
+        let sub2 = sub
+            .sub_ability
+            .as_ref()
+            .expect("expected graveyard exile continuation");
+        assert!(matches!(
+            *sub2.effect,
+            Effect::ChangeZoneAll {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Exile,
+                ..
+            }
+        ));
     }
 
     #[test]
