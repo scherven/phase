@@ -3593,7 +3593,7 @@ mod tests {
                 .expect("should have counter_filter");
             assert_eq!(
                 filter.counter_type,
-                crate::game::game_object::CounterType::Lore
+                crate::types::counter::CounterType::Lore
             );
             assert_eq!(filter.threshold, Some((i + 1) as u32));
             assert_eq!(trigger.trigger_zones, vec![Zone::Battlefield]);
@@ -5608,5 +5608,111 @@ mod tests {
             }
             other => panic!("Expected Discard, got {:?}", std::mem::discriminant(other)),
         }
+    }
+
+    #[test]
+    fn analyze_the_pollen_parses_collect_evidence_search_override() {
+        fn contains_reveal_top(ability: &AbilityDefinition) -> bool {
+            matches!(&*ability.effect, Effect::RevealTop { .. })
+                || ability
+                    .sub_ability
+                    .as_ref()
+                    .is_some_and(|sub| contains_reveal_top(sub))
+                || ability
+                    .else_ability
+                    .as_ref()
+                    .is_some_and(|sub| contains_reveal_top(sub))
+        }
+
+        let result = parse_with_keyword_names(
+            "As an additional cost to cast this spell, you may collect evidence 8. (Exile cards with total mana value 8 or greater from your graveyard.)\nSearch your library for a basic land card. If evidence was collected, instead search your library for a creature or land card. Reveal that card, put it into your hand, then shuffle.",
+            "Analyze the Pollen",
+            &["Collect evidence"],
+            &["Sorcery"],
+            &[],
+        );
+
+        assert_eq!(
+            result.additional_cost,
+            Some(AdditionalCost::Optional(AbilityCost::CollectEvidence {
+                amount: 8,
+            }))
+        );
+        assert_eq!(result.abilities.len(), 1);
+        let ability = &result.abilities[0];
+        match &*ability.effect {
+            Effect::SearchLibrary {
+                filter,
+                count,
+                reveal,
+            } => {
+                assert_eq!(*count, 1);
+                assert!(*reveal);
+                match filter {
+                    TargetFilter::Typed(tf) => {
+                        assert!(tf.type_filters.contains(&TypeFilter::Land));
+                        assert!(tf.properties.iter().any(|prop| matches!(
+                            prop,
+                            crate::types::ability::FilterProp::HasSupertype {
+                                value: crate::types::card_type::Supertype::Basic
+                            }
+                        )));
+                    }
+                    other => panic!("Expected typed land filter, got {:?}", other),
+                }
+            }
+            other => panic!("Expected SearchLibrary, got {:?}", other),
+        }
+
+        let override_search = ability
+            .sub_ability
+            .as_ref()
+            .expect("expected override search");
+        assert_eq!(
+            override_search.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        );
+        match &*override_search.effect {
+            Effect::SearchLibrary {
+                filter,
+                count,
+                reveal,
+            } => {
+                assert_eq!(*count, 1);
+                assert!(*reveal);
+                match filter {
+                    TargetFilter::Or { filters } => {
+                        assert_eq!(filters.len(), 2);
+                        assert!(filters.iter().any(|filter| matches!(
+                            filter,
+                            TargetFilter::Typed(tf)
+                                if tf.type_filters.contains(&TypeFilter::Creature)
+                        )));
+                        assert!(filters.iter().any(|filter| matches!(
+                            filter,
+                            TargetFilter::Typed(tf)
+                                if tf.type_filters.contains(&TypeFilter::Land)
+                        )));
+                    }
+                    other => panic!("Expected creature-or-land filter, got {:?}", other),
+                }
+            }
+            other => panic!("Expected override SearchLibrary, got {:?}", other),
+        }
+
+        let to_hand = override_search
+            .else_ability
+            .as_ref()
+            .expect("expected shared continuation");
+        assert!(matches!(
+            *to_hand.effect,
+            Effect::ChangeZone {
+                destination: Zone::Hand,
+                ..
+            }
+        ));
+        let shuffle = to_hand.sub_ability.as_ref().expect("expected shuffle");
+        assert!(matches!(*shuffle.effect, Effect::Shuffle { .. }));
+        assert!(!contains_reveal_top(ability));
     }
 }

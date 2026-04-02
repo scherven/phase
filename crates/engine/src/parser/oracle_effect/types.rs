@@ -117,6 +117,8 @@ pub(super) enum ContinuationAst {
         destination: Zone,
         /// CR 701.23a: When true, the searched card enters the battlefield tapped.
         enter_tapped: bool,
+        /// CR 701.23a: When true, the searched card is revealed before it moves.
+        reveal: bool,
         /// When true, the found card enters "attached to" the search source.
         /// Adds forward_result on the ChangeZone and chains an Attach sub_ability.
         attach_to_source: bool,
@@ -141,6 +143,10 @@ pub(super) enum ContinuationAst {
         count: u32,
         chooser: crate::types::ability::Chooser,
     },
+    /// Clauses like "reveal that card" / "put it into your hand" immediately after a
+    /// library-to-hand search continuation are already represented by the intrinsic
+    /// SearchDestination + reveal flag and should be absorbed.
+    SearchResultClauseHandled,
     /// "Put the rest on the bottom/into your graveyard" after Dig/RevealTop —
     /// sets `rest_destination` on the preceding Dig effect. The destination is
     /// parsed from the text (bottom of library, graveyard, hand, etc.).

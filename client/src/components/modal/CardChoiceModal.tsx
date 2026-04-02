@@ -5,7 +5,7 @@ import { CardImage } from "../card/CardImage.tsx";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
-import type { ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts";
+import type { ManaCost, ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { ChoiceOverlay, ConfirmButton, ScrollableCardStrip } from "./ChoiceOverlay.tsx";
 import { NamedChoiceModal } from "./NamedChoiceModal.tsx";
@@ -24,6 +24,7 @@ type EffectZoneChoice = Extract<WaitingFor, { type: "EffectZoneChoice" }>;
 type DiscardToHandSize = Extract<WaitingFor, { type: "DiscardToHandSize" }>;
 type SacrificeForCost = Extract<WaitingFor, { type: "SacrificeForCost" }>;
 type ExileFromGraveyardForCost = Extract<WaitingFor, { type: "ExileFromGraveyardForCost" }>;
+type CollectEvidenceChoice = Extract<WaitingFor, { type: "CollectEvidenceChoice" }>;
 type HarmonizeTapChoice = Extract<WaitingFor, { type: "HarmonizeTapChoice" }>;
 type ChooseLegend = Extract<WaitingFor, { type: "ChooseLegend" }>;
 type ManifestDreadChoice = Extract<WaitingFor, { type: "ManifestDreadChoice" }>;
@@ -81,6 +82,9 @@ export function CardChoiceModal() {
     case "ExileFromGraveyardForCost":
       if (waitingFor.data.player !== playerId) return null;
       return <ExileFromGraveyardModal data={waitingFor.data} />;
+    case "CollectEvidenceChoice":
+      if (waitingFor.data.player !== playerId) return null;
+      return <CollectEvidenceModal data={waitingFor.data} />;
     case "HarmonizeTapChoice":
       if (waitingFor.data.player !== playerId) return null;
       return <HarmonizeTapModal data={waitingFor.data} />;
@@ -1028,6 +1032,119 @@ function ExileFromGraveyardModal({ data }: { data: ExileFromGraveyardForCost["da
                 <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-purple-500/20">
                   <span className="rounded-full bg-purple-500/90 px-3 py-1 text-xs font-bold text-white">
                     Exile
+                  </span>
+                </div>
+              )}
+            </motion.button>
+          );
+        })}
+      </ScrollableCardStrip>
+    </ChoiceOverlay>
+  );
+}
+
+function manaValueOfShard(shard: string): number {
+  switch (shard) {
+    case "TwoWhite":
+    case "TwoBlue":
+    case "TwoBlack":
+    case "TwoRed":
+    case "TwoGreen":
+      return 2;
+    case "X":
+      return 0;
+    default:
+      return 1;
+  }
+}
+
+function manaValueOfCost(cost: ManaCost): number {
+  switch (cost.type) {
+    case "NoCost":
+    case "SelfManaCost":
+      return 0;
+    case "Cost":
+      return cost.generic + cost.shards.reduce((sum, shard) => sum + manaValueOfShard(shard), 0);
+  }
+}
+
+function manaValueOfObject(obj: { mana_cost: ManaCost }): number {
+  return manaValueOfCost(obj.mana_cost);
+}
+
+function CollectEvidenceModal({ data }: { data: CollectEvidenceChoice["data"] }) {
+  const dispatch = useGameDispatch();
+  const objects = useGameStore((s) => s.gameState?.objects);
+  const inspectObject = useUiStore((s) => s.inspectObject);
+  const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
+
+  const toggleSelect = useCallback((id: ObjectId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleConfirm = useCallback(() => {
+    dispatch({
+      type: "SelectCards",
+      data: { cards: Array.from(selected) },
+    });
+  }, [dispatch, selected]);
+
+  if (!objects) return null;
+
+  const total = Array.from(selected).reduce((sum, id) => {
+    const obj = objects[id];
+    return obj ? sum + manaValueOfObject(obj) : sum;
+  }, 0);
+  const isReady = total >= data.minimum_mana_value;
+
+  return (
+    <ChoiceOverlay
+      title="Collect Evidence"
+      subtitle={`Exile cards from your graveyard with total mana value ${data.minimum_mana_value} or greater`}
+      footer={<ConfirmButton onClick={handleConfirm} disabled={!isReady} label={`Collect (${total}/${data.minimum_mana_value})`} />}
+    >
+      <ScrollableCardStrip>
+        {data.cards.map((id, index) => {
+          const obj = objects[id];
+          if (!obj) return null;
+          const isSelected = selected.has(id);
+          const manaValue = manaValueOfObject(obj);
+          return (
+            <motion.button
+              key={id}
+              className={`relative rounded-lg transition ${
+                isSelected
+                  ? "z-10 ring-2 ring-amber-400/80"
+                  : "hover:shadow-[0_0_16px_rgba(200,200,255,0.3)]"
+              }`}
+              initial={{ opacity: 0, y: 60, scale: 0.85 }}
+              animate={{ opacity: isSelected ? 1 : 0.7, y: 0, scale: 1 }}
+              transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
+              whileHover={{ scale: 1.05, y: -6 }}
+              onClick={() => toggleSelect(id)}
+              onMouseEnter={() => inspectObject(id)}
+              onMouseLeave={() => inspectObject(null)}
+            >
+              <CardImage
+                cardName={obj.name}
+                size="normal"
+                className={CHOICE_CARD_IMAGE_CLASS}
+              />
+              <div className="absolute left-2 top-2 rounded-full bg-black/75 px-2 py-1 text-xs font-semibold text-white">
+                MV {manaValue}
+              </div>
+              {isSelected && (
+                <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-amber-500/20">
+                  <span className="rounded-full bg-amber-500/90 px-3 py-1 text-xs font-bold text-white">
+                    Evidence
                   </span>
                 </div>
               )}

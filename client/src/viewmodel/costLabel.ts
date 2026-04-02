@@ -49,6 +49,8 @@ export function formatCost(cost: SerializedCost): string {
       return `Discard ${count} card${count > 1 ? "s" : ""}`;
     }
     case "Blight": return `Blight ${(cost as { count?: number }).count ?? 1}`;
+    case "CollectEvidence":
+      return `Collect evidence ${cost.amount ?? 0}`;
     case "Composite":
       return (cost.costs ?? []).map(formatCost).join(", ");
     default:

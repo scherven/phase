@@ -16,6 +16,8 @@ use super::printed_cards::{apply_back_face_to_object, snapshot_object_face};
 /// exile permission clearing (CR 113.6e), monstrous reset (CR 701.37b),
 /// counter clearing (CR 122.2), layer pruning, and mana-tap cleanup.
 fn apply_zone_exit_cleanup(state: &mut GameState, object_id: ObjectId, from: Zone) {
+    state.revealed_cards.remove(&object_id);
+
     // CR 400.7: Snapshot LKI before zone change from battlefield or exile.
     // Power/toughness reflect layer modifications on battlefield (Layer 7);
     // from exile they will be None (no layer computation), which is correct.
@@ -30,6 +32,8 @@ fn apply_zone_exit_cleanup(state: &mut GameState, object_id: ObjectId, from: Zon
                 owner: obj.owner,
                 // CR 400.7: Capture core types for "if it was a creature" patterns.
                 card_types: obj.card_types.core_types.clone(),
+                // CR 400.7: Capture counters for "if it had counters on it" patterns.
+                counters: obj.counters.clone(),
             };
             state.lki_cache.insert(object_id, lki);
         }
@@ -674,7 +678,7 @@ mod tests {
             .get_mut(&id)
             .unwrap()
             .counters
-            .insert(super::super::game_object::CounterType::Plus1Plus1, 3);
+            .insert(crate::types::counter::CounterType::Plus1Plus1, 3);
 
         let mut events = Vec::new();
         move_to_zone(&mut state, id, Zone::Graveyard, &mut events);
@@ -698,7 +702,7 @@ mod tests {
             .get_mut(&id)
             .unwrap()
             .counters
-            .insert(super::super::game_object::CounterType::Plus1Plus1, 2);
+            .insert(crate::types::counter::CounterType::Plus1Plus1, 2);
 
         let mut events = Vec::new();
         move_to_library_at_index(&mut state, id, Some(0), &mut events);
@@ -722,7 +726,7 @@ mod tests {
             .get_mut(&id)
             .unwrap()
             .counters
-            .insert(super::super::game_object::CounterType::Plus1Plus1, 1);
+            .insert(crate::types::counter::CounterType::Plus1Plus1, 1);
 
         let mut events = Vec::new();
         move_to_zone(&mut state, id, Zone::Hand, &mut events);

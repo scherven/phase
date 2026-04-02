@@ -613,6 +613,31 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             casting::handle_cancel_cast(state, pending_cast, &mut events);
             WaitingFor::Priority { player: *player }
         }
+        (
+            WaitingFor::CollectEvidenceChoice {
+                player,
+                minimum_mana_value,
+                cards: legal_cards,
+                resume,
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => super::effects::collect_evidence::handle_choice(
+            state,
+            *player,
+            *minimum_mana_value,
+            legal_cards,
+            resume,
+            &chosen,
+            &mut events,
+        )?,
+        (WaitingFor::CollectEvidenceChoice { player, resume, .. }, GameAction::CancelCast) => {
+            if let crate::types::game_state::CollectEvidenceResume::Casting { pending_cast } =
+                resume.as_ref()
+            {
+                casting::handle_cancel_cast(state, pending_cast, &mut events);
+            }
+            WaitingFor::Priority { player: *player }
+        }
         // CR 702.180b: Player chose which creature to tap for harmonize cost reduction.
         // CR 601.2b: Creature is tapped as part of paying the total cost.
         (
@@ -2179,6 +2204,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 player,
                 cards: legal_cards,
                 count,
+                reveal,
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
@@ -2202,6 +2228,24 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                         "Selected card not in search results".to_string(),
                     ));
                 }
+            }
+
+            if *reveal {
+                state.last_revealed_ids = chosen.clone();
+                for &card_id in &chosen {
+                    state.revealed_cards.insert(card_id);
+                }
+                let card_names: Vec<String> = chosen
+                    .iter()
+                    .filter_map(|id| state.objects.get(id).map(|obj| obj.name.clone()))
+                    .collect();
+                events.push(GameEvent::CardsRevealed {
+                    player: p,
+                    card_ids: chosen.clone(),
+                    card_names,
+                });
+            } else {
+                state.last_revealed_ids.clear();
             }
 
             // Run the pending continuation with chosen cards as targets
@@ -3773,7 +3817,7 @@ fn apply_etb_counters(
     events: &mut Vec<GameEvent>,
 ) {
     for (counter_type_str, count) in counters {
-        let ct = super::game_object::parse_counter_type(counter_type_str);
+        let ct = crate::types::counter::parse_counter_type(counter_type_str);
         *obj.counters.entry(ct.clone()).or_insert(0) += count;
         events.push(GameEvent::CounterAdded {
             object_id: obj.id,
@@ -8667,8 +8711,8 @@ mod phase_trigger_regression_tests {
     /// causing triggers like Essence Channeler's to fire twice per life-gain event.
     #[test]
     fn lifelink_replacement_does_not_double_fire_life_gain_triggers() {
-        use crate::game::game_object::CounterType;
         use crate::types::ability::ReplacementDefinition;
+        use crate::types::counter::CounterType;
         use crate::types::replacements::ReplacementEvent;
 
         let mut state = new_game(42);

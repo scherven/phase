@@ -31,6 +31,7 @@ pub mod choose_card;
 pub mod choose_from_zone;
 pub mod clash;
 pub mod cleanup;
+pub mod collect_evidence;
 pub mod connive;
 pub mod copy_spell;
 pub mod counter;
@@ -300,15 +301,12 @@ pub fn resolve_effect(
         Effect::Double { .. } => double::resolve(state, ability, events),
         Effect::RuntimeHandled { .. } => Ok(()), // Handled by dedicated engine path
         Effect::Learn => learn::resolve(state, ability, events),
-        // New keyword actions — stub handlers (recognized for coverage, no-op for now)
-        Effect::Forage
-        | Effect::CollectEvidence { .. }
-        | Effect::Endure { .. }
-        | Effect::BlightEffect { .. } => {
+        Effect::Forage | Effect::Endure { .. } | Effect::BlightEffect { .. } => {
             // These keyword actions are recognized by the parser but not yet implemented.
             // They're no-ops at runtime but count as supported for coverage.
             Ok(())
         }
+        Effect::CollectEvidence { .. } => collect_evidence::resolve(state, ability, events),
         Effect::SetLifeTotal { .. } => life::resolve_set_life_total(state, ability, events),
         Effect::SetDayNight { to } => {
             crate::game::day_night::resolve_set_day_night(state, *to, events);
@@ -853,6 +851,22 @@ pub fn resolve_ability_chain(
                     | AbilityCondition::NinjutsuVariantPaidInstead { .. }
                     | AbilityCondition::TargetHasKeywordInstead { .. }
             ) {
+                if let Some(ref base_chain) = sub.else_ability {
+                    let mut resolved = base_chain.as_ref().clone();
+                    if resolved.targets.is_empty() && !ability.targets.is_empty() {
+                        resolved.targets = ability.targets.clone();
+                    }
+                    resolved.context = ability.context.clone();
+                    if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+                        debug_assert!(
+                            state.pending_continuation.is_none(),
+                            "pending_continuation overwritten before consumption — else_ability chain will be lost"
+                        );
+                        state.pending_continuation = Some(Box::new(resolved));
+                    } else {
+                        resolve_ability_chain(state, &resolved, events, depth + 1)?;
+                    }
+                }
                 return Ok(());
             }
             if matches!(condition, AbilityCondition::ConditionInstead { .. }) {

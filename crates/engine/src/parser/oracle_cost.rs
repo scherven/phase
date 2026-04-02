@@ -321,11 +321,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }) {
         let rest_lower = rest.to_lowercase();
         if let Some((n, _)) = parse_number(rest_lower.trim()) {
-            return AbilityCost::Exile {
-                count: n,
-                zone: Some(Zone::Graveyard),
-                filter: None,
-            };
+            return AbilityCost::CollectEvidence { amount: n };
         }
     }
 
@@ -999,6 +995,14 @@ mod tests {
                 zone: Some(Zone::Library),
                 filter: None,
             }
+        );
+    }
+
+    #[test]
+    fn cost_collect_evidence() {
+        assert_eq!(
+            parse_oracle_cost("Collect evidence 8"),
+            AbilityCost::CollectEvidence { amount: 8 }
         );
     }
 

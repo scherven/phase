@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::database::synthesis::synthesize_all;
 use crate::game::engine::{apply, EngineError};
-use crate::game::game_object::CounterType;
 use crate::game::game_object::GameObject;
 use crate::game::printed_cards::apply_card_face_to_object;
 use crate::game::zones::create_object;
@@ -20,6 +19,7 @@ use crate::types::ability::{
 use crate::types::actions::GameAction;
 use crate::types::card::CardFace;
 use crate::types::card_type::{CoreType, Supertype};
+use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{ActionResult, GameState, WaitingFor};
 use crate::types::identifiers::{CardId, ObjectId};
@@ -779,14 +779,14 @@ impl<'a> CardBuilder<'a> {
 
     /// Add +1/+1 counters to this creature.
     pub fn with_plus_counters(&mut self, count: u32) -> &mut Self {
-        let counter = crate::game::game_object::CounterType::Plus1Plus1;
+        let counter = crate::types::counter::CounterType::Plus1Plus1;
         *self.obj().counters.entry(counter).or_insert(0) += count;
         self
     }
 
     /// Add -1/-1 counters to this creature.
     pub fn with_minus_counters(&mut self, count: u32) -> &mut Self {
-        let counter = crate::game::game_object::CounterType::Minus1Minus1;
+        let counter = crate::types::counter::CounterType::Minus1Minus1;
         *self.obj().counters.entry(counter).or_insert(0) += count;
         self
     }
@@ -1064,6 +1064,7 @@ impl GameRunner {
             WaitingFor::SacrificeForCost { .. } => "SacrificeForCost",
             WaitingFor::TapCreaturesForManaAbility { .. } => "TapCreaturesForManaAbility",
             WaitingFor::ExileFromGraveyardForCost { .. } => "ExileFromGraveyardForCost",
+            WaitingFor::CollectEvidenceChoice { .. } => "CollectEvidenceChoice",
             WaitingFor::HarmonizeTapChoice { .. } => "HarmonizeTapChoice",
             WaitingFor::DiscoverChoice { .. } => "DiscoverChoice",
             WaitingFor::TopOrBottomChoice { .. } => "TopOrBottomChoice",
@@ -1791,7 +1792,7 @@ mod tests {
         assert!(obj.keywords.contains(&Keyword::Flying));
         assert_eq!(
             obj.counters
-                .get(&crate::game::game_object::CounterType::Plus1Plus1)
+                .get(&crate::types::counter::CounterType::Plus1Plus1)
                 .copied()
                 .unwrap_or(0),
             3,

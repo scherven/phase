@@ -10,9 +10,13 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (filter, count) = match &ability.effect {
-        Effect::SearchLibrary { filter, count, .. } => (filter.clone(), *count as usize),
-        _ => (TargetFilter::Any, 1),
+    let (filter, count, reveal) = match &ability.effect {
+        Effect::SearchLibrary {
+            filter,
+            count,
+            reveal,
+        } => (filter.clone(), *count as usize, *reveal),
+        _ => (TargetFilter::Any, 1, false),
     };
 
     let player = state
@@ -60,6 +64,7 @@ pub fn resolve(
         player: ability.controller,
         cards: matching,
         count: pick_count,
+        reveal,
     };
 
     events.push(GameEvent::EffectResolved {
@@ -163,9 +168,11 @@ mod tests {
                 player,
                 cards,
                 count,
+                reveal,
             } => {
                 assert_eq!(*player, PlayerId(0));
                 assert_eq!(*count, 1);
+                assert!(!reveal);
                 assert!(cards.contains(&bear), "Should contain the creature");
                 assert_eq!(cards.len(), 1, "Should NOT contain the land");
             }
@@ -256,5 +263,31 @@ mod tests {
             !matches!(state.waiting_for, WaitingFor::SearchChoice { .. }),
             "Should not search opponent's library"
         );
+    }
+
+    #[test]
+    fn search_with_reveal_sets_reveal_flag() {
+        let mut state = GameState::new_two_player(42);
+        add_library_creature(&mut state, 1, PlayerId(0), "Bear");
+
+        let ability = ResolvedAbility::new(
+            Effect::SearchLibrary {
+                filter: TargetFilter::Typed(TypedFilter::creature()),
+                count: 1,
+                reveal: true,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        match &state.waiting_for {
+            WaitingFor::SearchChoice { reveal, .. } => {
+                assert!(*reveal);
+            }
+            other => panic!("Expected SearchChoice, got {:?}", other),
+        }
     }
 }

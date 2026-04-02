@@ -75,6 +75,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
     r.insert(TriggerMode::SearchedLibrary, match_player_action);
     r.insert(TriggerMode::Scry, match_player_action);
     r.insert(TriggerMode::Surveil, match_player_action);
+    r.insert(TriggerMode::CollectEvidence, match_player_action);
     r.insert(TriggerMode::PlayerPerformedAction, match_player_action);
 
     // Zone-based: leaves the battlefield
@@ -215,7 +216,6 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
         TriggerMode::Proliferate,
         TriggerMode::Abandoned,
         TriggerMode::ClaimPrize,
-        TriggerMode::CollectEvidence,
         TriggerMode::CrankContraption,
         TriggerMode::Devoured,
         TriggerMode::Discover,
@@ -875,6 +875,7 @@ pub(super) fn match_player_action(
         TriggerMode::SearchedLibrary => *action == PlayerActionKind::SearchedLibrary,
         TriggerMode::Scry => *action == PlayerActionKind::Scry,
         TriggerMode::Surveil => *action == PlayerActionKind::Surveil,
+        TriggerMode::CollectEvidence => *action == PlayerActionKind::CollectEvidence,
         TriggerMode::PlayerPerformedAction => trigger
             .player_actions
             .as_ref()
@@ -2581,11 +2582,11 @@ mod tests {
             .get_mut(&saga_id)
             .unwrap()
             .counters
-            .insert(crate::game::game_object::CounterType::Lore, 1);
+            .insert(crate::types::counter::CounterType::Lore, 1);
 
         let event = GameEvent::CounterAdded {
             object_id: saga_id,
-            counter_type: crate::game::game_object::CounterType::Lore,
+            counter_type: crate::types::counter::CounterType::Lore,
             count: 1,
         };
 
@@ -2593,7 +2594,7 @@ mod tests {
         let trigger_ch1 = TriggerDefinition::new(TriggerMode::CounterAdded)
             .valid_card(TargetFilter::SelfRef)
             .counter_filter(CounterTriggerFilter {
-                counter_type: crate::game::game_object::CounterType::Lore,
+                counter_type: crate::types::counter::CounterType::Lore,
                 threshold: Some(1),
             });
         assert!(match_counter_added(&event, &trigger_ch1, saga_id, &state));
@@ -2602,7 +2603,7 @@ mod tests {
         let trigger_ch2 = TriggerDefinition::new(TriggerMode::CounterAdded)
             .valid_card(TargetFilter::SelfRef)
             .counter_filter(CounterTriggerFilter {
-                counter_type: crate::game::game_object::CounterType::Lore,
+                counter_type: crate::types::counter::CounterType::Lore,
                 threshold: Some(2),
             });
         assert!(!match_counter_added(&event, &trigger_ch2, saga_id, &state));
@@ -2627,11 +2628,11 @@ mod tests {
             .get_mut(&saga_id)
             .unwrap()
             .counters
-            .insert(crate::game::game_object::CounterType::Lore, 2);
+            .insert(crate::types::counter::CounterType::Lore, 2);
 
         let event = GameEvent::CounterAdded {
             object_id: saga_id,
-            counter_type: crate::game::game_object::CounterType::Lore,
+            counter_type: crate::types::counter::CounterType::Lore,
             count: 2, // Added 2 at once
         };
 
@@ -2640,7 +2641,7 @@ mod tests {
         let trigger_ch1 = TriggerDefinition::new(TriggerMode::CounterAdded)
             .valid_card(TargetFilter::SelfRef)
             .counter_filter(CounterTriggerFilter {
-                counter_type: crate::game::game_object::CounterType::Lore,
+                counter_type: crate::types::counter::CounterType::Lore,
                 threshold: Some(1),
             });
         assert!(match_counter_added(&event, &trigger_ch1, saga_id, &state));
@@ -2648,7 +2649,7 @@ mod tests {
         let trigger_ch2 = TriggerDefinition::new(TriggerMode::CounterAdded)
             .valid_card(TargetFilter::SelfRef)
             .counter_filter(CounterTriggerFilter {
-                counter_type: crate::game::game_object::CounterType::Lore,
+                counter_type: crate::types::counter::CounterType::Lore,
                 threshold: Some(2),
             });
         assert!(match_counter_added(&event, &trigger_ch2, saga_id, &state));
@@ -2657,7 +2658,7 @@ mod tests {
         let trigger_ch3 = TriggerDefinition::new(TriggerMode::CounterAdded)
             .valid_card(TargetFilter::SelfRef)
             .counter_filter(CounterTriggerFilter {
-                counter_type: crate::game::game_object::CounterType::Lore,
+                counter_type: crate::types::counter::CounterType::Lore,
                 threshold: Some(3),
             });
         assert!(!match_counter_added(&event, &trigger_ch3, saga_id, &state));
@@ -2681,19 +2682,19 @@ mod tests {
             .get_mut(&saga_id)
             .unwrap()
             .counters
-            .insert(crate::game::game_object::CounterType::Plus1Plus1, 1);
+            .insert(crate::types::counter::CounterType::Plus1Plus1, 1);
 
         // +1/+1 counter added, but trigger filters for lore
         let event = GameEvent::CounterAdded {
             object_id: saga_id,
-            counter_type: crate::game::game_object::CounterType::Plus1Plus1,
+            counter_type: crate::types::counter::CounterType::Plus1Plus1,
             count: 1,
         };
 
         let trigger = TriggerDefinition::new(TriggerMode::CounterAdded)
             .valid_card(TargetFilter::SelfRef)
             .counter_filter(CounterTriggerFilter {
-                counter_type: crate::game::game_object::CounterType::Lore,
+                counter_type: crate::types::counter::CounterType::Lore,
                 threshold: Some(1),
             });
         assert!(!match_counter_added(&event, &trigger, saga_id, &state));
@@ -2717,11 +2718,11 @@ mod tests {
             .get_mut(&saga_id)
             .unwrap()
             .counters
-            .insert(crate::game::game_object::CounterType::Lore, 1);
+            .insert(crate::types::counter::CounterType::Lore, 1);
 
         let event = GameEvent::CounterAdded {
             object_id: saga_id,
-            counter_type: crate::game::game_object::CounterType::Lore,
+            counter_type: crate::types::counter::CounterType::Lore,
             count: 1,
         };
 
@@ -2729,7 +2730,7 @@ mod tests {
         let trigger = TriggerDefinition::new(TriggerMode::CounterAdded)
             .valid_card(TargetFilter::SelfRef)
             .counter_filter(CounterTriggerFilter {
-                counter_type: crate::game::game_object::CounterType::Lore,
+                counter_type: crate::types::counter::CounterType::Lore,
                 threshold: None,
             });
         assert!(match_counter_added(&event, &trigger, saga_id, &state));

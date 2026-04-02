@@ -12,6 +12,7 @@ use crate::types::actions::{GameAction, LearnOption};
 use crate::types::card::LayoutKind;
 use crate::types::card_type::CoreType;
 use crate::types::game_state::{ConvokeMode, GameState, TargetSelectionSlot, WaitingFor};
+use crate::types::identifiers::ObjectId;
 use crate::types::match_config::DeckCardCount;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
@@ -41,6 +42,95 @@ pub struct ActionMetadata {
 pub struct CandidateAction {
     pub action: GameAction,
     pub metadata: ActionMetadata,
+}
+
+fn collect_evidence_candidate_combos(
+    state: &GameState,
+    cards: &[ObjectId],
+    minimum_mana_value: u32,
+) -> Vec<Vec<ObjectId>> {
+    const MAX_COMBOS: usize = 16;
+    fn push_collect_evidence_combo(
+        state: &GameState,
+        combos: &mut Vec<Vec<ObjectId>>,
+        seen: &mut HashSet<Vec<u64>>,
+        minimum_mana_value: u32,
+        combo: Vec<ObjectId>,
+    ) {
+        if combo.is_empty() || combos.len() >= MAX_COMBOS {
+            return;
+        }
+        let total: u32 = combo
+            .iter()
+            .filter_map(|id| state.objects.get(id))
+            .map(|obj| obj.mana_cost.mana_value())
+            .sum();
+        if total < minimum_mana_value {
+            return;
+        }
+        let mut key: Vec<u64> = combo.iter().map(|id| id.0).collect();
+        key.sort_unstable();
+        if seen.insert(key) {
+            combos.push(combo);
+        }
+    }
+
+    let mut valued_cards: Vec<(ObjectId, u32)> = cards
+        .iter()
+        .filter_map(|&id| {
+            state
+                .objects
+                .get(&id)
+                .map(|obj| (id, obj.mana_cost.mana_value()))
+        })
+        .collect();
+    valued_cards.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0 .0.cmp(&a.0 .0)));
+
+    let mut combos = Vec::new();
+    let mut seen = HashSet::new();
+
+    for &(id, value) in &valued_cards {
+        if value >= minimum_mana_value {
+            push_collect_evidence_combo(
+                state,
+                &mut combos,
+                &mut seen,
+                minimum_mana_value,
+                vec![id],
+            );
+        }
+    }
+
+    for start_idx in 0..valued_cards.len() {
+        if combos.len() >= MAX_COMBOS {
+            break;
+        }
+        let mut combo = vec![valued_cards[start_idx].0];
+        let mut total = valued_cards[start_idx].1;
+        for &(id, value) in valued_cards.iter().skip(start_idx + 1) {
+            if total >= minimum_mana_value {
+                break;
+            }
+            combo.push(id);
+            total += value;
+        }
+        push_collect_evidence_combo(state, &mut combos, &mut seen, minimum_mana_value, combo);
+    }
+
+    let mut ascending = valued_cards.clone();
+    ascending.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0 .0.cmp(&b.0 .0)));
+    let mut combo = Vec::new();
+    let mut total = 0;
+    for &(id, value) in &ascending {
+        if total >= minimum_mana_value {
+            break;
+        }
+        combo.push(id);
+        total += value;
+    }
+    push_collect_evidence_combo(state, &mut combos, &mut seen, minimum_mana_value, combo);
+
+    combos
 }
 
 pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
@@ -262,6 +352,7 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             player,
             cards,
             count,
+            ..
         } => combinations(cards, *count)
             .into_iter()
             .map(|combo| {
@@ -575,6 +666,21 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             cards,
             ..
         } => combinations(cards, *count)
+            .into_iter()
+            .map(|combo| {
+                candidate(
+                    GameAction::SelectCards { cards: combo },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
+        WaitingFor::CollectEvidenceChoice {
+            player,
+            minimum_mana_value,
+            cards,
+            ..
+        } => collect_evidence_candidate_combos(state, cards, *minimum_mana_value)
             .into_iter()
             .map(|combo| {
                 candidate(

@@ -686,7 +686,7 @@ fn pay_additional_cost(
                 }
                 if let Some(obj) = state.objects.get_mut(&land_id) {
                     *obj.counters
-                        .entry(super::game_object::CounterType::Generic(
+                        .entry(crate::types::counter::CounterType::Generic(
                             "blight".to_string(),
                         ))
                         .or_insert(0) += 1;
@@ -801,6 +801,11 @@ fn pay_additional_cost(
                 cards: eligible,
                 pending_cast: Box::new(pending),
             });
+        }
+        AbilityCost::CollectEvidence { amount } => {
+            return super::effects::collect_evidence::begin_cost_payment(
+                state, player, amount, pending,
+            );
         }
         _ => {
             // Other cost types (Exile, etc.) — not yet interactive

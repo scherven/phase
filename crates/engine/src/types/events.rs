@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::game::game_object::CounterType;
+use super::counter::CounterType;
 
 use super::ability::{EffectKind, TargetRef};
 use super::identifiers::{CardId, ObjectId};
@@ -24,6 +24,7 @@ pub enum PlayerActionKind {
     SearchedLibrary,
     Scry,
     Surveil,
+    CollectEvidence,
 }
 
 /// CR 701.30d: Result of a clash — whether the controller won, lost, or tied.

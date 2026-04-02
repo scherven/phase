@@ -2719,6 +2719,24 @@ fn mark_uses_tracked_set(def: &mut AbilityDefinition) {
     }
 }
 
+fn append_to_deepest_sub_ability(
+    ability: &mut AbilityDefinition,
+    tail: Option<Box<AbilityDefinition>>,
+) {
+    let Some(tail) = tail else {
+        return;
+    };
+
+    let mut cursor = ability;
+    while cursor.sub_ability.is_some() {
+        cursor = cursor
+            .sub_ability
+            .as_mut()
+            .expect("sub_ability checked above");
+    }
+    cursor.sub_ability = Some(tail);
+}
+
 /// Parse a compound effect chain into an `AbilityDefinition` sub-ability chain.
 ///
 /// Phase 1 keeps the existing clause/effect semantics but replaces the fragile
@@ -3084,6 +3102,28 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
             continue;
         }
 
+        if matches!(
+            def.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        ) && matches!(&*def.effect, Effect::SearchLibrary { .. })
+        {
+            if defs.len() >= 2 {
+                let previous_is_search =
+                    matches!(&*defs[defs.len() - 2].effect, Effect::SearchLibrary { .. });
+                let trailing_is_search_destination = matches!(
+                    &*defs[defs.len() - 1].effect,
+                    Effect::ChangeZone {
+                        origin: Some(Zone::Library),
+                        destination: Zone::Hand,
+                        ..
+                    }
+                );
+                if previous_is_search && trailing_is_search_destination {
+                    def.else_ability = Some(Box::new(defs.pop().unwrap()));
+                }
+            }
+        }
+
         let mut current_defs = vec![def];
         if let Some(sub) = clause_sub {
             current_defs.push(*sub);
@@ -3164,6 +3204,27 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         let last = defs.pop().unwrap();
         let mut chain = last;
         while let Some(mut prev) = defs.pop() {
+            if prev.condition == Some(AbilityCondition::AdditionalCostPaidInstead) {
+                if let Some(base_chain) = prev.else_ability.as_mut() {
+                    if matches!(
+                        (&*base_chain.effect, &*chain.effect),
+                        (
+                            Effect::ChangeZone {
+                                origin: Some(Zone::Library),
+                                destination: Zone::Hand,
+                                ..
+                            },
+                            Effect::ChangeZone {
+                                origin: Some(Zone::Library),
+                                destination: Zone::Hand,
+                                ..
+                            }
+                        )
+                    ) {
+                        append_to_deepest_sub_ability(base_chain, chain.sub_ability.clone());
+                    }
+                }
+            }
             if prev.sub_ability.is_some() {
                 // Walk to the deepest sub_ability and append there
                 let mut cursor = &mut prev;
@@ -3765,6 +3826,7 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
             (),
             alt((
                 tag("if this spell's additional cost was paid, "),
+                tag("if evidence was collected, "),
                 tag("if the gift was promised, "),
             )),
         )

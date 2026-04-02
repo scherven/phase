@@ -515,6 +515,14 @@ fn prepare_spell_cast(
         ));
     }
 
+    // CR 101.2: Blanket casting prohibition — "you can't cast [type] spells."
+    // E.g., Steel Golem: "You can't cast creature spells."
+    if is_blocked_by_cant_be_cast(state, player, obj) {
+        return Err(EngineError::ActionNotAllowed(
+            "A static ability prevents you from casting this spell".to_string(),
+        ));
+    }
+
     if is_blocked_by_cast_only_from_zones(state, obj, player) {
         return Err(EngineError::ActionNotAllowed(
             "A temporary effect prevents casting from this zone".to_string(),
@@ -1641,6 +1649,7 @@ pub fn pay_ability_cost(
         | AbilityCost::PayLife { .. }
         | AbilityCost::Discard { .. }
         | AbilityCost::Exile { .. }
+        | AbilityCost::CollectEvidence { .. }
         | AbilityCost::TapCreatures { .. }
         | AbilityCost::RemoveCounter { .. }
         | AbilityCost::ReturnToHand { .. }
@@ -2159,6 +2168,68 @@ fn is_blocked_by_cant_cast_during(state: &GameState, caster: PlayerId) -> bool {
             if condition_met {
                 return true;
             }
+        }
+    }
+    false
+}
+
+/// CR 101.2: Check if any CantBeCast static on the battlefield prevents
+/// the given player from casting the given spell.
+/// E.g., Steel Golem: "You can't cast creature spells."
+/// E.g., Grid Monitor: "You can't cast creature spells."
+fn is_blocked_by_cant_be_cast(
+    state: &GameState,
+    caster: PlayerId,
+    spell_obj: &super::game_object::GameObject,
+) -> bool {
+    for &bf_id in &state.battlefield {
+        let Some(bf_obj) = state.objects.get(&bf_id) else {
+            continue;
+        };
+        for def in &bf_obj.static_definitions {
+            let StaticMode::CantBeCast { ref who } = def.mode else {
+                continue;
+            };
+
+            // CR 101.2: Check if the caster is in the affected scope.
+            let caster_affected = match who {
+                CastingProhibitionScope::Opponents => caster != bf_obj.controller,
+                CastingProhibitionScope::AllPlayers => true,
+                CastingProhibitionScope::Controller => caster == bf_obj.controller,
+            };
+            if !caster_affected {
+                continue;
+            }
+
+            // CR 604.1: Check spell type filter if present (e.g., "creature spells").
+            if let Some(ref affected) = def.affected {
+                let record = SpellCastRecord {
+                    core_types: spell_obj.card_types.core_types.clone(),
+                    supertypes: spell_obj.card_types.supertypes.clone(),
+                    subtypes: spell_obj.card_types.subtypes.clone(),
+                    keywords: spell_obj.keywords.clone(),
+                    colors: spell_obj.color.clone(),
+                    mana_value: spell_obj.mana_cost.mana_value(),
+                };
+                if !super::filter::spell_record_matches_filter(&record, affected, bf_obj.controller)
+                {
+                    continue;
+                }
+            }
+
+            // CR 604.1: Evaluate condition if present (e.g., "as long as ...").
+            if let Some(ref condition) = def.condition {
+                if !crate::game::layers::evaluate_condition(
+                    state,
+                    condition,
+                    bf_obj.controller,
+                    bf_id,
+                ) {
+                    continue;
+                }
+            }
+
+            return true;
         }
     }
     false

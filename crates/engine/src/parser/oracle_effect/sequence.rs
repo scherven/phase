@@ -440,8 +440,18 @@ pub(super) fn apply_clause_continuation(
         ContinuationAst::SearchDestination {
             destination,
             enter_tapped,
+            reveal,
             attach_to_source,
         } => {
+            if let Some(previous) = defs.last_mut() {
+                if let Effect::SearchLibrary {
+                    reveal: existing_reveal,
+                    ..
+                } = &mut *previous.effect
+                {
+                    *existing_reveal |= reveal;
+                }
+            }
             let mut change_zone = AbilityDefinition::new(
                 kind,
                 Effect::ChangeZone {
@@ -579,6 +589,7 @@ pub(super) fn apply_clause_continuation(
                 },
             ));
         }
+        ContinuationAst::SearchResultClauseHandled => {}
         ContinuationAst::EntersTappedAttacking => {
             let Some(previous) = defs.last_mut() else {
                 return;
@@ -631,6 +642,7 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::CantRegenerate => true,
         ContinuationAst::PutRest { .. } => true,
         ContinuationAst::ChooseFromExile { .. } => true,
+        ContinuationAst::SearchResultClauseHandled => true,
         ContinuationAst::EntersTappedAttacking => true,
         ContinuationAst::DigFromAmong { .. } => true,
     }
@@ -662,6 +674,9 @@ pub(super) fn parse_intrinsic_continuation_ast(
             let attach_to_source = nom_primitives::scan_contains(&lower, "attached to");
             // CR 701.23a: "onto the battlefield tapped" — the searched card enters tapped.
             let enter_tapped = nom_primitives::scan_contains(&lower, "battlefield tapped");
+            let reveal = nom_primitives::scan_contains(&lower, "reveal")
+                || nom_primitives::scan_contains(&full_lower, "reveal that card")
+                || nom_primitives::scan_contains(&full_lower, "reveal it");
             // Safety net: verify the clause splitter correctly separated all boundaries.
             // If this fires, a verb is missing from starts_clause_text() or the splitter's
             // search_start guard is incorrectly suppressing a split.
@@ -688,6 +703,7 @@ pub(super) fn parse_intrinsic_continuation_ast(
             Some(ContinuationAst::SearchDestination {
                 destination: super::parse_search_destination(&lower),
                 enter_tapped,
+                reveal,
                 attach_to_source,
             })
         }
@@ -929,6 +945,20 @@ pub(super) fn parse_followup_continuation_ast(
                 Chooser::Controller
             };
             Some(ContinuationAst::ChooseFromExile { count, chooser })
+        }
+        Effect::ChangeZone {
+            origin: Some(Zone::Library),
+            destination: Zone::Hand,
+            ..
+        } if matches!(
+            lower.trim(),
+            "reveal that card"
+                | "reveal it"
+                | "put that card into your hand"
+                | "put it into your hand"
+        ) =>
+        {
+            Some(ContinuationAst::SearchResultClauseHandled)
         }
         // "Put up to N [filter] from among them/those cards onto the battlefield/into your hand"
         // and "put N of them into your hand [and the rest on the bottom]"

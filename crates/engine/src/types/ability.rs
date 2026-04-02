@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::card_type::{CoreType, Supertype};
+use super::counter::CounterType;
 use super::game_state::{DistributionUnit, RetargetScope};
 use super::identifiers::ObjectId;
 use super::keywords::Keyword;
@@ -15,7 +16,6 @@ use super::replacements::ReplacementEvent;
 use super::statics::StaticMode;
 use super::triggers::TriggerMode;
 use super::zones::Zone;
-use crate::game::game_object::CounterType;
 use crate::types::events::PlayerActionKind;
 
 // ---------------------------------------------------------------------------
@@ -1693,6 +1693,11 @@ pub enum AbilityCost {
         zone: Option<Zone>,
         #[serde(default)]
         filter: Option<TargetFilter>,
+    },
+    /// CR 701.59a / CR 702.163a: Exile cards from your graveyard with total mana value
+    /// at least N as a collect evidence cost.
+    CollectEvidence {
+        amount: u32,
     },
     TapCreatures {
         count: u32,
@@ -4058,7 +4063,7 @@ pub enum TriggerConstraint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CounterTriggerFilter {
     /// Only match events for this counter type.
-    pub counter_type: crate::game::game_object::CounterType,
+    pub counter_type: crate::types::counter::CounterType,
     /// If set, only fire when the count crosses this threshold:
     /// previous_count < threshold <= new_count.
     /// Used by Saga chapter triggers (CR 714.2a).

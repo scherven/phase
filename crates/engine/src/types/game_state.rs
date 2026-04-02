@@ -11,6 +11,7 @@ use super::ability::{
     ResolvedAbility, StaticCondition, TargetFilter, TargetRef, TriggerCondition, UnlessCost,
 };
 use super::card_type::{CoreType, Supertype};
+use super::counter::CounterType;
 use super::events::GameEvent;
 use super::format::FormatConfig;
 use super::identifiers::{CardId, ObjectId, TrackedSetId};
@@ -125,6 +126,10 @@ pub struct LKISnapshot {
     /// Used by `TriggerCondition::WasType` for "if it was a creature" patterns.
     #[serde(default)]
     pub card_types: Vec<CoreType>,
+    /// CR 400.7: Counters as they last existed on the object.
+    /// Used by `TriggerCondition::HadCounters` for "if it had counters on it" patterns.
+    #[serde(default)]
+    pub counters: HashMap<CounterType, u32>,
 }
 
 /// Snapshot of a spell's characteristics at cast time for per-turn history queries.
@@ -240,6 +245,17 @@ impl PendingCast {
             distribute: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum CollectEvidenceResume {
+    Casting {
+        pending_cast: Box<PendingCast>,
+    },
+    Effect {
+        pending_ability: Box<ResolvedAbility>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -421,6 +437,9 @@ pub enum WaitingFor {
         cards: Vec<ObjectId>,
         /// How many cards to select.
         count: usize,
+        /// Whether the chosen cards should be revealed before the continuation resolves.
+        #[serde(default)]
+        reveal: bool,
     },
     /// CR 700.2: Player selects card(s) from a tracked set (e.g., exiled cards).
     /// Chosen/unchosen cards flow into sub-abilities via pending_continuation,
@@ -721,6 +740,14 @@ pub enum WaitingFor {
         /// The pending cast to resume after the exile is complete.
         pending_cast: Box<PendingCast>,
     },
+    /// CR 701.59a / CR 702.163a: Choose graveyard cards with combined mana value
+    /// at least the required threshold, then resume casting or effect resolution.
+    CollectEvidenceChoice {
+        player: PlayerId,
+        minimum_mana_value: u32,
+        cards: Vec<ObjectId>,
+        resume: Box<CollectEvidenceResume>,
+    },
     /// CR 702.180a: Harmonize allows tapping up to one untapped creature to reduce cost by its power.
     /// CR 702.180b: Creature chosen as you choose to pay the harmonize cost (CR 601.2b).
     /// CR 302.6: Summoning sickness does not restrict tapping for costs (only {T} abilities).
@@ -910,6 +937,7 @@ impl WaitingFor {
             | WaitingFor::SacrificeForCost { player, .. }
             | WaitingFor::TapCreaturesForManaAbility { player, .. }
             | WaitingFor::ExileFromGraveyardForCost { player, .. }
+            | WaitingFor::CollectEvidenceChoice { player, .. }
             | WaitingFor::HarmonizeTapChoice { player, .. }
             | WaitingFor::OptionalEffectChoice { player, .. }
             | WaitingFor::OpponentMayChoice { player, .. }
@@ -936,19 +964,22 @@ impl WaitingFor {
     /// Whether this state is part of the casting flow and can be backed out of
     /// with `CancelCast`. This is true for every state that carries a `pending_cast`.
     pub fn has_pending_cast(&self) -> bool {
-        matches!(
-            self,
+        match self {
             WaitingFor::ManaPayment { .. }
-                | WaitingFor::TargetSelection { .. }
-                | WaitingFor::ModeChoice { .. }
-                | WaitingFor::OptionalCostChoice { .. }
-                | WaitingFor::DefilerPayment { .. }
-                | WaitingFor::DiscardForCost { .. }
-                | WaitingFor::SacrificeForCost { .. }
-                | WaitingFor::TapCreaturesForManaAbility { .. }
-                | WaitingFor::ExileFromGraveyardForCost { .. }
-                | WaitingFor::HarmonizeTapChoice { .. }
-        )
+            | WaitingFor::TargetSelection { .. }
+            | WaitingFor::ModeChoice { .. }
+            | WaitingFor::OptionalCostChoice { .. }
+            | WaitingFor::DefilerPayment { .. }
+            | WaitingFor::DiscardForCost { .. }
+            | WaitingFor::SacrificeForCost { .. }
+            | WaitingFor::TapCreaturesForManaAbility { .. }
+            | WaitingFor::ExileFromGraveyardForCost { .. }
+            | WaitingFor::HarmonizeTapChoice { .. } => true,
+            WaitingFor::CollectEvidenceChoice { resume, .. } => {
+                matches!(resume.as_ref(), CollectEvidenceResume::Casting { .. })
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1354,6 +1385,11 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monarch: Option<PlayerId>,
 
+    /// CR 702.131a: Players who have the city's blessing (from Ascend).
+    /// Once gained, the city's blessing is permanent for the rest of the game.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub city_blessing: HashSet<PlayerId>,
+
     /// Active game-level restrictions (e.g., damage prevention disabled).
     /// Checked by relevant game systems; expired entries cleaned up at phase transitions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1533,6 +1569,7 @@ impl GameState {
             last_zone_changed_ids: Vec::new(),
             last_effect_count: None,
             monarch: None,
+            city_blessing: HashSet::new(),
             restrictions: Vec::new(),
             pending_damage_prevention: Vec::new(),
             current_trigger_event: None,
@@ -1673,6 +1710,7 @@ impl PartialEq for GameState {
             && self.last_zone_changed_ids == other.last_zone_changed_ids
             && self.last_effect_count == other.last_effect_count
             && self.lki_cache == other.lki_cache
+            && self.city_blessing == other.city_blessing
     }
 }
 
