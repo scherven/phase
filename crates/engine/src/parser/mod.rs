@@ -3,6 +3,7 @@ pub mod oracle_casting;
 pub(crate) mod oracle_class;
 pub mod oracle_condition;
 pub mod oracle_cost;
+pub(crate) mod oracle_dispatch;
 pub mod oracle_effect;
 pub(crate) mod oracle_keyword;
 pub(crate) mod oracle_level;

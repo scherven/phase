@@ -1,7 +1,6 @@
 use rand::Rng;
 use thiserror::Error;
 
-use crate::game::combat::{AttackTarget, DamageAssignment, DamageTarget, TrampleKind};
 use crate::game::filter;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ChoiceType, ChoiceValue, ChosenAttribute, Effect,
@@ -28,6 +27,8 @@ use super::ability_utils::{
 use super::casting;
 use super::casting_costs;
 use super::effects;
+use super::engine_combat;
+use super::engine_priority;
 use super::mana_abilities;
 use super::mana_payment;
 use super::mana_sources;
@@ -37,8 +38,6 @@ use super::planeswalker;
 use super::priority;
 use super::public_state::{finalize_public_state, sync_waiting_for};
 use super::restrictions;
-use super::sba;
-use super::triggers;
 use super::turns;
 use super::zones;
 
@@ -121,7 +120,12 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                     && state.phase == Phase::CombatDamage;
 
                 // Run post-action pipeline (SBAs, triggers, layers)
-                match run_post_action_pipeline(state, &mut events, &wf, skip_triggers) {
+                match engine_priority::run_post_action_pipeline(
+                    state,
+                    &mut events,
+                    &wf,
+                    skip_triggers,
+                ) {
                     Ok(wf) => {
                         sync_waiting_for(state, &wf);
 
@@ -149,7 +153,7 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                     .is_some_and(|m| matches!(m, AutoPassMode::UntilEndOfTurn)) =>
             {
                 let mut events = Vec::new();
-                match handle_empty_attackers(state, &mut events) {
+                match engine_combat::handle_empty_attackers(state, &mut events) {
                     Ok(wf) => {
                         sync_waiting_for(state, &wf);
                         result.events.extend(events);
@@ -167,7 +171,7 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                     .is_some_and(|m| matches!(m, AutoPassMode::UntilEndOfTurn)) =>
             {
                 let mut events = Vec::new();
-                match handle_empty_blockers(state, &mut events) {
+                match engine_combat::handle_empty_blockers(state, &mut events) {
                     Ok(wf) => {
                         sync_waiting_for(state, &wf);
                         result.events.extend(events);
@@ -1440,65 +1444,15 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 .map_err(EngineError::InvalidAction)?
         }
         (WaitingFor::DeclareAttackers { player, .. }, GameAction::DeclareAttackers { attacks }) => {
-            if state.active_player != *player {
-                return Err(EngineError::WrongPlayer);
-            }
-            super::combat::declare_attackers(state, &attacks, &mut events)
-                .map_err(EngineError::InvalidAction)?;
-
-            // Process triggers for AttackersDeclared
-            triggers::process_triggers(state, &events);
             triggers_processed_inline = true;
-            if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
-                return Ok(ActionResult {
-                    events,
-                    waiting_for,
-                    log_entries: vec![],
-                });
-            }
-
-            if attacks.is_empty() {
-                // No attackers: skip to EndCombat
-                state.phase = Phase::EndCombat;
-                events.push(GameEvent::PhaseChanged {
-                    phase: Phase::EndCombat,
-                });
-                state.combat = None;
-                // CR 514.2: Prune "until end of combat" transient continuous effects.
-                super::layers::prune_end_of_combat_effects(state);
-                turns::advance_phase(state, &mut events);
-                turns::auto_advance(state, &mut events)
-            } else {
-                // CR 508.2: After attackers are declared, the active player gets priority.
-                priority::reset_priority(state);
-                WaitingFor::Priority {
-                    player: state.active_player,
-                }
-            }
+            engine_combat::handle_declare_attackers(state, *player, &attacks, &mut events)?
         }
         (
             WaitingFor::DeclareBlockers { player: _, .. },
             GameAction::DeclareBlockers { assignments },
         ) => {
-            super::combat::declare_blockers(state, &assignments, &mut events)
-                .map_err(EngineError::InvalidAction)?;
-
-            // Process triggers for BlockersDeclared
-            triggers::process_triggers(state, &events);
             triggers_processed_inline = true;
-            if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
-                return Ok(ActionResult {
-                    events,
-                    waiting_for,
-                    log_entries: vec![],
-                });
-            }
-
-            // CR 509.2: After blockers are declared, the active player gets priority.
-            priority::reset_priority(state);
-            WaitingFor::Priority {
-                player: state.active_player,
-            }
+            engine_combat::handle_declare_blockers(state, &assignments, &mut events)?
         }
         (WaitingFor::ReplacementChoice { .. }, GameAction::ChooseReplacement { index }) => {
             match super::replacement::continue_replacement(state, index, &mut events) {
@@ -3323,157 +3277,23 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 controller_damage,
             },
         ) => {
-            let p = *player;
-            let aid = *attacker_id;
-            let total = *total_damage;
-            let trample_kind = *trample;
-
-            // CR 510.1c: Validate total equals attacker's power.
-            let assigned_total: u32 = assignments.iter().map(|(_, a)| *a).sum::<u32>()
-                + trample_damage
-                + controller_damage;
-            if assigned_total != total {
-                return Err(EngineError::InvalidAction(format!(
-                    "Damage assignment total {} != attacker power {}",
-                    assigned_total, total
-                )));
-            }
-
-            // Validate all assignment targets are actual blockers of this attacker.
-            let valid_blocker_ids: Vec<ObjectId> = blockers.iter().map(|s| s.blocker_id).collect();
-            for (bid, _) in &assignments {
-                if !valid_blocker_ids.contains(bid) {
-                    return Err(EngineError::InvalidAction(format!(
-                        "{:?} is not a blocker of attacker {:?}",
-                        bid, aid
-                    )));
-                }
-            }
-
-            // CR 702.19b: Trample damage only allowed with trample.
-            if (trample_damage > 0 || controller_damage > 0) && trample_kind.is_none() {
-                return Err(EngineError::InvalidAction(
-                    "Cannot assign trample damage without trample".to_string(),
-                ));
-            }
-
-            // CR 702.19c: controller_damage only allowed with trample-over-PW attacking a PW.
-            if controller_damage > 0 {
-                let is_valid = trample_kind == Some(TrampleKind::OverPlaneswalkers)
-                    && pw_controller.is_some()
-                    && matches!(attack_target, AttackTarget::Planeswalker(_));
-                if !is_valid {
-                    return Err(EngineError::InvalidAction(
-                        "Controller damage only allowed with trample over planeswalkers attacking a planeswalker".to_string(),
-                    ));
-                }
-                // CR 702.19c: Must assign at least PW loyalty to PW before spillover.
-                let loyalty_threshold = pw_loyalty.unwrap_or(0);
-                if trample_damage < loyalty_threshold {
-                    return Err(EngineError::InvalidAction(format!(
-                        "Trample over planeswalkers: must assign at least {} to PW before {} to controller",
-                        loyalty_threshold, controller_damage
-                    )));
-                }
-            }
-
-            // CR 702.19b: Trample requires lethal to ALL blockers.
-            // Enforced regardless of whether excess goes to the player.
-            if trample_kind.is_some() {
-                for slot in blockers {
-                    let assigned = assignments
-                        .iter()
-                        .find(|(id, _)| *id == slot.blocker_id)
-                        .map(|(_, a)| *a)
-                        .unwrap_or(0);
-                    if assigned < slot.lethal_minimum {
-                        return Err(EngineError::InvalidAction(format!(
-                            "Trample: blocker {:?} must receive at least {} lethal damage before excess to player",
-                            slot.blocker_id, slot.lethal_minimum
-                        )));
-                    }
-                }
-            }
-
-            // Store assignments in pending_damage and advance the damage step index.
-            if let Some(combat) = &mut state.combat {
-                for (blocker_id, amount) in &assignments {
-                    if *amount > 0 {
-                        combat.pending_damage.push((
-                            aid,
-                            DamageAssignment {
-                                target: DamageTarget::Object(*blocker_id),
-                                amount: *amount,
-                            },
-                        ));
-                    }
-                }
-                // CR 702.19f: Trample excess goes to the attack target, not always the player.
-                // CR 506.4c: If PW/battle left the battlefield, no trample excess.
-                if trample_damage > 0 {
-                    let is_over_pw = trample_kind == Some(TrampleKind::OverPlaneswalkers);
-                    let excess_target = match attack_target {
-                        AttackTarget::Player(pid) => Some(DamageTarget::Player(*pid)),
-                        AttackTarget::Planeswalker(pw_id) => {
-                            match state.objects.get(pw_id) {
-                                Some(obj) if obj.zone == Zone::Battlefield => {
-                                    Some(DamageTarget::Object(*pw_id))
-                                }
-                                // CR 702.19e: Trample-over-PW falls back to defending player
-                                _ if is_over_pw => Some(DamageTarget::Player(*defending_player)),
-                                // CR 506.4c: Without trample-over-PW, no damage
-                                _ => None,
-                            }
-                        }
-                        AttackTarget::Battle(battle_id) => match state.objects.get(battle_id) {
-                            Some(obj) if obj.zone == Zone::Battlefield => {
-                                Some(DamageTarget::Object(*battle_id))
-                            }
-                            _ => None,
-                        },
-                    };
-                    if let Some(target) = excess_target {
-                        combat.pending_damage.push((
-                            aid,
-                            DamageAssignment {
-                                target,
-                                amount: trample_damage,
-                            },
-                        ));
-                    }
-                }
-                // CR 702.19c: Route controller damage to PW's controller.
-                if controller_damage > 0 {
-                    if let Some(ctrl) = pw_controller {
-                        combat.pending_damage.push((
-                            aid,
-                            DamageAssignment {
-                                target: DamageTarget::Player(*ctrl),
-                                amount: controller_damage,
-                            },
-                        ));
-                    }
-                }
-                // Advance past this attacker so resolve_combat_damage continues from next.
-                combat.damage_step_index = Some(combat.damage_step_index.unwrap_or(0) + 1);
-            }
-
-            // Resume the combat damage state machine — may return another
-            // WaitingFor::AssignCombatDamage for the next attacker, or None if all done.
-            if let Some(waiting) = super::combat_damage::resolve_combat_damage(state, &mut events) {
-                state.waiting_for = waiting.clone();
-                return Ok(ActionResult {
-                    events,
-                    waiting_for: waiting,
-                    log_entries: vec![],
-                });
-            }
-
-            // All combat damage resolved — triggers were processed inline by
-            // process_combat_damage_triggers. Mark so the pipeline doesn't re-fire.
             triggers_processed_inline = true;
-            super::priority::reset_priority(state);
-            WaitingFor::Priority { player: p }
+            engine_combat::handle_assign_combat_damage(
+                state,
+                *player,
+                *attacker_id,
+                *total_damage,
+                blockers,
+                *trample,
+                *defending_player,
+                attack_target,
+                *pw_loyalty,
+                *pw_controller,
+                &assignments,
+                trample_damage,
+                controller_damage,
+                &mut events,
+            )?
         }
         // CR 601.2d: Distribute among targets (casting-time distribution).
         (
@@ -3602,8 +3422,12 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
         // the action's result, not the pre-action state (fixes stale TargetSelection
         // after CancelCast).
         state.waiting_for = waiting_for.clone();
-        let wf =
-            run_post_action_pipeline(state, &mut events, &waiting_for, triggers_processed_inline)?;
+        let wf = engine_priority::run_post_action_pipeline(
+            state,
+            &mut events,
+            &waiting_for,
+            triggers_processed_inline,
+        )?;
         state.waiting_for = wf.clone();
         return Ok(ActionResult {
             events,
@@ -3646,113 +3470,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
 /// `skip_trigger_scan` — when `true`, skips the `process_triggers` call because
 /// triggers were already processed inline (e.g., combat damage, declare attackers).
 /// SBAs, exile returns, delayed triggers, and layer evaluation still run.
-fn run_post_action_pipeline(
-    state: &mut GameState,
-    events: &mut Vec<GameEvent>,
-    default_wf: &WaitingFor,
-    skip_trigger_scan: bool,
-) -> Result<WaitingFor, EngineError> {
-    sba::check_state_based_actions(state, events);
-
-    // If SBAs set a non-Priority waiting state (legend choice, replacement choice, game over),
-    // short-circuit — don't process triggers or overwrite the waiting state.
-    if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-        if matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
-            match_flow::handle_game_over_transition(state);
-        }
-        return Ok(state.waiting_for.clone());
-    }
-
-    // Check exile returns -- must happen after SBAs (which may move sources off battlefield)
-    // and before triggers (so returned permanents get ETB triggers)
-    check_exile_returns(state, events);
-
-    // CR 603.7: Check delayed triggers before processing regular triggers.
-    let delayed_events = triggers::check_delayed_triggers(state, events);
-    events.extend(delayed_events);
-
-    let stack_before = state.stack.len();
-
-    // Skip trigger scan when triggers were already processed inline (e.g., combat
-    // damage triggers fire before SBAs per CR 603.2). Without this guard, the same
-    // LifeChanged / DamageDealt events would be re-processed, double-firing triggers
-    // like "whenever you gain life".
-    if !skip_trigger_scan {
-        // Phase triggers are now processed inline by auto_advance() at each step
-        // (Upkeep, Draw, BeginCombat, End). Exclude all PhaseChanged events here
-        // to prevent double-firing. Non-phase triggers (ETB, spell cast, zone
-        // changes, etc.) still process normally.
-        let filtered_events: Vec<_> = events
-            .iter()
-            .filter(|e| !matches!(e, GameEvent::PhaseChanged { .. }))
-            .cloned()
-            .collect();
-        triggers::process_triggers(state, &filtered_events);
-    }
-
-    if let Some(wf) = begin_pending_trigger_target_selection(state)? {
-        state.waiting_for = wf.clone();
-        return Ok(wf);
-    }
-
-    // If triggers were placed on stack, grant priority to active player
-    if state.stack.len() > stack_before {
-        return Ok(WaitingFor::Priority {
-            player: state.active_player,
-        });
-    }
-
-    // Re-evaluate layers if dirty after SBA/trigger processing
-    if state.layers_dirty {
-        super::layers::evaluate_layers(state);
-    }
-
-    // Normal continuation: use the waiting_for computed by the action handler
-    Ok(default_wf.clone())
-}
-
-/// Handle declaring no attackers — skips to EndCombat with trigger processing.
-fn handle_empty_attackers(
-    state: &mut GameState,
-    events: &mut Vec<GameEvent>,
-) -> Result<WaitingFor, EngineError> {
-    super::combat::declare_attackers(state, &[], events).map_err(EngineError::InvalidAction)?;
-
-    // Process triggers for AttackersDeclared (even with no attackers)
-    triggers::process_triggers(state, events);
-    if let Some(wf) = begin_pending_trigger_target_selection(state)? {
-        return Ok(wf);
-    }
-
-    // No attackers → skip to EndCombat
-    state.phase = Phase::EndCombat;
-    events.push(GameEvent::PhaseChanged {
-        phase: Phase::EndCombat,
-    });
-    state.combat = None;
-    // CR 514.2: Prune "until end of combat" transient continuous effects.
-    super::layers::prune_end_of_combat_effects(state);
-    turns::advance_phase(state, events);
-    Ok(turns::auto_advance(state, events))
-}
-
-/// Handle declaring no blockers with trigger processing.
-fn handle_empty_blockers(
-    state: &mut GameState,
-    events: &mut Vec<GameEvent>,
-) -> Result<WaitingFor, EngineError> {
-    super::combat::declare_blockers(state, &[], events).map_err(EngineError::InvalidAction)?;
-
-    triggers::process_triggers(state, events);
-    if let Some(wf) = begin_pending_trigger_target_selection(state)? {
-        return Ok(wf);
-    }
-
-    turns::advance_phase(state, events);
-    Ok(turns::auto_advance(state, events))
-}
-
-fn begin_pending_trigger_target_selection(
+pub(super) fn begin_pending_trigger_target_selection(
     state: &mut GameState,
 ) -> Result<Option<WaitingFor>, EngineError> {
     let Some(trigger) = state.pending_trigger.as_ref() else {
@@ -4666,7 +4384,7 @@ pub fn start_game_skip_mulligan(state: &mut GameState) -> ActionResult {
 
 /// CR 607.2a + CR 406.6: Check if any exile-return sources have left the battlefield.
 /// If so, move the exiled cards back — linked abilities track which cards were exiled by the source.
-fn check_exile_returns(state: &mut GameState, events: &mut Vec<GameEvent>) {
+pub(super) fn check_exile_returns(state: &mut GameState, events: &mut Vec<GameEvent>) {
     let mut to_return: Vec<crate::types::game_state::ExileLink> = Vec::new();
 
     for event in events.iter() {

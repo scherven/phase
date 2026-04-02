@@ -24,6 +24,7 @@ use super::oracle_casting::{
 use super::oracle_class::parse_class_oracle_text;
 use super::oracle_condition::parse_restriction_condition;
 use super::oracle_cost::parse_oracle_cost;
+use super::oracle_dispatch::{dispatch_line_nom, make_unimplemented_with_effect};
 use super::oracle_effect::{
     parse_effect_chain, parse_effect_chain_with_context, split_leading_conditional, ParseContext,
 };
@@ -955,7 +956,7 @@ pub fn parse_oracle_text(
 
         // Priority 14a: Nom dispatch — try effect, trigger, static, and replacement
         // sub-parsers. If any succeeds, use the result directly.
-        let nom_effect = dispatch_line_nom(&line, &static_line, card_name);
+        let nom_effect = dispatch_line_nom(&line, card_name);
         if !matches!(nom_effect, Effect::Unimplemented { .. }) {
             result
                 .abilities
@@ -1496,7 +1497,7 @@ fn is_instead_replacement_line(text: &str) -> bool {
 }
 
 /// Check if lowercased text starts with a trigger prefix ("when ", "whenever ", "at ").
-fn has_trigger_prefix(lower: &str) -> bool {
+pub(super) fn has_trigger_prefix(lower: &str) -> bool {
     alt((
         tag::<_, _, VerboseError<&str>>("when "),
         tag("whenever "),
@@ -1544,7 +1545,7 @@ fn is_ability_activate_cost_static(lower: &str) -> bool {
 }
 
 /// Check if line matches "damage ... can't be prevented" pattern.
-fn is_damage_prevention_pattern(lower: &str) -> bool {
+pub(super) fn is_damage_prevention_pattern(lower: &str) -> bool {
     lower.contains("damage") && lower.contains("can't be prevented")
 }
 
@@ -1816,87 +1817,6 @@ fn is_replacement_compound_pattern(lower: &str) -> bool {
 
 /// Primary nom-based dispatcher for Oracle text lines.
 ///
-/// Attempt all major branch parsers — effect, trigger, static, replacement —
-/// and return the parsed Effect directly if any succeeds. On failure, produces
-/// a diagnostic `Unimplemented` with structural classification of the line.
-fn dispatch_line_nom(line: &str, _static_line: &str, card_name: &str) -> Effect {
-    let lower = line.to_lowercase();
-    let ctx = ParseContext {
-        subject: None,
-        card_name: Some(card_name.to_string()),
-    };
-
-    // Try effect parsing for lines matching effect sentence structure
-    // (subsumes old Priority 14a damage-prevention and Priority 14b effect candidates)
-    if is_effect_sentence_candidate(&lower) || is_damage_prevention_pattern(&lower) {
-        let def = parse_effect_chain_with_context(line, AbilityKind::Spell, &ctx);
-        if !has_unimplemented(&def) {
-            return *def.effect;
-        }
-    }
-
-    // Structural classification for diagnostic traces (D-12/D-13).
-    // Lines that reach here failed real parsing — classify their shape
-    // for informative Unimplemented descriptions.
-    let lower_trimmed = lower.trim_start();
-    if has_trigger_prefix(lower_trimmed) {
-        return Effect::Unimplemented {
-            name: "trigger_structure".into(),
-            description: Some(format!(
-                "Trigger prefix matched but line failed trigger parser: {line}"
-            )),
-        };
-    }
-
-    if is_static_pattern(&lower) {
-        return Effect::Unimplemented {
-            name: "static_structure".into(),
-            description: Some(format!(
-                "Static pattern matched but line failed static parser: {line}"
-            )),
-        };
-    }
-
-    if is_replacement_pattern(&lower) {
-        return Effect::Unimplemented {
-            name: "replacement_structure".into(),
-            description: Some(format!(
-                "Replacement pattern matched but line failed replacement parser: {line}"
-            )),
-        };
-    }
-
-    if is_effect_sentence_candidate(&lower) {
-        return Effect::Unimplemented {
-            name: "effect_structure".into(),
-            description: Some(format!(
-                "Effect sentence candidate but line failed effect parser: {line}"
-            )),
-        };
-    }
-
-    Effect::Unimplemented {
-        name: "unknown".into(),
-        description: Some(line.to_string()),
-    }
-}
-
-/// Create an Unimplemented fallback ability with a nom-provided diagnostic effect.
-///
-/// If `dispatch_line_nom` succeeded in parsing the line (found a match in one of
-/// the nom branches), this wraps the effect in an AbilityDefinition. Otherwise
-/// it creates an Unimplemented with the error trace from the nom dispatch.
-fn make_unimplemented_with_effect(line: &str, effect: Effect) -> AbilityDefinition {
-    if !matches!(effect, Effect::Unimplemented { .. }) {
-        // Nom dispatch found a match — use the effect directly.
-        // This shouldn't normally happen (priority checks above should have caught it),
-        // but handles edge cases where the nom fallback finds something.
-        return AbilityDefinition::new(AbilityKind::Spell, effect).description(line.to_string());
-    }
-    tracing::warn!(oracle_text = line, "unimplemented ability line");
-    AbilityDefinition::new(AbilityKind::Spell, effect).description(line.to_string())
-}
-
 /// Create an Unimplemented fallback ability.
 pub(super) fn make_unimplemented(line: &str) -> AbilityDefinition {
     tracing::warn!(oracle_text = line, "unimplemented ability line");

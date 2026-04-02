@@ -16,6 +16,8 @@ pub mod dungeon;
 pub mod effects;
 pub mod elimination;
 pub mod engine;
+pub(crate) mod engine_combat;
+pub(crate) mod engine_priority;
 pub mod filter;
 pub mod game_object;
 pub mod gap_analysis;
