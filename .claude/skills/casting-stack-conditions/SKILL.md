@@ -240,6 +240,7 @@ The public reducer entry point remains `engine.rs::apply()`, but casting/stack s
 - `engine_casting.rs` — cast/target/continuation reducer helpers
 - `engine_stack.rs` — trigger-target and stack-entry continuation helpers
 - `engine_modes.rs` — `AbilityModeChoice` routing for activated and triggered modal abilities
+- `engine_payment_choices.rs` — optional-effect, opponent-may, unless-payment, and ward-payment reducer helpers
 - `engine_resolution_choices.rs` — resolution-time interactive choice handlers that resume continuations or yield replacement choices
 - `engine_priority.rs` — priority-pass and post-resolution resume helpers
 
@@ -368,6 +369,7 @@ rg -q "fn requires_untapped" crates/engine/src/game/casting.rs && \
 rg -q "fn handle_ability_mode_choice" crates/engine/src/game/engine_modes.rs && \
 test -f crates/engine/src/game/engine_casting.rs && \
 test -f crates/engine/src/game/engine_resolution_choices.rs && \
+test -f crates/engine/src/game/engine_payment_choices.rs && \
 test -f crates/engine/src/game/engine_stack.rs && \
 rg -q "fn resolve_top" crates/engine/src/game/stack.rs && \
 rg -q "fn resolve_ability_chain" crates/engine/src/game/effects/mod.rs && \
