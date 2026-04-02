@@ -661,10 +661,7 @@ pub fn resolve_ability_chain(
                         remaining_scoped.controller = remaining_pid;
                         // Append the previous tail after this player's sub_ability chain
                         if let Some(prev) = tail {
-                            super::ability_utils::append_to_sub_chain(
-                                &mut remaining_scoped,
-                                *prev,
-                            );
+                            super::ability_utils::append_to_sub_chain(&mut remaining_scoped, *prev);
                         }
                         tail = Some(Box::new(remaining_scoped));
                     }
