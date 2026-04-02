@@ -9,6 +9,7 @@ import type { ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts"
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { ChoiceOverlay, ConfirmButton, ScrollableCardStrip } from "./ChoiceOverlay.tsx";
 import { NamedChoiceModal } from "./NamedChoiceModal.tsx";
+import { DungeonChoiceModal, RoomChoiceModal } from "./DungeonChoiceModal.tsx";
 import { DamageAssignmentModal } from "../combat/DamageAssignmentModal.tsx";
 import { DistributeAmongModal } from "./DistributeAmongModal.tsx";
 import { RetargetChoiceModal } from "./RetargetChoiceModal.tsx";
@@ -106,6 +107,12 @@ export function CardChoiceModal() {
     case "ManifestDreadChoice":
       if (waitingFor.data.player !== playerId) return null;
       return <ManifestDreadModal data={waitingFor.data} />;
+    case "ChooseDungeon":
+      if (waitingFor.data.player !== playerId) return null;
+      return <DungeonChoiceModal data={waitingFor.data} />;
+    case "ChooseDungeonRoom":
+      if (waitingFor.data.player !== playerId) return null;
+      return <RoomChoiceModal data={waitingFor.data} />;
     default:
       return null;
   }

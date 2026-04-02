@@ -101,6 +101,60 @@ fn do_eliminate(state: &mut GameState, player: PlayerId, events: &mut Vec<GameEv
         }
     }
 
+    // CR 725.4: If the player who has the initiative leaves the game,
+    // the active player takes the initiative. If the active player is
+    // also leaving, the next living player in turn order gets it.
+    if state.initiative == Some(player) {
+        let any_alive = state
+            .players
+            .iter()
+            .any(|p| !p.is_eliminated && p.id != player);
+
+        if !any_alive {
+            state.initiative = None;
+        } else {
+            let new_holder =
+                if players::is_alive(state, state.active_player) && state.active_player != player {
+                    state.active_player
+                } else {
+                    players::next_player(state, player)
+                };
+            state.initiative = Some(new_holder);
+            events.push(GameEvent::InitiativeTaken {
+                player_id: new_holder,
+            });
+            // CR 725.2: "Whenever a player takes the initiative, that player ventures
+            // into Undercity." Push as a pending trigger so it goes on the stack.
+            let source_id = crate::game::dungeon::dungeon_sentinel_id(new_holder);
+            let venture_ability = crate::types::ability::ResolvedAbility::new(
+                crate::types::ability::Effect::VentureInto {
+                    dungeon: crate::game::dungeon::DungeonId::Undercity,
+                },
+                vec![],
+                source_id,
+                new_holder,
+            );
+            crate::game::triggers::push_pending_trigger_to_stack(
+                state,
+                crate::game::triggers::PendingTrigger {
+                    source_id,
+                    controller: new_holder,
+                    condition: None,
+                    ability: venture_ability,
+                    timestamp: 0,
+                    target_constraints: Vec::new(),
+                    trigger_event: Some(GameEvent::InitiativeTaken {
+                        player_id: new_holder,
+                    }),
+                    modal: None,
+                    mode_abilities: vec![],
+                    description: Some("Take the initiative — venture into Undercity".to_string()),
+                },
+                events,
+            );
+        }
+    }
+
     events.push(GameEvent::PlayerEliminated { player_id: player });
 }
 
@@ -383,5 +437,70 @@ mod tests {
         eliminate_player(&mut state, PlayerId(1), &mut events);
 
         assert!(state.eliminated_players.contains(&PlayerId(1)));
+    }
+
+    // --- Initiative transfer on elimination (CR 725.4) ---
+
+    #[test]
+    fn initiative_transfers_on_elimination() {
+        let mut state = setup_three_player();
+        state.active_player = PlayerId(0);
+        state.initiative = Some(PlayerId(1));
+        let mut events = Vec::new();
+
+        eliminate_player(&mut state, PlayerId(1), &mut events);
+
+        // CR 725.4: Active player (P0) takes the initiative.
+        assert_eq!(state.initiative, Some(PlayerId(0)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::InitiativeTaken {
+                player_id: PlayerId(0)
+            }
+        )));
+        // CR 725.2: Venture into Undercity should be on the stack.
+        assert!(
+            !state.stack.is_empty(),
+            "venture trigger should be pushed to stack"
+        );
+    }
+
+    #[test]
+    fn initiative_transfers_to_next_when_active_leaving() {
+        let mut state = setup_three_player();
+        state.active_player = PlayerId(0);
+        state.initiative = Some(PlayerId(0));
+        let mut events = Vec::new();
+
+        eliminate_player(&mut state, PlayerId(0), &mut events);
+
+        // CR 725.4: Active player is leaving, so next living player in turn order gets it.
+        // P1 is next after P0 in a 3-player game.
+        assert_eq!(state.initiative, Some(PlayerId(1)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::InitiativeTaken {
+                player_id: PlayerId(1)
+            }
+        )));
+    }
+
+    #[test]
+    fn initiative_transfers_in_two_player_game() {
+        let mut state = setup_two_player();
+        state.active_player = PlayerId(0);
+        state.initiative = Some(PlayerId(0));
+        let mut events = Vec::new();
+
+        eliminate_player(&mut state, PlayerId(0), &mut events);
+
+        // CR 725.4: P1 is still alive, so they get initiative (game ends immediately after).
+        assert_eq!(state.initiative, Some(PlayerId(1)));
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::GameOver {
+                winner: Some(PlayerId(1))
+            }
+        ));
     }
 }

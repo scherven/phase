@@ -215,6 +215,7 @@ pub fn synthesize_mobilize(face: &mut CardFace) {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: true,
+                supertypes: vec![],
             };
 
             face.triggers.push(

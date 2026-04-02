@@ -2,7 +2,7 @@ use crate::game::dungeon::{
     self, available_dungeons, dungeon_sentinel_id, is_bottommost, next_rooms, room_name, DungeonId,
     VentureSource,
 };
-use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
+use crate::types::ability::{EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::player::PlayerId;
@@ -221,14 +221,16 @@ fn queue_room_trigger(state: &mut GameState, player: PlayerId, dungeon: DungeonI
     let source_id = dungeon_sentinel_id(player);
     let name = room_name(dungeon, room);
 
-    // Room effects are currently unimplemented — the trigger is queued
-    // but resolves as a no-op. Individual room effects will be wired
-    // as Effect variants are mapped to each room.
-    let room_ability = ResolvedAbility::new(
-        Effect::VentureIntoDungeon, // Placeholder — room effects TBD
-        vec![],
-        source_id,
-        player,
+    // CR 309.4c: Build the room's actual effect from the dungeon definition.
+    let (room_ability, target_constraints) =
+        dungeon::room_effects(dungeon, room, source_id, player);
+
+    // Room triggers set pending_trigger. In normal flow, it should already be None
+    // because the engine consumes it before dispatching the next venture action.
+    // If this assertion fires, the call site needs to consume the existing trigger first.
+    debug_assert!(
+        state.pending_trigger.is_none(),
+        "queue_room_trigger: pending_trigger already set — previous trigger not consumed"
     );
 
     // Push as a pending trigger so it goes on the stack properly.
@@ -238,7 +240,7 @@ fn queue_room_trigger(state: &mut GameState, player: PlayerId, dungeon: DungeonI
         condition: None,
         ability: room_ability,
         timestamp: 0,
-        target_constraints: Vec::new(),
+        target_constraints,
         trigger_event: Some(GameEvent::RoomEntered {
             player_id: player,
             dungeon,
@@ -287,7 +289,7 @@ pub fn handle_choose_room(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::ResolvedAbility;
+    use crate::types::ability::{Effect, ResolvedAbility};
     use crate::types::identifiers::ObjectId;
 
     fn make_venture_ability(player: PlayerId) -> ResolvedAbility {
@@ -332,6 +334,19 @@ mod tests {
         let progress = &state.dungeon_progress[&PlayerId(0)];
         assert_eq!(progress.current_dungeon, Some(DungeonId::Undercity));
         assert_eq!(progress.current_room, 0);
+
+        // Must emit RoomEntered for room 0 (Secret Entrance).
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::RoomEntered {
+                room_index: 0,
+                dungeon: DungeonId::Undercity,
+                ..
+            }
+        )));
+
+        // Must queue a room trigger (pending_trigger set).
+        assert!(state.pending_trigger.is_some());
     }
 
     #[test]

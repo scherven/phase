@@ -468,15 +468,13 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
                 "if it had counters on it",
                 TriggerCondition::HadCounters { counter_type: None },
             ),
-            // CR 309.7: Acererak's intervening-if — "if you haven't completed Tomb of Annihilation"
-            (
-                "if you haven't completed tomb of annihilation",
-                TriggerCondition::NotCompletedDungeon {
-                    dungeon: crate::game::dungeon::DungeonId::TombOfAnnihilation,
-                },
-            ),
         ],
     ) {
+        return result;
+    }
+
+    // CR 309.7: "if you haven't completed [dungeon name]" — dynamic dungeon name parsing.
+    if let Some(result) = try_extract_not_completed_dungeon(&tp, &lower, text) {
         return result;
     }
 
@@ -612,6 +610,42 @@ fn try_extract_simple_condition(
             return Some((
                 strip_condition_clause(text, pos, pattern.len()),
                 Some(condition.clone()),
+            ));
+        }
+    }
+    None
+}
+
+/// CR 309.7: Extract "if you haven't completed [dungeon name]" conditions.
+///
+/// Parses the dungeon name dynamically from the text rather than matching a
+/// verbatim Oracle string — handles any dungeon, not just Tomb of Annihilation.
+fn try_extract_not_completed_dungeon(
+    tp: &TextPair<'_>,
+    lower: &str,
+    text: &str,
+) -> Option<(String, Option<TriggerCondition>)> {
+    use crate::game::dungeon::DungeonId;
+
+    let prefix = "if you haven't completed ";
+    let pos = tp.find(prefix)?;
+    let after = &lower[pos + prefix.len()..];
+
+    // Try each known dungeon display name (lowercase) against the remainder.
+    let dungeons = [
+        ("lost mine of phandelver", DungeonId::LostMineOfPhandelver),
+        ("dungeon of the mad mage", DungeonId::DungeonOfTheMadMage),
+        ("tomb of annihilation", DungeonId::TombOfAnnihilation),
+        ("undercity", DungeonId::Undercity),
+        ("baldur's gate wilderness", DungeonId::BaldursGateWilderness),
+    ];
+
+    for (name, id) in &dungeons {
+        if after.starts_with(name) {
+            let clause_len = prefix.len() + name.len();
+            return Some((
+                strip_condition_clause(text, pos, clause_len),
+                Some(TriggerCondition::NotCompletedDungeon { dungeon: *id }),
             ));
         }
     }

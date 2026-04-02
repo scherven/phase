@@ -86,6 +86,11 @@ fn parse_player_state_conditions(input: &str) -> OracleResult<'_, StaticConditio
             StaticCondition::HasCityBlessing,
             tag("you have the city's blessing"),
         ),
+        // CR 309.7: Dungeon completion
+        value(
+            StaticCondition::CompletedADungeon,
+            tag("you've completed a dungeon"),
+        ),
     ))
     .parse(input)
 }

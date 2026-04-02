@@ -64,7 +64,14 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
         parse_number_of_cards_in_zone,
         parse_number_of_opponents,
     ))
-    .or(alt((parse_speed_ref,)))
+    .or(alt((
+        parse_speed_ref,
+        // CR 309.7: "the number of dungeons you've completed"
+        value(
+            QuantityRef::DungeonsCompleted,
+            tag("dungeons you've completed"),
+        ),
+    )))
     .parse(input)
 }
 

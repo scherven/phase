@@ -28,6 +28,7 @@ pub fn resolve(
             owner: crate::types::ability::TargetFilter::Controller,
             attach_to: None,
             enters_attacking: false,
+            supertypes: vec![],
         },
         ability.targets.clone(),
         ability.source_id,

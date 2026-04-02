@@ -76,6 +76,7 @@ pub(super) fn try_parse_token(_lower: &str, text: &str) -> Option<Effect> {
         owner: TargetFilter::Controller,
         attach_to: token.attach_to,
         enters_attacking: false,
+        supertypes: vec![],
     })
 }
 

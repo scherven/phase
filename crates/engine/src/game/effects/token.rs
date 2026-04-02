@@ -10,7 +10,7 @@ use crate::types::ability::{
     ManaProduction, PtValue, QuantityExpr, QuantityRef, ResolvedAbility, TargetFilter, TargetRef,
     TypedFilter,
 };
-use crate::types::card_type::{CardType, CoreType};
+use crate::types::card_type::{CardType, CoreType, Supertype};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{DelayedTrigger, GameState};
 use crate::types::identifiers::CardId;
@@ -33,6 +33,7 @@ struct TokenAttrs {
     subtypes: Vec<String>,
     colors: Vec<ManaColor>,
     keywords: Vec<Keyword>,
+    supertypes: Vec<Supertype>,
 }
 
 /// Parse a Forge token script name into structured attributes.
@@ -71,6 +72,7 @@ fn parse_token_script(script: &str) -> Option<TokenAttrs> {
                 subtypes,
                 colors,
                 keywords: vec![],
+                supertypes: vec![],
             })
         }
         // Non-creature enchantment: {color}_e_{subtype}[_{suffix}]
@@ -84,6 +86,7 @@ fn parse_token_script(script: &str) -> Option<TokenAttrs> {
                 subtypes,
                 colors,
                 keywords: vec![],
+                supertypes: vec![],
             })
         }
         // Variable P/T creature: {color}_x_x_{type_parts}
@@ -135,6 +138,7 @@ fn parse_creature_parts(
         subtypes,
         colors,
         keywords,
+        supertypes: vec![],
     }
 }
 
@@ -320,6 +324,7 @@ pub fn resolve(
         count,
         owner_filter,
         enters_attacking,
+        fallback_supertypes,
     ) = match &ability.effect {
         Effect::Token {
             name,
@@ -332,6 +337,7 @@ pub fn resolve(
             count,
             owner,
             enters_attacking,
+            supertypes,
             ..
         } => (
             name.clone(),
@@ -344,6 +350,7 @@ pub fn resolve(
             resolve_quantity(state, count, ability.controller, ability.source_id).max(0) as u32,
             owner,
             *enters_attacking,
+            supertypes.clone(),
         ),
         _ => (
             "Token".to_string(),
@@ -356,6 +363,7 @@ pub fn resolve(
             1,
             &TargetFilter::Controller,
             false,
+            vec![],
         ),
     };
     let token_owner = resolve_token_owner(state, ability, owner_filter);
@@ -368,6 +376,7 @@ pub fn resolve(
             &fallback_types,
             &fallback_colors,
             &fallback_keywords,
+            &fallback_supertypes,
             state,
             ability.controller,
             ability.source_id,
@@ -432,7 +441,7 @@ pub fn resolve(
                             obj.base_power = attrs.power;
                             obj.base_toughness = attrs.toughness;
                             obj.card_types = CardType {
-                                supertypes: vec![],
+                                supertypes: attrs.supertypes.clone(),
                                 core_types: attrs.core_types.clone(),
                                 subtypes: attrs.subtypes.clone(),
                             };
@@ -568,6 +577,7 @@ fn build_token_attrs_from_effect(
     types: &[String],
     colors: &[ManaColor],
     keywords: &[Keyword],
+    supertypes: &[Supertype],
     state: &GameState,
     controller: crate::types::player::PlayerId,
     source_id: crate::types::identifiers::ObjectId,
@@ -614,6 +624,7 @@ fn build_token_attrs_from_effect(
         subtypes,
         colors: colors.to_vec(),
         keywords: keywords.to_vec(),
+        supertypes: supertypes.to_vec(),
     })
 }
 
@@ -946,6 +957,7 @@ mod tests {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: false,
+                supertypes: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1027,6 +1039,7 @@ mod tests {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: false,
+                supertypes: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1079,6 +1092,7 @@ mod tests {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: false,
+                supertypes: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1121,6 +1135,7 @@ mod tests {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: false,
+                supertypes: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1153,6 +1168,7 @@ mod tests {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: false,
+                supertypes: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1183,6 +1199,7 @@ mod tests {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: false,
+                supertypes: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1239,6 +1256,7 @@ mod tests {
                 owner: TargetFilter::ParentTargetController,
                 attach_to: None,
                 enters_attacking: false,
+                supertypes: vec![],
             },
             vec![TargetRef::Object(target_id)],
             ObjectId(100),
