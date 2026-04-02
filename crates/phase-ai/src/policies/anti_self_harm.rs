@@ -1,5 +1,9 @@
+use engine::game::combat;
 use engine::game::filter::matches_target_filter;
-use engine::types::ability::{Effect, QuantityExpr, ReplacementMode, TargetFilter, TargetRef};
+use engine::game::mana_abilities;
+use engine::types::ability::{
+    AbilityCost, Effect, QuantityExpr, ReplacementMode, TargetFilter, TargetRef,
+};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::WaitingFor;
@@ -119,6 +123,27 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
             && !etb_trigger_has_valid_targets(ctx, &facts)
         {
             penalty -= 8.0;
+        }
+    }
+
+    // Penalize pump spells during opponent's combat that would require tapping creature
+    // mana sources. auto_tap prefers pure lands (tier 0) over non-land dorks (tier 1),
+    // so creature sources are only tapped when lands can't cover the full mana cost.
+    // Tapping a creature dork for mana removes it as a potential blocker — pumping a
+    // creature that can't block afterwards is a wasted combat trick.
+    let has_pump = effects.iter().any(|e| {
+        matches!(e, Effect::Pump { .. } | Effect::DoublePT { .. })
+            && matches!(effect_polarity(e), EffectPolarity::Beneficial)
+    });
+    if has_pump {
+        let own_turn = ctx.state.active_player == ctx.ai_player;
+        if !own_turn
+            && matches!(
+                ctx.state.phase,
+                Phase::BeginCombat | Phase::DeclareAttackers | Phase::DeclareBlockers
+            )
+        {
+            penalty += pump_taps_blocker_penalty(ctx);
         }
     }
 
@@ -363,17 +388,18 @@ fn score_target_object(ctx: &PolicyContext<'_>, object_id: ObjectId, beneficial:
 
         // Penalize pumping own tapped creatures — they can't attack or block,
         // so the +N/+N expires at cleanup with no combat impact.
+        // Exception: tapped creatures actively participating in combat (as attacker
+        // or blocker) benefit from the pump during damage resolution.
         if beneficial && object.tapped && object.controller == ctx.ai_player {
             let has_pump = effects
                 .iter()
                 .any(|e| matches!(e, Effect::Pump { .. } | Effect::DoublePT { .. }));
             if has_pump {
-                // Only discount during combat phases where it might still block
-                let in_combat = matches!(
-                    ctx.state.phase,
-                    Phase::DeclareBlockers | Phase::CombatDamage
-                );
-                if !in_combat {
+                let in_combat_as_participant = ctx.state.combat.as_ref().is_some_and(|combat| {
+                    combat.attackers.iter().any(|a| a.object_id == object_id)
+                        || combat.blocker_to_attacker.contains_key(&object_id)
+                });
+                if !in_combat_as_participant {
                     score -= 6.0;
                 }
             }
@@ -403,6 +429,118 @@ fn score_target_object(ctx: &PolicyContext<'_>, object_id: ObjectId, beneficial:
     }
 
     score
+}
+
+/// Penalize pump spells during opponent's combat when the AI must tap creature mana
+/// sources to pay the cost. Returns a negative penalty proportional to creature
+/// blocking value lost.
+fn pump_taps_blocker_penalty(ctx: &PolicyContext<'_>) -> f64 {
+    let Some(source) = ctx.source_object() else {
+        return 0.0;
+    };
+    let spell_cost = source.mana_cost.mana_value() as usize;
+    if spell_cost == 0 {
+        return 0.0;
+    }
+
+    let pool_mana = ctx.state.players[ctx.ai_player.0 as usize]
+        .mana_pool
+        .total();
+    let remaining_cost = spell_cost.saturating_sub(pool_mana);
+    if remaining_cost == 0 {
+        return 0.0;
+    }
+
+    // Count untapped land sources (auto_tap tier 0 — tapped first before creatures).
+    let untapped_land_count = ctx
+        .state
+        .battlefield
+        .iter()
+        .filter(|&&id| {
+            ctx.state.objects.get(&id).is_some_and(|obj| {
+                obj.controller == ctx.ai_player
+                    && !obj.tapped
+                    && obj.card_types.core_types.contains(&CoreType::Land)
+                    && !obj.card_types.core_types.contains(&CoreType::Creature)
+            })
+        })
+        .count();
+
+    if untapped_land_count >= remaining_cost {
+        // Lands can cover the cost — auto_tap won't touch creature dorks.
+        return 0.0;
+    }
+
+    // Shortfall: some non-land tier-1 sources must be tapped. Check if any are creatures
+    // that could otherwise block.
+    // CR 302.6: Creatures with summoning sickness cannot activate tap abilities.
+    let shortfall = remaining_cost - untapped_land_count;
+    let turn = ctx.state.turn_number;
+    let creature_mana_source_count = ctx
+        .state
+        .battlefield
+        .iter()
+        .filter(|&&id| {
+            ctx.state.objects.get(&id).is_some_and(|obj| {
+                obj.controller == ctx.ai_player
+                    && !obj.tapped
+                    && obj.card_types.core_types.contains(&CoreType::Creature)
+                    && !obj.card_types.core_types.contains(&CoreType::Land)
+                    && !combat::has_summoning_sickness(obj, turn)
+                    && obj.abilities.iter().any(mana_abilities::is_mana_ability)
+            })
+        })
+        .count();
+
+    if creature_mana_source_count == 0 {
+        return 0.0;
+    }
+
+    // Non-land, non-creature tier-1 sources (mana rocks) that auto_tap would use
+    // before creatures. Exclude sacrifice-for-mana sources (Treasures) — those are
+    // tier 4 in auto_tap and would NOT be tapped before creature dorks.
+    let non_creature_tier1_count = ctx
+        .state
+        .battlefield
+        .iter()
+        .filter(|&&id| {
+            ctx.state.objects.get(&id).is_some_and(|obj| {
+                obj.controller == ctx.ai_player
+                    && !obj.tapped
+                    && !obj.card_types.core_types.contains(&CoreType::Land)
+                    && !obj.card_types.core_types.contains(&CoreType::Creature)
+                    && obj.abilities.iter().any(|a| {
+                        mana_abilities::is_mana_ability(a) && !ability_cost_requires_sacrifice(a)
+                    })
+            })
+        })
+        .count();
+
+    let creatures_at_risk = shortfall.saturating_sub(non_creature_tier1_count);
+    let creatures_tapped = creatures_at_risk.min(creature_mana_source_count);
+    if creatures_tapped == 0 {
+        return 0.0;
+    }
+
+    // Each creature tapped loses its blocking value during this combat.
+    -(5.0 * creatures_tapped as f64)
+}
+
+/// Check if an ability's cost includes self-sacrifice (Treasure-style `{T}, Sacrifice`).
+/// Mirrors `mana_sources::cost_requires_sacrifice` which is private to the engine module.
+fn ability_cost_requires_sacrifice(ability: &engine::types::ability::AbilityDefinition) -> bool {
+    match &ability.cost {
+        Some(AbilityCost::Composite { costs }) => costs.iter().any(|c| {
+            matches!(
+                c,
+                AbilityCost::Sacrifice {
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            )
+        }),
+        _ => false,
+    }
 }
 
 /// Extract the fixed damage amount from the pending spell's DealDamage effect.
@@ -1582,5 +1720,292 @@ mod tests {
             },
         };
         (decision, candidate)
+    }
+
+    /// Fix 1: Pumping during opponent's combat when the only way to pay is by tapping
+    /// a creature mana source (e.g., Llanowar Elves paying for Giant Growth) should be
+    /// penalized — the tapped creature can't block, wasting the pump.
+    #[test]
+    fn pre_cast_penalizes_pump_when_creature_mana_source_must_tap() {
+        use engine::types::ability::{AbilityCost, AbilityKind, ManaProduction};
+        use engine::types::mana::ManaColor;
+
+        let mut state = make_state();
+        state.active_player = PlayerId(1); // opponent's turn
+        state.phase = Phase::DeclareAttackers;
+
+        // AI has a creature mana source (Llanowar Elves) — no untapped lands.
+        let dork_id = add_creature(&mut state, PlayerId(0), "Llanowar Elves", 1, 1);
+        let dork_obj = state.objects.get_mut(&dork_id).unwrap();
+        // Played on a previous turn — no summoning sickness.
+        dork_obj.entered_battlefield_turn = Some(0);
+        let mut mana_ability = engine::types::ability::AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::Fixed {
+                    colors: vec![ManaColor::Green],
+                },
+                restrictions: vec![],
+                expiry: None,
+            },
+        );
+        mana_ability.cost = Some(AbilityCost::Tap);
+        dork_obj.abilities.push(mana_ability);
+
+        // Also add an opponent creature so the "no opponent creatures" penalty doesn't fire
+        add_creature(&mut state, PlayerId(1), "Goblin", 2, 2);
+
+        // Pump spell in hand
+        let spell_id = create_object(
+            &mut state,
+            CardId(500),
+            PlayerId(0),
+            "Giant Growth".to_string(),
+            Zone::Hand,
+        );
+        let spell_obj = state.objects.get_mut(&spell_id).unwrap();
+        spell_obj.card_types.core_types.push(CoreType::Instant);
+        spell_obj.mana_cost = ManaCost::Cost {
+            shards: vec![engine::types::mana::ManaCostShard::Green],
+            generic: 0,
+        };
+        spell_obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Pump {
+                power: PtValue::Fixed(3),
+                toughness: PtValue::Fixed(3),
+                target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+            },
+        )];
+
+        let config = AiConfig::default();
+        let decision = AiDecisionContext {
+            waiting_for: WaitingFor::Priority {
+                player: PlayerId(0),
+            },
+            candidates: Vec::new(),
+        };
+        let candidate = CandidateAction {
+            action: GameAction::CastSpell {
+                object_id: spell_id,
+                card_id: CardId(500),
+                targets: Vec::new(),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Spell,
+            },
+        };
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        let score = AntiSelfHarmPolicy.score(&ctx);
+        assert!(
+            score < -4.0,
+            "Should penalize pump spell that must tap creature blocker, got {score}"
+        );
+    }
+
+    /// Fix 1 counterpart: if there are enough lands to pay, no penalty should apply.
+    #[test]
+    fn pre_cast_no_penalty_when_lands_cover_pump_cost() {
+        use engine::types::ability::{AbilityCost, AbilityKind, ManaProduction};
+        use engine::types::mana::ManaColor;
+
+        let mut state = make_state();
+        state.active_player = PlayerId(1); // opponent's turn
+        state.phase = Phase::DeclareAttackers;
+
+        // AI has a creature mana source AND an untapped land.
+        let dork_id = add_creature(&mut state, PlayerId(0), "Llanowar Elves", 1, 1);
+        let dork_obj = state.objects.get_mut(&dork_id).unwrap();
+        dork_obj.entered_battlefield_turn = Some(0);
+        let mut mana_ability = engine::types::ability::AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::Fixed {
+                    colors: vec![ManaColor::Green],
+                },
+                restrictions: vec![],
+                expiry: None,
+            },
+        );
+        mana_ability.cost = Some(AbilityCost::Tap);
+        dork_obj.abilities.push(mana_ability);
+
+        // Add an untapped land (enough to pay for Giant Growth)
+        let land_id = create_object(
+            &mut state,
+            CardId(501),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        let land_obj = state.objects.get_mut(&land_id).unwrap();
+        land_obj.card_types.core_types.push(CoreType::Land);
+
+        add_creature(&mut state, PlayerId(1), "Goblin", 2, 2);
+
+        // Pump spell in hand
+        let spell_id = create_object(
+            &mut state,
+            CardId(502),
+            PlayerId(0),
+            "Giant Growth".to_string(),
+            Zone::Hand,
+        );
+        let spell_obj = state.objects.get_mut(&spell_id).unwrap();
+        spell_obj.card_types.core_types.push(CoreType::Instant);
+        spell_obj.mana_cost = ManaCost::Cost {
+            shards: vec![engine::types::mana::ManaCostShard::Green],
+            generic: 0,
+        };
+        spell_obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Pump {
+                power: PtValue::Fixed(3),
+                toughness: PtValue::Fixed(3),
+                target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+            },
+        )];
+
+        let config = AiConfig::default();
+        let decision = AiDecisionContext {
+            waiting_for: WaitingFor::Priority {
+                player: PlayerId(0),
+            },
+            candidates: Vec::new(),
+        };
+        let candidate = CandidateAction {
+            action: GameAction::CastSpell {
+                object_id: spell_id,
+                card_id: CardId(502),
+                targets: Vec::new(),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Spell,
+            },
+        };
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        let score = AntiSelfHarmPolicy.score(&ctx);
+        assert!(
+            score >= -1.0,
+            "Should not penalize when lands can cover cost, got {score}"
+        );
+    }
+
+    /// Fix 3: Pumping a tapped creature during combat should still be penalized
+    /// if the creature is not participating in combat (not an attacker or blocker).
+    #[test]
+    fn penalizes_pump_on_tapped_non_combatant_during_combat() {
+        use engine::game::combat::CombatState;
+
+        let mut state = make_state();
+        state.phase = Phase::DeclareBlockers;
+        state.combat = Some(CombatState::default());
+
+        // AI has a tapped creature NOT in combat
+        let creature_id = add_creature(&mut state, PlayerId(0), "Tapped Dork", 1, 1);
+        let creature = state.objects.get_mut(&creature_id).unwrap();
+        creature.tapped = true;
+
+        let config = AiConfig::default();
+        let effect = Effect::Pump {
+            power: PtValue::Fixed(3),
+            toughness: PtValue::Fixed(3),
+            target: TargetFilter::Any,
+        };
+        let (decision, candidate) = make_target_selection_ctx(
+            &state,
+            effect,
+            vec![TargetRef::Object(creature_id)],
+            Some(TargetRef::Object(creature_id)),
+        );
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        let score = AntiSelfHarmPolicy.score(&ctx);
+        // Base targeting score for own 1/1 creature is ~+3.0, minus the -6.0 penalty = ~-3.0
+        assert!(
+            score < -2.0,
+            "Should penalize pump on tapped non-combatant during DeclareBlockers, got {score}"
+        );
+    }
+
+    /// Fix 3 counterpart: pumping a tapped creature that IS an attacker is fine.
+    #[test]
+    fn allows_pump_on_tapped_attacker_during_combat() {
+        use engine::game::combat::{AttackerInfo, CombatState};
+
+        let mut state = make_state();
+        state.phase = Phase::DeclareBlockers;
+
+        let attacker_id = add_creature(&mut state, PlayerId(0), "Attacker", 3, 3);
+        let attacker = state.objects.get_mut(&attacker_id).unwrap();
+        attacker.tapped = true;
+
+        // Set up combat with this creature as an attacker
+        let mut combat = CombatState::default();
+        combat.attackers.push(AttackerInfo {
+            object_id: attacker_id,
+            defending_player: PlayerId(1),
+            attack_target: engine::game::combat::AttackTarget::Player(PlayerId(1)),
+            blocked: false,
+        });
+        state.combat = Some(combat);
+
+        let config = AiConfig::default();
+        let effect = Effect::Pump {
+            power: PtValue::Fixed(3),
+            toughness: PtValue::Fixed(3),
+            target: TargetFilter::Any,
+        };
+        let (decision, candidate) = make_target_selection_ctx(
+            &state,
+            effect,
+            vec![TargetRef::Object(attacker_id)],
+            Some(TargetRef::Object(attacker_id)),
+        );
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        let score = AntiSelfHarmPolicy.score(&ctx);
+        // The score should be positive (pump on own attacker) or at worst mildly negative
+        // from other policies, but NOT the -6.0 tapped-creature penalty
+        assert!(
+            score > -4.0,
+            "Should not heavily penalize pump on tapped attacker in combat, got {score}"
+        );
     }
 }

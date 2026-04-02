@@ -1,3 +1,5 @@
+use engine::game::combat;
+use engine::game::mana_abilities;
 use engine::game::players;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::GameState;
@@ -127,21 +129,27 @@ fn has_recursion_keyword(obj: &engine::game::game_object::GameObject) -> bool {
     })
 }
 
-/// Count untapped lands controlled by the player plus mana already in their pool.
+/// Count untapped mana sources controlled by the player plus mana already in their pool.
+/// Includes lands and non-land permanents with mana abilities (dorks, mana rocks).
+/// CR 302.6: Creatures with summoning sickness cannot activate tap abilities,
+/// so sick non-land mana dorks are excluded.
 pub(crate) fn available_mana(state: &GameState, player: PlayerId) -> u32 {
-    let untapped_lands = state
+    let turn = state.turn_number;
+    let untapped_mana_sources = state
         .battlefield
         .iter()
         .filter(|&&id| {
             state.objects.get(&id).is_some_and(|obj| {
                 obj.controller == player
-                    && obj.card_types.core_types.contains(&CoreType::Land)
                     && !obj.tapped
+                    && (obj.card_types.core_types.contains(&CoreType::Land)
+                        || (!combat::has_summoning_sickness(obj, turn)
+                            && obj.abilities.iter().any(mana_abilities::is_mana_ability)))
             })
         })
         .count();
     let pool_mana = state.players[player.0 as usize].mana_pool.total();
-    (untapped_lands + pool_mana) as u32
+    (untapped_mana_sources + pool_mana) as u32
 }
 
 #[cfg(test)]
@@ -222,6 +230,59 @@ mod tests {
             score_flashback > score_plain,
             "Flashback card should score higher: {score_flashback} > {score_plain}"
         );
+    }
+
+    #[test]
+    fn available_mana_counts_creature_mana_dorks() {
+        use engine::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaProduction,
+        };
+        use engine::types::mana::ManaColor;
+
+        let mut state = make_state();
+        state.turn_number = 2; // advance past turn 0 so creatures can lose sickness
+
+        // Add 1 untapped land
+        let land_id = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        let land_obj = state.objects.get_mut(&land_id).unwrap();
+        land_obj.card_types.core_types.push(CoreType::Land);
+
+        // Add 1 untapped creature with a mana ability (Llanowar Elves)
+        let dork_id = create_object(
+            &mut state,
+            CardId(101),
+            PlayerId(0),
+            "Llanowar Elves".to_string(),
+            Zone::Battlefield,
+        );
+        let dork_obj = state.objects.get_mut(&dork_id).unwrap();
+        dork_obj.card_types.core_types.push(CoreType::Creature);
+        dork_obj.power = Some(1);
+        dork_obj.toughness = Some(1);
+        // Played on a previous turn — no summoning sickness.
+        dork_obj.entered_battlefield_turn = Some(0);
+        let mut mana_ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::Fixed {
+                    colors: vec![ManaColor::Green],
+                },
+                restrictions: vec![],
+                expiry: None,
+            },
+        );
+        mana_ability.cost = Some(AbilityCost::Tap);
+        dork_obj.abilities.push(mana_ability);
+
+        // Should count both: 1 land + 1 mana dork = 2
+        let mana = available_mana(&state, PlayerId(0));
+        assert_eq!(mana, 2, "Should count both land and creature mana dork");
     }
 
     #[test]
