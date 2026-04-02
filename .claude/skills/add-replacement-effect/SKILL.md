@@ -134,8 +134,11 @@ Stored on `GameState` as `Option<Box<AbilityDefinition>>`. Set by `continue_repl
 
 ### Phase 4 — Engine Integration (if post-replacement effect)
 
-- [ ] **`crates/engine/src/game/engine.rs` — `apply_post_replacement_effect()`**
-  If your replacement produces a post-zone-change side effect using a new `Effect` variant, add a match arm in this function. Currently handles `LoseLife` and `Tap`.
+- [ ] **`crates/engine/src/game/engine_replacement.rs` — `apply_post_replacement_effect()`**
+  If your replacement produces a post-zone-change side effect using a new `Effect` variant, extend this helper. It owns post-replacement side effects, copy-target follow-up, and replacement-choice execution after the zone change is committed.
+
+- [ ] **`crates/engine/src/game/engine.rs` — routing only**
+  Ensure the relevant `(WaitingFor::ReplacementChoice { .. }, GameAction::ChooseReplacement { .. })` or `CopyTargetChoice` route still delegates into `engine_replacement.rs`. Do not reintroduce replacement execution logic into `engine.rs`.
 
 ### Phase 5 — Tests
 
@@ -163,7 +166,7 @@ For replacements that need interactive choice before zone completion:
 1. **Add state to `GameObject`** for the choice result (e.g., `chosen_basic_land_type: Option<BasicLandType>`)
 2. **Add `WaitingFor` + `GameAction` variants** for the interactive round-trip (see `add-interactive-effect` skill)
 3. **In the replacement pipeline**: when the interactive replacement is detected, store the pending `ProposedEvent` and return a waiting state *before* executing the zone change
-4. **In `engine.rs`**: when the player responds, set the choice on the object, *then* execute the stored zone change, *then* process any additional post-replacement effects
+4. **In `engine_replacement.rs`**: when the player responds, set the choice on the object, *then* execute the stored zone change, *then* process any additional post-replacement effects
 
 This ensures layers never evaluate the permanent in an undefined state.
 

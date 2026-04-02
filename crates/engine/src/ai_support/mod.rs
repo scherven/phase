@@ -8,7 +8,6 @@ use crate::game::mana_abilities;
 use crate::game::mana_sources;
 use crate::types::ability::AbilityKind;
 use crate::types::actions::GameAction;
-use crate::types::card_type::CoreType;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaCost;
@@ -371,14 +370,19 @@ pub fn auto_pass_recommended(state: &GameState, actions: &[GameAction]) -> bool 
     let has_meaningful = actions.iter().any(|a| {
         match a {
             GameAction::PassPriority => false,
-            GameAction::ActivateAbility { source_id, .. } => {
-                // Non-land activated abilities (creatures, artifacts) are meaningful.
-                // Land activated abilities are only present as mana-producing fallbacks
-                // and are not meaningful on their own.
-                state
-                    .objects
-                    .get(source_id)
-                    .is_some_and(|obj| !obj.card_types.core_types.contains(&CoreType::Land))
+            GameAction::ActivateAbility {
+                source_id,
+                ability_index,
+            } => {
+                // Non-mana activated abilities are always meaningful.
+                // Mana abilities on lands are NOT meaningful on their own — they only
+                // matter if the mana enables casting a spell, in which case CastSpell
+                // will also be present in `actions`.
+                state.objects.get(source_id).is_some_and(|obj| {
+                    obj.abilities
+                        .get(*ability_index)
+                        .is_some_and(|ability| !mana_abilities::is_mana_ability(ability))
+                })
             }
             _ => true,
         }
@@ -552,5 +556,88 @@ mod tests {
     fn cheap_reject_candidate_preserves_ambiguous_priority_pass() {
         let state = GameState::new_two_player(42);
         assert!(!cheap_reject_candidate(&state, &GameAction::PassPriority));
+    }
+
+    #[test]
+    fn auto_pass_does_not_skip_non_mana_land_ability() {
+        // Shifting Woodland pattern: a land with both a mana ability and a
+        // non-mana activated ability (delirium BecomeCopy). Auto-pass must NOT
+        // fire when the non-mana ability is a legal action.
+        use crate::game::zones::create_object;
+        use crate::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaProduction, TargetFilter,
+        };
+        use crate::types::card_type::CoreType;
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaColor;
+        use crate::types::zones::Zone;
+
+        let mut state = GameState::new_two_player(42);
+        state.phase = crate::types::phase::Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        let land = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Land With Non-Mana Ability".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&land).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            // Mana ability (index 0)
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Mana {
+                        produced: ManaProduction::Fixed {
+                            colors: vec![ManaColor::Green],
+                        },
+                        restrictions: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(AbilityCost::Tap),
+            );
+            // Non-mana ability (index 1)
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::BecomeCopy {
+                    target: TargetFilter::Any,
+                    duration: Some(crate::types::ability::Duration::UntilEndOfTurn),
+                },
+            ));
+        }
+
+        // Actions include PassPriority + the non-mana ActivateAbility
+        let actions = vec![
+            GameAction::PassPriority,
+            GameAction::ActivateAbility {
+                source_id: land,
+                ability_index: 1,
+            },
+        ];
+        assert!(
+            !super::auto_pass_recommended(&state, &actions),
+            "Auto-pass must not fire when a non-mana land ability is available"
+        );
+
+        // But if only the mana ability is available, auto-pass should fire
+        let mana_only = vec![
+            GameAction::PassPriority,
+            GameAction::ActivateAbility {
+                source_id: land,
+                ability_index: 0,
+            },
+        ];
+        assert!(
+            super::auto_pass_recommended(&state, &mana_only),
+            "Auto-pass should fire when only mana abilities are available"
+        );
     }
 }
