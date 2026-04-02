@@ -6,9 +6,10 @@ use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
 use super::oracle::{
-    has_unimplemented, is_effect_sentence_candidate, is_granted_static_line,
-    is_replacement_pattern, is_static_pattern, make_unimplemented, normalize_self_refs_for_static,
-    ParsedAbilities,
+    has_unimplemented, make_unimplemented, normalize_self_refs_for_static, ParsedAbilities,
+};
+use super::oracle_classifier::{
+    is_effect_sentence_candidate, is_granted_static_line, is_replacement_pattern, is_static_pattern,
 };
 use super::oracle_cost::parse_oracle_cost;
 use super::oracle_effect::parse_effect_chain;

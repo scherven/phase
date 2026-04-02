@@ -19,16 +19,17 @@ use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 use super::ability_utils::{
-    assign_selected_slots_in_chain, assign_targets_in_chain, auto_select_targets,
-    begin_target_selection, build_chained_resolved, build_target_slots, choose_target,
-    compute_unavailable_modes, flatten_targets_in_chain, record_modal_mode_choices,
-    validate_modal_indices, validate_selected_targets, TargetSelectionAdvance,
+    assign_targets_in_chain, auto_select_targets, begin_target_selection, build_chained_resolved,
+    build_target_slots, compute_unavailable_modes, flatten_targets_in_chain,
+    record_modal_mode_choices, validate_modal_indices,
 };
 use super::casting;
 use super::casting_costs;
 use super::effects;
+use super::engine_casting;
 use super::engine_combat;
 use super::engine_priority;
+use super::engine_stack;
 use super::mana_abilities;
 use super::mana_payment;
 use super::mana_sources;
@@ -66,7 +67,7 @@ pub fn apply(state: &mut GameState, action: GameAction) -> Result<ActionResult, 
     Ok(result)
 }
 
-fn resume_pending_continuation_if_priority(
+pub(super) fn resume_pending_continuation_if_priority(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EngineError> {
@@ -431,15 +432,22 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         (WaitingFor::TargetSelection { player, .. }, GameAction::SelectTargets { targets }) => {
-            casting::handle_select_targets(state, *player, targets, &mut events)?
+            engine_casting::handle_target_selection_select_targets(
+                state,
+                *player,
+                targets,
+                &mut events,
+            )?
         }
         (WaitingFor::TargetSelection { player, .. }, GameAction::ChooseTarget { target }) => {
-            casting::handle_choose_target(state, *player, target, &mut events)?
+            engine_casting::handle_target_selection_choose_target(
+                state,
+                *player,
+                target,
+                &mut events,
+            )?
         }
         (
             WaitingFor::TargetSelection {
@@ -448,10 +456,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         (
             WaitingFor::OptionalCostChoice {
                 player,
@@ -459,7 +464,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 pending_cast,
             },
             GameAction::DecideOptionalCost { pay },
-        ) => casting::handle_decide_additional_cost(
+        ) => engine_casting::handle_optional_cost_choice(
             state,
             *player,
             *pending_cast.clone(),
@@ -474,10 +479,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         // CR 601.2b: Defiler cycle — player decides whether to pay life for mana reduction.
         (
             WaitingFor::DefilerPayment {
@@ -487,7 +489,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 pending_cast,
             },
             GameAction::DecideOptionalCost { pay },
-        ) => casting_costs::handle_defiler_payment(
+        ) => engine_casting::handle_defiler_payment(
             state,
             *player,
             *pending_cast.clone(),
@@ -503,10 +505,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         // CR 601.2b: Player selected cards to discard as additional casting cost.
         (
             WaitingFor::DiscardForCost {
@@ -516,7 +515,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 pending_cast,
             },
             GameAction::SelectCards { cards: chosen },
-        ) => casting::handle_discard_for_cost(
+        ) => engine_casting::handle_discard_for_cost(
             state,
             *player,
             *pending_cast.clone(),
@@ -532,10 +531,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         // CR 118.3: Player selected permanents to sacrifice as cost.
         (
             WaitingFor::SacrificeForCost {
@@ -545,7 +541,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 pending_cast,
             },
             GameAction::SelectCards { cards: chosen },
-        ) => casting::handle_sacrifice_for_cost(
+        ) => engine_casting::handle_sacrifice_for_cost(
             state,
             *player,
             *pending_cast.clone(),
@@ -561,10 +557,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         (
             WaitingFor::TapCreaturesForManaAbility {
                 count,
@@ -573,7 +566,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::SelectCards { cards: chosen },
-        ) => mana_abilities::handle_tap_creatures_for_mana_ability(
+        ) => engine_casting::handle_tap_creatures_for_mana_ability(
             state,
             *count,
             creatures,
@@ -590,7 +583,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 pending_cast,
             },
             GameAction::SelectCards { cards: chosen },
-        ) => casting_costs::handle_exile_from_graveyard_for_cost(
+        ) => engine_casting::handle_exile_from_graveyard_for_cost(
             state,
             *player,
             *pending_cast.clone(),
@@ -606,10 +599,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         (
             WaitingFor::CollectEvidenceChoice {
                 player,
@@ -628,12 +618,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             &mut events,
         )?,
         (WaitingFor::CollectEvidenceChoice { player, resume, .. }, GameAction::CancelCast) => {
-            if let crate::types::game_state::CollectEvidenceResume::Casting { pending_cast } =
-                resume.as_ref()
-            {
-                casting::handle_cancel_cast(state, pending_cast, &mut events);
-            }
-            WaitingFor::Priority { player: *player }
+            engine_casting::handle_collect_evidence_cancel(state, *player, resume, &mut events)
         }
         // CR 702.180b: Player chose which creature to tap for harmonize cost reduction.
         // CR 601.2b: Creature is tapped as part of paying the total cost.
@@ -644,63 +629,14 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 pending_cast,
             },
             GameAction::HarmonizeTap { creature_id },
-        ) => {
-            let mut pending = *pending_cast.clone();
-
-            if let Some(cid) = creature_id {
-                // Validate creature is in eligible list
-                if !eligible_creatures.contains(&cid) {
-                    return Err(EngineError::ActionNotAllowed(
-                        "Creature not eligible for Harmonize tap".into(),
-                    ));
-                }
-                // Re-validate: creature must still be on battlefield and untapped
-                let obj = state.objects.get(&cid).ok_or_else(|| {
-                    EngineError::InvalidAction("Creature no longer exists".into())
-                })?;
-                if obj.zone != Zone::Battlefield || obj.tapped {
-                    return Err(EngineError::InvalidAction(
-                        "Creature is no longer eligible for Harmonize tap".into(),
-                    ));
-                }
-
-                // Read power BEFORE tapping (idiomatic: read then mutate)
-                let power = obj.power.unwrap_or(0).max(0) as u32;
-
-                // Tap the creature
-                if let Some(obj) = state.objects.get_mut(&cid) {
-                    obj.tapped = true;
-                }
-                events.push(GameEvent::PermanentTapped {
-                    object_id: cid,
-                    caused_by: None,
-                });
-
-                // Reduce generic mana cost by creature's power (floor at 0)
-                // CR 702.180a: Harmonize tap cost reduction — reduce by tapped creature's power.
-                if let crate::types::mana::ManaCost::Cost {
-                    ref mut generic, ..
-                } = pending.cost
-                {
-                    *generic = generic.saturating_sub(power);
-                }
-            }
-            // creature_id = None → skip, proceed with unmodified cost
-
-            // Resume casting flow — call pay_and_push_adventure directly to skip
-            // re-entering the Harmonize check in pay_and_push.
-            casting_costs::pay_and_push_adventure(
-                state,
-                *player,
-                pending.object_id,
-                pending.card_id,
-                pending.ability,
-                &pending.cost,
-                pending.casting_variant,
-                pending.distribute,
-                &mut events,
-            )?
-        }
+        ) => engine_casting::handle_harmonize_tap_choice(
+            state,
+            *player,
+            eligible_creatures,
+            *pending_cast.clone(),
+            creature_id,
+            &mut events,
+        )?,
         (
             WaitingFor::HarmonizeTapChoice {
                 player,
@@ -708,10 +644,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::CancelCast,
-        ) => {
-            casting::handle_cancel_cast(state, pending_cast, &mut events);
-            WaitingFor::Priority { player: *player }
-        }
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         // CR 609.3: Player decided whether to perform an optional effect ("You may X").
         (WaitingFor::OptionalEffectChoice { .. }, GameAction::DecideOptionalEffect { accept }) => {
             state.cost_payment_failed_flag = false; // Reset before resolution
@@ -2853,104 +2786,22 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ..
             },
             GameAction::SelectTargets { targets },
-        ) => {
-            validate_selected_targets(target_slots, &targets, target_constraints)?;
-            // Take the pending trigger, set targets, push to stack
-            let trigger = state
-                .pending_trigger
-                .take()
-                .ok_or_else(|| EngineError::InvalidAction("No pending trigger".to_string()))?;
-            let mut ability = trigger.ability;
-            assign_targets_in_chain(&mut ability, &targets)?;
-
-            casting::emit_targeting_events(
+        ) => engine_stack::handle_trigger_target_selection_select_targets(
+            state,
+            *player,
+            target_slots,
+            target_constraints,
+            targets,
+            &mut events,
+        )?,
+        (WaitingFor::TriggerTargetSelection { .. }, GameAction::ChooseTarget { target }) => {
+            let waiting_for = state.waiting_for.clone();
+            engine_stack::handle_trigger_target_selection_choose_target(
                 state,
-                &flatten_targets_in_chain(&ability),
-                trigger.source_id,
-                trigger.controller,
+                waiting_for,
+                target,
                 &mut events,
-            );
-
-            let entry_id = ObjectId(state.next_object_id);
-            state.next_object_id += 1;
-            let entry = crate::types::game_state::StackEntry {
-                id: entry_id,
-                source_id: trigger.source_id,
-                controller: trigger.controller,
-                kind: crate::types::game_state::StackEntryKind::TriggeredAbility {
-                    source_id: trigger.source_id,
-                    ability,
-                    condition: trigger.condition.clone(),
-                    trigger_event: None,
-                    description: trigger.description.clone(),
-                },
-            };
-            super::stack::push_to_stack(state, entry, &mut events);
-            state.priority_passes.clear();
-            state.priority_pass_count = 0;
-            WaitingFor::Priority { player: *player }
-        }
-        (
-            WaitingFor::TriggerTargetSelection {
-                player,
-                target_slots,
-                target_constraints,
-                selection,
-                source_id: wf_source_id,
-                description: wf_description,
-            },
-            GameAction::ChooseTarget { target },
-        ) => {
-            let Some(_pending_trigger) = state.pending_trigger.as_ref() else {
-                return Err(EngineError::InvalidAction("No pending trigger".to_string()));
-            };
-
-            match choose_target(target_slots, target_constraints, selection, target)? {
-                TargetSelectionAdvance::InProgress(selection) => {
-                    WaitingFor::TriggerTargetSelection {
-                        player: *player,
-                        target_slots: target_slots.clone(),
-                        target_constraints: target_constraints.clone(),
-                        selection,
-                        source_id: *wf_source_id,
-                        description: wf_description.clone(),
-                    }
-                }
-                TargetSelectionAdvance::Complete(selected_slots) => {
-                    let trigger = state.pending_trigger.take().ok_or_else(|| {
-                        EngineError::InvalidAction("No pending trigger".to_string())
-                    })?;
-                    let mut ability = trigger.ability;
-                    assign_selected_slots_in_chain(&mut ability, &selected_slots)?;
-
-                    casting::emit_targeting_events(
-                        state,
-                        &flatten_targets_in_chain(&ability),
-                        trigger.source_id,
-                        trigger.controller,
-                        &mut events,
-                    );
-
-                    let entry_id = ObjectId(state.next_object_id);
-                    state.next_object_id += 1;
-                    let entry = crate::types::game_state::StackEntry {
-                        id: entry_id,
-                        source_id: trigger.source_id,
-                        controller: trigger.controller,
-                        kind: crate::types::game_state::StackEntryKind::TriggeredAbility {
-                            source_id: trigger.source_id,
-                            ability,
-                            condition: trigger.condition.clone(),
-                            trigger_event: None,
-                            description: trigger.description.clone(),
-                        },
-                    };
-                    super::stack::push_to_stack(state, entry, &mut events);
-                    state.priority_passes.clear();
-                    state.priority_pass_count = 0;
-                    WaitingFor::Priority { player: *player }
-                }
-            }
+            )?
         }
         (
             WaitingFor::BetweenGamesSideboard { player, .. },
@@ -3130,50 +2981,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             }
         }
         // CR 601.2c: Player selected targets from a multi-target set ("any number of").
-        (
-            WaitingFor::MultiTargetSelection {
-                player,
-                legal_targets,
-                min_targets,
-                max_targets,
-                pending_ability,
-            },
-            GameAction::SelectCards { cards: selected },
-        ) => {
-            let p = *player;
-            let legal = legal_targets.clone();
-            let min = *min_targets;
-            let max = *max_targets;
-            let mut ability = pending_ability.as_ref().clone();
-
-            // CR 601.2c: Validate target count is within the declared range.
-            if selected.len() < min || selected.len() > max {
-                return Err(EngineError::InvalidAction(format!(
-                    "Must select between {} and {} targets, got {}",
-                    min,
-                    max,
-                    selected.len()
-                )));
-            }
-
-            // CR 601.2c: Each selected target must be a legal target.
-            for id in &selected {
-                if !legal.contains(id) {
-                    return Err(EngineError::InvalidAction(
-                        "Selected target not in legal set".to_string(),
-                    ));
-                }
-            }
-
-            ability.targets = selected.iter().map(|&id| TargetRef::Object(id)).collect();
-
-            state.waiting_for = WaitingFor::Priority { player: p };
-            state.priority_player = p;
-            let _ = effects::resolve_ability_chain(state, &ability, &mut events, 0);
-
-            resume_pending_continuation_if_priority(state, &mut events)?;
-
-            state.waiting_for.clone()
+        (WaitingFor::MultiTargetSelection { .. }, GameAction::SelectCards { cards: selected }) => {
+            let waiting_for = state.waiting_for.clone();
+            engine_stack::handle_multi_target_selection(state, waiting_for, &selected, &mut events)?
         }
         // CR 702.139a: Pre-game companion reveal
         (

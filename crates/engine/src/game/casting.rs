@@ -2044,9 +2044,7 @@ pub fn handle_cancel_cast(
 }
 
 // Cost payment handlers are in casting_costs module.
-pub(crate) use super::casting_costs::{
-    handle_decide_additional_cost, handle_discard_for_cost, handle_sacrifice_for_cost,
-};
+pub(crate) use super::casting_costs::{handle_discard_for_cost, handle_sacrifice_for_cost};
 
 /// CR 601.2f: Reduce the generic mana component of an ability cost.
 /// Walks Composite costs to find Mana variants. Floors generic at 0.

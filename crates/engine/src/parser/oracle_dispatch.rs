@@ -1,8 +1,9 @@
 use crate::types::ability::{AbilityDefinition, AbilityKind, Effect};
 
-use super::oracle::{
-    has_trigger_prefix, has_unimplemented, is_damage_prevention_pattern,
-    is_effect_sentence_candidate, is_replacement_pattern, is_static_pattern,
+use super::oracle::has_unimplemented;
+use super::oracle_classifier::{
+    has_trigger_prefix, is_damage_prevention_pattern, is_effect_sentence_candidate,
+    is_replacement_pattern, is_static_pattern,
 };
 use super::oracle_effect::{parse_effect_chain_with_context, ParseContext};
 
