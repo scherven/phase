@@ -5994,7 +5994,8 @@ fn apply_where_x_effect_expression(effect: &mut Effect, where_x_expression: Opti
         | Effect::Mill { count: amount, .. }
         | Effect::PutCounter { count: amount, .. }
         | Effect::PutCounterAll { count: amount, .. }
-        | Effect::Token { count: amount, .. } => {
+        | Effect::Token { count: amount, .. }
+        | Effect::Dig { count: amount, .. } => {
             *amount = apply_where_x_quantity_expression(amount.clone(), where_x_expression);
         }
         Effect::Pump {

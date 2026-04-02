@@ -384,7 +384,7 @@ export function MyDecks({
     return () => {
       cancelled = true;
     };
-  }, [deckNames, selectedFormat, selectedMatchType]);
+  }, [deckNames, selectedFormat, selectedMatchType, onCompatibilityUpdate]);
 
   const filteredDeckNames = useMemo(() => {
     return deckNames.filter((deckName) => {

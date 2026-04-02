@@ -574,10 +574,19 @@ pub(super) fn parse_search_and_creation_ast(
         value((), tag("look at the top ")).parse(input)
     }) {
         let rest_lower = &lower[lower.len() - rest.len()..];
-        let count = nom_primitives::parse_number
-            .parse(rest_lower)
-            .map(|(_, n)| n)
-            .unwrap_or(1);
+        // Try numeric count first ("three cards"), then "x" as a variable
+        // resolved later by apply_where_x_effect_expression.
+        let count = if let Ok((_, n)) = nom_primitives::parse_number.parse(rest_lower) {
+            QuantityExpr::Fixed { value: n as i32 }
+        } else if tag::<_, _, VerboseError<&str>>("x").parse(rest_lower).is_ok() {
+            QuantityExpr::Ref {
+                qty: QuantityRef::Variable {
+                    name: "X".to_string(),
+                },
+            }
+        } else {
+            QuantityExpr::Fixed { value: 1 }
+        };
         return Some(SearchCreationImperativeAst::Dig { count });
     }
     if let Some((_, _)) = nom_on_lower(text, lower, |input| value((), tag("create ")).parse(input))
@@ -628,9 +637,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             reveal,
         },
         SearchCreationImperativeAst::Dig { count } => Effect::Dig {
-            count: QuantityExpr::Fixed {
-                value: count as i32,
-            },
+            count,
             destination: None,
             keep_count: None,
             up_to: false,

@@ -405,7 +405,7 @@ pub(super) enum SearchCreationImperativeAst {
         reveal: bool,
     },
     Dig {
-        count: u32,
+        count: QuantityExpr,
     },
     CopyTokenOf {
         target: TargetFilter,

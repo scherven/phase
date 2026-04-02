@@ -185,23 +185,46 @@ export async function fetchTokenImageUrl(
   size: ImageSize = "normal",
   filters?: TokenSearchFilters,
 ): Promise<string> {
-  let query = `t:token !"${tokenName}"`;
-  if (filters?.power != null) query += ` pow=${filters.power}`;
-  if (filters?.toughness != null) query += ` tou=${filters.toughness}`;
-  if (filters?.colors != null) {
-    const colorStr = filters.colors.map((c) => MANA_COLOR_TO_SCRYFALL[c] ?? "").join("");
-    query += colorStr ? ` c=${colorStr}` : " c=c";
+  const colorClause = buildTokenColorClause(filters?.colors);
+
+  // Try with exact P/T first, then fall back without P/T if no results.
+  const queries = [
+    buildTokenQuery(tokenName, filters?.power, filters?.toughness, colorClause),
+    ...(filters?.power != null || filters?.toughness != null
+      ? [buildTokenQuery(tokenName, null, null, colorClause)]
+      : []),
+  ];
+
+  for (const query of queries) {
+    const url = `https://api.scryfall.com/cards/search?q=${encodeURIComponent(query)}&order=released&dir=desc`;
+    const response = await rateLimitedFetch(url);
+    if (!response.ok) continue;
+    const data: ScryfallSearchResponse = await response.json();
+    if (data.data.length > 0) {
+      return getImageUrl(data.data[0], size, 0);
+    }
   }
-  const url = `https://api.scryfall.com/cards/search?q=${encodeURIComponent(query)}&order=released&dir=desc`;
-  const response = await rateLimitedFetch(url);
-  if (!response.ok) {
-    throw new Error(`No token image found for "${tokenName}"`);
-  }
-  const data: ScryfallSearchResponse = await response.json();
-  if (data.data.length === 0) {
-    throw new Error(`No token image found for "${tokenName}"`);
-  }
-  return getImageUrl(data.data[0], size, 0);
+
+  throw new Error(`No token image found for "${tokenName}"`);
+}
+
+function buildTokenQuery(
+  name: string,
+  power: number | null | undefined,
+  toughness: number | null | undefined,
+  colorClause: string,
+): string {
+  let query = `t:token !"${name}"`;
+  if (power != null) query += ` pow=${power}`;
+  if (toughness != null) query += ` tou=${toughness}`;
+  query += colorClause;
+  return query;
+}
+
+function buildTokenColorClause(colors: string[] | undefined | null): string {
+  if (colors == null) return "";
+  const colorStr = colors.map((c) => MANA_COLOR_TO_SCRYFALL[c] ?? "").join("");
+  return colorStr ? ` c=${colorStr}` : " c=c";
 }
 
 /**
