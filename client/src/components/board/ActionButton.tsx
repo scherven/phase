@@ -244,9 +244,9 @@ export function ActionButton() {
   const idle = mode === "hidden" && !isEndingTurn;
   const blocked = idle || actionPending;
   const panelClassName =
-    "flex max-w-[min(25rem,calc(100vw-1.25rem))] flex-row items-center gap-1 rounded-[10px] border border-white/10 bg-[#0b1020]/88 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.44)] backdrop-blur-md lg:gap-1.5 lg:rounded-[14px] lg:p-1.5 lg:max-w-none";
-  const primaryButtonClass = "lg:min-w-[10rem]";
-  const secondaryButtonClass = "";
+    "flex max-w-[min(32rem,calc(100vw-1.25rem))] flex-row flex-wrap items-center justify-end gap-1.5 rounded-[22px] border border-white/10 bg-slate-950/72 p-2 shadow-[0_24px_64px_rgba(15,23,42,0.52)] backdrop-blur-xl lg:max-w-none";
+  const primaryButtonClass = "min-w-[10.5rem] lg:min-w-[12rem]";
+  const secondaryButtonClass = "min-w-[8rem]";
 
   return (
     <>
@@ -264,7 +264,7 @@ export function ActionButton() {
               }}
               className={gameButtonClass({ tone: "amber", size: "md", disabled: actionPending, className: secondaryButtonClass })}
             >
-              {selectedAttackers.length > 0 ? "Clear Attackers" : "All Attack"}
+              {selectedAttackers.length > 0 ? "Clear Attackers" : "Attack with All"}
             </button>
             {selectedAttackers.length > 0 ? (
               <button
@@ -281,8 +281,8 @@ export function ActionButton() {
                 className={gameButtonClass({ tone: "slate", size: "md", disabled: actionPending, className: primaryButtonClass })}
               >
                 {skipArmed === "attackers"
-                  ? "Tap again: No Attacks"
-                  : "No Attacks"}
+                  ? "Tap Again: Attack with None"
+                  : "Attack with None"}
               </button>
             )}
           </>
@@ -304,7 +304,7 @@ export function ActionButton() {
                   onClick={handleClearBlockers}
                   className={gameButtonClass({ tone: "neutral", size: "md", disabled: actionPending, className: secondaryButtonClass })}
                 >
-                  Clear Blocks
+                  Reset Blocks
                 </button>
               </>
             ) : (
@@ -314,13 +314,13 @@ export function ActionButton() {
                 className={gameButtonClass({ tone: "slate", size: "md", disabled: actionPending, className: primaryButtonClass })}
               >
                 {skipArmed === "blockers"
-                  ? "Tap again: No Blocks"
-                  : "No Blocks"}
+                  ? "Tap Again: Block with None"
+                  : "Block with None"}
               </button>
             )}
             {pendingBlocker !== null && (
-              <div className="absolute bottom-full mb-3 right-0 rounded-lg bg-blue-900/80 px-4 py-2 text-sm font-medium text-blue-200 shadow-lg whitespace-nowrap">
-                Click an attacker to assign blocker
+              <div className="absolute bottom-full right-0 mb-3 whitespace-nowrap rounded-full border border-cyan-300/25 bg-cyan-950/80 px-4 py-2 text-sm font-medium text-cyan-100 shadow-lg backdrop-blur-xl">
+                Select the attacker this blocker should defend against
               </div>
             )}
           </>
@@ -349,7 +349,7 @@ export function ActionButton() {
               onClick={() => dispatchAction({ type: "SetAutoPass", data: { mode: { type: "UntilStackEmpty" } } })}
               className={gameButtonClass({ tone: "slate", size: "md", disabled: actionPending, className: secondaryButtonClass })}
             >
-              Resolve All
+              Auto-Resolve Stack
             </button>
           </>
         )}
@@ -383,7 +383,7 @@ export function ActionButton() {
               className={gameButtonClass({ tone: "slate", size: "md", disabled: blocked, className: secondaryButtonClass })}
             >
               <span className="flex items-center gap-1">
-                End Turn
+                Pass Until End Step
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
                   <path fillRule="evenodd" d="M2 10a.75.75 0 0 1 .75-.75h12.59l-2.1-1.95a.75.75 0 1 1 1.02-1.1l3.5 3.25a.75.75 0 0 1 0 1.1l-3.5 3.25a.75.75 0 1 1-1.02-1.1l2.1-1.95H2.75A.75.75 0 0 1 2 10Z" clipRule="evenodd" />
                 </svg>
@@ -402,7 +402,7 @@ export function ActionButton() {
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 animate-spin">
                 <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.451a.75.75 0 0 0 0-1.5H4.5a.75.75 0 0 0-.75.75v3.75a.75.75 0 0 0 1.5 0v-2.033l.364.363a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.624-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.75a.75.75 0 0 0 0 1.5h3.75a.75.75 0 0 0 .75-.75V3.42a.75.75 0 0 0-1.5 0v2.033l-.364-.364A7 7 0 0 0 3.074 8.227a.75.75 0 0 0 1.449.39l.165-.044Z" clipRule="evenodd" />
               </svg>
-              Ending Turn...
+              Auto-Passing to End Step...
             </span>
           </button>
         )}

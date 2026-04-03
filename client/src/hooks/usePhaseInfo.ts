@@ -17,6 +17,7 @@ export interface PhaseInfo {
   phases: readonly PhaseStripEntry[];
   advanceLabel: string;
   isCombatPhase: boolean;
+  nextPhaseLabel: string | null;
 }
 
 const PHASE_STRIP: readonly PhaseStripEntry[] = [
@@ -73,10 +74,26 @@ const COMBAT_PHASES = new Set<Phase>([
   "EndCombat",
 ]);
 
+const NEXT_PHASE_LABELS: Partial<Record<Phase, string>> = {
+  Untap: "Upkeep",
+  Upkeep: "Draw",
+  Draw: "Main Phase 1",
+  PreCombatMain: "Begin Combat",
+  BeginCombat: "Declare Attackers",
+  DeclareAttackers: "Declare Blockers",
+  DeclareBlockers: "Combat Damage",
+  CombatDamage: "End Combat",
+  EndCombat: "Main Phase 2",
+  PostCombatMain: "End Step",
+  End: "Cleanup",
+};
+
 function getAdvanceLabel(phase: Phase, hasStackItems: boolean, isMyTurn: boolean): string {
   if (hasStackItems) return "Resolve";
-  if (isMyTurn && phase === "PreCombatMain") return "To Combat";
-  return "Next";
+  if (!isMyTurn) return "Pass Priority";
+
+  const nextPhaseLabel = NEXT_PHASE_LABELS[phase];
+  return nextPhaseLabel ? `To ${nextPhaseLabel}` : "Pass Priority";
 }
 
 export function usePhaseInfo(): PhaseInfo {
@@ -90,6 +107,7 @@ export function usePhaseInfo(): PhaseInfo {
   const currentOrder = DISPLAY_ORDER[displayKey];
   const isCombatPhase = COMBAT_PHASES.has(phase);
   const advanceLabel = getAdvanceLabel(phase, stackLength > 0, isMyTurn);
+  const nextPhaseLabel = NEXT_PHASE_LABELS[phase] ?? null;
 
   return {
     displayKey,
@@ -98,5 +116,6 @@ export function usePhaseInfo(): PhaseInfo {
     phases: PHASE_STRIP,
     advanceLabel,
     isCombatPhase,
+    nextPhaseLabel,
   };
 }

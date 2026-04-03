@@ -4,12 +4,12 @@ import { useGameStore } from "../../stores/gameStore.ts";
 const EMPTY_MANA: ManaUnit[] = [];
 
 const MANA_COLORS: Record<ManaType, string> = {
-  White: "bg-amber-300 text-amber-900 shadow-[0_0_10px_3px_rgba(251,191,36,0.5)]",
-  Blue: "bg-blue-500 text-white shadow-[0_0_10px_3px_rgba(59,130,246,0.5)]",
-  Black: "bg-gray-700 text-gray-200 shadow-[0_0_10px_3px_rgba(107,114,128,0.5)]",
-  Red: "bg-red-500 text-white shadow-[0_0_10px_3px_rgba(239,68,68,0.5)]",
-  Green: "bg-green-600 text-white shadow-[0_0_10px_3px_rgba(22,163,74,0.5)]",
-  Colorless: "bg-gray-400 text-gray-800 shadow-[0_0_10px_3px_rgba(156,163,175,0.5)]",
+  White: "bg-amber-200 text-amber-950 ring-1 ring-amber-50/60 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]",
+  Blue: "bg-blue-500/90 text-white ring-1 ring-blue-200/25 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]",
+  Black: "bg-slate-700 text-slate-100 ring-1 ring-white/10 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]",
+  Red: "bg-rose-500/90 text-white ring-1 ring-rose-200/25 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]",
+  Green: "bg-emerald-600/90 text-white ring-1 ring-emerald-200/25 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]",
+  Colorless: "bg-slate-300 text-slate-800 ring-1 ring-white/20 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]",
 };
 
 const MANA_ORDER: ManaType[] = ["White", "Blue", "Black", "Red", "Green", "Colorless"];
@@ -35,11 +35,11 @@ export function ManaPoolSummary({ playerId }: ManaPoolSummaryProps) {
   if (entries.length === 0) return null;
 
   return (
-    <div className="flex animate-pulse items-center gap-1">
+    <div className="flex items-center gap-1">
       {entries.map(({ color, count }) => (
         <span
           key={color}
-          className={`inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-xs font-bold ${MANA_COLORS[color]}`}
+          className={`inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[11px] font-bold tabular-nums ${MANA_COLORS[color]}`}
         >
           {count}
         </span>

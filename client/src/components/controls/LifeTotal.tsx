@@ -107,14 +107,14 @@ export function LifeTotal({ playerId, size = "default", hideLabel = false }: Lif
         : "bg-transparent";
 
   return (
-    <div className="flex items-center gap-2">
-      {!hideLabel && <span className="text-xs text-gray-400">P{playerId + 1}</span>}
+    <div className="flex items-baseline gap-2">
+      {!hideLabel && <span className="text-xs text-slate-400">P{playerId + 1}</span>}
       <motion.span
         key={life}
         initial={{ scale: 1.3 }}
         animate={{ scale: 1 }}
         transition={{ duration: 0.2 }}
-        className={`rounded px-1 font-bold tabular-nums transition-colors duration-400 ${size === "lg" ? "text-base lg:text-2xl" : "text-sm lg:text-xl"} ${colorClass} ${flashBg}`}
+        className={`rounded-md px-1.5 py-0.5 font-bold tabular-nums transition-colors duration-400 ${size === "lg" ? "text-2xl lg:text-[2rem]" : "text-lg lg:text-[1.4rem]"} ${colorClass} ${flashBg}`}
       >
         <motion.span>{displayed}</motion.span>
       </motion.span>

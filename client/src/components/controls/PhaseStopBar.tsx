@@ -115,12 +115,12 @@ function PhaseDot({ phase }: { phase: Phase }) {
     <button
       onClick={togglePhase}
       title={phase}
-      className={`relative flex h-5 w-5 items-center justify-center rounded-full transition-colors lg:h-8 lg:w-8 lg:p-1 ${
+      className={`relative flex h-6 w-6 items-center justify-center rounded-full border transition-all duration-200 lg:h-8 lg:w-8 lg:p-1 ${
         isActive
-          ? "text-white shadow-[0_0_6px_rgba(34,211,238,0.5)]"
+          ? "border-cyan-300/45 bg-cyan-400/18 text-white shadow-[0_10px_22px_rgba(34,211,238,0.22)]"
           : hasStop
-            ? "text-gray-300 hover:text-white"
-            : "text-gray-400 hover:text-gray-200"
+            ? "border-white/12 bg-white/8 text-slate-200 hover:border-white/20 hover:text-white"
+            : "border-transparent bg-transparent text-slate-500 hover:border-white/10 hover:bg-white/5 hover:text-slate-200"
       }`}
     >
       {isActive && (
@@ -137,7 +137,7 @@ function PhaseDot({ phase }: { phase: Phase }) {
 /** Upkeep, Draw, Main1 — placed to the left of the player avatar */
 export function PhaseIndicatorLeft() {
   return (
-    <div className="flex items-center gap-px rounded-full bg-black/40 px-0.5 py-px lg:gap-0.5 lg:px-1.5 lg:py-0.5">
+    <div className="flex items-center gap-0.5 rounded-full border border-white/10 bg-slate-950/58 px-1 py-1 backdrop-blur-xl lg:px-1.5">
       {LEFT_PHASES.map((phase) => (
         <PhaseDot key={phase} phase={phase} />
       ))}
@@ -148,7 +148,7 @@ export function PhaseIndicatorLeft() {
 /** Main2, End — placed to the right of the player avatar */
 export function PhaseIndicatorRight() {
   return (
-    <div className="flex items-center gap-px rounded-full bg-black/40 px-0.5 py-px lg:gap-0.5 lg:px-1.5 lg:py-0.5">
+    <div className="flex items-center gap-0.5 rounded-full border border-white/10 bg-slate-950/58 px-1 py-1 backdrop-blur-xl lg:px-1.5">
       {RIGHT_PHASES.map((phase) => (
         <PhaseDot key={phase} phase={phase} />
       ))}
@@ -159,7 +159,7 @@ export function PhaseIndicatorRight() {
 /** BeginCombat through EndCombat — placed near ActionButton on the right side */
 export function CombatPhaseIndicator() {
   return (
-    <div className="flex items-center gap-px rounded-full bg-black/40 px-0.5 py-px lg:gap-0.5 lg:px-1.5 lg:py-0.5">
+    <div className="flex items-center gap-0.5 rounded-full border border-white/10 bg-slate-950/64 px-1 py-1 backdrop-blur-xl lg:px-1.5">
       {COMBAT_PHASES.map((phase) => (
         <PhaseDot key={phase} phase={phase} />
       ))}

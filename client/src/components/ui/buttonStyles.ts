@@ -17,28 +17,28 @@ interface GameButtonOptions {
 }
 
 const BASE_CLASSES =
-  "min-h-6 lg:min-h-8 border border-solid font-semibold backdrop-blur-sm transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 inline-flex items-center justify-center";
+  "min-h-9 border border-solid font-semibold backdrop-blur-xl transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 inline-flex items-center justify-center shadow-[0_10px_24px_rgba(15,23,42,0.18)]";
 
 const SIZE_CLASSES: Record<GameButtonSize, string> = {
-  xs: "px-2 py-1 text-xs rounded",
-  sm: "px-3 py-1.5 text-sm rounded-md",
-  md: "px-2 py-0.5 text-[11px] rounded lg:px-3 lg:py-1 lg:text-xs lg:rounded-md",
-  lg: "px-6 py-2.5 text-base rounded-lg",
+  xs: "px-2.5 py-1 text-xs rounded-full",
+  sm: "px-3.5 py-2 text-sm rounded-full",
+  md: "px-3.5 py-2 text-[11px] rounded-full lg:px-4 lg:text-xs",
+  lg: "px-6 py-3 text-base rounded-full",
 };
 
 const TONE_CLASSES: Record<GameButtonTone, string> = {
   neutral:
-    "border-gray-600 bg-gray-700/80 text-gray-100 hover:bg-gray-600/80",
+    "border-white/12 bg-white/8 text-slate-100 hover:border-white/20 hover:bg-white/12",
   emerald:
-    "border-orange-400/60 bg-orange-600/85 text-orange-50 hover:bg-orange-500/85",
+    "border-emerald-300/35 bg-emerald-500/18 text-emerald-50 hover:bg-emerald-500/24",
   amber:
-    "border-amber-500/60 bg-amber-700/80 text-amber-50 hover:bg-amber-600/80",
-  blue: "border-blue-500/60 bg-blue-700/80 text-blue-50 hover:bg-blue-600/80",
-  red: "border-red-500/60 bg-red-700/80 text-red-50 hover:bg-red-600/80",
+    "border-amber-300/35 bg-amber-500/16 text-amber-50 hover:bg-amber-500/24",
+  blue: "border-blue-300/35 bg-blue-500/18 text-blue-50 hover:bg-blue-500/24",
+  red: "border-red-300/35 bg-red-500/18 text-red-50 hover:bg-red-500/24",
   indigo:
-    "border-indigo-500/60 bg-indigo-700/80 text-indigo-50 hover:bg-indigo-600/80",
+    "border-indigo-300/35 bg-indigo-500/18 text-indigo-50 hover:bg-indigo-500/24",
   slate:
-    "border-slate-500/60 bg-slate-700/80 text-slate-50 hover:bg-slate-600/80",
+    "border-white/10 bg-slate-900/76 text-slate-100 hover:border-white/20 hover:bg-slate-800/76",
 };
 
 export function gameButtonClass({
