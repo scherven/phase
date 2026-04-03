@@ -1202,6 +1202,7 @@ fn continue_with_prepared(
     prepared: PreparedSpellCast,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    // CR 601.2c: The player announcing a spell with modes chooses the mode(s).
     if let Some(ref modal_choice) = prepared.modal {
         // Cap max_choices to actual mode count
         let mut capped = modal_choice.clone();

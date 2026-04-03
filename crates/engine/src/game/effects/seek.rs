@@ -9,8 +9,10 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::zones::Zone;
 
-/// Alchemy digital-only: randomly pick card(s) from library matching filter,
-/// put to destination. No reveal, no shuffle, no player choice.
+/// Seek — MTG Arena Alchemy digital-only mechanic. No CR rule number applies.
+/// Randomly pick card(s) from library matching filter, put to destination.
+/// No reveal, no shuffle, no player choice. Analogous to a hidden-information
+/// search (CR 701.23b) but randomized.
 /// Seek is not a draw — no CardDrawn event, no draw-trigger interaction.
 pub fn resolve(
     state: &mut GameState,

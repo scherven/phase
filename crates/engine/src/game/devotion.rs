@@ -16,6 +16,8 @@ pub fn count_devotion(state: &GameState, player: PlayerId, colors: &[ManaColor])
             _ => continue,
         };
         if let ManaCost::Cost { ref shards, .. } = obj.mana_cost {
+            // CR 700.5: Each mana symbol is counted once; hybrid symbols (e.g. {W/U})
+            // contribute to both colors but are still a single symbol.
             for shard in shards {
                 if colors.iter().any(|c| shard.contributes_to(*c)) {
                     total += 1;

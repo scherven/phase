@@ -29,7 +29,8 @@ pub fn is_mana_ability(ability_def: &AbilityDefinition) -> bool {
     ability_def.multi_target.is_none()
 }
 
-/// CR 605.3b: Mana abilities don't use the stack; they resolve immediately when activated.
+/// CR 605.2: Mana abilities don't use the stack — they can't be targeted, countered, or responded to.
+/// CR 605.3b: Mana abilities resolve immediately when activated.
 ///
 /// Pays the full ability cost (tap, sacrifice, etc.) via `pay_mana_ability_cost`,
 /// then produces mana. When `color_override` is `Some`, produces exactly that color

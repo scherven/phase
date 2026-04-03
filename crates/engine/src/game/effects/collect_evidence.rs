@@ -24,6 +24,7 @@ fn total_mana_value(state: &GameState, cards: &[ObjectId]) -> u32 {
         .sum()
 }
 
+// CR 701.59b: Can't collect evidence if graveyard total mana value < N.
 fn can_collect_evidence(state: &GameState, player: PlayerId, amount: u32) -> bool {
     total_mana_value(state, &graveyard_cards(state, player)) >= amount
 }
@@ -42,6 +43,7 @@ fn waiting_state(
     }
 }
 
+/// CR 701.59a: Collect evidence N — exile graveyard cards with total mana value >= N.
 pub(crate) fn begin_cost_payment(
     state: &GameState,
     player: PlayerId,
@@ -65,6 +67,7 @@ pub(crate) fn begin_cost_payment(
     ))
 }
 
+/// CR 701.59a: Collect evidence N as an effect — prompt player to exile cards.
 pub(crate) fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -112,6 +115,7 @@ pub(crate) fn resolve(
     Ok(())
 }
 
+/// CR 701.59a + CR 701.59c: Exile chosen cards and resume linked ability if evidence was collected.
 pub(crate) fn handle_choice(
     state: &mut GameState,
     player: PlayerId,

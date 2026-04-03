@@ -95,7 +95,7 @@ pub(crate) fn translate_effect(
         }),
         // CR 701.6a: Counter a spell or ability on the stack.
         "Counter" => translate_counter(params),
-        // CR 701.26a: Return to hand (bounce).
+        // CR 400.3: Return to hand (bounce) — object goes to its owner's hand.
         "Bounce" | "BounceAll" => translate_bounce(params),
         _ => Err(ForgeTranslateError::UnsupportedEffect(
             effect_type.to_string(),
@@ -458,7 +458,7 @@ fn translate_sacrifice(params: &ForgeParams) -> Result<Effect, ForgeTranslateErr
     })
 }
 
-// CR 701.13a: Mill cards.
+// CR 701.17a: Mill cards.
 fn translate_mill(
     params: &ForgeParams,
     resolver: &mut SvarResolver,
@@ -500,7 +500,7 @@ fn translate_counter(params: &ForgeParams) -> Result<Effect, ForgeTranslateError
     })
 }
 
-// CR 701.26a: Return to owner's hand.
+// CR 400.3: Return to owner's hand.
 fn translate_bounce(params: &ForgeParams) -> Result<Effect, ForgeTranslateError> {
     let target = resolve_target(params, "ValidTgts");
     Ok(Effect::ChangeZone {

@@ -701,7 +701,7 @@ fn food_ability() -> AbilityDefinition {
     })
 }
 
-/// CR 111.10c: Clue — "{2}, Sacrifice this artifact: Draw a card."
+/// CR 111.10f: Clue — "{2}, Sacrifice this artifact: Draw a card."
 fn clue_ability() -> AbilityDefinition {
     AbilityDefinition::new(
         AbilityKind::Activated,
@@ -725,7 +725,7 @@ fn clue_ability() -> AbilityDefinition {
     })
 }
 
-/// CR 111.10d: Blood — "{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card."
+/// CR 111.10g: Blood — "{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card."
 fn blood_ability() -> AbilityDefinition {
     AbilityDefinition::new(
         AbilityKind::Activated,
@@ -756,7 +756,7 @@ fn blood_ability() -> AbilityDefinition {
     })
 }
 
-/// CR 111.10e: Powerstone — "{T}: Add {C}. This mana can't be spent to cast a nonartifact spell."
+/// CR 111.10h: Powerstone — "{T}: Add {C}. This mana can't be spent to cast a nonartifact spell."
 fn powerstone_ability() -> AbilityDefinition {
     use crate::types::ability::ManaSpendRestriction;
     AbilityDefinition::new(

@@ -8,17 +8,28 @@ use super::statics::StaticMode;
 /// Sublayers of layer 7 (P/T) are represented as separate variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Layer {
-    Copy,      // Layer 1
-    Control,   // Layer 2
-    Text,      // Layer 3
-    Type,      // Layer 4
-    Color,     // Layer 5
-    Ability,   // Layer 6
-    CharDef,   // Layer 7a - Characteristic-defining abilities
-    SetPT,     // Layer 7b - Setting P/T
-    ModifyPT,  // Layer 7c - Modifying P/T (+N/+N)
-    SwitchPT,  // Layer 7d - Switching P/T
-    CounterPT, // Layer 7e - Counter-based P/T
+    /// CR 613.1a: Layer 1 — Copy effects.
+    Copy,
+    /// CR 613.1b: Layer 2 — Control-changing effects.
+    Control,
+    /// CR 613.1c: Layer 3 — Text-changing effects.
+    Text,
+    /// CR 613.1d: Layer 4 — Type-changing effects.
+    Type,
+    /// CR 613.1e: Layer 5 — Color-changing effects.
+    Color,
+    /// CR 613.1f: Layer 6 — Ability-adding and ability-removing effects.
+    Ability,
+    /// CR 613.4a: Layer 7a — Characteristic-defining abilities that set P/T.
+    CharDef,
+    /// CR 613.4b: Layer 7b — Effects that set P/T to specific values.
+    SetPT,
+    /// CR 613.4c: Layer 7c — Effects that modify P/T (+N/+N).
+    ModifyPT,
+    /// CR 613.4d: Layer 7d — Effects that switch P/T.
+    SwitchPT,
+    /// CR 613.4c: Layer 7e — +1/+1 and -1/-1 counters modifying P/T (applied after other 7c effects).
+    CounterPT,
 }
 
 impl Layer {

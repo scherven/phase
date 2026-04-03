@@ -48,6 +48,7 @@ pub fn derive_display_state(state: &mut GameState) {
                 .map(|(idx, _)| idx);
             (
                 unimplemented_mechanics(obj),
+                // CR 302.6: Creature must have been under controller's control since turn began to attack or {T}.
                 has_summoning_sickness(obj, turn),
                 mana_idx,
             )

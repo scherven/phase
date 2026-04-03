@@ -266,6 +266,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 return Err(EngineError::NotYourPriority);
             }
             state.cancelled_casts.clear();
+            // CR 116.2a: Playing a land is a special action — sorcery-speed, once per turn, stack must be empty.
             // CR 305.2: Playing a land is a special action, not a spell.
             handle_play_land(state, object_id, card_id, &mut events)?
         }

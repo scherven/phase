@@ -206,6 +206,7 @@ pub(super) fn handle_assign_combat_damage(
     Ok(WaitingFor::Priority { player })
 }
 
+/// CR 508.8: If no creatures are declared as attackers, skip declare blockers and combat damage steps.
 pub(super) fn handle_empty_attackers(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,

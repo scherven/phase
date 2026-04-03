@@ -581,7 +581,7 @@ fn order_with_dependencies(
             .map(|node_idx| sorted[graph[node_idx]].clone())
             .collect(),
         Err(_) => {
-            // CR 613.8: Dependency cycle — fall back to timestamp ordering.
+            // CR 613.8b: Dependency cycle — fall back to timestamp ordering.
             sorted.iter().map(|e| (*e).clone()).collect()
         }
     }
