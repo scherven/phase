@@ -1722,10 +1722,37 @@ pub fn pay_ability_cost(
             }
             set_speed(state, player, Some(current_speed - amount), events);
         }
+        // CR 606.4: Loyalty abilities use loyalty counter adjustment as their cost.
+        // Called after target selection when the ability was initiated interactively.
+        AbilityCost::Loyalty { amount } => {
+            let amount = *amount;
+            let obj = state
+                .objects
+                .get(&source_id)
+                .ok_or_else(|| EngineError::InvalidAction("Planeswalker not found".to_string()))?;
+            let current = obj.loyalty.unwrap_or(0) as i32;
+            let new_loyalty = (current + amount).max(0) as u32;
+            let obj = state.objects.get_mut(&source_id).unwrap();
+            obj.loyalty = Some(new_loyalty);
+            obj.counters
+                .insert(crate::types::counter::CounterType::Loyalty, new_loyalty);
+            if amount > 0 {
+                events.push(GameEvent::CounterAdded {
+                    object_id: source_id,
+                    counter_type: crate::types::counter::CounterType::Loyalty,
+                    count: amount as u32,
+                });
+            } else if amount < 0 {
+                events.push(GameEvent::CounterRemoved {
+                    object_id: source_id,
+                    counter_type: crate::types::counter::CounterType::Loyalty,
+                    count: (-amount) as u32,
+                });
+            }
+        }
         // Other cost types (Exile, PayLife, etc.) require interactive resolution
         // and are intercepted before reaching pay_ability_cost, or are not yet auto-payable.
         AbilityCost::Untap
-        | AbilityCost::Loyalty { .. }
         | AbilityCost::PayLife { .. }
         | AbilityCost::Discard { .. }
         | AbilityCost::Exile { .. }

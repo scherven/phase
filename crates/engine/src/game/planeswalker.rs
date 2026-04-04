@@ -1,13 +1,18 @@
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, StackEntry, StackEntryKind, WaitingFor};
-use crate::types::identifiers::ObjectId;
+use crate::types::game_state::{GameState, PendingCast, StackEntry, StackEntryKind, WaitingFor};
+use crate::types::identifiers::{CardId, ObjectId};
+use crate::types::mana::ManaCost;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 
+use super::ability_utils::{
+    assign_targets_in_chain, auto_select_targets, begin_target_selection, build_target_slots,
+    flatten_targets_in_chain,
+};
+use super::casting::emit_targeting_events;
 use super::engine::EngineError;
 use super::stack;
-use crate::types::counter::CounterType;
 
 use crate::types::ability::ResolvedAbility;
 
@@ -98,52 +103,55 @@ pub fn handle_activate_loyalty(
     // Build a ResolvedAbility for the stack from the typed definition
     let resolved = build_pw_resolved(ability_def, pw_id, player);
 
-    // CR 606.4: The cost to activate a loyalty ability is to put on or remove loyalty counters.
-    // Sync both obj.loyalty (display) and obj.counters[Loyalty] (used by HasCounters condition).
-    let new_loyalty = (current_loyalty + loyalty_cost).max(0) as u32;
-    let obj = state.objects.get_mut(&pw_id).unwrap();
-    obj.loyalty = Some(new_loyalty);
-    obj.counters.insert(CounterType::Loyalty, new_loyalty);
-    obj.loyalty_activated_this_turn = true;
+    // CR 602.2b + CR 601.2c: Targets are announced before costs are paid.
+    // If this ability requires targets, prompt for selection first.
+    let target_slots = build_target_slots(state, &resolved)?;
+    if !target_slots.is_empty() {
+        if let Some(targets) = auto_select_targets(&target_slots, &[])? {
+            let mut resolved = resolved;
+            assign_targets_in_chain(&mut resolved, &targets)?;
+            return Ok(finalize_loyalty_activation(
+                state,
+                player,
+                pw_id,
+                loyalty_cost,
+                resolved,
+                ability_index,
+                events,
+            ));
+        }
 
-    // Emit counter events
-    if loyalty_cost > 0 {
-        events.push(GameEvent::CounterAdded {
-            object_id: pw_id,
-            counter_type: crate::types::counter::CounterType::Loyalty,
-            count: loyalty_cost as u32,
+        // CR 606.3: Mark activated this turn at announcement time to prevent re-activation.
+        // Only needed here — finalize_loyalty_activation handles the auto-select and
+        // non-targeted paths.
+        state.objects.get_mut(&pw_id).unwrap().loyalty_activated_this_turn = true;
+        state.lands_tapped_for_mana.remove(&player);
+
+        let selection = begin_target_selection(&target_slots, &[])?;
+        let mut pending = PendingCast::new(pw_id, CardId(0), resolved, ManaCost::NoCost);
+        pending.activation_ability_index = Some(ability_index);
+        // CR 606.4: Loyalty cost is paid after targets are chosen.
+        // Stored here so handle_select_targets can call pay_ability_cost.
+        pending.activation_cost = Some(crate::types::ability::AbilityCost::Loyalty {
+            amount: loyalty_cost,
         });
-    } else if loyalty_cost < 0 {
-        events.push(GameEvent::CounterRemoved {
-            object_id: pw_id,
-            counter_type: crate::types::counter::CounterType::Loyalty,
-            count: (-loyalty_cost) as u32,
+        return Ok(WaitingFor::TargetSelection {
+            player,
+            pending_cast: Box::new(pending),
+            target_slots,
+            selection,
         });
     }
 
-    // Push ability onto the stack
-    let entry_id = ObjectId(state.next_object_id);
-    state.next_object_id += 1;
-
-    stack::push_to_stack(
+    Ok(finalize_loyalty_activation(
         state,
-        StackEntry {
-            id: entry_id,
-            source_id: pw_id,
-            controller: player,
-            kind: StackEntryKind::ActivatedAbility {
-                source_id: pw_id,
-                ability: resolved,
-            },
-        },
+        player,
+        pw_id,
+        loyalty_cost,
+        resolved,
+        ability_index,
         events,
-    );
-
-    events.push(GameEvent::AbilityActivated { source_id: pw_id });
-    state.priority_passes.clear();
-    state.priority_pass_count = 0;
-
-    Ok(WaitingFor::Priority { player })
+    ))
 }
 
 /// Extract the loyalty cost from a typed ability definition.
@@ -163,12 +171,57 @@ fn build_pw_resolved(
     source_id: ObjectId,
     controller: PlayerId,
 ) -> ResolvedAbility {
-    ResolvedAbility::new(
-        *ability_def.effect.clone(),
-        Vec::new(),
-        source_id,
-        controller,
-    )
+    super::ability_utils::build_resolved_from_def(ability_def, source_id, controller)
+}
+
+/// CR 606.4: Pay the loyalty cost, push the ability onto the stack, and return Priority.
+/// Single exit point for non-targeted (and auto-target-resolved) loyalty activations.
+///
+/// Loyalty counter adjustment is delegated to `casting::pay_ability_cost` — the single
+/// authority for all ability cost resolution — to avoid duplicating counter logic here.
+fn finalize_loyalty_activation(
+    state: &mut GameState,
+    player: PlayerId,
+    pw_id: ObjectId,
+    loyalty_cost: i32,
+    resolved: ResolvedAbility,
+    ability_index: usize,
+    events: &mut Vec<GameEvent>,
+) -> WaitingFor {
+    // CR 606.4: Single authority for loyalty cost payment.
+    let cost = crate::types::ability::AbilityCost::Loyalty {
+        amount: loyalty_cost,
+    };
+    super::casting::pay_ability_cost(state, player, pw_id, &cost, events)
+        .expect("loyalty validation passed in handle_activate_loyalty");
+    state.objects.get_mut(&pw_id).unwrap().loyalty_activated_this_turn = true;
+
+    let assigned_targets = flatten_targets_in_chain(&resolved);
+    emit_targeting_events(state, &assigned_targets, pw_id, player, events);
+
+    let entry_id = ObjectId(state.next_object_id);
+    state.next_object_id += 1;
+    stack::push_to_stack(
+        state,
+        StackEntry {
+            id: entry_id,
+            source_id: pw_id,
+            controller: player,
+            kind: StackEntryKind::ActivatedAbility {
+                source_id: pw_id,
+                ability: resolved,
+            },
+        },
+        events,
+    );
+
+    super::restrictions::record_ability_activation(state, pw_id, ability_index);
+    events.push(GameEvent::AbilityActivated { source_id: pw_id });
+    state.lands_tapped_for_mana.remove(&player);
+    state.priority_passes.clear();
+    state.priority_pass_count = 0;
+
+    WaitingFor::Priority { player }
 }
 
 #[cfg(test)]
@@ -260,9 +313,9 @@ mod tests {
             5,
             vec![make_loyalty_ability(
                 -3,
-                Effect::Destroy {
-                    target: TargetFilter::Typed(TypedFilter::creature()),
-                    cant_regenerate: false,
+                // Use non-targeted effect so no target selection is needed.
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 2 },
                 },
             )],
         );
@@ -477,5 +530,61 @@ mod tests {
             },
         );
         assert_eq!(parse_loyalty_cost(&no_cost), 0);
+    }
+
+    /// CR 602.2b + CR 601.2c + CR 606.4: Targeted loyalty abilities must prompt for target selection
+    /// before paying the loyalty cost. The cost is deferred into the PendingCast so
+    /// handle_select_targets can call pay_ability_cost after the player chooses.
+    #[test]
+    fn targeted_loyalty_ability_returns_target_selection() {
+        let mut state = setup();
+        let pw = create_planeswalker(
+            &mut state,
+            PlayerId(0),
+            "Kaito",
+            4,
+            vec![make_loyalty_ability(
+                -2,
+                Effect::Tap {
+                    target: TargetFilter::Typed(TypedFilter::creature()),
+                },
+            )],
+        );
+
+        // Two creatures so auto_select_targets doesn't collapse to Priority.
+        for card_id in [99usize, 100] {
+            let c = create_object(
+                &mut state,
+                CardId(card_id.try_into().unwrap()),
+                PlayerId(1),
+                "Goblin".to_string(),
+                Zone::Battlefield,
+            );
+            state.objects.get_mut(&c).unwrap().card_types.core_types.push(CoreType::Creature);
+        }
+
+        let mut events = Vec::new();
+        let result = handle_activate_loyalty(&mut state, PlayerId(0), pw, 0, &mut events)
+            .expect("activation should succeed with a legal target");
+
+        // Loyalty is NOT deducted yet — cost is paid after target selection.
+        assert_eq!(state.objects[&pw].loyalty, Some(4), "loyalty unchanged before target selection");
+        // But activation is marked to prevent re-activation this turn.
+        assert!(state.objects[&pw].loyalty_activated_this_turn);
+        // Engine waits for the player to select a target.
+        assert!(
+            matches!(result, WaitingFor::TargetSelection { .. }),
+            "expected TargetSelection, got {result:?}"
+        );
+        // The pending cast carries the loyalty cost for deferred payment.
+        if let WaitingFor::TargetSelection { pending_cast, .. } = result {
+            assert!(
+                matches!(
+                    pending_cast.activation_cost,
+                    Some(crate::types::ability::AbilityCost::Loyalty { amount: -2 })
+                ),
+                "loyalty cost must be stored for deferred payment"
+            );
+        }
     }
 }

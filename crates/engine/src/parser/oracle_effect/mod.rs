@@ -3144,6 +3144,17 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         {
             replace_target_with_parent(&mut def.effect);
         }
+        // CR 608.2c: Pronoun clause following an unconditional targeted effect.
+        // "Tap target creature. Put two stun counters on it." — "it" refers to the
+        // tapped creature from the previous sentence, not the ability source.
+        if condition.is_none()
+            && defs.last().is_some_and(|prev| {
+                prev.condition.is_none() && has_typed_target(&prev.effect)
+            })
+            && has_anaphoric_reference(&text.to_lowercase())
+        {
+            replace_target_with_parent(&mut def.effect);
+        }
 
         // CR 608.2e: "Instead" overrides — attach as sub_ability on the previous def,
         // not as a standalone def. The Cow swap in effects/mod.rs handles the resolution.
@@ -9532,6 +9543,35 @@ mod tests {
                 }
             ),
             "expected SwitchPT with SelfRef, got: {e:?}"
+        );
+    }
+
+    /// CR 608.2c: Period-separated pronoun reference ("Tap target creature. Put two stun
+    /// counters on it.") must resolve "it" to ParentTarget, not SelfRef. The sub_ability's
+    /// counter effect should target the same creature as the tap effect.
+    #[test]
+    fn period_separated_pronoun_resolves_to_parent_target() {
+        let def = parse_effect_chain(
+            "Tap target creature. Put two stun counters on it.",
+            crate::types::ability::AbilityKind::Activated,
+        );
+
+        // Primary effect: Tap with a typed creature filter.
+        assert!(
+            matches!(def.effect.as_ref(), Effect::Tap { target: TargetFilter::Typed(_) }),
+            "expected Tap with typed target, got: {:?}",
+            def.effect
+        );
+
+        // Sub-ability: PutCounter targeting ParentTarget (the same creature).
+        let sub = def.sub_ability.as_ref().expect("should have sub_ability for 'put counters on it'");
+        assert!(
+            matches!(
+                sub.effect.as_ref(),
+                Effect::PutCounter { target: TargetFilter::ParentTarget, .. }
+            ),
+            "expected PutCounter with ParentTarget, got: {:?}",
+            sub.effect
         );
     }
 }
