@@ -1,8 +1,9 @@
 use crate::game::devotion::count_devotion;
 use crate::game::filter::matches_target_filter;
+use crate::game::printed_cards::{apply_copiable_values, intrinsic_copiable_values};
 use crate::game::speed::{effective_speed, has_max_speed};
 use crate::types::ability::{
-    BasicLandType, ContinuousModification, Duration, QuantityExpr, StaticCondition,
+    BasicLandType, ContinuousModification, CopiableValues, Duration, QuantityExpr, StaticCondition,
     StaticDefinition, TargetFilter, TypedFilter,
 };
 use crate::types::card_type::is_land_subtype;
@@ -69,6 +70,17 @@ pub fn prune_host_left_effects(state: &mut GameState, departed_id: ObjectId) {
     state
         .transient_continuous_effects
         .retain(|e| !(e.duration == Duration::UntilHostLeavesPlay && e.source_id == departed_id));
+    if state.transient_continuous_effects.len() != before {
+        state.layers_dirty = true;
+    }
+}
+
+/// Remove transient effects bound to a specific affected object that has left the battlefield.
+pub fn prune_affected_object_left_effects(state: &mut GameState, departed_id: ObjectId) {
+    let before = state.transient_continuous_effects.len();
+    state.transient_continuous_effects.retain(|effect| {
+        !matches!(effect.affected, TargetFilter::SpecificObject { id } if id == departed_id)
+    });
     if state.transient_continuous_effects.len() != before {
         state.layers_dirty = true;
     }
@@ -275,31 +287,18 @@ pub fn evaluate_layers(state: &mut GameState) {
     let bf_ids: Vec<ObjectId> = state.battlefield.clone();
     for &id in &bf_ids {
         if let Some(obj) = state.objects.get_mut(&id) {
-            if obj.base_power.is_some() {
-                obj.power = obj.base_power;
-            }
-            if obj.base_toughness.is_some() {
-                obj.toughness = obj.base_toughness;
-            }
-            if !obj.base_card_types.supertypes.is_empty()
-                || !obj.base_card_types.core_types.is_empty()
-                || !obj.base_card_types.subtypes.is_empty()
-            {
-                obj.card_types = obj.base_card_types.clone();
-            }
+            obj.sync_missing_base_characteristics();
+            obj.name = obj.base_name.clone();
+            obj.power = obj.base_power;
+            obj.toughness = obj.base_toughness;
+            obj.loyalty = obj.base_loyalty;
+            obj.card_types = obj.base_card_types.clone();
+            obj.mana_cost = obj.base_mana_cost.clone();
             obj.keywords = obj.base_keywords.clone();
-            if !obj.base_abilities.is_empty() {
-                obj.abilities = obj.base_abilities.clone();
-            }
-            if !obj.base_trigger_definitions.is_empty() {
-                obj.trigger_definitions = obj.base_trigger_definitions.clone();
-            }
-            if !obj.base_replacement_definitions.is_empty() {
-                obj.replacement_definitions = obj.base_replacement_definitions.clone();
-            }
-            if !obj.base_static_definitions.is_empty() {
-                obj.static_definitions = obj.base_static_definitions.clone();
-            }
+            obj.abilities = obj.base_abilities.clone();
+            obj.trigger_definitions = obj.base_trigger_definitions.clone();
+            obj.replacement_definitions = obj.base_replacement_definitions.clone();
+            obj.static_definitions = obj.base_static_definitions.clone();
             obj.color = obj.base_color.clone();
             // CR 613.1b: Reset controller to owner; Layer 2 re-applies control-changing effects.
             obj.controller = obj.owner;
@@ -308,13 +307,20 @@ pub fn evaluate_layers(state: &mut GameState) {
         }
     }
 
-    // Step 2: Gather active continuous effects
+    // Step 2: Apply copy effects first so copied static abilities exist before later layers.
+    let copy_effects = gather_active_effects_for_layer(state, Layer::Copy);
+    let ordered_copy = order_active_continuous_effects(Layer::Copy, &copy_effects, state);
+    for effect in &ordered_copy {
+        apply_continuous_effect(state, effect);
+    }
+
+    // Step 3: Gather active continuous effects after layer 1 is applied.
     let effects_by_layer = gather_active_continuous_effects(state);
 
-    // Step 3: Process each layer in order
+    // Step 4: Process each remaining layer in order
     for (layer, layer_bucket) in &effects_by_layer {
-        if *layer == Layer::CounterPT {
-            // Step 4: Counter-based P/T handled separately
+        if matches!(*layer, Layer::Copy | Layer::CounterPT) {
+            // Copy handled above; Counter-based P/T handled separately below.
             continue;
         }
 
@@ -377,6 +383,13 @@ pub fn evaluate_layers(state: &mut GameState) {
 
     // Step 5: Clear dirty flag
     state.layers_dirty = false;
+}
+
+fn gather_active_effects_for_layer(state: &GameState, layer: Layer) -> Vec<ActiveContinuousEffect> {
+    collect_shared_active_continuous_effects(state)
+        .into_iter()
+        .filter(|effect| effect.layer == layer)
+        .collect()
 }
 
 /// Collect all active continuous effects from permanents on the battlefield.
@@ -628,6 +641,10 @@ pub(crate) fn order_active_continuous_effects(
 /// Check if effect `a` depends on effect `b`.
 /// If `b` changes types and `a`'s filter is type-based, `a` depends on `b`.
 fn depends_on(a: &ActiveContinuousEffect, b: &ActiveContinuousEffect, _state: &GameState) -> bool {
+    if matches!(b.modification, ContinuousModification::CopyValues { .. }) {
+        return true;
+    }
+
     // If b changes types (AddType/RemoveType) and a's filter references a type
     let b_changes_types = matches!(
         &b.modification,
@@ -780,6 +797,9 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
         };
 
         match &effect.modification {
+            ContinuousModification::CopyValues { values } => {
+                apply_copiable_values(obj, values);
+            }
             ContinuousModification::AddPower { value } => {
                 if let Some(ref mut p) = obj.power {
                     *p += value;
@@ -946,6 +966,31 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
             }
         }
     }
+}
+
+pub(crate) fn compute_current_copiable_values(
+    state: &GameState,
+    object_id: ObjectId,
+) -> Option<CopiableValues> {
+    let obj = state.objects.get(&object_id)?;
+    let mut values = intrinsic_copiable_values(obj);
+    let mut copy_effects: Vec<ActiveContinuousEffect> =
+        gather_active_effects_for_layer(state, Layer::Copy)
+            .into_iter()
+            .filter(|effect| {
+                matches_target_filter(state, object_id, &effect.affected_filter, effect.source_id)
+            })
+            .collect();
+    copy_effects = order_active_continuous_effects(Layer::Copy, &copy_effects, state);
+    for effect in &copy_effects {
+        if let ContinuousModification::CopyValues {
+            values: effect_values,
+        } = &effect.modification
+        {
+            values = (**effect_values).clone();
+        }
+    }
+    Some(values)
 }
 
 #[cfg(test)]

@@ -71,6 +71,7 @@ impl ContinuousModification {
     /// Returns the appropriate Layer for this modification type.
     pub fn layer(&self) -> Layer {
         match self {
+            ContinuousModification::CopyValues { .. } => Layer::Copy,
             ContinuousModification::AddPower { .. }
             | ContinuousModification::AddToughness { .. }
             | ContinuousModification::AddDynamicPower { .. }
@@ -128,6 +129,7 @@ pub struct ActiveContinuousEffect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::CopiableValues;
     use crate::types::keywords::Keyword;
     use crate::types::mana::ManaColor;
 
@@ -161,6 +163,26 @@ mod tests {
 
     #[test]
     fn continuous_modification_layer_mapping() {
+        assert_eq!(
+            ContinuousModification::CopyValues {
+                values: Box::new(CopiableValues {
+                    name: "Clone".to_string(),
+                    mana_cost: crate::types::mana::ManaCost::default(),
+                    color: vec![],
+                    card_types: crate::types::card_type::CardType::default(),
+                    power: None,
+                    toughness: None,
+                    loyalty: None,
+                    keywords: vec![],
+                    abilities: vec![],
+                    trigger_definitions: vec![],
+                    replacement_definitions: vec![],
+                    static_definitions: vec![],
+                })
+            }
+            .layer(),
+            Layer::Copy
+        );
         assert_eq!(
             ContinuousModification::AddPower { value: 1 }.layer(),
             Layer::ModifyPT

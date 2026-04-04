@@ -37,6 +37,13 @@
   "back_face": null,
   "base_power": 2,
   "base_toughness": 2,
+  "base_name": "Fixture Bear",
+  "base_loyalty": null,
+  "base_mana_cost": {
+    "type": "Cost",
+    "shards": ["Green"],
+    "generic": 1
+  },
   "base_card_types": {
     "supertypes": [],
     "core_types": ["Creature"],

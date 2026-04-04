@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::card_type::{CoreType, Supertype};
+use super::card_type::{CardType, CoreType, Supertype};
 use super::counter::CounterType;
 use super::game_state::{DistributionUnit, RetargetScope};
 use super::identifiers::ObjectId;
@@ -4565,8 +4565,29 @@ impl ReplacementDefinition {
 /// What modification a continuous effect applies to an object.
 /// Each variant knows its own layer implicitly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CopiableValues {
+    pub name: String,
+    pub mana_cost: ManaCost,
+    pub color: Vec<ManaColor>,
+    pub card_types: CardType,
+    pub power: Option<i32>,
+    pub toughness: Option<i32>,
+    pub loyalty: Option<u32>,
+    pub keywords: Vec<Keyword>,
+    pub abilities: Vec<AbilityDefinition>,
+    pub trigger_definitions: Vec<TriggerDefinition>,
+    pub replacement_definitions: Vec<ReplacementDefinition>,
+    pub static_definitions: Vec<StaticDefinition>,
+}
+
+/// What modification a continuous effect applies to an object.
+/// Each variant knows its own layer implicitly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum ContinuousModification {
+    CopyValues {
+        values: Box<CopiableValues>,
+    },
     AddPower {
         value: i32,
     },

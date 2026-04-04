@@ -1,3 +1,4 @@
+use crate::game::layers::compute_current_copiable_values;
 use crate::game::zones;
 use crate::types::ability::{
     Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
@@ -42,27 +43,9 @@ pub fn resolve(
             .ok_or_else(|| EffectError::MissingParam("CopyTokenOf requires a target".to_string()))?
     };
 
-    // Step 2: Snapshot copiable characteristics from the source (CR 707.2).
-    // CR 707.2: Copiable values are derived from the text printed on the object
-    // (name, mana cost, color, types, rules text, power, toughness, loyalty),
-    // as modified by other copy effects. We use base_* fields for this.
-    let source = state
-        .objects
-        .get(&copy_source_id)
+    let values = compute_current_copiable_values(state, copy_source_id)
         .ok_or(EffectError::ObjectNotFound(copy_source_id))?;
-
-    let name = source.name.clone();
-    let mana_cost = source.mana_cost.clone();
-    let color = source.base_color.clone();
-    let card_types = source.base_card_types.clone();
-    let power = source.base_power;
-    let toughness = source.base_toughness;
-    let loyalty = source.loyalty;
-    let keywords = source.base_keywords.clone();
-    let abilities = source.base_abilities.clone();
-    let trigger_definitions = source.base_trigger_definitions.clone();
-    let replacement_definitions = source.base_replacement_definitions.clone();
-    let static_definitions = source.base_static_definitions.clone();
+    let name = values.name.clone();
 
     // Step 3: Create a new token object on the battlefield.
     let token_id = zones::create_object(
@@ -76,26 +59,31 @@ pub fn resolve(
     // Step 4: Apply snapshotted characteristics to the token (CR 707.2).
     let token = state.objects.get_mut(&token_id).unwrap();
     token.is_token = true;
-    token.mana_cost = mana_cost;
-    token.base_color = color.clone();
-    token.color = color;
-    token.base_card_types = card_types.clone();
-    token.card_types = card_types;
-    token.base_power = power;
-    token.power = power;
-    token.base_toughness = toughness;
-    token.toughness = toughness;
-    token.loyalty = loyalty;
-    token.base_keywords = keywords.clone();
-    token.keywords = keywords;
-    token.base_abilities = abilities.clone();
-    token.abilities = abilities;
-    token.base_trigger_definitions = trigger_definitions.clone();
-    token.trigger_definitions = trigger_definitions;
-    token.base_replacement_definitions = replacement_definitions.clone();
-    token.replacement_definitions = replacement_definitions;
-    token.base_static_definitions = static_definitions.clone();
-    token.static_definitions = static_definitions;
+    token.name = values.name.clone();
+    token.base_name = values.name.clone();
+    token.mana_cost = values.mana_cost.clone();
+    token.base_mana_cost = values.mana_cost.clone();
+    token.base_color = values.color.clone();
+    token.color = values.color.clone();
+    token.base_card_types = values.card_types.clone();
+    token.card_types = values.card_types.clone();
+    token.base_power = values.power;
+    token.power = values.power;
+    token.base_toughness = values.toughness;
+    token.toughness = values.toughness;
+    token.base_loyalty = values.loyalty;
+    token.loyalty = values.loyalty;
+    token.base_keywords = values.keywords.clone();
+    token.keywords = values.keywords.clone();
+    token.base_abilities = values.abilities.clone();
+    token.abilities = values.abilities.clone();
+    token.base_trigger_definitions = values.trigger_definitions.clone();
+    token.trigger_definitions = values.trigger_definitions.clone();
+    token.base_replacement_definitions = values.replacement_definitions.clone();
+    token.replacement_definitions = values.replacement_definitions.clone();
+    token.base_static_definitions = values.static_definitions.clone();
+    token.static_definitions = values.static_definitions.clone();
+    token.base_characteristics_initialized = true;
     token.entered_battlefield_turn = Some(state.turn_number);
 
     // Step 5: If tapped, set tapped state.

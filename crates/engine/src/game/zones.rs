@@ -79,6 +79,7 @@ fn apply_zone_exit_cleanup(state: &mut GameState, object_id: ObjectId, from: Zon
     if from == Zone::Battlefield {
         state.layers_dirty = true;
         super::layers::prune_host_left_effects(state, object_id);
+        super::layers::prune_affected_object_left_effects(state, object_id);
         for tapped in state.lands_tapped_for_mana.values_mut() {
             tapped.retain(|&id| id != object_id);
         }

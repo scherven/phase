@@ -97,13 +97,21 @@ pub struct GameObject {
     // Base characteristics (for layer system)
     pub base_power: Option<i32>,
     pub base_toughness: Option<i32>,
+    #[serde(default)]
+    pub base_name: String,
+    #[serde(default)]
+    pub base_loyalty: Option<u32>,
     pub base_card_types: CardType,
+    #[serde(default)]
+    pub base_mana_cost: ManaCost,
     pub base_keywords: Vec<Keyword>,
     pub base_abilities: Vec<AbilityDefinition>,
     pub base_trigger_definitions: Vec<TriggerDefinition>,
     pub base_replacement_definitions: Vec<ReplacementDefinition>,
     pub base_static_definitions: Vec<StaticDefinition>,
     pub base_color: Vec<ManaColor>,
+    #[serde(default)]
+    pub base_characteristics_initialized: bool,
 
     // Timestamp for layer ordering
     pub timestamp: u64,
@@ -235,6 +243,49 @@ pub struct GameObject {
 }
 
 impl GameObject {
+    pub fn sync_missing_base_characteristics(&mut self) {
+        if self.base_characteristics_initialized {
+            return;
+        }
+
+        if self.base_power.is_none() && self.power.is_some() {
+            self.base_power = self.power;
+        }
+        if self.base_toughness.is_none() && self.toughness.is_some() {
+            self.base_toughness = self.toughness;
+        }
+        if self.base_loyalty.is_none() && self.loyalty.is_some() {
+            self.base_loyalty = self.loyalty;
+        }
+        if self.base_card_types == CardType::default() && self.card_types != CardType::default() {
+            self.base_card_types = self.card_types.clone();
+        }
+        if self.base_mana_cost == ManaCost::default() && self.mana_cost != ManaCost::default() {
+            self.base_mana_cost = self.mana_cost.clone();
+        }
+        if self.base_keywords.is_empty() && !self.keywords.is_empty() {
+            self.base_keywords = self.keywords.clone();
+        }
+        if self.base_abilities.is_empty() && !self.abilities.is_empty() {
+            self.base_abilities = self.abilities.clone();
+        }
+        if self.base_trigger_definitions.is_empty() && !self.trigger_definitions.is_empty() {
+            self.base_trigger_definitions = self.trigger_definitions.clone();
+        }
+        if self.base_replacement_definitions.is_empty() && !self.replacement_definitions.is_empty()
+        {
+            self.base_replacement_definitions = self.replacement_definitions.clone();
+        }
+        if self.base_static_definitions.is_empty() && !self.static_definitions.is_empty() {
+            self.base_static_definitions = self.static_definitions.clone();
+        }
+        if self.base_color.is_empty() && !self.color.is_empty() {
+            self.base_color = self.color.clone();
+        }
+
+        self.base_characteristics_initialized = true;
+    }
+
     pub fn new(id: ObjectId, card_id: CardId, owner: PlayerId, name: String, zone: Zone) -> Self {
         GameObject {
             id,
@@ -251,7 +302,7 @@ impl GameObject {
             attached_to: None,
             attachments: Vec::new(),
             counters: HashMap::new(),
-            name,
+            name: name.clone(),
             power: None,
             toughness: None,
             loyalty: None,
@@ -267,13 +318,17 @@ impl GameObject {
             back_face: None,
             base_power: None,
             base_toughness: None,
+            base_name: name.clone(),
+            base_loyalty: None,
             base_card_types: CardType::default(),
+            base_mana_cost: ManaCost::default(),
             base_keywords: Vec::new(),
             base_abilities: Vec::new(),
             base_trigger_definitions: Vec::new(),
             base_replacement_definitions: Vec::new(),
             base_static_definitions: Vec::new(),
             base_color: Vec::new(),
+            base_characteristics_initialized: false,
             timestamp: 0,
             entered_battlefield_turn: None,
             ninjutsu_variant_paid: None,

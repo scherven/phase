@@ -103,7 +103,7 @@ impl fmt::Display for CoreType {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CardType {
     pub supertypes: Vec<Supertype>,
     pub core_types: Vec<CoreType>,
