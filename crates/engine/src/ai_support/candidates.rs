@@ -1603,15 +1603,37 @@ fn mana_tap_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
             if obj.controller != player || obj.tapped {
                 continue;
             }
-            // Lands: use TapLandForMana action
-            if obj.card_types.core_types.contains(&CoreType::Land)
-                && !mana_sources::activatable_land_mana_options(state, obj_id, player).is_empty()
-            {
-                actions.push(candidate(
-                    GameAction::TapLandForMana { object_id: obj_id },
-                    TacticalClass::Mana,
-                    Some(player),
-                ));
+            // Lands: single-option lands use TapLandForMana; multi-option lands
+            // (duals, triomes) use ActivateAbility per mana ability so the AI
+            // can choose which color to produce.
+            if obj.card_types.core_types.contains(&CoreType::Land) {
+                let land_options =
+                    mana_sources::activatable_land_mana_options(state, obj_id, player);
+                if land_options.len() == 1 {
+                    actions.push(candidate(
+                        GameAction::TapLandForMana { object_id: obj_id },
+                        TacticalClass::Mana,
+                        Some(player),
+                    ));
+                } else {
+                    // Generate one ActivateAbility per distinct mana ability index
+                    let mut seen_indices = Vec::new();
+                    for opt in &land_options {
+                        if let Some(idx) = opt.ability_index {
+                            if !seen_indices.contains(&idx) {
+                                seen_indices.push(idx);
+                                actions.push(candidate(
+                                    GameAction::ActivateAbility {
+                                        source_id: obj_id,
+                                        ability_index: idx,
+                                    },
+                                    TacticalClass::Mana,
+                                    Some(player),
+                                ));
+                            }
+                        }
+                    }
+                }
             // CR 605.1b: Non-land permanents with mana abilities use ActivateAbility
             } else if !obj.card_types.core_types.contains(&CoreType::Land)
                 && !mana_sources::activatable_mana_options(state, obj_id, player).is_empty()

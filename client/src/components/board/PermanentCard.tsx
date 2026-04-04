@@ -185,15 +185,23 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
       const o = useGameStore.getState().gameState?.objects[objectId];
       // Filter out mana abilities from non-mana ability actions — mana abilities
       // are in legalActions for auto-pass awareness but handled by canTapForMana.
-      const abilityActions = useGameStore.getState().legalActions.filter((a) =>
-        a.type === "ActivateAbility" && a.data.source_id === objectId
-        && (o?.abilities?.[a.data.ability_index] as { effect?: { type?: string } } | undefined)?.effect?.type !== "Mana",
+      const allLegalForObject = useGameStore.getState().legalActions.filter((a) =>
+        a.type === "ActivateAbility" && a.data.source_id === objectId,
+      );
+      const abilityActions = allLegalForObject.filter((a) =>
+        (o?.abilities?.[a.data.ability_index] as { effect?: { type?: string } } | undefined)?.effect?.type !== "Mana",
+      );
+      const manaActions = allLegalForObject.filter((a) =>
+        (o?.abilities?.[a.data.ability_index] as { effect?: { type?: string } } | undefined)?.effect?.type === "Mana",
       );
       if (abilityActions.length === 0 && canTapForMana) {
         // No non-mana abilities — tap for mana directly
         if (o && !o.card_types.core_types.includes("Land") && o.mana_ability_index != null) {
           // Non-land mana source: dispatch ActivateAbility (handles tap + sacrifice etc.)
           dispatchAction({ type: "ActivateAbility", data: { source_id: objectId, ability_index: o.mana_ability_index } });
+        } else if (manaActions.length > 1) {
+          // Multi-color land (e.g., shock lands, dual lands) — show choice modal
+          setPendingAbilityChoice({ objectId, actions: manaActions });
         } else {
           dispatchAction({ type: "TapLandForMana", data: { object_id: objectId } });
         }
@@ -205,6 +213,8 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
         if (canTapForMana) {
           if (o && !o.card_types.core_types.includes("Land") && o.mana_ability_index != null) {
             allActions.push({ type: "ActivateAbility", data: { source_id: objectId, ability_index: o.mana_ability_index } });
+          } else if (manaActions.length > 1) {
+            allActions.push(...manaActions);
           } else {
             allActions.push({ type: "TapLandForMana", data: { object_id: objectId } });
           }

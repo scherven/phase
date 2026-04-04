@@ -1843,12 +1843,22 @@ pub(super) fn handle_tap_land_for_mana(
         ));
     }
 
-    let mana_option = mana_sources::activatable_land_mana_options(state, object_id, obj.controller)
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            EngineError::ActionNotAllowed("Land has no activatable mana ability".to_string())
-        })?;
+    let mana_options =
+        mana_sources::activatable_land_mana_options(state, object_id, obj.controller);
+    if mana_options.is_empty() {
+        return Err(EngineError::ActionNotAllowed(
+            "Land has no activatable mana ability".to_string(),
+        ));
+    }
+    // Lands with multiple mana options (dual lands, triomes, etc.) must use
+    // ActivateAbility with a specific ability_index to select which color.
+    // TapLandForMana is a convenience shortcut for single-option lands only.
+    if mana_options.len() > 1 {
+        return Err(EngineError::ActionNotAllowed(
+            "Land has multiple mana options — use ActivateAbility to choose".to_string(),
+        ));
+    }
+    let mana_option = mana_options.into_iter().next().unwrap();
 
     let ability_to_resolve = mana_option.ability_index.and_then(|ability_index| {
         state
@@ -2904,18 +2914,20 @@ mod tests {
     }
 
     #[test]
-    fn tap_land_for_mana_uses_mana_ability_with_activation_condition() {
+    fn multi_mana_land_rejects_tap_land_for_mana() {
+        // Dual lands with multiple mana abilities must use ActivateAbility to
+        // select which color — TapLandForMana is ambiguous for multi-option lands.
         let mut state = setup_game_at_main_phase();
 
-        let verge_id = create_object(
+        let dual_id = create_object(
             &mut state,
             CardId(2),
             PlayerId(0),
-            "Gloomlake Verge".to_string(),
+            "Watery Grave".to_string(),
             Zone::Battlefield,
         );
         {
-            let obj = state.objects.get_mut(&verge_id).unwrap();
+            let obj = state.objects.get_mut(&dual_id).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
             obj.abilities.push(
                 AbilityDefinition::new(
@@ -2941,26 +2953,74 @@ mod tests {
                         expiry: None,
                     },
                 )
-                .cost(crate::types::ability::AbilityCost::Tap)
-                .sub_ability(AbilityDefinition::new(
-                    crate::types::ability::AbilityKind::Activated,
-                    crate::types::ability::Effect::Unimplemented {
-                        name: "activate_only_if_controls_land_subtype_any".to_string(),
-                        description: Some("Island|Swamp".to_string()),
-                    },
-                )),
+                .cost(crate::types::ability::AbilityCost::Tap),
             );
         }
 
         let result = apply(
             &mut state,
             GameAction::TapLandForMana {
-                object_id: verge_id,
+                object_id: dual_id,
+            },
+        );
+        assert!(result.is_err(), "TapLandForMana should reject multi-mana lands");
+    }
+
+    #[test]
+    fn multi_mana_land_activates_via_ability_index() {
+        // Dual lands use ActivateAbility with a specific ability_index to select color.
+        let mut state = setup_game_at_main_phase();
+
+        let dual_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Watery Grave".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&dual_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.has_mana_ability = true;
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    crate::types::ability::AbilityKind::Activated,
+                    crate::types::ability::Effect::Mana {
+                        produced: crate::types::ability::ManaProduction::Fixed {
+                            colors: vec![crate::types::mana::ManaColor::Blue],
+                        },
+                        restrictions: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(crate::types::ability::AbilityCost::Tap),
+            );
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    crate::types::ability::AbilityKind::Activated,
+                    crate::types::ability::Effect::Mana {
+                        produced: crate::types::ability::ManaProduction::Fixed {
+                            colors: vec![crate::types::mana::ManaColor::Black],
+                        },
+                        restrictions: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(crate::types::ability::AbilityCost::Tap),
+            );
+        }
+
+        // Activate Blue (ability_index 0)
+        let result = apply(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: dual_id,
+                ability_index: 0,
             },
         )
         .unwrap();
 
-        assert!(state.objects[&verge_id].tapped);
+        assert!(state.objects[&dual_id].tapped);
         assert_eq!(
             state.players[0]
                 .mana_pool

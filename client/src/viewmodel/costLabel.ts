@@ -63,12 +63,28 @@ export function abilityLabel(ability: unknown): string {
   return cost ? formatCost(cost) : "0";
 }
 
+// Maps ManaColor names to MTG mana symbol abbreviations.
+const MANA_COLOR_ABBREVIATION: Record<string, string> = {
+  White: "W", Blue: "U", Black: "B", Red: "R", Green: "G",
+};
+
 export function abilityChoiceLabel(
   action: GameAction,
   object: GameObject,
 ): { label: string; description?: string } {
   if (action.type === "ActivateAbility") {
-    const ability = object.abilities[action.data.ability_index] as { cost?: SerializedCost; description?: string } | null;
+    const ability = object.abilities[action.data.ability_index] as { cost?: SerializedCost; effect?: { type?: string; produced?: { type?: string; colors?: string[] } }; description?: string } | null;
+    // For mana abilities, show what they produce (e.g., "Add {U}") instead of just the cost
+    if (ability?.effect?.type === "Mana" && ability.effect.produced) {
+      const produced = ability.effect.produced;
+      if (produced.type === "Fixed" && produced.colors?.length) {
+        const symbols = produced.colors.map((c) => `{${MANA_COLOR_ABBREVIATION[c] ?? c}}`).join("");
+        return { label: `Add ${symbols}` };
+      }
+      if (produced.type === "Colorless") {
+        return { label: "Add {C}" };
+      }
+    }
     const label = abilityLabel(ability);
     const description = ability?.description ? stripCostPrefix(ability.description) : undefined;
     return { label, description };
