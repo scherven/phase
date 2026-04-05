@@ -5475,4 +5475,77 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn gran_gran_reduces_noncreature_spell_with_three_lessons_in_graveyard() {
+        let mut state = setup_game_at_main_phase();
+
+        let gran_gran = create_object(
+            &mut state,
+            CardId(600),
+            PlayerId(0),
+            "Gran-Gran".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&gran_gran).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.extend([
+                "Human".to_string(),
+                "Peasant".to_string(),
+                "Ally".to_string(),
+            ]);
+            obj.static_definitions.push(
+                parse_static_line(
+                    "Noncreature spells you cast cost {1} less to cast as long as there are three or more Lesson cards in your graveyard.",
+                )
+                .expect("Gran-Gran reducer should parse"),
+            );
+        }
+
+        for i in 0..3u64 {
+            let lesson = create_object(
+                &mut state,
+                CardId(610 + i),
+                PlayerId(0),
+                format!("Lesson {i}"),
+                Zone::Graveyard,
+            );
+            let obj = state.objects.get_mut(&lesson).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.card_types.subtypes.push("Lesson".to_string());
+        }
+
+        let spell = create_object(
+            &mut state,
+            CardId(620),
+            PlayerId(0),
+            "Test Noncreature Spell".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&spell).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 1,
+            };
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+            ));
+        }
+
+        let effective = effective_spell_cost(&state, PlayerId(0), spell)
+            .expect("effective cost should resolve");
+        assert_eq!(
+            effective,
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 0,
+            }
+        );
+    }
 }

@@ -6,7 +6,9 @@
 
 use std::collections::HashSet;
 
-use crate::game::filter::{matches_target_filter_controlled, spell_record_matches_filter};
+use crate::game::filter::{
+    matches_target_filter_controlled, spell_record_matches_filter, type_filter_matches,
+};
 use crate::game::speed::effective_speed;
 use crate::types::ability::{
     AggregateFunction, CountScope, ObjectProperty, PlayerFilter, QuantityExpr, QuantityRef,
@@ -570,11 +572,10 @@ fn matches_zone_card_filter(
     if card_types.is_empty() {
         return true;
     }
-    state.objects.get(&obj_id).is_some_and(|obj| {
-        card_types.iter().any(|tf| {
-            type_filter_to_core_type(tf).is_some_and(|ct| obj.card_types.core_types.contains(&ct))
-        })
-    })
+    state
+        .objects
+        .get(&obj_id)
+        .is_some_and(|obj| card_types.iter().any(|tf| type_filter_matches(tf, obj)))
 }
 
 /// Return an iterator over players matching the given `CountScope`.
@@ -588,25 +589,6 @@ fn scoped_players<'a>(
         CountScope::All => true,
         CountScope::Opponents => p.id != controller,
     })
-}
-
-/// Map a `TypeFilter` to its corresponding `CoreType`, if applicable.
-/// Only core type filters are valid for zone-based card counting.
-fn type_filter_to_core_type(tf: &TypeFilter) -> Option<CoreType> {
-    match tf {
-        TypeFilter::Creature => Some(CoreType::Creature),
-        TypeFilter::Instant => Some(CoreType::Instant),
-        TypeFilter::Sorcery => Some(CoreType::Sorcery),
-        TypeFilter::Land => Some(CoreType::Land),
-        TypeFilter::Artifact => Some(CoreType::Artifact),
-        TypeFilter::Enchantment => Some(CoreType::Enchantment),
-        TypeFilter::Planeswalker => Some(CoreType::Planeswalker),
-        TypeFilter::Battle => Some(CoreType::Battle),
-        TypeFilter::Permanent | TypeFilter::Card | TypeFilter::Any => None,
-        TypeFilter::Non(_) => None,
-        TypeFilter::Subtype(_) => None,
-        TypeFilter::AnyOf(ref filters) => filters.iter().find_map(type_filter_to_core_type),
-    }
 }
 
 /// Count players matching a PlayerFilter relative to the controller.
@@ -890,6 +872,49 @@ mod tests {
             },
         };
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(1)), 1);
+    }
+
+    #[test]
+    fn resolve_quantity_zone_card_count_matches_subtype_cards() {
+        let mut state = GameState::new_two_player(42);
+
+        for i in 0..3u64 {
+            let lesson = create_object(
+                &mut state,
+                CardId(700 + i),
+                PlayerId(0),
+                format!("Lesson {i}"),
+                Zone::Graveyard,
+            );
+            let obj = state.objects.get_mut(&lesson).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.card_types.subtypes.push("Lesson".to_string());
+        }
+
+        let non_lesson = create_object(
+            &mut state,
+            CardId(710),
+            PlayerId(0),
+            "Not a Lesson".to_string(),
+            Zone::Graveyard,
+        );
+        state
+            .objects
+            .get_mut(&non_lesson)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Sorcery);
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: vec![TypeFilter::Subtype("Lesson".to_string())],
+                scope: CountScope::Controller,
+            },
+        };
+
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(1)), 3);
     }
 
     #[test]
