@@ -1065,6 +1065,9 @@ pub(super) fn parse_followup_continuation_ast(
         } if matches!(
             lower.trim(),
             "reveal that card"
+                | "reveal those cards"
+                | "reveal the card"
+                | "reveal them"
                 | "reveal it"
                 | "put that card into your hand"
                 | "put it into your hand"

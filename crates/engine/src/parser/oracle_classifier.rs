@@ -10,7 +10,8 @@ pub(crate) fn is_cant_win_lose_compound(lower: &str) -> bool {
 }
 
 pub(crate) fn has_roll_die_pattern(lower: &str) -> bool {
-    lower.contains("roll a d")
+    // CR 706: Detect both "roll a dN" and word-form "roll a six-sided die" patterns.
+    lower.contains("roll a d") || lower.contains("rolls a d") || lower.contains("-sided die")
 }
 
 pub(crate) fn is_instead_replacement_line(text: &str) -> bool {

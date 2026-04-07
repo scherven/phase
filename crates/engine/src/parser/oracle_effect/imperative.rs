@@ -2220,42 +2220,34 @@ fn try_parse_player_counter(lower: &str) -> Option<ImperativeFamilyAst> {
 
 /// CR 706: Parse die side count from "roll a dN" / "roll a six-sided die" patterns.
 fn try_parse_roll_die_sides(lower: &str) -> Option<u8> {
-    // "roll a d20", "roll a d6", "roll a d4"
-    let (rest, _) = alt((
-        tag::<_, _, VerboseError<&str>>("roll a d"),
-        tag("rolls a d"),
+    // Strip the "roll a " / "rolls a " prefix.
+    let (rest, _) = alt((tag::<_, _, VerboseError<&str>>("roll a "), tag("rolls a ")))
+        .parse(lower)
+        .ok()?;
+    // Numeric form: "d20", "d6", "d4"
+    if let Ok((num_rest, _)) = tag::<_, _, VerboseError<&str>>("d").parse(rest) {
+        if let Ok(sides) = num_rest.parse::<u8>() {
+            return Some(sides);
+        }
+    }
+    // CR 706: Word-form: "six-sided die", "four-sided die", etc.
+    let (_, sides) = alt((
+        value(
+            4_u8,
+            alt((
+                tag::<_, _, VerboseError<&str>>("four-sided"),
+                tag("4-sided"),
+            )),
+        ),
+        value(6, alt((tag("six-sided"), tag("6-sided")))),
+        value(8, alt((tag("eight-sided"), tag("8-sided")))),
+        value(10, alt((tag("ten-sided"), tag("10-sided")))),
+        value(12, alt((tag("twelve-sided"), tag("12-sided")))),
+        value(20, alt((tag("twenty-sided"), tag("20-sided")))),
     ))
-    .parse(lower)
+    .parse(rest)
     .ok()?;
-    if let Ok(sides) = rest.parse::<u8>() {
-        return Some(sides);
-    }
-    // Word-form: "roll a six-sided die", "roll a four-sided die"
-    if alt((
-        tag::<_, _, VerboseError<&str>>("four-sided"),
-        tag("4-sided"),
-    ))
-    .parse(rest)
-    .is_ok()
-    {
-        return Some(4);
-    }
-    if alt((tag::<_, _, VerboseError<&str>>("six-sided"), tag("6-sided")))
-        .parse(rest)
-        .is_ok()
-    {
-        return Some(6);
-    }
-    if alt((
-        tag::<_, _, VerboseError<&str>>("twenty-sided"),
-        tag("20-sided"),
-    ))
-    .parse(rest)
-    .is_ok()
-    {
-        return Some(20);
-    }
-    None
+    Some(sides)
 }
 
 /// CR 706.2: Try to parse a d20 result table line like "1—9 | Draw two cards"

@@ -236,12 +236,43 @@ pub(super) fn try_parse_die_roll_table(
     Some((def, if has_branches { j } else { i + 1 }))
 }
 
+/// CR 706: Parse die side count from "roll a dN" and word-form "roll a six-sided die" patterns.
 fn parse_roll_die_sides(lower: &str) -> Option<u8> {
     let ((), rest) = nom_on_lower(lower, lower, |i| {
         value((), alt((tag("roll a d"), tag("rolls a d")))).parse(i)
     })?;
     let rest = rest.trim_end_matches('.');
-    rest.parse::<u8>().ok()
+    // Numeric form: "roll a d20", "roll a d6" — rest is "20", "6", etc.
+    if let Ok(n) = rest.parse::<u8>() {
+        return Some(n);
+    }
+    // Word-form: "roll a six-sided die" — the "roll a d" prefix consumed "d" which
+    // doesn't apply here, so fall back to word-form parsing on the full string.
+    parse_roll_die_sides_word_form(lower)
+}
+
+/// CR 706: Parse word-form die patterns like "roll a six-sided die".
+fn parse_roll_die_sides_word_form(lower: &str) -> Option<u8> {
+    let (rest, _) = alt((tag::<_, _, VerboseError<&str>>("roll a "), tag("rolls a ")))
+        .parse(lower)
+        .ok()?;
+    let (_, sides) = alt((
+        value(
+            4_u8,
+            alt((
+                tag::<_, _, VerboseError<&str>>("four-sided"),
+                tag("4-sided"),
+            )),
+        ),
+        value(6, alt((tag("six-sided"), tag("6-sided")))),
+        value(8, alt((tag("eight-sided"), tag("8-sided")))),
+        value(10, alt((tag("ten-sided"), tag("10-sided")))),
+        value(12, alt((tag("twelve-sided"), tag("12-sided")))),
+        value(20, alt((tag("twenty-sided"), tag("20-sided")))),
+    ))
+    .parse(rest)
+    .ok()?;
+    Some(sides)
 }
 
 fn strip_die_table_flavor_label(text: &str) -> &str {
