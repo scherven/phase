@@ -13,8 +13,8 @@ use crate::parser::oracle_nom::bridge::nom_on_lower;
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_static::parse_continuous_modifications;
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, ContinuousModification, ControllerRef, Duration, Effect,
-    GainLifePlayer, LibraryPosition, MultiTargetSpec, PaymentCost, PreventionAmount,
+    AbilityDefinition, AbilityKind, Chooser, ContinuousModification, ControllerRef, Duration,
+    Effect, GainLifePlayer, LibraryPosition, MultiTargetSpec, PaymentCost, PreventionAmount,
     PreventionScope, PtValue, QuantityExpr, QuantityRef, RoundingMode, StaticDefinition,
     TargetFilter, TypedFilter,
 };
@@ -844,7 +844,54 @@ pub(super) fn parse_choose_ast(text: &str, lower: &str) -> Option<ChooseImperati
         });
     }
 
+    // "choose N of them/those [cards]" / "you choose N of those cards" /
+    // "an opponent chooses N of them" — anaphoric reference to a previously
+    // revealed/exiled set, producing ChooseFromZone.
+    if let Some((count, chooser)) = parse_choose_anaphoric(lower) {
+        return Some(ChooseImperativeAst::FromTrackedSet { count, chooser });
+    }
+
     None
+}
+
+/// Parse anaphoric "choose N of them/those [cards]" patterns using nom combinators.
+/// Returns (count, chooser) if the pattern matches.
+fn parse_choose_anaphoric(lower: &str) -> Option<(u32, Chooser)> {
+    type E<'a> = VerboseError<&'a str>;
+
+    // Determine chooser from prefix: "an opponent chooses" / "target opponent chooses" → Opponent,
+    // "you choose" / bare "choose" → Controller.
+    let (rest, chooser) = alt((
+        value(
+            Chooser::Opponent,
+            alt((
+                tag::<_, _, E>("an opponent chooses "),
+                tag("target opponent chooses "),
+            )),
+        ),
+        value(
+            Chooser::Controller,
+            alt((tag::<_, _, E>("you choose "), tag("choose "))),
+        ),
+    ))
+    .parse(lower)
+    .ok()?;
+
+    // Optional "up to " prefix.
+    let rest = tag::<_, _, E>("up to ")
+        .parse(rest)
+        .map(|(r, _)| r)
+        .unwrap_or(rest);
+
+    // Parse count (one/two/three/N).
+    let (rest, count) = nom_primitives::parse_number.parse(rest).ok()?;
+
+    // Must be followed by " of them" or " of those" (optionally with trailing type noun).
+    let _ = alt((tag::<_, _, E>(" of them"), tag(" of those")))
+        .parse(rest)
+        .ok()?;
+
+    Some((count, chooser))
 }
 
 pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
@@ -859,6 +906,13 @@ pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
             target: TargetFilter::Any,
             card_filter,
             count: None,
+        },
+        // CR 700.2: Anaphoric "choose N of them/those" → select from the tracked set
+        // populated by the preceding effect (RevealTop, RevealHand, ExileTop, etc.).
+        ChooseImperativeAst::FromTrackedSet { count, chooser } => Effect::ChooseFromZone {
+            count,
+            zone: Zone::Exile,
+            chooser,
         },
     }
 }
@@ -892,6 +946,7 @@ pub(super) fn parse_utility_imperative_ast(
             _ => unreachable!(),
         };
     }
+    // CR 701.27 + CR 701.28: "transform" and "convert" are equivalent game actions.
     if matches!(
         lower,
         "transform"
@@ -901,13 +956,20 @@ pub(super) fn parse_utility_imperative_ast(
             | "transform this permanent"
             | "transform this artifact"
             | "transform this land"
+            | "convert"
+            | "convert ~"
+            | "convert this"
+            | "convert this creature"
+            | "convert this permanent"
+            | "convert this artifact"
+            | "convert this land"
     ) {
         return Some(UtilityImperativeAst::Transform {
             target: TargetFilter::SelfRef,
         });
     }
     if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
-        value((), tag("transform ")).parse(input)
+        value((), alt((tag("transform "), tag("convert ")))).parse(input)
     }) {
         let (target, _) = parse_target(rest);
         if !matches!(target, TargetFilter::Any) {
@@ -1817,8 +1879,11 @@ pub(super) fn parse_imperative_family_ast(
             parse_utility_imperative_ast(text, lower)
                 .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Utility(ast)))
         }
-        "transform" | "transforms" => parse_utility_imperative_ast(text, lower)
-            .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Utility(ast))),
+        // CR 701.27 + CR 701.28: "transform" and "convert" are equivalent game actions.
+        "transform" | "transforms" | "convert" | "converts" => {
+            parse_utility_imperative_ast(text, lower)
+                .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Utility(ast)))
+        }
 
         // Shuffle (CR 701.19)
         "shuffle" | "shuffles" => parse_shuffle_ast(text, lower).map(ImperativeFamilyAst::Shuffle),
@@ -3353,5 +3418,96 @@ mod tests {
                 max: Some(3)
             })
         );
+    }
+
+    #[test]
+    fn parse_choose_one_of_them() {
+        let text = "choose one of them";
+        let lower = text.to_lowercase();
+        let result = parse_choose_ast(text, &lower);
+        match result {
+            Some(ChooseImperativeAst::FromTrackedSet { count, chooser }) => {
+                assert_eq!(count, 1);
+                assert_eq!(chooser, Chooser::Controller);
+            }
+            other => panic!("Expected FromTrackedSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_choose_two_of_those_cards() {
+        let text = "choose two of those cards";
+        let lower = text.to_lowercase();
+        let result = parse_choose_ast(text, &lower);
+        match result {
+            Some(ChooseImperativeAst::FromTrackedSet { count, chooser }) => {
+                assert_eq!(count, 2);
+                assert_eq!(chooser, Chooser::Controller);
+            }
+            other => panic!("Expected FromTrackedSet with count=2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_choose_anaphoric_opponent() {
+        let text = "an opponent chooses one of them";
+        let lower = text.to_lowercase();
+        let result = parse_choose_ast(text, &lower);
+        match result {
+            Some(ChooseImperativeAst::FromTrackedSet { count, chooser }) => {
+                assert_eq!(count, 1);
+                assert_eq!(chooser, Chooser::Opponent);
+            }
+            other => panic!("Expected FromTrackedSet with Opponent chooser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_choose_anaphoric_you_choose() {
+        let text = "you choose one of those cards";
+        let lower = text.to_lowercase();
+        let result = parse_choose_ast(text, &lower);
+        match result {
+            Some(ChooseImperativeAst::FromTrackedSet { count, chooser }) => {
+                assert_eq!(count, 1);
+                assert_eq!(chooser, Chooser::Controller);
+            }
+            other => panic!("Expected FromTrackedSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_choose_up_to_two_of_them() {
+        let text = "choose up to two of them";
+        let lower = text.to_lowercase();
+        let result = parse_choose_ast(text, &lower);
+        match result {
+            Some(ChooseImperativeAst::FromTrackedSet { count, chooser }) => {
+                assert_eq!(count, 2);
+                assert_eq!(chooser, Chooser::Controller);
+            }
+            other => panic!("Expected FromTrackedSet with count=2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lower_choose_anaphoric_to_choose_from_zone() {
+        let ast = ChooseImperativeAst::FromTrackedSet {
+            count: 3,
+            chooser: Chooser::Opponent,
+        };
+        let effect = lower_choose_ast(ast);
+        match effect {
+            Effect::ChooseFromZone {
+                count,
+                zone,
+                chooser,
+            } => {
+                assert_eq!(count, 3);
+                assert_eq!(zone, Zone::Exile);
+                assert_eq!(chooser, Chooser::Opponent);
+            }
+            other => panic!("Expected ChooseFromZone, got {other:?}"),
+        }
     }
 }

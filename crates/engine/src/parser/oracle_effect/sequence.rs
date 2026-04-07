@@ -1031,8 +1031,12 @@ pub(super) fn parse_followup_continuation_ast(
             Some(ContinuationAst::CantRegenerate)
         }
         // CR 700.2: "Choose/You choose/An opponent chooses/Target opponent chooses one/two/N
-        // of them/those" after ChangeZone or ExileTop → ChooseFromZone building block
-        Effect::ChangeZone { .. } | Effect::ExileTop { .. }
+        // of them/those" after ChangeZone, ExileTop, RevealTop, or RevealHand →
+        // ChooseFromZone building block
+        Effect::ChangeZone { .. }
+        | Effect::ExileTop { .. }
+        | Effect::RevealTop { .. }
+        | Effect::RevealHand { .. }
             if (nom_primitives::scan_contains(&lower, "of them")
                 || nom_primitives::scan_contains(&lower, "of those"))
                 && alt((

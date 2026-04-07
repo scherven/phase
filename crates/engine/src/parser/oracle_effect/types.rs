@@ -517,6 +517,12 @@ pub(super) enum ChooseImperativeAst {
     RevealHandFilter {
         card_filter: TargetFilter,
     },
+    /// "choose N of them/those [cards]" — anaphoric reference to a previously
+    /// revealed/exiled set of cards. Lowered to `Effect::ChooseFromZone`.
+    FromTrackedSet {
+        count: u32,
+        chooser: crate::types::ability::Chooser,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

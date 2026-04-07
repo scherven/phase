@@ -2687,10 +2687,13 @@ fn is_choose_as_targeting(rest: &str) -> bool {
         return true;
     }
 
-    // "choose up to N" without "target" (e.g. "choose up to two creatures")
+    // "choose up to N" without "target" (e.g. "choose up to two creatures"),
+    // but NOT "choose up to N of them/those" which is anaphoric (handled separately).
     if tag::<_, _, VerboseError<&str>>("up to ")
         .parse(rest)
         .is_ok()
+        && !scan_contains_phrase(rest, "of them")
+        && !scan_contains_phrase(rest, "of those")
     {
         return true;
     }
