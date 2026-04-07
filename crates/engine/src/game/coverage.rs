@@ -1310,6 +1310,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::SolveCase
         | Effect::Cleanup { .. }
         | Effect::AddRestriction { .. }
+        | Effect::ReduceNextSpellCost { .. }
         | Effect::CreateEmblem { .. }
         | Effect::PayCost { .. }
         | Effect::LoseTheGame

@@ -449,6 +449,26 @@ fn parse_event_condition(text: &str) -> Option<ParsedCondition> {
         return Some(ParsedCondition::YouCastNoncreatureSpellThisTurn);
     }
 
+    // "you've cast another spell this turn" — requires at least 1 other spell cast
+    if alt((
+        value(
+            (),
+            terminated(
+                tag::<_, _, VerboseError<&str>>("you've cast another spell"),
+                tag(" this turn"),
+            ),
+        ),
+        value(
+            (),
+            terminated(tag("you cast another spell"), tag(" this turn")),
+        ),
+    ))
+    .parse(text)
+    .is_ok()
+    {
+        return Some(ParsedCondition::YouCastSpellCountAtLeast { count: 1 });
+    }
+
     // "you/you've discarded a card this turn"
     if alt((
         value(

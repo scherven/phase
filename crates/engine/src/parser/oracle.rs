@@ -921,14 +921,16 @@ pub fn parse_oracle_text(
             }
         }
 
+        // CR 601.3: "Cast this spell only [condition]" — applies to any card type, not just instants/sorceries.
+        if let Some(restrictions) = parse_casting_restriction_line(&line) {
+            result.casting_restrictions.extend(restrictions);
+            i += 1;
+            continue;
+        }
+
         if is_spell {
             if let Some(option) = parse_spell_casting_option_line(&line, card_name) {
                 result.casting_options.push(option);
-                i += 1;
-                continue;
-            }
-            if let Some(restrictions) = parse_casting_restriction_line(&line) {
-                result.casting_restrictions.extend(restrictions);
                 i += 1;
                 continue;
             }

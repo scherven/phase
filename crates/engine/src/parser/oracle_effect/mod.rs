@@ -336,7 +336,42 @@ fn parse_delayed_subject_filter(condition_text: &str) -> TargetFilter {
     scan_delayed_subject(condition_text).unwrap_or(TargetFilter::Any)
 }
 
+/// CR 601.2f: Parse "the next spell you cast this turn costs {N} less to cast".
+///
+/// Also handles "for each counter removed this way" variants by falling back to fixed {1}.
+fn try_parse_reduce_next_spell_cost(tp: TextPair) -> Option<ParsedEffectClause> {
+    use nom::sequence::delimited;
+
+    // Match prefix: "the next spell you cast this turn costs "
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("the next spell you cast this turn costs ")
+        .parse(tp.lower)
+        .ok()?;
+
+    // Extract the mana amount: "{1}", "{2}", etc.
+    let (after_amount, amount) = delimited(
+        tag::<_, _, VerboseError<&str>>("{"),
+        nom::character::complete::u32,
+        tag("}"),
+    )
+    .parse(rest)
+    .ok()?;
+
+    // Match suffix: " less to cast" with optional trailing clause
+    alt((
+        tag::<_, _, VerboseError<&str>>(" less to cast for each counter removed this way"),
+        tag(" less to cast"),
+    ))
+    .parse(after_amount)
+    .ok()?;
+
+    Some(parsed_clause(Effect::ReduceNextSpellCost {
+        amount,
+        spell_filter: None,
+    }))
+}
+
 /// CR 614.16: Parse "Damage can't be prevented [this turn]" into Effect::AddRestriction.
+///
 /// Handles variants:
 ///   - "Damage can't be prevented this turn"
 ///   - "Combat damage that would be dealt by creatures you control can't be prevented"
@@ -717,6 +752,11 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     }
 
     if let Some(clause) = try_parse_self_name_exile(tp, ctx) {
+        return clause;
+    }
+
+    // CR 601.2f: "the next spell you cast this turn costs {N} less to cast"
+    if let Some(clause) = try_parse_reduce_next_spell_cost(tp) {
         return clause;
     }
 

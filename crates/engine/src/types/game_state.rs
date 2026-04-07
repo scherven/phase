@@ -147,6 +147,19 @@ pub struct SpellCastRecord {
     pub mana_value: u32,
 }
 
+/// CR 601.2f: A pending one-shot cost reduction for the next spell a player casts.
+/// Created by effects like "the next spell you cast this turn costs {N} less to cast."
+/// Consumed (removed) when the player casts their next spell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingSpellCostReduction {
+    pub player: PlayerId,
+    /// Generic mana reduction amount.
+    pub amount: u32,
+    /// Optional filter for which spells this applies to (None = any spell).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spell_filter: Option<TargetFilter>,
+}
+
 /// CR 400.7: Snapshot of an object's properties at the time of a zone change,
 /// enabling data-driven filtered counting at resolution time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1367,6 +1380,10 @@ pub struct GameState {
     /// CR 700.14: Cumulative mana spent on spells this turn per player (for Expend triggers).
     #[serde(default)]
     pub mana_spent_on_spells_this_turn: HashMap<PlayerId, u32>,
+    /// CR 601.2f: One-shot cost reductions for the next spell cast.
+    /// Consumed when the player casts their next qualifying spell.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_spell_cost_reductions: Vec<PendingSpellCostReduction>,
 
     /// Modal modes chosen this turn per source: (ObjectId, mode_index).
     /// CR 700.2: "choose one that hasn't been chosen this turn"
@@ -1628,6 +1645,7 @@ impl GameState {
             battlefield_entries_this_turn: Vec::new(),
             damage_dealt_this_turn: Vec::new(),
             mana_spent_on_spells_this_turn: HashMap::new(),
+            pending_spell_cost_reductions: Vec::new(),
             modal_modes_chosen_this_turn: HashSet::new(),
             modal_modes_chosen_this_game: HashSet::new(),
             revealed_cards: HashSet::new(),
@@ -1782,6 +1800,7 @@ impl PartialEq for GameState {
             && self.zone_changes_this_turn == other.zone_changes_this_turn
             && self.battlefield_entries_this_turn == other.battlefield_entries_this_turn
             && self.damage_dealt_this_turn == other.damage_dealt_this_turn
+            && self.pending_spell_cost_reductions == other.pending_spell_cost_reductions
             && self.modal_modes_chosen_this_turn == other.modal_modes_chosen_this_turn
             && self.modal_modes_chosen_this_game == other.modal_modes_chosen_this_game
             && self.pending_continuation == other.pending_continuation

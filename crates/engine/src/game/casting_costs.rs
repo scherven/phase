@@ -1046,6 +1046,9 @@ pub(super) fn finalize_cast(
         .clone();
     restrictions::record_spell_cast(state, player, &obj);
 
+    // CR 601.2f: Consume any one-shot pending cost reductions now that the spell is finalized.
+    super::casting::consume_pending_spell_cost_reduction(state, player);
+
     // CR 700.14: Track cumulative mana spent on spells this turn for Expend triggers.
     // Uses actual mana deducted from pool (accounts for cost reduction, convoke, etc.).
     if actual_mana_spent > 0 {

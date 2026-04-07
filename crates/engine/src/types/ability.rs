@@ -2492,6 +2492,13 @@ pub enum Effect {
     AddRestriction {
         restriction: GameRestriction,
     },
+    /// CR 601.2f: "The next spell you cast this turn costs {N} less to cast."
+    /// Creates a one-shot pending cost reduction consumed when the player casts their next spell.
+    ReduceNextSpellCost {
+        amount: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spell_filter: Option<TargetFilter>,
+    },
     /// CR 114.1: Create an emblem with the specified static abilities in the command zone.
     /// Emblems persist for the rest of the game and cannot be removed.
     CreateEmblem {
@@ -3043,6 +3050,7 @@ impl Effect {
             | Effect::SetClassLevel { .. }
             | Effect::CreateDelayedTrigger { .. }
             | Effect::AddRestriction { .. }
+            | Effect::ReduceNextSpellCost { .. }
             | Effect::CreateEmblem { .. }
             | Effect::PayCost { .. }
             | Effect::GrantCastingPermission { .. }
@@ -3162,6 +3170,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::SetClassLevel { .. } => "SetClassLevel",
         Effect::CreateDelayedTrigger { .. } => "CreateDelayedTrigger",
         Effect::AddRestriction { .. } => "AddRestriction",
+        Effect::ReduceNextSpellCost { .. } => "ReduceNextSpellCost",
         Effect::CreateEmblem { .. } => "CreateEmblem",
         Effect::PayCost { .. } => "PayCost",
         Effect::CastFromZone { .. } => "CastFromZone",
@@ -3299,6 +3308,7 @@ pub enum EffectKind {
     SetClassLevel,
     CreateDelayedTrigger,
     AddRestriction,
+    ReduceNextSpellCost,
     CreateEmblem,
     PayCost,
     CastFromZone,
@@ -3439,6 +3449,7 @@ impl From<&Effect> for EffectKind {
             Effect::SetClassLevel { .. } => EffectKind::SetClassLevel,
             Effect::CreateDelayedTrigger { .. } => EffectKind::CreateDelayedTrigger,
             Effect::AddRestriction { .. } => EffectKind::AddRestriction,
+            Effect::ReduceNextSpellCost { .. } => EffectKind::ReduceNextSpellCost,
             Effect::CreateEmblem { .. } => EffectKind::CreateEmblem,
             Effect::PayCost { .. } => EffectKind::PayCost,
             Effect::CastFromZone { .. } => EffectKind::CastFromZone,

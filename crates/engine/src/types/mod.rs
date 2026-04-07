@@ -35,8 +35,9 @@ pub use events::GameEvent;
 pub use format::{FormatConfig, GameFormat};
 pub use game_state::{
     ActionResult, BattlefieldEntryRecord, CommanderDamageEntry, GameState, LKISnapshot,
-    PendingReplacement, PlayerDeckPool, ScheduledTurnControl, SpellCastRecord, StackEntry,
-    StackEntryKind, TransientContinuousEffect, WaitingFor, ZoneChangeRecord,
+    PendingReplacement, PendingSpellCostReduction, PlayerDeckPool, ScheduledTurnControl,
+    SpellCastRecord, StackEntry, StackEntryKind, TransientContinuousEffect, WaitingFor,
+    ZoneChangeRecord,
 };
 pub use identifiers::{CardId, ObjectId};
 pub use keywords::{Keyword, PartnerType, ProtectionTarget};

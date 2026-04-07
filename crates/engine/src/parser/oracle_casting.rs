@@ -554,6 +554,20 @@ mod tests {
     }
 
     #[test]
+    fn spell_cast_restriction_cast_another_spell_this_turn() {
+        let restrictions = parse_casting_restriction_line(
+            "Cast this spell only if you've cast another spell this turn.",
+        )
+        .expect("restrictions should parse");
+        assert_eq!(
+            restrictions,
+            vec![CastingRestriction::RequiresCondition {
+                condition: Some(ParsedCondition::YouCastSpellCountAtLeast { count: 1 }),
+            }]
+        );
+    }
+
+    #[test]
     fn spell_cast_restriction_handles_combat_on_your_turn_before_blockers() {
         let restrictions = parse_casting_restriction_line(
             "Cast this spell only during combat on your turn before blockers are declared.",

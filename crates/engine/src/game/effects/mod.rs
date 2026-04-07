@@ -282,6 +282,9 @@ pub fn resolve_effect(
         Effect::SetClassLevel { .. } => set_class_level::resolve(state, ability, events),
         Effect::CreateDelayedTrigger { .. } => delayed_trigger::resolve(state, ability, events),
         Effect::AddRestriction { .. } => add_restriction::resolve(state, ability, events),
+        Effect::ReduceNextSpellCost { .. } => {
+            resolve_reduce_next_spell_cost(state, ability, events)
+        }
         Effect::CreateEmblem { .. } => create_emblem::resolve(state, ability, events),
         Effect::PayCost { .. } => pay::resolve(state, ability, events),
         Effect::CastFromZone { .. } => cast_from_zone::resolve(state, ability, events),
@@ -1307,6 +1310,38 @@ fn resolve_unless_payer(
         TargetFilter::Controller => Some(state.active_player),
         _ => None,
     }
+}
+
+/// CR 601.2f: "The next spell you cast this turn costs {N} less to cast."
+/// Pushes a one-shot cost reduction entry consumed when the player casts their next spell.
+fn resolve_reduce_next_spell_cost(
+    state: &mut GameState,
+    ability: &crate::types::ability::ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), crate::types::ability::EffectError> {
+    let (amount, spell_filter) = match &ability.effect {
+        Effect::ReduceNextSpellCost {
+            amount,
+            spell_filter,
+        } => (*amount, spell_filter.clone()),
+        _ => {
+            return Err(crate::types::ability::EffectError::MissingParam(
+                "ReduceNextSpellCost".to_string(),
+            ))
+        }
+    };
+    state
+        .pending_spell_cost_reductions
+        .push(crate::types::game_state::PendingSpellCostReduction {
+            player: ability.controller,
+            amount,
+            spell_filter,
+        });
+    events.push(GameEvent::EffectResolved {
+        kind: crate::types::ability::EffectKind::ReduceNextSpellCost,
+        source_id: ability.source_id,
+    });
+    Ok(())
 }
 
 #[cfg(test)]

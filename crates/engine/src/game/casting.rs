@@ -787,6 +787,9 @@ fn prepare_spell_cast(
     // CR 702.41a: Affinity — reduce cost by {1} for each matching permanent controlled.
     apply_affinity_reduction(state, player, object_id, &mut mana_cost);
 
+    // CR 601.2f: Apply one-shot pending cost reductions ("the next spell costs {N} less").
+    apply_pending_spell_cost_reductions(state, player, object_id, &mut mana_cost);
+
     Ok(PreparedSpellCast {
         object_id,
         card_id: obj.card_id,
@@ -974,6 +977,40 @@ fn apply_affinity_reduction(
                 .count() as u32;
             apply_cost_mod_to_mana(mana_cost, &ManaCost::generic(1), count, false);
         }
+    }
+}
+
+/// CR 601.2f: Apply one-shot pending cost reductions (read-only during cost calculation).
+/// The matching entry is consumed later in `consume_pending_spell_cost_reduction`.
+fn apply_pending_spell_cost_reductions(
+    state: &GameState,
+    caster: PlayerId,
+    spell_id: ObjectId,
+    mana_cost: &mut ManaCost,
+) {
+    for r in &state.pending_spell_cost_reductions {
+        if r.player != caster {
+            continue;
+        }
+        let matches = match &r.spell_filter {
+            None => true,
+            Some(filter) => spell_matches_cost_filter(state, spell_id, filter, spell_id),
+        };
+        if matches {
+            apply_cost_mod_to_mana(mana_cost, &ManaCost::generic(1), r.amount, false);
+            break; // Only apply the first matching reduction
+        }
+    }
+}
+
+/// CR 601.2f: Consume (remove) a one-shot pending cost reduction after a spell is cast.
+pub(super) fn consume_pending_spell_cost_reduction(state: &mut GameState, caster: PlayerId) {
+    if let Some(idx) = state
+        .pending_spell_cost_reductions
+        .iter()
+        .position(|r| r.player == caster && r.spell_filter.is_none())
+    {
+        state.pending_spell_cost_reductions.remove(idx);
     }
 }
 
