@@ -242,6 +242,9 @@ pub fn resolve_effect(
         Effect::Explore => explore::resolve(state, ability, events),
         Effect::ExploreAll { .. } => explore::resolve_all(state, ability, events),
         Effect::Investigate => investigate::resolve(state, ability, events),
+        // CR 701.56a: Time travel — interactive counter manipulation on suspended/time-countered permanents.
+        // Currently a no-op; full interactive implementation requires WaitingFor infrastructure.
+        Effect::TimeTravel => Ok(()),
         Effect::BecomeMonarch => become_monarch::resolve(state, ability, events),
         Effect::Proliferate => proliferate::resolve(state, ability, events),
         Effect::Populate => populate::resolve(state, ability, events),

@@ -240,6 +240,8 @@ pub(super) enum ImperativeFamilyAst {
     /// CR 725: "take the initiative"
     TakeTheInitiative,
     Proliferate,
+    /// CR 701.56a: Time travel — add or remove time counters.
+    TimeTravel,
     GainKeyword(Effect),
     LoseKeyword(Effect),
     /// CR 104.3a: "[target player] lose(s) the game"

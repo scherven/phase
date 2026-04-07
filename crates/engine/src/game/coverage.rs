@@ -1329,7 +1329,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
         | Effect::Clash
-        | Effect::Incubate { .. } => {}
+        | Effect::Incubate { .. }
+        | Effect::TimeTravel => {}
     }
     d
 }

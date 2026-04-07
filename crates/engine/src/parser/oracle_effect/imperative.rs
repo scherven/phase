@@ -1982,6 +1982,17 @@ pub(super) fn parse_imperative_family_ast(
             }
         }
         "proliferate" => Some(ImperativeFamilyAst::Proliferate),
+        // CR 701.56a: "time travel" / "time travel N times"
+        "time" => {
+            if tag::<_, _, VerboseError<&str>>("time travel")
+                .parse(lower)
+                .is_ok()
+            {
+                Some(ImperativeFamilyAst::TimeTravel)
+            } else {
+                None
+            }
+        }
         // CR 701.36a: "populate"
         "populate" => Some(ImperativeFamilyAst::Populate),
         // CR 701.30: "clash with an opponent"
@@ -2551,6 +2562,8 @@ fn lower_imperative_family_effect(ast: ImperativeFamilyAst) -> Effect {
         },
         ImperativeFamilyAst::TakeTheInitiative => Effect::TakeTheInitiative,
         ImperativeFamilyAst::Proliferate => Effect::Proliferate,
+        // CR 701.56a: Time travel.
+        ImperativeFamilyAst::TimeTravel => Effect::TimeTravel,
         // CR 701.36a: Populate.
         ImperativeFamilyAst::Populate => Effect::Populate,
         // CR 701.30: Clash with an opponent.

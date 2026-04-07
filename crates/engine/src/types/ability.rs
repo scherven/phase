@@ -2214,6 +2214,9 @@ pub enum Effect {
     },
     /// CR 702.136: Investigate — create a Clue artifact token.
     Investigate,
+    /// CR 701.56a: Time travel — for each permanent you control with a time counter
+    /// and each suspended card you own, you may add or remove a time counter.
+    TimeTravel,
     /// CR 722: Become the monarch. Sets GameState::monarch to the controller.
     BecomeMonarch,
     Proliferate,
@@ -3071,6 +3074,7 @@ impl Effect {
             | Effect::ExploreAll { .. }
             | Effect::Seek { .. }
             | Effect::SetDayNight { .. }
+            | Effect::TimeTravel
             | Effect::RuntimeHandled { .. }
             | Effect::Unimplemented { .. } => None,
         }
@@ -3118,6 +3122,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Explore => "Explore",
         Effect::ExploreAll { .. } => "ExploreAll",
         Effect::Investigate => "Investigate",
+        Effect::TimeTravel => "TimeTravel",
         Effect::BecomeMonarch => "BecomeMonarch",
         Effect::Proliferate => "Proliferate",
         Effect::Populate => "Populate",
@@ -3257,6 +3262,7 @@ pub enum EffectKind {
     Explore,
     ExploreAll,
     Investigate,
+    TimeTravel,
     BecomeMonarch,
     Proliferate,
     Populate,
@@ -3393,6 +3399,7 @@ impl From<&Effect> for EffectKind {
             Effect::Explore => EffectKind::Explore,
             Effect::ExploreAll { .. } => EffectKind::ExploreAll,
             Effect::Investigate => EffectKind::Investigate,
+            Effect::TimeTravel => EffectKind::TimeTravel,
             Effect::BecomeMonarch => EffectKind::BecomeMonarch,
             Effect::Proliferate => EffectKind::Proliferate,
             Effect::Populate => EffectKind::Populate,

@@ -8,10 +8,12 @@ use serde::{Deserialize, Serialize};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction,
     AdditionalCost, CastingRestriction, Comparator, Effect, ModalChoice, ReplacementDefinition,
-    SolveCondition, SpellCastingOption, StaticDefinition, TriggerDefinition, TypedFilter,
+    SolveCondition, SpellCastingOption, StaticDefinition, TargetFilter, TriggerDefinition,
+    TypedFilter,
 };
 use crate::types::keywords::{Keyword, KeywordKind};
 use crate::types::mana::ManaCost;
+use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
 use super::oracle_nom::bridge::nom_on_lower;
@@ -675,6 +677,74 @@ pub fn parse_oracle_text(
                 result.triggers.push(trigger);
                 continue;
             }
+        }
+
+        // CR 701.43d: "You may exert [creature] as it attacks" — optional attack cost.
+        // Must intercept BEFORE Priority 7 (static patterns) because the "When you do"
+        // linked effect often contains "gets +N/+M" which is_static_pattern would match.
+        // Standalone: skip (separate "Whenever you exert" trigger line follows).
+        // Compound: produce an Exerted trigger with the linked effect.
+        if let Some(((), rest_original)) = nom_on_lower(&line, &lower, |i| {
+            value(
+                (),
+                alt((
+                    tag("you may exert this creature as it attacks"),
+                    tag("you may exert ~ as it attacks"),
+                    tag("you may exert it as it attacks"),
+                )),
+            )
+            .parse(i)
+        }) {
+            // Check for linked "When you do, [effect]" in same sentence
+            let rest_trimmed = rest_original.trim().trim_start_matches('.').trim_start();
+            let rest_lower = rest_trimmed.to_lowercase();
+            if let Some(((), effect_rest)) = nom_on_lower(rest_trimmed, &rest_lower, |i| {
+                value((), tag("when you do, ")).parse(i)
+            }) {
+                let effect_def = parse_effect_chain(effect_rest.trim(), AbilityKind::Spell);
+                let trigger = TriggerDefinition::new(TriggerMode::Exerted)
+                    .valid_card(TargetFilter::SelfRef)
+                    .trigger_zones(vec![Zone::Battlefield])
+                    .execute(effect_def)
+                    .description(line.to_string());
+                result.triggers.push(trigger);
+            }
+            i += 1;
+            continue;
+        }
+        // CR 701.43d: Variant with card name — "You may exert {Name} as {he/she/it/they} attacks"
+        if nom_on_lower(&line, &lower, |i| value((), tag("you may exert ")).parse(i)).is_some()
+            && lower.contains(" as ")
+            && lower.contains(" attacks")
+        {
+            if let Some(when_pos) = lower.find(". when you do, ") {
+                let effect_text = &line[when_pos + ". When you do, ".len()..];
+                let effect_def = parse_effect_chain(effect_text.trim(), AbilityKind::Spell);
+                let trigger = TriggerDefinition::new(TriggerMode::Exerted)
+                    .valid_card(TargetFilter::SelfRef)
+                    .trigger_zones(vec![Zone::Battlefield])
+                    .execute(effect_def)
+                    .description(line.to_string());
+                result.triggers.push(trigger);
+            }
+            i += 1;
+            continue;
+        }
+        // CR 701.43d: Conditional exert — "If [creature] hasn't been exerted this turn, you may exert it"
+        if lower.starts_with("if ") && lower.contains("you may exert") && lower.contains("attacks")
+        {
+            if let Some(when_pos) = lower.find(". when you do, ") {
+                let effect_text = &line[when_pos + ". When you do, ".len()..];
+                let effect_def = parse_effect_chain(effect_text.trim(), AbilityKind::Spell);
+                let trigger = TriggerDefinition::new(TriggerMode::Exerted)
+                    .valid_card(TargetFilter::SelfRef)
+                    .trigger_zones(vec![Zone::Battlefield])
+                    .execute(effect_def)
+                    .description(line.to_string());
+                result.triggers.push(trigger);
+            }
+            i += 1;
+            continue;
         }
 
         // Priority 7: Static/continuous patterns
@@ -5267,5 +5337,119 @@ mod tests {
         let shuffle = to_hand.sub_ability.as_ref().expect("expected shuffle");
         assert!(matches!(*shuffle.effect, Effect::Shuffle { .. }));
         assert!(!contains_reveal_top(ability));
+    }
+
+    // ── Time Travel (CR 701.56) ──
+
+    #[test]
+    fn time_travel_standalone_spell() {
+        let r = parse(
+            "Time travel.\nDraw a card.",
+            "Wibbly-Wobbly, Timey-Wimey",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 2);
+        assert!(matches!(*r.abilities[0].effect, Effect::TimeTravel));
+        assert!(matches!(*r.abilities[1].effect, Effect::Draw { .. }));
+    }
+
+    #[test]
+    fn time_travel_in_trigger() {
+        let r = parse(
+            "Whenever this creature deals combat damage to a player, time travel.",
+            "Time Beetle",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(r.triggers.len(), 1);
+        let exec = r.triggers[0].execute.as_ref().unwrap();
+        assert!(matches!(*exec.effect, Effect::TimeTravel));
+    }
+
+    #[test]
+    fn time_travel_activated_ability() {
+        let r = parse(
+            "{4}, {T}: Time travel. Activate only as a sorcery.",
+            "Rotating Fireplace",
+            &[],
+            &["Artifact"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        assert!(matches!(*r.abilities[0].effect, Effect::TimeTravel));
+        assert!(r.abilities[0].sorcery_speed);
+    }
+
+    // ── Exert (CR 701.43d) ──
+
+    #[test]
+    fn exert_with_when_you_do_pump() {
+        let r = parse(
+            "You may exert this creature as it attacks. When you do, it gets +1/+3 and gains lifelink until end of turn.",
+            "Glory-Bound Initiate",
+            &[],
+            &["Creature"],
+            &["Human", "Warrior"],
+        );
+        assert_eq!(r.triggers.len(), 1);
+        assert_eq!(r.triggers[0].mode, TriggerMode::Exerted);
+        let exec = r.triggers[0].execute.as_ref().unwrap();
+        // The "gets +1/+3 and gains lifelink" is a continuous modification (GenericEffect),
+        // not a direct Pump — parse_effect_chain handles this composite pattern.
+        assert!(
+            matches!(
+                *exec.effect,
+                Effect::GenericEffect { .. } | Effect::Pump { .. }
+            ),
+            "expected GenericEffect or Pump, got {:?}",
+            exec.effect
+        );
+    }
+
+    #[test]
+    fn exert_standalone_line() {
+        let r = parse(
+            "You may exert this creature as it attacks.\nWhenever you exert a creature, you may discard a card. If you do, draw a card.",
+            "Battlefield Scavenger",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        // Standalone exert line produces no output (trigger is separate)
+        assert!(r.abilities.is_empty());
+        assert_eq!(r.triggers.len(), 1);
+        assert_eq!(
+            r.triggers[0].mode,
+            TriggerMode::Unknown("Whenever you exert a creature".to_string())
+        );
+    }
+
+    #[test]
+    fn exert_with_card_name() {
+        let r = parse(
+            "You may exert Anep as it attacks. When you do, exile the top two cards of your library. Until the end of your next turn, you may play those cards.",
+            "Anep, Vizier of Hazoret",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(r.triggers.len(), 1);
+        assert_eq!(r.triggers[0].mode, TriggerMode::Exerted);
+    }
+
+    #[test]
+    fn exert_conditional() {
+        let r = parse(
+            "If this creature hasn't been exerted this turn, you may exert it as it attacks. When you do, untap all other creatures you control and after this phase, there is an additional combat phase.",
+            "Combat Celebrant",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(r.triggers.len(), 1);
+        assert_eq!(r.triggers[0].mode, TriggerMode::Exerted);
     }
 }
