@@ -373,6 +373,8 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         FilterProp::HasSupertype { value } => record.supertypes.contains(value),
         FilterProp::NotSupertype { value } => !record.supertypes.contains(value),
         FilterProp::Multicolored => record.colors.len() > 1,
+        // CR 105.2c: Colorless objects have no color.
+        FilterProp::Colorless => record.colors.is_empty(),
         FilterProp::CmcGE { value } => match value {
             QuantityExpr::Fixed { value } => record.mana_value as i32 >= *value,
             _ => {
@@ -409,6 +411,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::PowerLE { .. }
         | FilterProp::PowerGE { .. }
         | FilterProp::IsChosenCreatureType
+        | FilterProp::IsChosenColor
         | FilterProp::IsChosenCardType
         | FilterProp::HasSingleTarget
         | FilterProp::Suspected
@@ -522,6 +525,8 @@ fn matches_filter_prop(
         FilterProp::PowerLE { value } => obj.power.unwrap_or(0) <= *value,
         FilterProp::PowerGE { value } => obj.power.unwrap_or(0) >= *value,
         FilterProp::Multicolored => obj.color.len() > 1,
+        // CR 105.2c: Colorless objects have no color.
+        FilterProp::Colorless => obj.color.is_empty(),
         FilterProp::HasSupertype { value } => obj.card_types.supertypes.contains(value),
         // CR 205.4b: Object does NOT have this color.
         FilterProp::NotColor { color } => !obj.color.contains(color),
@@ -535,6 +540,16 @@ fn matches_filter_prop(
                 .any(|s| s.eq_ignore_ascii_case(chosen)),
             None => false,
         },
+        // CR 105.4: Match objects whose colors include the source's chosen color.
+        // Used for "of the chosen color" (Hall of Triumph, Prismatic Strands).
+        FilterProp::IsChosenColor => source
+            .chosen_attributes
+            .iter()
+            .find_map(|a| match a {
+                crate::types::ability::ChosenAttribute::Color(c) => Some(c),
+                _ => None,
+            })
+            .is_some_and(|chosen| obj.color.contains(chosen)),
         // CR 205: Match objects whose core type includes the source's chosen card type.
         // Used for "spells of the chosen type" (Archon of Valor's Reach).
         FilterProp::IsChosenCardType => source

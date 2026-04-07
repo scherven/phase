@@ -909,6 +909,37 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         );
     }
 
+    // --- "Activated abilities of [filter] cost {N} less to activate" ---
+    // CR 602.1 + CR 601.2f: Generic activated ability cost reduction (e.g., Training Grounds).
+    if let Some(rest) = nom_tag_lower(tp.lower, tp.lower, "activated abilities of ") {
+        if let Some(cost_pos) = rest.find(" cost ") {
+            let filter_part = &rest[..cost_pos];
+            let after_cost = &rest[cost_pos + " cost ".len()..];
+            if after_cost.contains("less to activate") {
+                let amount = after_cost
+                    .split(" less")
+                    .next()
+                    .and_then(|mana_str| {
+                        let stripped = mana_str.trim().trim_matches('{').trim_matches('}');
+                        stripped.parse::<u32>().ok()
+                    })
+                    .unwrap_or(1);
+                // Parse the filter between "of" and "cost" using parse_type_phrase
+                let filter_text =
+                    &tp.original["activated abilities of ".len()..][..filter_part.len()];
+                let (affected, _rest) = parse_type_phrase(filter_text);
+                return Some(
+                    StaticDefinition::new(StaticMode::ReduceAbilityCost {
+                        keyword: "activated".to_string(),
+                        amount,
+                    })
+                    .affected(affected)
+                    .description(text.to_string()),
+                );
+            }
+        }
+    }
+
     // --- CR 601.2f: Cost modification statics ---
     // Patterns: "[Type] spells [you/your opponents] cast cost {N} less/more to cast"
     // Also: "Noncreature spells cost {1} more to cast" (Thalia, no "you cast")
@@ -964,6 +995,13 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         return Some(
             StaticDefinition::new(StaticMode::CastWithFlash).description(text.to_string()),
         );
+    }
+
+    // --- "[Type] spells you cast [from zone] have [keyword]" (CR 702.51a) ---
+    // E.g., "Creature spells you cast have convoke."
+    // Also: "Creature cards you own that aren't on the battlefield have flash."
+    if let Some(def) = parse_spells_have_keyword(&tp, &text) {
+        return Some(def);
     }
 
     // --- "can block an additional creature" / "can block any number" (CR 509.1b) ---
@@ -1862,6 +1900,157 @@ fn find_continuous_predicate_start(lower: &str) -> Option<usize> {
     .min()
 }
 
+/// Parse "[Type] spells you cast [from zone] have [keyword]" patterns.
+/// CR 702.51a: Grants a keyword (typically convoke) to spells matching a filter during casting.
+/// Also handles "Creature cards you own that aren't on the battlefield have flash."
+fn parse_spells_have_keyword(tp: &TextPair<'_>, text: &str) -> Option<StaticDefinition> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+
+    // Pattern 1: "[type] spells you cast [from zone] have [keyword]."
+    // Find " have " to split subject from keyword
+    let have_pos = tp.lower.rfind(" have ")?;
+    let subject = &tp.lower[..have_pos];
+    let keyword_str = tp.lower[have_pos + " have ".len()..]
+        .trim()
+        .trim_end_matches('.');
+
+    // Parse the keyword — must be a valid keyword
+    let keyword = Keyword::from_str(keyword_str).ok()?;
+
+    // Find "spells you cast" in the subject — may be preceded by a type descriptor
+    let spells_marker = "spells you cast";
+    if let Some(marker_pos) = subject.find(spells_marker) {
+        let type_part = subject[..marker_pos].trim();
+        let after_spells = subject[marker_pos + spells_marker.len()..].trim();
+
+        // Parse optional zone qualifier: "from exile", "from your graveyard"
+        let zone_filter = if tag::<_, _, VE<'_>>("from exile")(after_spells).is_ok() {
+            Some(FilterProp::InZone { zone: Zone::Exile })
+        } else {
+            None
+        };
+
+        // Build the affected filter
+        let mut typed = if type_part.is_empty() {
+            // "Spells you cast" (no type prefix) — applies to all spells
+            TypedFilter::card()
+        } else {
+            // Parse the spell type filter from the prefix
+            let type_prefix_original = &tp.original[..marker_pos].trim();
+            let (base_filter, _) = parse_type_phrase(type_prefix_original);
+            match base_filter {
+                TargetFilter::Typed(tf) => tf,
+                _ => TypedFilter::card(),
+            }
+        };
+        typed = typed.controller(ControllerRef::You);
+        if let Some(zone_prop) = zone_filter {
+            typed.properties.push(zone_prop);
+        }
+
+        return Some(
+            StaticDefinition::new(StaticMode::CastWithKeyword { keyword })
+                .affected(TargetFilter::Typed(typed))
+                .description(text.to_string()),
+        );
+    }
+
+    // Pattern 2: "Creature cards you own that aren't on the battlefield have flash"
+    // This grants flash to cards in non-battlefield zones.
+    if subject.contains("cards you own that aren't on the battlefield") {
+        let type_end = subject.find(" cards")?;
+        let type_part = &tp.original[..type_end];
+        let (base_filter, _) = parse_type_phrase(type_part);
+        let affected = match base_filter {
+            TargetFilter::Typed(mut typed) => {
+                typed = typed.controller(ControllerRef::You);
+                // "aren't on the battlefield" means any zone except battlefield
+                typed.properties.push(FilterProp::InAnyZone {
+                    zones: vec![Zone::Hand, Zone::Graveyard, Zone::Exile, Zone::Command],
+                });
+                TargetFilter::Typed(typed)
+            }
+            _ => base_filter,
+        };
+        return Some(
+            StaticDefinition::new(StaticMode::CastWithKeyword { keyword })
+                .affected(affected)
+                .description(text.to_string()),
+        );
+    }
+
+    None
+}
+
+/// Parse creature subject phrases containing "of the chosen color/type" qualifiers.
+/// Handles patterns like:
+/// - "Creatures you control of the chosen color"
+/// - "Creatures of the chosen color"
+/// - "Creatures of the chosen type your opponents control"
+/// - "creature you control of the chosen type other than this Vehicle"
+///
+/// CR 105.4: "of the chosen color" → `FilterProp::IsChosenColor`
+/// CR 205.3m: "of the chosen type" → `FilterProp::IsChosenCreatureType`
+fn parse_chosen_qualifier_subject(tp: &TextPair<'_>) -> Option<TargetFilter> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+
+    // Must start with "creature" or "creatures"
+    let rest = if let Ok((r, _)) = tag::<_, _, VE<'_>>("creatures ")(tp.lower) {
+        r
+    } else if let Ok((r, _)) = tag::<_, _, VE<'_>>("creature ")(tp.lower) {
+        r
+    } else {
+        return None;
+    };
+
+    // Try to find "of the chosen color" or "of the chosen type" somewhere in the rest
+    let chosen_prop: FilterProp;
+    let before_chosen: &str;
+    let after_chosen: &str;
+
+    if let Some(pos) = rest.find("of the chosen color") {
+        chosen_prop = FilterProp::IsChosenColor;
+        before_chosen = rest[..pos].trim();
+        after_chosen = rest[pos + "of the chosen color".len()..].trim();
+    } else if let Some(pos) = rest.find("of the chosen type") {
+        chosen_prop = FilterProp::IsChosenCreatureType;
+        before_chosen = rest[..pos].trim();
+        after_chosen = rest[pos + "of the chosen type".len()..].trim();
+    } else {
+        return None;
+    };
+
+    // Parse controller from before or after the chosen qualifier
+    let mut controller = None;
+    let mut extra_props = vec![chosen_prop];
+
+    // Check "you control" before the qualifier
+    if before_chosen == "you control" {
+        controller = Some(ControllerRef::You);
+    } else if !before_chosen.is_empty() {
+        return None;
+    }
+
+    // Check controller/qualifiers after the qualifier
+    let remaining = after_chosen;
+    if remaining.starts_with("your opponents control") {
+        controller = Some(ControllerRef::Opponent);
+    } else if remaining.starts_with("you control") {
+        controller = Some(ControllerRef::You);
+    }
+
+    // Check for "other than" suffix (e.g., "other than this Vehicle")
+    if remaining.contains("other than") {
+        extra_props.push(FilterProp::Another);
+    }
+
+    let mut typed = TypedFilter::creature().properties(extra_props);
+    if let Some(ctrl) = controller {
+        typed = typed.controller(ctrl);
+    }
+    Some(TargetFilter::Typed(typed))
+}
+
 fn parse_continuous_subject_filter(subject: &str) -> Option<TargetFilter> {
     let trimmed = subject.trim();
     let lower = trimmed.to_lowercase();
@@ -1875,6 +2064,12 @@ fn parse_continuous_subject_filter(subject: &str) -> Option<TargetFilter> {
 
     if let Some(rest_tp) = nom_tag_tp(&tp, "other ") {
         return parse_continuous_subject_filter(rest_tp.original.trim()).map(add_another_filter);
+    }
+
+    // CR 105.4 / CR 205.3m: "Creatures [you control] of the chosen color/type [opponent control]"
+    // Handle "of the chosen color/type" qualifiers that appear in creature subject phrases.
+    if let Some(filter) = parse_chosen_qualifier_subject(&tp) {
+        return Some(filter);
     }
 
     if let Some(filter) = parse_modified_creature_subject_filter(trimmed) {
@@ -8427,5 +8622,144 @@ mod tests {
                 }),
             "Expected AddType Enchantment"
         );
+    }
+
+    // --- Group A: Chosen color/type creature pump ---
+
+    #[test]
+    fn static_chosen_color_pump() {
+        // Hall of Triumph: "Creatures you control of the chosen color get +1/+1."
+        let def =
+            parse_static_line("Creatures you control of the chosen color get +1/+1.").unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(
+                    tf.properties.contains(&FilterProp::IsChosenColor),
+                    "Expected IsChosenColor property"
+                );
+            }
+            other => panic!("Expected Some(Typed filter), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn static_chosen_type_pump() {
+        // "Creatures of the chosen type your opponents control get -1/-1."
+        let def =
+            parse_static_line("Creatures of the chosen type your opponents control get -1/-1.")
+                .unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert_eq!(tf.controller, Some(ControllerRef::Opponent));
+                assert!(
+                    tf.properties.contains(&FilterProp::IsChosenCreatureType),
+                    "Expected IsChosenCreatureType property"
+                );
+            }
+            other => panic!("Expected Some(Typed filter), got {other:?}"),
+        }
+    }
+
+    // --- Group B: Generic activated ability cost reduction ---
+
+    #[test]
+    fn static_reduce_activated_ability_cost_generic() {
+        // Training Grounds: "Activated abilities of creatures you control cost {2} less to activate."
+        let def = parse_static_line(
+            "Activated abilities of creatures you control cost {2} less to activate.",
+        )
+        .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::ReduceAbilityCost {
+                keyword: "activated".to_string(),
+                amount: 2,
+            }
+        );
+    }
+
+    // --- Group C: Spells you cast have keyword ---
+
+    #[test]
+    fn static_creature_spells_have_convoke() {
+        // "Creature spells you cast have convoke."
+        let def = parse_static_line("Creature spells you cast have convoke.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CastWithKeyword {
+                keyword: Keyword::Convoke,
+            }
+        );
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(
+                    tf.type_filters.contains(&TypeFilter::Creature),
+                    "Expected Creature type filter"
+                );
+            }
+            other => panic!("Expected Some(Typed filter), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn static_noncreature_spells_have_convoke() {
+        // "Noncreature spells you cast have convoke."
+        let def = parse_static_line("Noncreature spells you cast have convoke.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CastWithKeyword {
+                keyword: Keyword::Convoke,
+            }
+        );
+    }
+
+    #[test]
+    fn static_spells_from_exile_have_convoke() {
+        // "Spells you cast from exile have convoke."
+        let def = parse_static_line("Spells you cast from exile have convoke.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CastWithKeyword {
+                keyword: Keyword::Convoke,
+            }
+        );
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(
+                    tf.properties
+                        .contains(&FilterProp::InZone { zone: Zone::Exile }),
+                    "Expected InZone(Exile) property"
+                );
+            }
+            other => panic!("Expected Some(Typed filter), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn static_creature_cards_not_on_battlefield_have_flash() {
+        // Leyline of Anticipation variant: "Creature cards you own that aren't on the battlefield have flash."
+        let def =
+            parse_static_line("Creature cards you own that aren't on the battlefield have flash.")
+                .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CastWithKeyword {
+                keyword: Keyword::Flash,
+            }
+        );
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert!(
+                    tf.type_filters.contains(&TypeFilter::Creature),
+                    "Expected Creature type filter"
+                );
+            }
+            other => panic!("Expected Some(Typed filter), got {other:?}"),
+        }
     }
 }

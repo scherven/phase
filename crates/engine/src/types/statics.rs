@@ -126,6 +126,12 @@ pub enum StaticMode {
     },
     CantBeActivated,
     CastWithFlash,
+    /// CR 702.51a: Grants a keyword to spells during casting.
+    /// Generalized version of CastWithFlash — the `spell_filter` on the StaticDefinition
+    /// determines which spells are affected (e.g., "Creature spells you cast have convoke").
+    CastWithKeyword {
+        keyword: Keyword,
+    },
     /// CR 601.2f: Reduces the cost of spells matching the filter.
     /// Permanent-based cost reduction applied during casting (not self-cost reduction).
     ReduceCost {
@@ -341,7 +347,8 @@ impl Hash for StaticMode {
             | StaticMode::DefilerCostReduction { .. }
             | StaticMode::PerTurnCastLimit { .. }
             | StaticMode::PerTurnDrawLimit { .. }
-            | StaticMode::MaximumHandSize { .. } => {}
+            | StaticMode::MaximumHandSize { .. }
+            | StaticMode::CastWithKeyword { .. } => {}
             // All other variants are unit variants — discriminant suffices.
             _ => {}
         }
@@ -359,6 +366,9 @@ impl fmt::Display for StaticMode {
             StaticMode::CantBeCast { who } => write!(f, "CantBeCast({who})"),
             StaticMode::CantBeActivated => write!(f, "CantBeActivated"),
             StaticMode::CastWithFlash => write!(f, "CastWithFlash"),
+            StaticMode::CastWithKeyword { keyword } => {
+                write!(f, "CastWithKeyword({keyword:?})")
+            }
             StaticMode::ReduceCost { .. } => write!(f, "ReduceCost"),
             StaticMode::ReduceAbilityCost { keyword, amount } => {
                 write!(f, "ReduceAbilityCost({keyword},{amount})")
@@ -641,6 +651,12 @@ impl FromStr for StaticMode {
                     StaticMode::AdditionalLandDrop {
                         count: rest.parse().unwrap_or(1),
                     }
+                } else if let Some(inner) = other
+                    .strip_prefix("CastWithKeyword(")
+                    .and_then(|s| s.strip_suffix(')'))
+                {
+                    let keyword = Keyword::from_str(inner).unwrap();
+                    StaticMode::CastWithKeyword { keyword }
                 } else if let Some(inner) = other
                     .strip_prefix("SkipStep(")
                     .and_then(|s| s.strip_suffix(')'))

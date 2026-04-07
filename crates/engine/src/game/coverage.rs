@@ -40,6 +40,7 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::PerTurnDrawLimit { .. }
             | StaticMode::GraveyardCastPermission { .. }
             | StaticMode::CastFromHandFree
+            | StaticMode::CastWithKeyword { .. }
             | StaticMode::MaximumHandSize { .. }
     )
 }
@@ -300,6 +301,8 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
                 parts.push(format!("targets {}", fmt_target(filter)));
             }
             FilterProp::Named { name } => parts.push(format!("named \"{name}\"")),
+            FilterProp::Colorless => parts.push("colorless".into()),
+            FilterProp::IsChosenColor => parts.push("chosen color".into()),
         }
     }
     if let Some(ctrl) = &tf.controller {

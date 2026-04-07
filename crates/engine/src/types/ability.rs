@@ -854,6 +854,8 @@ pub enum FilterProp {
     },
     /// Matches multicolored objects (2+ colors).
     Multicolored,
+    /// CR 105.2c: Matches colorless objects (0 colors).
+    Colorless,
     /// Matches objects with a specific supertype (Basic, Legendary, Snow).
     HasSupertype {
         value: Supertype,
@@ -861,6 +863,10 @@ pub enum FilterProp {
     /// Matches objects whose subtypes include the source object's chosen creature type.
     /// Used for "of the chosen type" patterns (Cavern of Souls, Metallic Mimic).
     IsChosenCreatureType,
+    /// Matches objects whose colors include the source object's chosen color.
+    /// Used for "of the chosen color" patterns (Hall of Triumph, Runed Stalactite).
+    /// Reads `ChosenAttribute::Color` from the source permanent.
+    IsChosenColor,
     /// Matches objects whose core type includes the source object's chosen card type.
     /// Used for "spells of the chosen type" patterns (Archon of Valor's Reach).
     /// Reads `ChosenAttribute::CardType` from the source permanent.
@@ -2527,6 +2533,11 @@ pub enum Effect {
         target: TargetFilter,
         #[serde(default)]
         scope: PreventionScope,
+        /// CR 615 + CR 105.1: When true, the prevention shield filters damage sources
+        /// by the color chosen via a preceding Choose effect (stored as ChosenAttribute::Color
+        /// on the source object). Used by Prismatic Strands and similar cards.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        source_color_choice: bool,
     },
     /// CR 104.3a: A player who meets this effect's condition loses the game.
     /// The affected player is determined by resolution context (controller's opponent
