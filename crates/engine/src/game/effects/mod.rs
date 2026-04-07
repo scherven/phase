@@ -61,6 +61,7 @@ pub mod gain_control;
 pub mod gift_delivery;
 pub mod goad;
 pub mod grant_permission;
+pub mod incubate;
 pub mod investigate;
 pub mod learn;
 pub mod life;
@@ -298,6 +299,7 @@ pub fn resolve_effect(
         Effect::PutOnTopOrBottom { .. } => put_on_top_or_bottom::resolve(state, ability, events),
         Effect::GiftDelivery { .. } => gift_delivery::resolve(state, ability, events),
         Effect::ChangeTargets { .. } => change_targets::resolve(state, ability, events),
+        Effect::Incubate { .. } => incubate::resolve(state, ability, events),
         Effect::Amass { .. } => amass::resolve(state, ability, events),
         Effect::Monstrosity { .. } => monstrosity::resolve(state, ability, events),
         Effect::Adapt { .. } => adapt::resolve(state, ability, events),

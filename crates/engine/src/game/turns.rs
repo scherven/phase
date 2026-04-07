@@ -8,7 +8,7 @@ use crate::types::identifiers::ObjectId;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 use crate::types::proposed_event::ProposedEvent;
-use crate::types::statics::StaticMode;
+use crate::types::statics::{HandSizeModification, StaticMode};
 use crate::types::zones::Zone;
 
 use super::combat;
@@ -385,7 +385,7 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     // If the player has "no maximum hand size" (CR 402.2), skip the discard check entirely.
     let has_no_max = super::static_abilities::check_static_ability(
         state,
-        crate::types::statics::StaticMode::NoMaximumHandSize,
+        StaticMode::NoMaximumHandSize,
         &super::static_abilities::StaticCheckContext {
             player_id: Some(active),
             ..Default::default()
@@ -393,6 +393,8 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     );
 
     if !has_no_max {
+        let max_hand_size = compute_maximum_hand_size(state, active);
+
         let player = state
             .players
             .iter()
@@ -400,8 +402,8 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
             .expect("active player exists");
 
         let hand_size = player.hand.len();
-        if hand_size > 7 {
-            let count = hand_size - 7;
+        if hand_size > max_hand_size {
+            let count = hand_size - max_hand_size;
             let cards = player.hand.clone();
             return Some(WaitingFor::DiscardToHandSize {
                 player: active,
@@ -434,6 +436,83 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     }
 
     None
+}
+
+/// CR 402.2 + CR 514.1: Compute the effective maximum hand size for a player.
+///
+/// Starts from the default of 7 (CR 402.2), then applies all `MaximumHandSize`
+/// statics from battlefield and command zone that affect the given player.
+/// SetTo overrides replace the base; AdjustedBy modifiers are accumulated additively.
+/// The result is clamped to a minimum of 0.
+fn compute_maximum_hand_size(state: &GameState, player: PlayerId) -> usize {
+    let context = super::static_abilities::StaticCheckContext {
+        player_id: Some(player),
+        ..Default::default()
+    };
+
+    // CR 402.2: Default maximum hand size is seven.
+    let mut base: i32 = 7;
+    let mut total_adjustment: i32 = 0;
+    let mut has_set_to = false;
+
+    let zones = state.battlefield.iter().chain(state.command_zone.iter());
+    for &id in zones {
+        let obj = match state.objects.get(&id) {
+            Some(o) => o,
+            None => continue,
+        };
+
+        // Skip non-emblem command zone objects (commanders, etc.)
+        if obj.zone == Zone::Command && !obj.is_emblem {
+            continue;
+        }
+
+        for def in &obj.static_definitions {
+            let modification = match &def.mode {
+                StaticMode::MaximumHandSize { modification } => modification,
+                _ => continue,
+            };
+
+            // Check affected filter
+            if let Some(ref affected) = def.affected {
+                if !super::static_abilities::static_filter_matches(state, &context, affected, id) {
+                    continue;
+                }
+            }
+
+            // Evaluate condition if present
+            if let Some(ref condition) = def.condition {
+                if !super::layers::evaluate_condition(state, condition, obj.controller, id) {
+                    continue;
+                }
+            }
+
+            match modification {
+                HandSizeModification::SetTo(n) => {
+                    // Last SetTo wins (timestamp order; for simplicity, last encountered).
+                    base = *n as i32;
+                    has_set_to = true;
+                }
+                HandSizeModification::AdjustedBy(n) => {
+                    total_adjustment += n;
+                }
+                HandSizeModification::EqualTo(expr) => {
+                    let resolved =
+                        super::quantity::resolve_quantity(state, expr, obj.controller, id);
+                    base = resolved;
+                    has_set_to = true;
+                }
+            }
+        }
+    }
+
+    if has_set_to {
+        // SetTo/EqualTo overrides the base; adjustments still apply on top.
+        (base + total_adjustment).max(0) as usize
+    } else {
+        // Only adjustments modify the default 7.
+        (7i32 + total_adjustment).max(0) as usize
+    }
 }
 
 /// Complete the cleanup step after the player has chosen cards to discard.
@@ -1525,6 +1604,114 @@ mod tests {
             result
         );
         assert_eq!(state.players[0].hand.len(), 10);
+    }
+
+    /// CR 402.2 + CR 514.1: MaximumHandSize(SetTo(2)) forces discard to 2 instead of 7.
+    #[test]
+    fn execute_cleanup_max_hand_size_set_to_two() {
+        use crate::types::ability::{ControllerRef, StaticDefinition, TargetFilter, TypedFilter};
+        use crate::types::statics::{HandSizeModification, StaticMode};
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        // Give player 5 cards in hand (above 2, but below 7)
+        for i in 0..5 {
+            create_object(
+                &mut state,
+                CardId(i),
+                PlayerId(0),
+                format!("Card {}", i),
+                Zone::Hand,
+            );
+        }
+
+        // Place a permanent that sets max hand size to 2
+        let perm = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Null Brooch".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&perm)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::MaximumHandSize {
+                    modification: HandSizeModification::SetTo(2),
+                })
+                .affected(TargetFilter::Typed(
+                    TypedFilter::default().controller(ControllerRef::You),
+                )),
+            );
+
+        let mut events = Vec::new();
+        let result = execute_cleanup(&mut state, &mut events);
+
+        // Player has 5 cards, max is 2 → must discard 3
+        match result {
+            Some(WaitingFor::DiscardToHandSize { count, .. }) => {
+                assert_eq!(count, 3, "Expected discard of 3 cards (5 - 2)");
+            }
+            other => panic!("Expected DiscardToHandSize, got {:?}", other),
+        }
+    }
+
+    /// CR 402.2: MaximumHandSize(AdjustedBy(-3)) reduces the max from 7 to 4.
+    #[test]
+    fn execute_cleanup_max_hand_size_reduced_by_three() {
+        use crate::types::ability::{ControllerRef, StaticDefinition, TargetFilter, TypedFilter};
+        use crate::types::statics::{HandSizeModification, StaticMode};
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        // Give player 6 cards in hand (above 4, but below 7)
+        for i in 0..6 {
+            create_object(
+                &mut state,
+                CardId(i),
+                PlayerId(0),
+                format!("Card {}", i),
+                Zone::Hand,
+            );
+        }
+
+        // Place a permanent that reduces max hand size by 3
+        let perm = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Reducing Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&perm)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::MaximumHandSize {
+                    modification: HandSizeModification::AdjustedBy(-3),
+                })
+                .affected(TargetFilter::Typed(
+                    TypedFilter::default().controller(ControllerRef::You),
+                )),
+            );
+
+        let mut events = Vec::new();
+        let result = execute_cleanup(&mut state, &mut events);
+
+        // Player has 6 cards, max is 7-3=4 → must discard 2
+        match result {
+            Some(WaitingFor::DiscardToHandSize { count, .. }) => {
+                assert_eq!(count, 2, "Expected discard of 2 cards (6 - 4)");
+            }
+            other => panic!("Expected DiscardToHandSize, got {:?}", other),
+        }
     }
 
     #[test]

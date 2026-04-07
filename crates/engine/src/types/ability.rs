@@ -2693,6 +2693,14 @@ pub enum Effect {
     RuntimeHandled {
         handler: RuntimeHandler,
     },
+    /// CR 701.53a: Incubate N — create an Incubator token with N +1/+1 counters on it.
+    /// The Incubator is a colorless artifact with "{2}: Transform this artifact."
+    /// Its back face is a 0/0 colorless Phyrexian artifact creature.
+    Incubate {
+        /// Number of +1/+1 counters to place on the Incubator token.
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+    },
     /// CR 701.47a: Amass [subtype] N — create or grow an Army creature token.
     /// If no Army exists, create a 0/0 black [subtype] Army creature token.
     /// Put N +1/+1 counters on the chosen Army. If it isn't a [subtype], it becomes one.
@@ -3035,6 +3043,7 @@ impl Effect {
             | Effect::VentureIntoDungeon
             | Effect::VentureInto { .. }
             | Effect::TakeTheInitiative
+            | Effect::Incubate { .. }
             | Effect::Amass { .. }
             | Effect::Monstrosity { .. }
             | Effect::Bolster { .. }
@@ -3156,6 +3165,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Goad { .. } => "Goad",
         Effect::ExchangeControl => "ExchangeControl",
         Effect::ChangeTargets { .. } => "ChangeTargets",
+        Effect::Incubate { .. } => "Incubate",
         Effect::Amass { .. } => "Amass",
         Effect::Monstrosity { .. } => "Monstrosity",
         Effect::Bolster { .. } => "Bolster",
@@ -3290,6 +3300,7 @@ pub enum EffectKind {
     Goad,
     ExchangeControl,
     ChangeTargets,
+    Incubate,
     Amass,
     Monstrosity,
     Bolster,
@@ -3425,6 +3436,7 @@ impl From<&Effect> for EffectKind {
             Effect::Goad { .. } => EffectKind::Goad,
             Effect::ExchangeControl => EffectKind::ExchangeControl,
             Effect::ChangeTargets { .. } => EffectKind::ChangeTargets,
+            Effect::Incubate { .. } => EffectKind::Incubate,
             Effect::Amass { .. } => EffectKind::Amass,
             Effect::Monstrosity { .. } => EffectKind::Monstrosity,
             Effect::Bolster { .. } => EffectKind::Bolster,

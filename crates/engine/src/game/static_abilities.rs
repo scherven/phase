@@ -428,7 +428,7 @@ pub fn player_can_spend_as_any_color(state: &GameState, player_id: PlayerId) -> 
 }
 
 /// Check if a static ability's affected filter matches the check context.
-fn static_filter_matches(
+pub(crate) fn static_filter_matches(
     state: &GameState,
     context: &StaticCheckContext,
     filter: &TargetFilter,

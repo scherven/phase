@@ -2016,6 +2016,8 @@ pub(super) fn parse_imperative_family_ast(
                 amount: count,
             }))
         }
+        // CR 701.53a: "incubate N"
+        "incubate" => try_parse_incubate(lower).map(ImperativeFamilyAst::GainKeyword),
         // CR 701.47a: "amass [Type] N"
         "amass" => try_parse_amass(text, lower).map(ImperativeFamilyAst::GainKeyword),
         // CR 701.37a: "monstrosity N"
@@ -2040,6 +2042,9 @@ pub(super) fn parse_imperative_family_ast(
             let is_other = ctx.subject.is_some();
             Some(ImperativeFamilyAst::Support { count, is_other })
         }
+        // CR 508.1d: "attacks/attack this turn/combat if able" — forced attack requirement.
+        // CR 508.1d: "attacks/attack this turn/combat if able" — forced attack requirement.
+        "attacks" | "attack" => try_parse_attack_if_able(lower),
         // CR 509.1b / CR 508.1d: "can't be blocked [this turn]", "can't attack", etc.
         // These appear as subjectless clauses in compound effects (e.g., "gets +2/+0 and can't be blocked this turn").
         "can't" | "cannot" => try_parse_subjectless_cant(lower),
@@ -2700,6 +2705,25 @@ pub(super) fn lower_zone_counter_ast(ast: ZoneCounterImperativeAst) -> Effect {
     }
 }
 
+/// CR 701.53a: Parse "incubate {N}" from Oracle text.
+///
+/// Handles numeric and "X" counts via shared `parse_count_expr`.
+fn try_parse_incubate(lower: &str) -> Option<Effect> {
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("incubate ")
+        .parse(lower)
+        .ok()?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+
+    let count = parse_count_expr(rest)
+        .map(|(q, _)| q)
+        .unwrap_or(QuantityExpr::Fixed { value: 1 });
+
+    Some(Effect::Incubate { count })
+}
+
 /// CR 701.47a: Parse "amass {Type} {N}" from Oracle text.
 ///
 /// Handles all subtypes generically. The subtype is canonicalized from plural
@@ -2754,8 +2778,38 @@ fn try_parse_adapt(lower: &str) -> Option<Effect> {
     Some(Effect::Adapt { count })
 }
 
-/// CR 509.1b / CR 508.1d: Parse subjectless "can't" clauses that appear in compound effects.
+/// CR 508.1d: Parse "attacks/attack this turn/combat if able" as a temporary MustAttack.
 ///
+/// Emits a `GenericEffect` with `StaticMode::MustAttack` and the appropriate duration.
+fn try_parse_attack_if_able(lower: &str) -> Option<ImperativeFamilyAst> {
+    use crate::types::statics::StaticMode;
+
+    let trimmed = lower.trim_end_matches('.');
+
+    // Try nom combinators to match the pattern
+    let result: Result<(&str, Duration), nom::Err<VerboseError<&str>>> = alt((
+        value(Duration::UntilEndOfTurn, tag("attacks this turn if able")),
+        value(Duration::UntilEndOfTurn, tag("attack this turn if able")),
+        value(
+            Duration::UntilEndOfCombat,
+            tag("attacks this combat if able"),
+        ),
+        value(
+            Duration::UntilEndOfCombat,
+            tag("attack this combat if able"),
+        ),
+    ))
+    .parse(trimmed);
+
+    let (_, duration) = result.ok()?;
+
+    Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
+        static_abilities: vec![StaticDefinition::new(StaticMode::MustAttack)],
+        duration: Some(duration),
+        target: None,
+    }))
+}
+
 /// Handles "can't be blocked [this turn]", "can't attack [this turn]", "can't block [this turn]",
 /// and compound forms like "can't attack or block". These delegate to the subject.rs
 /// static-granting machinery, wrapping the result in a `GenericEffect`.
@@ -3508,6 +3562,73 @@ mod tests {
                 assert_eq!(chooser, Chooser::Opponent);
             }
             other => panic!("Expected ChooseFromZone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_incubate_fixed() {
+        let result = try_parse_incubate("incubate 3");
+        assert!(result.is_some(), "Should parse 'incubate 3'");
+        match result.unwrap() {
+            Effect::Incubate { count } => {
+                assert_eq!(count, QuantityExpr::Fixed { value: 3 });
+            }
+            other => panic!("Expected Incubate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_incubate_x() {
+        let result = try_parse_incubate("incubate x");
+        assert!(result.is_some(), "Should parse 'incubate x'");
+        match result.unwrap() {
+            Effect::Incubate { count } => {
+                assert!(
+                    matches!(
+                        count,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::Variable { .. }
+                        }
+                    ),
+                    "Expected Ref(Variable), got {count:?}"
+                );
+            }
+            other => panic!("Expected Incubate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_attack_this_turn_if_able() {
+        let result = try_parse_attack_if_able("attacks this turn if able");
+        assert!(result.is_some(), "Should parse 'attacks this turn if able'");
+        match result.unwrap() {
+            ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
+                static_abilities,
+                duration,
+                ..
+            }) => {
+                assert_eq!(
+                    static_abilities[0].mode,
+                    crate::types::statics::StaticMode::MustAttack
+                );
+                assert_eq!(duration, Some(Duration::UntilEndOfTurn));
+            }
+            other => panic!("Expected GenericEffect with MustAttack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_attack_this_combat_if_able() {
+        let result = try_parse_attack_if_able("attack this combat if able");
+        assert!(
+            result.is_some(),
+            "Should parse 'attack this combat if able'"
+        );
+        match result.unwrap() {
+            ImperativeFamilyAst::GainKeyword(Effect::GenericEffect { duration, .. }) => {
+                assert_eq!(duration, Some(Duration::UntilEndOfCombat));
+            }
+            other => panic!("Expected GenericEffect, got {other:?}"),
         }
     }
 }

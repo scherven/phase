@@ -31,7 +31,9 @@ use crate::types::card_type::Supertype;
 use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
-use crate::types::statics::{CastingProhibitionCondition, CastingProhibitionScope, StaticMode};
+use crate::types::statics::{
+    CastingProhibitionCondition, CastingProhibitionScope, HandSizeModification, StaticMode,
+};
 use crate::types::zones::Zone;
 
 /// Try matching a nom `tag()` against the lowercase text, returning the remaining original-case
@@ -146,6 +148,11 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
                     .description(text.to_string()),
             );
         }
+    }
+
+    // CR 402.2 + CR 514.1: Maximum hand size modification.
+    if let Some(result) = try_parse_max_hand_size(&tp, &text) {
+        return Some(result);
     }
 
     // --- "You control enchanted creature/permanent/land/artifact" (Control Magic pattern) ---
@@ -3521,6 +3528,75 @@ fn parse_cda_pt_equality(lower: &str, text: &str) -> Option<StaticDefinition> {
 }
 
 /// CR 604.2 + CR 601.2a + CR 305.1: Parse graveyard play/cast permission statics.
+/// CR 402.2 + CR 514.1: Parse maximum hand size modification patterns.
+///
+/// Patterns:
+/// - "Your maximum hand size is [N]." → SetTo(N)
+/// - "Your maximum hand size is increased by [N]." → AdjustedBy(+N)
+/// - "Your maximum hand size is reduced by [N]." → AdjustedBy(-N)
+/// - "Each opponent's maximum hand size is reduced by [N]." → AdjustedBy(-N), opponent scope
+/// - "The chosen player's maximum hand size is [N]." → SetTo(N), chosen player scope
+/// - "Your maximum hand size is equal to [quantity]." → EqualTo(quantity)
+fn try_parse_max_hand_size(tp: &TextPair<'_>, text: &str) -> Option<StaticDefinition> {
+    type NomErr<'a> = nom_language::error::VerboseError<&'a str>;
+
+    let lower_trimmed = tp.lower.trim_end_matches('.');
+
+    // Dispatch on subject prefix to determine affected filter
+    let (affected, rest) = if let Ok((r, _)) =
+        tag::<_, _, NomErr>("your maximum hand size is ").parse(lower_trimmed)
+    {
+        (
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You)),
+            r,
+        )
+    } else if let Ok((r, _)) =
+        tag::<_, _, NomErr>("each opponent's maximum hand size is ").parse(lower_trimmed)
+    {
+        (
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+            r,
+        )
+    } else if let Ok((r, _)) =
+        tag::<_, _, NomErr>("the chosen player's maximum hand size is ").parse(lower_trimmed)
+    {
+        (TargetFilter::Player, r)
+    } else {
+        return None;
+    };
+
+    // Parse the modification kind
+    let modification = if let Ok((num_rest, _)) = tag::<_, _, NomErr>("increased by ").parse(rest) {
+        let (_, n) = nom_primitives::parse_number(num_rest).ok()?;
+        HandSizeModification::AdjustedBy(n as i32)
+    } else if let Ok((num_rest, _)) = tag::<_, _, NomErr>("reduced by ").parse(rest) {
+        let (_, n) = nom_primitives::parse_number(num_rest).ok()?;
+        HandSizeModification::AdjustedBy(-(n as i32))
+    } else if let Ok((qty_rest, _)) = tag::<_, _, NomErr>("equal to ").parse(rest) {
+        // "equal to the number of hour counters on ~" → dynamic quantity
+        let (_, qty_ref) = nom_primitives::parse_number(qty_rest)
+            .ok()
+            .map(|(r, n)| (r, QuantityExpr::Fixed { value: n as i32 }))
+            .or_else(|| {
+                use super::oracle_nom::quantity::parse_quantity_ref;
+                parse_quantity_ref(qty_rest)
+                    .ok()
+                    .map(|(r, qr)| (r, QuantityExpr::Ref { qty: qr }))
+            })?;
+        HandSizeModification::EqualTo(qty_ref)
+    } else {
+        // Plain "is [N]" → SetTo
+        let (_, n) = nom_primitives::parse_number(rest).ok()?;
+        HandSizeModification::SetTo(n)
+    };
+
+    Some(
+        StaticDefinition::new(StaticMode::MaximumHandSize { modification })
+            .affected(affected)
+            .description(text.to_string()),
+    )
+}
+
 /// Handles three patterns:
 /// 1. "Once during each of your turns, you may cast [filter] from your graveyard." (Lurrus, Karador)
 /// 2. "You may play [filter] from your graveyard." (Crucible of Worlds, Icetill Explorer)
@@ -7487,5 +7563,88 @@ mod tests {
             }
             other => panic!("Expected Typed filter with Creature, got {other:?}"),
         }
+    }
+
+    // --- MaximumHandSize tests ---
+
+    #[test]
+    fn max_hand_size_set_to_two() {
+        let def = parse_static_line("Your maximum hand size is two.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::MaximumHandSize {
+                modification: HandSizeModification::SetTo(2),
+            }
+        );
+        assert!(matches!(
+            def.affected,
+            Some(TargetFilter::Typed(TypedFilter {
+                controller: Some(ControllerRef::You),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn max_hand_size_set_to_twenty() {
+        let def = parse_static_line("Your maximum hand size is twenty.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::MaximumHandSize {
+                modification: HandSizeModification::SetTo(20),
+            }
+        );
+    }
+
+    #[test]
+    fn max_hand_size_increased_by_one() {
+        let def = parse_static_line("Your maximum hand size is increased by one.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::MaximumHandSize {
+                modification: HandSizeModification::AdjustedBy(1),
+            }
+        );
+    }
+
+    #[test]
+    fn max_hand_size_reduced_by_three() {
+        let def = parse_static_line("Your maximum hand size is reduced by three.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::MaximumHandSize {
+                modification: HandSizeModification::AdjustedBy(-3),
+            }
+        );
+    }
+
+    #[test]
+    fn max_hand_size_opponent_reduced_by_one() {
+        let def =
+            parse_static_line("Each opponent's maximum hand size is reduced by one.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::MaximumHandSize {
+                modification: HandSizeModification::AdjustedBy(-1),
+            }
+        );
+        assert!(matches!(
+            def.affected,
+            Some(TargetFilter::Typed(TypedFilter {
+                controller: Some(ControllerRef::Opponent),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn max_hand_size_set_to_five() {
+        let def = parse_static_line("Your maximum hand size is five.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::MaximumHandSize {
+                modification: HandSizeModification::SetTo(5),
+            }
+        );
     }
 }

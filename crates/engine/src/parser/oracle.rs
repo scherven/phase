@@ -1901,6 +1901,49 @@ mod tests {
     }
 
     #[test]
+    fn incubate_parses_as_effect() {
+        let r = parse(
+            "When this creature enters, incubate 3.",
+            "Converter Beast",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(r.triggers.len(), 1);
+        let trigger_def = r.triggers[0].execute.as_ref().unwrap();
+        assert!(
+            matches!(&*trigger_def.effect, crate::types::ability::Effect::Incubate { count }
+                if matches!(count, crate::types::ability::QuantityExpr::Fixed { value: 3 })),
+            "Expected Incubate {{ count: Fixed(3) }}, got {:?}",
+            trigger_def.effect
+        );
+    }
+
+    #[test]
+    fn attack_this_turn_if_able_parses_as_effect() {
+        let r = parse(
+            "Target creature attacks this turn if able.\nDraw a card.",
+            "Boiling Blood",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert!(!r.abilities.is_empty());
+        assert!(
+            matches!(
+                &*r.abilities[0].effect,
+                crate::types::ability::Effect::GenericEffect {
+                    static_abilities,
+                    ..
+                } if !static_abilities.is_empty()
+                    && static_abilities[0].mode == crate::types::statics::StaticMode::MustAttack
+            ),
+            "Expected GenericEffect with MustAttack, got {:?}",
+            r.abilities[0].effect
+        );
+    }
+
+    #[test]
     fn no_maximum_hand_size_routes_to_static_parser() {
         let r = parse(
             "You have no maximum hand size.",

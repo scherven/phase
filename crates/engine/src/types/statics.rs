@@ -5,7 +5,7 @@ use std::str::FromStr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::ability::{CardPlayMode, QuantityRef, TargetFilter};
+use super::ability::{CardPlayMode, QuantityExpr, QuantityRef, TargetFilter};
 use super::keywords::Keyword;
 use super::mana::{ManaColor, ManaCost};
 use super::phase::Phase;
@@ -85,6 +85,27 @@ impl FromStr for CastingProhibitionCondition {
             "combat" => Ok(CastingProhibitionCondition::DuringCombat),
             "not_your_turn" => Ok(CastingProhibitionCondition::NotDuringYourTurn),
             other => Err(format!("unknown CastingProhibitionCondition: {other}")),
+        }
+    }
+}
+
+/// CR 402.2: How a static ability modifies the maximum hand size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum HandSizeModification {
+    /// "Your maximum hand size is N." — overrides the base hand size.
+    SetTo(u32),
+    /// "Your maximum hand size is increased/reduced by N." — adjusts the base hand size.
+    AdjustedBy(i32),
+    /// "Your maximum hand size is equal to [quantity]." — dynamic quantity from game state.
+    EqualTo(QuantityExpr),
+}
+
+impl fmt::Display for HandSizeModification {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HandSizeModification::SetTo(n) => write!(f, "SetTo({n})"),
+            HandSizeModification::AdjustedBy(n) => write!(f, "AdjustedBy({n})"),
+            HandSizeModification::EqualTo(_) => write!(f, "EqualTo(qty)"),
         }
     }
 }
@@ -239,6 +260,11 @@ pub enum StaticMode {
     BlockRestriction,
     /// CR 402.2: No maximum hand size.
     NoMaximumHandSize,
+    /// CR 402.2 + CR 514.1: Maximum hand size modification.
+    /// Applied during cleanup to determine the discard threshold.
+    MaximumHandSize {
+        modification: HandSizeModification,
+    },
     MayPlayAdditionalLand,
 
     /// CR 702: Creatures can't have or gain a specific keyword (Archetype cycle).
@@ -311,7 +337,8 @@ impl Hash for StaticMode {
             | StaticMode::RaiseCost { .. }
             | StaticMode::DefilerCostReduction { .. }
             | StaticMode::PerTurnCastLimit { .. }
-            | StaticMode::PerTurnDrawLimit { .. } => {}
+            | StaticMode::PerTurnDrawLimit { .. }
+            | StaticMode::MaximumHandSize { .. } => {}
             // All other variants are unit variants — discriminant suffices.
             _ => {}
         }
@@ -401,6 +428,9 @@ impl fmt::Display for StaticMode {
             StaticMode::EmblemStatic => write!(f, "EmblemStatic"),
             StaticMode::BlockRestriction => write!(f, "BlockRestriction"),
             StaticMode::NoMaximumHandSize => write!(f, "NoMaximumHandSize"),
+            StaticMode::MaximumHandSize { modification } => {
+                write!(f, "MaximumHandSize({modification})")
+            }
             StaticMode::MayPlayAdditionalLand => write!(f, "MayPlayAdditionalLand"),
             StaticMode::CantHaveKeyword { keyword } => {
                 write!(f, "CantHaveKeyword({keyword:?})")
@@ -522,6 +552,11 @@ impl FromStr for StaticMode {
             "EmblemStatic" => StaticMode::EmblemStatic,
             "BlockRestriction" => StaticMode::BlockRestriction,
             "NoMaximumHandSize" => StaticMode::NoMaximumHandSize,
+            s if s.starts_with("MaximumHandSize(") => {
+                // MaximumHandSize is data-carrying; FromStr round-trip not required.
+                // Display output is for diagnostics only.
+                StaticMode::Other(s.to_string())
+            }
             "MayPlayAdditionalLand" => StaticMode::MayPlayAdditionalLand,
             "CantWinTheGame" => StaticMode::CantWinTheGame,
             "CantLoseTheGame" => StaticMode::CantLoseTheGame,

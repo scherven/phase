@@ -40,6 +40,7 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::PerTurnDrawLimit { .. }
             | StaticMode::GraveyardCastPermission { .. }
             | StaticMode::CastFromHandFree
+            | StaticMode::MaximumHandSize { .. }
     )
 }
 
@@ -1321,7 +1322,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::VentureIntoDungeon
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
-        | Effect::Clash => {}
+        | Effect::Clash
+        | Effect::Incubate { .. } => {}
     }
     d
 }
@@ -4305,6 +4307,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             }
             StaticMode::CantWinTheGame => effective_lower.contains("can't win the game"),
             StaticMode::NoMaximumHandSize => effective_lower.contains("no maximum hand size"),
+            StaticMode::MaximumHandSize { .. } => effective_lower.contains("maximum hand size is"),
             StaticMode::CantUntap => {
                 effective_lower.contains("doesn't untap") || effective_lower.contains("don't untap")
             }
