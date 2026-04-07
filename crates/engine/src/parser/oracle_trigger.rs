@@ -2175,6 +2175,22 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         }
     }
 
+    // CR 603.8: "when you control no [type]" — state trigger that fires when the
+    // controller controls no permanents matching a type/subtype filter.
+    // Handles: "when you control no islands", "when you control no other creatures",
+    // "when you control no artifacts", "when you control no forests", etc.
+    for prefix in ["whenever you control no ", "when you control no "] {
+        if let Ok((rest, ())) = value((), tag::<_, _, VerboseError<&str>>(prefix)).parse(lower) {
+            if let Some(filter) = parse_control_none_filter(rest) {
+                let mut def = make_base();
+                def.mode = TriggerMode::StateCondition;
+                def.condition = Some(TriggerCondition::ControlsNone { filter });
+                def.valid_card = Some(TargetFilter::SelfRef);
+                return Some((TriggerMode::StateCondition, def));
+            }
+        }
+    }
+
     // Discard triggers: prefix-based matching for broader card coverage.
     // Handles "you discard", "an opponent discards", "a player discards",
     // "each player discards" with optional type filters.
@@ -3198,6 +3214,56 @@ fn parse_turn_constraint(phase_text: &str) -> Option<TriggerConstraint> {
             .map_or("", |i| remaining[i + 1..].trim_start());
     }
     None
+}
+
+/// CR 603.8: Parse the filter from "you control no [filter]" state trigger conditions.
+/// Handles subtypes (Islands, Swamps, Forests), types (artifacts, creatures, lands),
+/// "other" prefix (other creatures, other artifacts), and adjective-type combos (snow lands).
+fn parse_control_none_filter(text: &str) -> Option<TargetFilter> {
+    let text = text.trim().trim_end_matches('.');
+
+    // Check for "other" prefix → FilterProp::Another
+    let (has_other, remainder) =
+        if let Ok((rest, ())) = value((), tag::<_, _, VerboseError<&str>>("other ")).parse(text) {
+            (true, rest)
+        } else {
+            (false, text)
+        };
+
+    // Try parsing as a type phrase first (handles "creatures", "artifacts", "lands", etc.)
+    let (filter, rest) = parse_type_phrase(remainder);
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    match filter {
+        TargetFilter::Typed(mut tf) => {
+            tf.controller = Some(ControllerRef::You);
+            if has_other {
+                tf.properties.push(FilterProp::Another);
+            }
+            Some(TargetFilter::Typed(tf))
+        }
+        TargetFilter::Or { filters } => {
+            // Distribute controller to all branches
+            let filters = filters
+                .into_iter()
+                .map(|f| {
+                    if let TargetFilter::Typed(mut tf) = f {
+                        tf.controller = Some(ControllerRef::You);
+                        if has_other {
+                            tf.properties.push(FilterProp::Another);
+                        }
+                        TargetFilter::Typed(tf)
+                    } else {
+                        f
+                    }
+                })
+                .collect();
+            Some(TargetFilter::Or { filters })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -6493,6 +6559,75 @@ mod tests {
                 );
             }
             other => panic!("expected ControlNextTurn effect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn state_trigger_control_no_islands() {
+        let def = parse_trigger_line(
+            "When you control no Islands, sacrifice this creature.",
+            "Dandân",
+        );
+        assert_eq!(def.mode, TriggerMode::StateCondition);
+        if let Some(TriggerCondition::ControlsNone { filter }) = &def.condition {
+            if let TargetFilter::Typed(tf) = filter {
+                assert!(
+                    tf.type_filters
+                        .iter()
+                        .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Island")),
+                    "expected Island subtype in {:?}",
+                    tf.type_filters,
+                );
+            } else {
+                panic!("expected Typed filter, got {filter:?}");
+            }
+        } else {
+            panic!("expected ControlsNone condition, got {:?}", def.condition,);
+        }
+        // Effect should be sacrifice self
+        let execute = def.execute.as_ref().expect("should have execute");
+        assert!(
+            matches!(*execute.effect, Effect::Sacrifice { .. }),
+            "expected Sacrifice, got {:?}",
+            execute.effect,
+        );
+    }
+
+    #[test]
+    fn state_trigger_control_no_other_creatures() {
+        let def = parse_trigger_line(
+            "When you control no other creatures, sacrifice this creature.",
+            "Emperor Crocodile",
+        );
+        assert_eq!(def.mode, TriggerMode::StateCondition);
+        if let Some(TriggerCondition::ControlsNone { filter }) = &def.condition {
+            if let TargetFilter::Typed(tf) = filter {
+                assert!(tf.properties.contains(&FilterProp::Another));
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+            } else {
+                panic!("expected Typed filter, got {filter:?}");
+            }
+        } else {
+            panic!("expected ControlsNone condition, got {:?}", def.condition);
+        }
+    }
+
+    #[test]
+    fn state_trigger_control_no_artifacts() {
+        let def = parse_trigger_line(
+            "When you control no artifacts, sacrifice this creature.",
+            "Covetous Dragon",
+        );
+        assert_eq!(def.mode, TriggerMode::StateCondition);
+        if let Some(TriggerCondition::ControlsNone { filter }) = &def.condition {
+            if let TargetFilter::Typed(tf) = filter {
+                assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+            } else {
+                panic!("expected Typed filter, got {filter:?}");
+            }
+        } else {
+            panic!("expected ControlsNone condition, got {:?}", def.condition);
         }
     }
 }

@@ -7,6 +7,7 @@ use crate::types::game_state::{AutoPassMode, GameState, WaitingFor};
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 use crate::types::proposed_event::ProposedEvent;
+use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 use super::combat;
@@ -424,8 +425,24 @@ pub fn finish_cleanup_discard(
 }
 
 /// CR 103.8a: The player who goes first skips their first draw step.
+/// CR 614.1b + CR 614.10: Also skip if a "skip your draw step" static is active.
 pub fn should_skip_draw(state: &GameState) -> bool {
-    state.turn_number == 1
+    state.turn_number == 1 || should_skip_step(state, Phase::Draw)
+}
+
+/// CR 614.1b + CR 614.10: Check whether the active player should skip the given step
+/// due to a "skip your [step] step" static ability on a permanent they control.
+fn should_skip_step(state: &GameState, step: Phase) -> bool {
+    let active = state.active_player;
+    state.battlefield.iter().any(|id| {
+        state.objects.get(id).is_some_and(|obj| {
+            obj.controller == active
+                && obj
+                    .static_definitions
+                    .iter()
+                    .any(|sd| sd.mode == StaticMode::SkipStep { step })
+        })
+    })
 }
 
 /// CR 714.3b: As the precombat main phase begins, put a lore counter on each Saga
@@ -477,7 +494,10 @@ pub fn auto_advance(state: &mut GameState, events: &mut Vec<GameEvent>) -> Waiti
 
         match state.phase {
             Phase::Untap => {
-                execute_untap(state, events);
+                // CR 614.1b: Skip the untap step if a "skip your untap step" static is active.
+                if !should_skip_step(state, Phase::Untap) {
+                    execute_untap(state, events);
+                }
                 // CR 502.4 / CR 117.3a: No player receives priority during the untap step.
                 advance_phase(state, events);
             }
@@ -994,6 +1014,51 @@ mod tests {
         // Card should still be in library
         assert!(state.players[0].library.contains(&id));
         assert!(!state.players[0].hand.contains(&id));
+    }
+
+    #[test]
+    fn skip_draw_step_static_prevents_draw() {
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+        state.phase = Phase::Untap;
+        state.turn_number = 2; // Not first turn
+
+        // Add a card to library
+        let card_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Card".to_string(),
+            Zone::Library,
+        );
+
+        // Add a permanent with SkipStep { step: Draw }
+        let enchant_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Necropotence".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&enchant_id)
+            .unwrap()
+            .static_definitions
+            .push(crate::types::ability::StaticDefinition::new(
+                StaticMode::SkipStep { step: Phase::Draw },
+            ));
+
+        let mut events = Vec::new();
+        auto_advance(&mut state, &mut events);
+
+        // Card should still be in library — draw was skipped
+        assert!(
+            state.players[0].library.contains(&card_id),
+            "draw step should be skipped when SkipStep(Draw) static is active"
+        );
+        assert!(!state.players[0].hand.contains(&card_id));
     }
 
     #[test]

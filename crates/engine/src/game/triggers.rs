@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use crate::types::ability::{
-    AbilityDefinition, ControllerRef, Effect, ModalChoice, PlayerFilter, ResolvedAbility,
-    TargetFilter, TargetRef, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
-    UnlessCost,
+    AbilityDefinition, AbilityKind, ControllerRef, Effect, ModalChoice, PlayerFilter,
+    ResolvedAbility, TargetFilter, TargetRef, TriggerCondition, TriggerDefinition, TypeFilter,
+    TypedFilter, UnlessCost,
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
@@ -874,6 +874,98 @@ fn apply_trigger_doubling(state: &GameState, pending: &mut Vec<PendingTrigger>) 
     pending.extend(extra);
 }
 
+/// CR 603.8: Check state triggers for all permanents on the battlefield.
+/// State triggers fire when a game-state condition is true, rather than in response
+/// to events. A state trigger doesn't trigger again until its ability has resolved,
+/// been countered, or otherwise left the stack.
+pub fn check_state_triggers(state: &mut GameState) {
+    let source_ids: Vec<ObjectId> = state.battlefield.to_vec();
+
+    let mut pending: Vec<PendingTrigger> = Vec::new();
+
+    for obj_id in source_ids {
+        let (controller, timestamp, trigger_defs) = {
+            let Some(obj) = state.objects.get(&obj_id) else {
+                continue;
+            };
+            if obj.zone != Zone::Battlefield {
+                continue;
+            }
+            (
+                obj.controller,
+                obj.entered_battlefield_turn.unwrap_or(0),
+                obj.trigger_definitions.clone(),
+            )
+        };
+
+        for trigger in &trigger_defs {
+            if trigger.mode != TriggerMode::StateCondition {
+                continue;
+            }
+
+            // CR 603.8: Don't re-trigger if this state trigger is already on the stack.
+            let already_on_stack = state.stack.iter().any(|entry| {
+                entry.source_id == obj_id
+                    && matches!(&entry.kind, StackEntryKind::TriggeredAbility { .. })
+            });
+            if already_on_stack {
+                continue;
+            }
+
+            // Evaluate the condition
+            let condition_met = trigger.condition.as_ref().is_some_and(|cond| {
+                check_trigger_condition(state, cond, controller, Some(obj_id), None)
+            });
+
+            if condition_met {
+                let execute = trigger.execute.as_deref().cloned().unwrap_or_else(|| {
+                    AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::Unimplemented {
+                            name: "state trigger".to_string(),
+                            description: trigger.description.clone(),
+                        },
+                    )
+                });
+
+                let ability = build_resolved_from_def(&execute, obj_id, controller);
+                pending.push(PendingTrigger {
+                    source_id: obj_id,
+                    controller,
+                    condition: trigger.condition.clone(),
+                    ability,
+                    timestamp,
+                    target_constraints: Vec::new(),
+                    trigger_event: None,
+                    modal: None,
+                    mode_abilities: vec![],
+                    description: trigger.description.clone(),
+                });
+            }
+        }
+    }
+
+    if pending.is_empty() {
+        return;
+    }
+
+    // CR 603.3b: APNAP ordering for state triggers.
+    pending.sort_by_key(|t| {
+        let is_nap = if t.controller == state.active_player {
+            0
+        } else {
+            1
+        };
+        (is_nap, t.timestamp)
+    });
+    pending.reverse();
+
+    let mut events_out = Vec::new();
+    for trigger in pending {
+        push_pending_trigger_to_stack(state, trigger, &mut events_out);
+    }
+}
+
 /// CR 603.7: Check if any delayed triggers should fire based on recent events.
 /// One-shot triggers are removed after firing; multi-fire (WheneverEvent) triggers
 /// persist until end-of-turn cleanup (CR 603.7c).
@@ -1206,6 +1298,15 @@ pub(crate) fn check_trigger_condition(
             .is_some_and(|lki| lki.card_types.contains(card_type)),
         // "if you control a [type]" — check for presence of matching permanent.
         TriggerCondition::ControlsType { filter } => state.battlefield.iter().any(|id| {
+            crate::game::filter::matches_target_filter(
+                state,
+                *id,
+                filter,
+                source_id.unwrap_or(ObjectId(0)),
+            )
+        }),
+        // CR 603.8: "when you control no [type]" — true when no permanents match the filter.
+        TriggerCondition::ControlsNone { filter } => !state.battlefield.iter().any(|id| {
             crate::game::filter::matches_target_filter(
                 state,
                 *id,

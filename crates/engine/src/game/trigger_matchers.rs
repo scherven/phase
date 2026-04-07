@@ -159,6 +159,9 @@ pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
         | TriggerMode::VisitAttraction
         | TriggerMode::BecomesPlotted
         | TriggerMode::BecomesSaddled => match_unimplemented,
+        // CR 603.8: State triggers are not event-based — they are checked separately
+        // in the priority pipeline, not through the event-matching trigger system.
+        TriggerMode::StateCondition => return None,
         TriggerMode::Unknown(_) => return None,
     })
 }

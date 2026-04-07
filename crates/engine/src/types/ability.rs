@@ -3950,6 +3950,10 @@ pub enum TriggerCondition {
     /// Subsumes ControlCreatures for any permanent type (artifacts, enchantments, lands, etc.).
     ControlCount { minimum: u32, filter: TargetFilter },
 
+    /// CR 603.8: "when you control no [type]" — state trigger condition.
+    /// True when the controller controls no permanents matching the filter.
+    ControlsNone { filter: TargetFilter },
+
     /// CR 603.4: "if you attacked this turn" — true when the controller declared attackers
     /// during this turn's combat phase.
     AttackedThisTurn,

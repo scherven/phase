@@ -306,6 +306,12 @@ pub enum TriggerMode {
     /// "Whenever ~ attacks or blocks" — fires on both attack (CR 508.3a) and block (CR 509.1h) events.
     AttacksOrBlocks,
 
+    /// CR 603.8: State trigger — fires when a game-state condition becomes true, rather than
+    /// in response to an event. Checked whenever a player would receive priority.
+    /// The engine tracks whether the trigger is already on the stack to prevent re-triggering
+    /// until the ability has resolved, been countered, or otherwise left the stack.
+    StateCondition,
+
     // Elemental bending
     Airbend,
     Earthbend,
@@ -456,6 +462,7 @@ impl FromStr for TriggerMode {
             "SpellCast" => TriggerMode::SpellCast,
             "SpellCastOrCopy" => TriggerMode::SpellCastOrCopy,
             "SpellCopy" => TriggerMode::SpellCopy,
+            "StateCondition" => TriggerMode::StateCondition,
             "Stationed" => TriggerMode::Stationed,
             "Surveil" => TriggerMode::Surveil,
             "TakesInitiative" => TriggerMode::TakesInitiative,

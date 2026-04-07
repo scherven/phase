@@ -37,6 +37,11 @@ pub(super) fn run_post_action_pipeline(
         triggers::process_triggers(state, &filtered_events);
     }
 
+    // CR 603.8: Check state triggers after event-based triggers.
+    // State triggers fire when a condition is true, checked whenever a player
+    // would receive priority.
+    triggers::check_state_triggers(state);
+
     if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
         state.waiting_for = waiting_for.clone();
         return Ok(waiting_for);
