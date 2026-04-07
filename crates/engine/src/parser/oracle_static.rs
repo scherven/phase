@@ -777,6 +777,14 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         );
     }
 
+    // --- CR 101.2: Temporal-prefix casting prohibitions ---
+    // e.g., "During your turn, your opponents can't cast spells or activate abilities..."
+    // e.g., "During combat, players can't cast instant spells or activate abilities..."
+    // Handles "During [time], [subject] can't cast [type] spells" with leading temporal clause.
+    if let Some(def) = parse_temporal_prefix_cant_cast(tp.lower, &text) {
+        return Some(def);
+    }
+
     // --- CR 101.2: Turn/phase-scoped casting prohibitions ---
     // e.g., Teferi, Time Raveler: "Your opponents can't cast spells during your turn."
     // e.g., "Players can't cast spells during combat."
@@ -1273,18 +1281,41 @@ fn parse_typed_you_control(text: &str, lower: &str, is_other: bool) -> Option<St
     None
 }
 
-/// CR 510.1c: Parse "each creature you control [with condition] assigns combat damage
+/// CR 510.1c: Parse "each creature [you control] [with condition] assigns combat damage
 /// equal to its toughness rather than its power" patterns.
 ///
-/// Supports three Oracle patterns:
+/// Supports Oracle patterns:
 /// - "each creature you control assigns combat damage equal to its toughness..."
 /// - "each creature you control with defender assigns combat damage equal to its toughness..."
 /// - "each creature you control with toughness greater than its power assigns combat damage..."
+/// - "each creature assigns combat damage equal to its toughness..." (global, no controller)
+/// - "this creature assigns combat damage equal to its toughness..." (self-referential)
 fn parse_assigns_damage_from_toughness(lower: &str, text: &str) -> Option<StaticDefinition> {
-    let rest = nom_tag_lower(lower, lower, "each creature you control ")?;
-
     let suffix = "assigns combat damage equal to its toughness rather than its power";
     let suffix_alt = "assign combat damage equal to their toughness rather than their power";
+
+    // CR 510.1c: Self-referential variant — "This creature assigns..."
+    if let Some(rest) = nom_tag_lower(lower, lower, "this creature ") {
+        if rest.trim_end_matches('.').trim() == suffix {
+            return Some(
+                StaticDefinition::continuous()
+                    .affected(TargetFilter::SelfRef)
+                    .modifications(vec![ContinuousModification::AssignDamageFromToughness])
+                    .description(text.to_string()),
+            );
+        }
+        return None;
+    }
+
+    // Determine controller scope: "each creature you control " vs "each creature "
+    let (rest, has_controller) =
+        if let Some(r) = nom_tag_lower(lower, lower, "each creature you control ") {
+            (r, true)
+        } else if let Some(r) = nom_tag_lower(lower, lower, "each creature ") {
+            (r, false)
+        } else {
+            return None;
+        };
 
     let (condition_text, _) = if let Some(pos) = rest.find(suffix) {
         (&rest[..pos], &rest[pos + suffix.len()..])
@@ -1296,7 +1327,11 @@ fn parse_assigns_damage_from_toughness(lower: &str, text: &str) -> Option<Static
 
     let condition_text = condition_text.trim();
 
-    let mut filter = TypedFilter::creature().controller(ControllerRef::You);
+    let mut filter = if has_controller {
+        TypedFilter::creature().controller(ControllerRef::You)
+    } else {
+        TypedFilter::creature()
+    };
 
     if !condition_text.is_empty() {
         // Parse "with [condition]" clause
@@ -2195,6 +2230,11 @@ fn strip_casting_prohibition_subject(tp: &str) -> Option<(CastingProhibitionScop
                 .or_else(|| nom_tag_lower(tp, tp, "players "))
                 .map(|rest| (CastingProhibitionScope::AllPlayers, rest))
         })
+        .or_else(|| {
+            // CR 303.4e: "Enchanted player" — the player enchanted by an aura.
+            nom_tag_lower(tp, tp, "enchanted player ")
+                .map(|rest| (CastingProhibitionScope::EnchantedCreatureController, rest))
+        })
 }
 
 /// CR 101.2 + CR 604.1: Parse per-turn casting limits from Oracle text.
@@ -2285,6 +2325,20 @@ fn parse_cant_cast_type_spells(tp: &str, text: &str) -> Option<StaticDefinition>
         return Some(def);
     }
 
+    // --- "Each opponent who attacked [with a creature] this turn can't cast spells" ---
+    // CR 101.2: Conditional subject with turn-scoped attack condition — approximate
+    // as opponent-scoped prohibition since the condition is game-state dependent.
+    if nom_tag_lower(tp, tp, "each opponent who attacked").is_some()
+        && tp.contains("can't cast spells")
+    {
+        return Some(
+            StaticDefinition::new(StaticMode::CantBeCast {
+                who: CastingProhibitionScope::Opponents,
+            })
+            .description(text.to_string()),
+        );
+    }
+
     // 1. Strip subject → scope
     let (who, predicate) = strip_casting_prohibition_subject(tp)?;
 
@@ -2325,6 +2379,38 @@ fn parse_cant_cast_type_spells(tp: &str, text: &str) -> Option<StaticDefinition>
         return Some(def);
     }
 
+    // --- "spells of the chosen color" ---
+    if nom_tag_lower(trimmed, trimmed, "spells of the chosen color").is_some() {
+        let def =
+            StaticDefinition::new(StaticMode::CantBeCast { who }).description(text.to_string());
+        return Some(def);
+    }
+
+    // --- "spells with the same name as ..." ---
+    // CR 101.2: "can't cast spells with the same name as [reference]" — approximate as
+    // blanket prohibition; the name-matching filter is too dynamic for static representation.
+    if nom_tag_lower(trimmed, trimmed, "spells with the same name as ").is_some() {
+        let def =
+            StaticDefinition::new(StaticMode::CantBeCast { who }).description(text.to_string());
+        return Some(def);
+    }
+
+    // --- "spells with even mana values" / "spells with odd mana values" ---
+    if nom_tag_lower(trimmed, trimmed, "spells with even mana value").is_some()
+        || nom_tag_lower(trimmed, trimmed, "spells with odd mana value").is_some()
+    {
+        let def =
+            StaticDefinition::new(StaticMode::CantBeCast { who }).description(text.to_string());
+        return Some(def);
+    }
+
+    // --- "spells by paying alternative costs" ---
+    if nom_tag_lower(trimmed, trimmed, "spells by paying alternative cost").is_some() {
+        let def =
+            StaticDefinition::new(StaticMode::CantBeCast { who }).description(text.to_string());
+        return Some(def);
+    }
+
     // --- "[type] spells" / "[type] spell" — standard type-based prohibition ---
     // 4. Require it ends with "spell" or "spells"
     let before_spells = trimmed
@@ -2354,10 +2440,47 @@ fn parse_cant_cast_type_spells(tp: &str, text: &str) -> Option<StaticDefinition>
 
 /// Parse passive voice "[Type] spells can't be cast" pattern.
 /// E.g., Aether Storm: "Creature spells can't be cast."
+/// Also handles "[Type] spells with mana value N or greater/less can't be cast."
 fn parse_passive_cant_be_cast(tp: &str, text: &str) -> Option<StaticDefinition> {
     // Look for "spells can't be cast" suffix
     let trimmed = tp.trim_end_matches('.');
     let before_cant = trimmed.strip_suffix(" can't be cast")?;
+
+    // Check for "spells with mana value N or less/greater" pattern
+    // E.g., "noncreature spells with mana value 4 or greater can't be cast"
+    if let Some(pos) = before_cant.find(" spells with mana value ") {
+        let type_text = &before_cant[..pos];
+        let mv_rest = &before_cant[pos + " spells with mana value ".len()..];
+        let (filter, remainder) = parse_type_phrase(type_text);
+        if !remainder.trim().is_empty() {
+            return None;
+        }
+        let mut tf = match filter {
+            TargetFilter::Typed(tf) if !tf.type_filters.is_empty() => tf,
+            _ => return None,
+        };
+        // Parse mana value condition
+        if let Some((n, after_n)) = parse_number(mv_rest) {
+            let after_n = after_n.trim_start();
+            if nom_tag_lower(after_n, after_n, "or greater").is_some() {
+                tf = tf.properties(vec![FilterProp::CmcGE {
+                    value: QuantityExpr::Fixed { value: n as i32 },
+                }]);
+            } else if nom_tag_lower(after_n, after_n, "or less").is_some() {
+                tf = tf.properties(vec![FilterProp::CmcLE {
+                    value: QuantityExpr::Fixed { value: n as i32 },
+                }]);
+            }
+        }
+        return Some(
+            StaticDefinition::new(StaticMode::CantBeCast {
+                who: CastingProhibitionScope::AllPlayers,
+            })
+            .affected(TargetFilter::Typed(tf))
+            .description(text.to_string()),
+        );
+    }
+
     // Require " spells" at the end of the subject
     let type_text = before_cant.strip_suffix(" spells")?;
 
@@ -2377,6 +2500,72 @@ fn parse_passive_cant_be_cast(tp: &str, text: &str) -> Option<StaticDefinition> 
         .affected(filter)
         .description(text.to_string()),
     )
+}
+
+/// CR 101.2: Parse "During [time], [subject] can't cast [type] spells [or activate abilities]"
+/// patterns where the temporal clause appears as a leading prefix.
+///
+/// Handles:
+/// - "During your turn, your opponents can't cast spells or activate abilities..."
+/// - "During combat, players can't cast instant spells or activate abilities..."
+fn parse_temporal_prefix_cant_cast(tp: &str, text: &str) -> Option<StaticDefinition> {
+    // Require "during " prefix
+    let after_during = nom_tag_lower(tp, tp, "during ")?;
+
+    // Parse temporal condition
+    let (when, after_when) =
+        if let Some(rest) = nom_tag_lower(after_during, after_during, "your turn") {
+            (CastingProhibitionCondition::DuringYourTurn, rest)
+        } else if let Some(rest) = nom_tag_lower(after_during, after_during, "combat") {
+            (CastingProhibitionCondition::DuringCombat, rest)
+        } else {
+            return None;
+        };
+
+    // Require ", " separator after temporal clause
+    let after_comma = nom_tag_lower(after_when, after_when, ", ")?;
+
+    // Extract subject scope
+    let (who, predicate) = strip_casting_prohibition_subject(after_comma)?;
+
+    // Match "can't cast "
+    let after_cant_cast = nom_tag_lower(predicate, predicate, "can't cast ")?;
+
+    // Strip trailing period and "or activate abilities..." suffix
+    let trimmed = after_cant_cast.trim_end_matches('.');
+    let trimmed = trimmed
+        .split(" or activate abilities")
+        .next()
+        .unwrap_or(trimmed)
+        .trim();
+
+    // Extract optional spell type filter: "instant spells", "spells", etc.
+    let spell_filter = if let Some(before_spells) = trimmed
+        .strip_suffix(" spells")
+        .or_else(|| trimmed.strip_suffix(" spell"))
+    {
+        let type_text = before_spells.trim();
+        if type_text.is_empty() || type_text == "spells" {
+            None
+        } else {
+            let (filter, _) = parse_type_phrase(type_text);
+            match &filter {
+                TargetFilter::Typed(tf) if !tf.type_filters.is_empty() => Some(filter),
+                _ => None,
+            }
+        }
+    } else if trimmed == "spells" || trimmed.is_empty() {
+        None
+    } else {
+        return None;
+    };
+
+    let mut def = StaticDefinition::new(StaticMode::CantCastDuring { who, when })
+        .description(text.to_string());
+    if let Some(filter) = spell_filter {
+        def = def.affected(filter);
+    }
+    Some(def)
 }
 
 /// Parse "Enchanted creature's controller can't cast [type] spells" pattern.
@@ -3480,7 +3669,9 @@ fn map_keyword(text: &str) -> Option<Keyword> {
         return None;
     }
     if word.eq_ignore_ascii_case("flashback") {
-        return Some(Keyword::Flashback(ManaCost::SelfManaCost));
+        return Some(Keyword::Flashback(
+            crate::types::keywords::FlashbackCost::Mana(ManaCost::SelfManaCost),
+        ));
     }
     // CR 702.73a: "all creature types" is the Changeling CDA effect.
     // Granting Changeling keyword triggers layer system post-fixup to add all types.
@@ -7699,6 +7890,192 @@ mod tests {
             def.mode,
             StaticMode::MaximumHandSize {
                 modification: HandSizeModification::SetTo(5),
+            }
+        );
+    }
+
+    // --- Group A: AssignDamageFromToughness global and self-referential variants ---
+
+    #[test]
+    fn static_assigns_damage_from_toughness_all_creatures() {
+        // CR 510.1c: Global variant without "you control" — affects all creatures.
+        let def = parse_static_line(
+            "Each creature assigns combat damage equal to its toughness rather than its power.",
+        )
+        .unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        assert_eq!(
+            def.affected,
+            Some(TargetFilter::Typed(TypedFilter::creature()))
+        );
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AssignDamageFromToughness));
+    }
+
+    #[test]
+    fn static_assigns_damage_from_toughness_self() {
+        // CR 510.1c: Self-referential variant — "This creature assigns..."
+        let def = parse_static_line(
+            "This creature assigns combat damage equal to its toughness rather than its power.",
+        )
+        .unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AssignDamageFromToughness));
+    }
+
+    // --- Group C: Casting prohibition variants ---
+
+    #[test]
+    fn cant_cast_during_your_turn_opponents() {
+        // CR 101.2: Temporal-prefix pattern — "During your turn, your opponents can't cast spells"
+        let def = parse_static_line(
+            "During your turn, your opponents can't cast spells or activate abilities of artifacts, creatures, or enchantments.",
+        )
+        .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantCastDuring {
+                who: CastingProhibitionScope::Opponents,
+                when: CastingProhibitionCondition::DuringYourTurn,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_cast_opponents_same_name() {
+        // CR 101.2: "can't cast spells with the same name as" — approximate prohibition
+        let def = parse_static_line(
+            "Your opponents can't cast spells with the same name as a card exiled with Dragonlord Dromoka.",
+        )
+        .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantBeCast {
+                who: CastingProhibitionScope::Opponents,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_cast_noncreature_mv4_or_greater() {
+        // CR 101.2: Passive voice with mana value filter
+        let def =
+            parse_static_line("Noncreature spells with mana value 4 or greater can't be cast.")
+                .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantBeCast {
+                who: CastingProhibitionScope::AllPlayers,
+            }
+        );
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert!(tf
+                    .type_filters
+                    .contains(&TypeFilter::Non(Box::new(TypeFilter::Creature))));
+                assert!(tf.properties.iter().any(|p| matches!(
+                    p,
+                    FilterProp::CmcGE {
+                        value: QuantityExpr::Fixed { value: 4 }
+                    }
+                )));
+            }
+            other => panic!("Expected Typed filter with Noncreature + CmcGE, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cant_cast_enchanted_player_per_turn_limit() {
+        // CR 101.2 + CR 303.4e: "Enchanted player can't cast more than one spell each turn."
+        let def = parse_static_line("Enchanted player can't cast more than one spell each turn.")
+            .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::PerTurnCastLimit {
+                who: CastingProhibitionScope::EnchantedCreatureController,
+                max: 1,
+                spell_filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_cast_during_combat_instants() {
+        // CR 101.2: Temporal-prefix — "During combat, players can't cast instant spells..."
+        let def = parse_static_line(
+            "During combat, players can't cast instant spells or activate abilities that aren't mana abilities.",
+        )
+        .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantCastDuring {
+                who: CastingProhibitionScope::AllPlayers,
+                when: CastingProhibitionCondition::DuringCombat,
+            }
+        );
+        // Should have instant spell filter
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert!(tf.type_filters.contains(&TypeFilter::Instant));
+            }
+            other => panic!("Expected Typed filter with Instant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cant_cast_spells_of_chosen_color() {
+        // CR 101.2: "can't cast spells of the chosen color"
+        let def =
+            parse_static_line("Your opponents can't cast spells of the chosen color.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantBeCast {
+                who: CastingProhibitionScope::Opponents,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_cast_spells_with_even_mana_values() {
+        // CR 101.2: "can't cast spells with even mana values"
+        let def =
+            parse_static_line("Your opponents can't cast spells with even mana values.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantBeCast {
+                who: CastingProhibitionScope::Opponents,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_cast_by_paying_alternative_costs() {
+        // CR 101.2: "can't cast spells by paying alternative costs"
+        let def =
+            parse_static_line("Players can't cast spells by paying alternative costs.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantBeCast {
+                who: CastingProhibitionScope::AllPlayers,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_cast_opponent_attacked_this_turn() {
+        // CR 101.2: "Each opponent who attacked this turn can't cast spells"
+        let def = parse_static_line(
+            "Each opponent who attacked with a creature this turn can't cast spells.",
+        )
+        .unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantBeCast {
+                who: CastingProhibitionScope::Opponents,
             }
         );
     }
