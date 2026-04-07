@@ -216,6 +216,7 @@ pub fn synthesize_mobilize(face: &mut CardFace) {
                 attach_to: None,
                 enters_attacking: true,
                 supertypes: vec![],
+                static_abilities: vec![],
             };
 
             face.triggers.push(

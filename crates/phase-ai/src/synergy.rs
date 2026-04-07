@@ -332,6 +332,7 @@ mod tests {
                         attach_to: None,
                         enters_attacking: false,
                         supertypes: vec![],
+                        static_abilities: vec![],
                     },
                 )],
                 ..Default::default()

@@ -325,6 +325,7 @@ pub fn resolve(
         owner_filter,
         enters_attacking,
         fallback_supertypes,
+        token_statics,
     ) = match &ability.effect {
         Effect::Token {
             name,
@@ -338,6 +339,7 @@ pub fn resolve(
             owner,
             enters_attacking,
             supertypes,
+            static_abilities,
             ..
         } => (
             name.clone(),
@@ -351,6 +353,7 @@ pub fn resolve(
             owner,
             *enters_attacking,
             supertypes.clone(),
+            static_abilities.clone(),
         ),
         _ => (
             "Token".to_string(),
@@ -363,6 +366,7 @@ pub fn resolve(
             1,
             &TargetFilter::Controller,
             false,
+            vec![],
             vec![],
         ),
     };
@@ -463,6 +467,12 @@ pub fn resolve(
                             }
                         }
                         obj.tapped = tapped;
+
+                        // Apply static abilities from the token definition
+                        // (e.g., "This token can't block.").
+                        for static_def in &token_statics {
+                            obj.static_definitions.push(static_def.clone());
+                        }
                     }
 
                     // CR 508.4: Token enters attacking — not declared as attacker.
@@ -959,6 +969,7 @@ mod tests {
                 attach_to: None,
                 enters_attacking: false,
                 supertypes: vec![],
+                static_abilities: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1041,6 +1052,7 @@ mod tests {
                 attach_to: None,
                 enters_attacking: false,
                 supertypes: vec![],
+                static_abilities: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1094,6 +1106,7 @@ mod tests {
                 attach_to: None,
                 enters_attacking: false,
                 supertypes: vec![],
+                static_abilities: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1137,6 +1150,7 @@ mod tests {
                 attach_to: None,
                 enters_attacking: false,
                 supertypes: vec![],
+                static_abilities: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1170,6 +1184,7 @@ mod tests {
                 attach_to: None,
                 enters_attacking: false,
                 supertypes: vec![],
+                static_abilities: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1201,6 +1216,7 @@ mod tests {
                 attach_to: None,
                 enters_attacking: false,
                 supertypes: vec![],
+                static_abilities: vec![],
             },
             vec![],
             ObjectId(100),
@@ -1258,6 +1274,7 @@ mod tests {
                 attach_to: None,
                 enters_attacking: false,
                 supertypes: vec![],
+                static_abilities: vec![],
             },
             vec![TargetRef::Object(target_id)],
             ObjectId(100),

@@ -46,6 +46,7 @@ pub(super) struct TokenDescription {
     pub(super) tapped: bool,
     pub(super) count: QuantityExpr,
     pub(super) attach_to: Option<TargetFilter>,
+    pub(super) static_abilities: Vec<StaticDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

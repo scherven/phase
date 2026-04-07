@@ -674,6 +674,7 @@ pub(super) fn parse_search_and_creation_ast(
                 tapped,
                 count,
                 attach_to,
+                static_abilities,
                 ..
             }) => Some(SearchCreationImperativeAst::Token {
                 token: Box::new(TokenDescription {
@@ -686,6 +687,7 @@ pub(super) fn parse_search_and_creation_ast(
                     tapped,
                     count,
                     attach_to,
+                    static_abilities,
                 }),
             }),
             _ => None,
@@ -732,6 +734,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             attach_to: token.attach_to,
             enters_attacking: false,
             supertypes: vec![],
+            static_abilities: token.static_abilities,
         },
         SearchCreationImperativeAst::Seek {
             filter,
@@ -2858,7 +2861,13 @@ fn try_parse_adapt(lower: &str) -> Option<Effect> {
     Some(Effect::Adapt { count })
 }
 
-/// CR 508.1d: Parse "attacks/attack this turn/combat if able" as a temporary MustAttack.
+/// CR 508.1d: Parse "attacks/attack [player] this turn/combat if able" as a temporary MustAttack.
+///
+/// Handles bare forms ("attacks this turn if able") and player-targeted forms
+/// ("attacks you this turn if able", "attacks that opponent this combat if able",
+/// "attacks target opponent this turn if able"). The player target is currently
+/// not enforced at runtime — MustAttack forces the creature to attack if able,
+/// but the specific-player constraint requires additional engine support.
 ///
 /// Emits a `GenericEffect` with `StaticMode::MustAttack` and the appropriate duration.
 fn try_parse_attack_if_able(lower: &str) -> Option<ImperativeFamilyAst> {
@@ -2866,7 +2875,7 @@ fn try_parse_attack_if_able(lower: &str) -> Option<ImperativeFamilyAst> {
 
     let trimmed = lower.trim_end_matches('.');
 
-    // Try nom combinators to match the pattern
+    // First try: bare forms without a player reference.
     let result: Result<(&str, Duration), nom::Err<VerboseError<&str>>> = alt((
         value(Duration::UntilEndOfTurn, tag("attacks this turn if able")),
         value(Duration::UntilEndOfTurn, tag("attack this turn if able")),
@@ -2878,10 +2887,64 @@ fn try_parse_attack_if_able(lower: &str) -> Option<ImperativeFamilyAst> {
             Duration::UntilEndOfCombat,
             tag("attack this combat if able"),
         ),
+        value(
+            Duration::UntilEndOfCombat,
+            tag("attacks that combat if able"),
+        ),
+        value(
+            Duration::UntilEndOfCombat,
+            tag("attack that combat if able"),
+        ),
     ))
     .parse(trimmed);
 
-    let (_, duration) = result.ok()?;
+    if let Ok((_, duration)) = result {
+        return Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::new(StaticMode::MustAttack)],
+            duration: Some(duration),
+            target: None,
+        }));
+    }
+
+    // Second try: player-targeted forms — "attacks [player] this turn/combat if able".
+    // Strip verb prefix, skip over the player phrase, then match the duration suffix.
+    let rest = if let Ok((r, _)) =
+        alt((tag::<_, _, VerboseError<&str>>("attacks "), tag("attack "))).parse(trimmed)
+    {
+        r
+    } else {
+        return None;
+    };
+
+    // Match duration suffix: "this turn if able" or "this combat if able"
+    let duration_suffix: Result<(&str, Duration), nom::Err<VerboseError<&str>>> = alt((
+        value(Duration::UntilEndOfTurn, tag(" this turn if able")),
+        value(Duration::UntilEndOfCombat, tag(" this combat if able")),
+        value(Duration::UntilEndOfCombat, tag(" each combat if able")),
+    ))
+    .parse(rest);
+
+    // If a duration suffix is found somewhere in the remaining text,
+    // the player phrase is whatever sits between the verb and the suffix.
+    if duration_suffix.is_err() {
+        // Try scanning for the suffix by finding it anywhere after the verb
+        for (suffix_tag, dur) in [
+            (" this turn if able", Duration::UntilEndOfTurn),
+            (" this combat if able", Duration::UntilEndOfCombat),
+            (" each combat if able", Duration::UntilEndOfCombat),
+        ] {
+            if rest.ends_with(suffix_tag) {
+                return Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
+                    static_abilities: vec![StaticDefinition::new(StaticMode::MustAttack)],
+                    duration: Some(dur),
+                    target: None,
+                }));
+            }
+        }
+        return None;
+    }
+
+    let (_, duration) = duration_suffix.ok()?;
 
     Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
         static_abilities: vec![StaticDefinition::new(StaticMode::MustAttack)],

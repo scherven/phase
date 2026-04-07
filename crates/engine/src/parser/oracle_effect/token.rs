@@ -77,6 +77,7 @@ pub(super) fn try_parse_token(_lower: &str, text: &str) -> Option<Effect> {
         attach_to: token.attach_to,
         enters_attacking: false,
         supertypes: vec![],
+        static_abilities: token.static_abilities,
     })
 }
 
@@ -213,6 +214,9 @@ pub(super) fn parse_token_description(text: &str) -> Option<TokenDescription> {
         return None;
     }
 
+    // Extract quoted static abilities: `and "This token can't block."` / `"~ can't block."`
+    let static_abilities = extract_token_static_abilities(suffix);
+
     Some(TokenDescription {
         name,
         power,
@@ -223,6 +227,7 @@ pub(super) fn parse_token_description(text: &str) -> Option<TokenDescription> {
         tapped,
         count,
         attach_to,
+        static_abilities,
     })
 }
 
@@ -423,6 +428,51 @@ fn parse_token_name_clause(text: &str) -> (Option<String>, &str) {
     } else {
         (Some(name.to_string()), rest)
     }
+}
+
+/// Extract quoted static abilities from token suffix text.
+///
+/// Handles patterns like:
+/// - `and "This token can't block."` → `[StaticDefinition::new(StaticMode::CantBlock)]`
+/// - `and "This creature can't block."` → same
+/// - `and '~ can't block.'` → same
+fn extract_token_static_abilities(text: &str) -> Vec<crate::types::ability::StaticDefinition> {
+    use crate::types::ability::StaticDefinition;
+    use crate::types::statics::StaticMode;
+
+    let mut statics = Vec::new();
+    let lower = text.to_lowercase();
+
+    // Look for quoted ability text between double quotes.
+    // Single quotes are unreliable because "can't" contains an apostrophe.
+    for (open, close) in [('"', '"')] {
+        let search = &lower;
+        let mut pos = 0;
+        while pos < search.len() {
+            if let Some(start) = search[pos..].find(open) {
+                let abs_start = pos + start + open.len_utf8();
+                if let Some(end) = search[abs_start..].find(close) {
+                    let quoted = &search[abs_start..abs_start + end];
+                    let quoted_clean = quoted.trim().trim_end_matches('.');
+
+                    // CR 509.1b: "can't block" static restriction
+                    if quoted_clean.ends_with("can't block")
+                        || quoted_clean.ends_with("cannot block")
+                    {
+                        statics.push(StaticDefinition::new(StaticMode::CantBlock));
+                    }
+
+                    pos = abs_start + end + close.len_utf8();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    statics
 }
 
 fn extract_token_where_x_expression(text: &str) -> Option<String> {
@@ -648,5 +698,53 @@ mod tests {
     fn keyword_clause_no_where() {
         let kws = parse_token_keyword_clause("with flying");
         assert_eq!(kws, vec![Keyword::Flying]);
+    }
+
+    #[test]
+    fn extract_static_cant_block_from_quoted_ability() {
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let statics =
+            extract_token_static_abilities(r#"with toxic 1 and "This token can't block.""#);
+        assert_eq!(statics, vec![StaticDefinition::new(StaticMode::CantBlock)]);
+    }
+
+    #[test]
+    fn extract_static_no_false_positive_on_single_quotes() {
+        // Single quotes around "can't" are ambiguous (apostrophe = close quote).
+        // Only double quotes reliably delimit abilities in Oracle text.
+        let statics = extract_token_static_abilities("and '~ can't block.'");
+        assert!(statics.is_empty());
+    }
+
+    #[test]
+    fn extract_static_empty_when_no_quoted_ability() {
+        let statics = extract_token_static_abilities("with flying and haste");
+        assert!(statics.is_empty());
+    }
+
+    #[test]
+    fn token_with_cant_block_produces_static() {
+        let effect = try_parse_token(
+            &"create a 1/1 colorless phyrexian mite artifact creature token with toxic 1 and \"this token can't block.\"".to_lowercase(),
+            "create a 1/1 colorless Phyrexian Mite artifact creature token with toxic 1 and \"This token can't block.\"",
+        );
+        if let Some(Effect::Token {
+            static_abilities, ..
+        }) = effect
+        {
+            assert_eq!(
+                static_abilities.len(),
+                1,
+                "Expected CantBlock static on token"
+            );
+            assert_eq!(
+                static_abilities[0].mode,
+                crate::types::statics::StaticMode::CantBlock
+            );
+        } else {
+            panic!("Expected Token effect, got {:?}", effect);
+        }
     }
 }

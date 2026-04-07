@@ -29,6 +29,7 @@ pub fn resolve(
             attach_to: None,
             enters_attacking: false,
             supertypes: vec![],
+            static_abilities: vec![],
         },
         ability.targets.clone(),
         ability.source_id,

@@ -331,18 +331,29 @@ pub fn resolve_remove(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (counter_type_str, counter_num) = match &ability.effect {
+    let (counter_type_str, raw_count) = match &ability.effect {
         Effect::RemoveCounter {
             counter_type,
             count,
             ..
-        } => (counter_type.clone(), *count as u32),
+        } => (counter_type.clone(), *count),
         _ => ("P1P1".to_string(), 1),
     };
     let ct = parse_counter_type(&counter_type_str);
 
     let targets = resolve_defined_or_targets(ability);
     for obj_id in targets {
+        // CR 122.1: count == -1 means "remove all" — resolve to the actual counter count.
+        let counter_num = if raw_count < 0 {
+            state
+                .objects
+                .get(&obj_id)
+                .and_then(|obj| obj.counters.get(&ct).copied())
+                .unwrap_or(0)
+        } else {
+            raw_count as u32
+        };
+
         let proposed = ProposedEvent::RemoveCounter {
             object_id: obj_id,
             counter_type: ct.clone(),

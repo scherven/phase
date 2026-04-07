@@ -252,10 +252,26 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
         return AbilityCost::Blight { count };
     }
 
-    // "Remove N {type} counter(s) from ~"
+    // "Remove N {type} counter(s) from ~" or "Remove all {type} counters from ~"
     if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("remove ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         if rest_lower.contains("counter") {
+            // CR 122.1: "remove all" uses u32::MAX as sentinel, resolved at runtime.
+            if let Some(((), all_rest)) =
+                nom_on_lower(rest, &rest_lower, |i| value((), tag("all ")).parse(i))
+            {
+                let counter_type = all_rest
+                    .to_lowercase()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                return AbilityCost::RemoveCounter {
+                    count: u32::MAX,
+                    counter_type,
+                    target: None,
+                };
+            }
             if let Some((count, after_count)) = parse_number(&rest_lower) {
                 let counter_type = after_count
                     .split_whitespace()
@@ -282,7 +298,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Tap an untapped creature you control" / "Tap two untapped creatures you control"
-    // / "Tap another untapped creature you control"
+    // / "Tap another untapped creature you control" / "Tap X untapped [type] you control"
     if let Some(((), tap_rest)) = nom_on_lower(text, &lower, |i| value((), tag("tap ")).parse(i)) {
         let tap_lower = tap_rest.to_lowercase();
         let (count, filter_text) = if let Some(((), r)) = nom_on_lower(tap_rest, &tap_lower, |i| {
@@ -293,6 +309,11 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
             .parse(i)
         }) {
             (1u32, r.to_lowercase())
+        } else if let Some(((), r)) = nom_on_lower(tap_rest, &tap_lower, |i| {
+            // "X untapped [type]" — variable count, use u32::MAX as sentinel.
+            value((), alt((tag("x untapped "), tag("x other untapped ")))).parse(i)
+        }) {
+            (u32::MAX, r.to_lowercase())
         } else if let Some((n, r)) = super::oracle_util::parse_number(&tap_lower) {
             let r = nom_on_lower(
                 &tap_rest[tap_lower.len() - r.len()..],

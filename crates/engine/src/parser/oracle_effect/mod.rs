@@ -1348,6 +1348,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
                 attach_to,
                 enters_attacking,
                 supertypes,
+                static_abilities,
                 count: _,
             } => Effect::Token {
                 name,
@@ -1361,6 +1362,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
                 attach_to,
                 enters_attacking,
                 supertypes,
+                static_abilities,
                 count: quantity,
             },
             other => other,

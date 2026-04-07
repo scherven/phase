@@ -107,10 +107,20 @@ pub(super) fn try_parse_put_counter<'a>(
 }
 
 pub(super) fn try_parse_remove_counter(lower: &str, ctx: &ParseContext) -> Option<Effect> {
-    // "remove N {type} counter(s) from {target}"
+    // "remove N {type} counter(s) from {target}" or "remove all {type} counters from {target}"
     let ((), after_remove) = nom_on_lower(lower, lower, |i| value((), tag("remove ")).parse(i))?;
     let after_remove = after_remove.trim();
-    let (count, rest) = parse_number(after_remove)?;
+
+    // CR 122.1: "remove all" uses sentinel count -1, resolved to actual count at runtime.
+    let (count, rest) = if let Some(((), rest)) = nom_on_lower(after_remove, after_remove, |i| {
+        value((), tag("all ")).parse(i)
+    }) {
+        (-1i32, rest.trim_start())
+    } else {
+        let (n, r) = parse_number(after_remove)?;
+        (n as i32, r)
+    };
+
     let type_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
     let raw_type = &rest[..type_end];
     let counter_type = normalize_counter_type(raw_type);
@@ -139,7 +149,7 @@ pub(super) fn try_parse_remove_counter(lower: &str, ctx: &ParseContext) -> Optio
 
     Some(Effect::RemoveCounter {
         counter_type,
-        count: count as i32,
+        count,
         target,
     })
 }

@@ -2008,6 +2008,9 @@ pub enum Effect {
         /// CR 205.4a: Supertypes for the token (Legendary, Snow, etc.).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         supertypes: Vec<super::card_type::Supertype>,
+        /// Static abilities granted to the token (e.g., "This token can't block.").
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        static_abilities: Vec<StaticDefinition>,
     },
     GainLife {
         #[serde(default = "default_quantity_one")]
@@ -5447,6 +5450,7 @@ mod tests {
             attach_to: None,
             enters_attacking: false,
             supertypes: vec![],
+            static_abilities: vec![],
         };
         let json = serde_json::to_string(&effect).unwrap();
         let deserialized: Effect = serde_json::from_str(&json).unwrap();
