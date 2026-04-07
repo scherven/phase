@@ -1,7 +1,8 @@
 use crate::types::ability::MultiTargetSpec;
 use crate::types::ability::{
-    AbilityDefinition, CastingPermission, Duration, Effect, ManaProduction, ManaSpendRestriction,
-    PaymentCost, PtValue, QuantityExpr, StaticDefinition, TargetFilter, UnlessCost,
+    AbilityCondition, AbilityDefinition, CastingPermission, Duration, Effect, ManaProduction,
+    ManaSpendRestriction, PaymentCost, PtValue, QuantityExpr, StaticDefinition, TargetFilter,
+    UnlessCost,
 };
 use crate::types::game_state::DistributionUnit;
 use crate::types::keywords::Keyword;
@@ -20,6 +21,10 @@ pub(super) struct ParsedEffectClause {
     pub(super) distribute: Option<DistributionUnit>,
     /// CR 115.1d: Multi-target spec for "any number of" / "up to N" / fixed-count targeting.
     pub(super) multi_target: Option<MultiTargetSpec>,
+    /// CR 608.2c: Leading conditional guard from "if X, Y" clause structure.
+    /// Set when `parse_clause_ast` detects a leading conditional and the condition
+    /// text is parseable by the nom condition combinator pipeline.
+    pub(super) condition: Option<AbilityCondition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +83,8 @@ pub(super) enum ClauseAst {
         predicate: Box<PredicateAst>,
     },
     Conditional {
+        /// CR 608.2c: Parsed leading "if" guard, when recognized by the condition pipeline.
+        condition: Option<AbilityCondition>,
         clause: Box<ClauseAst>,
     },
 }
@@ -648,6 +655,7 @@ pub(super) fn parsed_clause(effect: Effect) -> ParsedEffectClause {
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     }
 }
 

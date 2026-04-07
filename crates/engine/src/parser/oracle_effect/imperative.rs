@@ -1445,6 +1445,7 @@ fn with_shuffle_sub_ability(effect: Effect) -> ParsedEffectClause {
         sub_ability: Some(Box::new(shuffle)),
         distribute: None,
         multi_target: None,
+        condition: None,
     }
 }
 

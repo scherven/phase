@@ -176,6 +176,7 @@ fn try_parse_subject_restriction_clause(
             multi_target: None,
             duration: Some(Duration::UntilEndOfTurn),
             sub_ability: None,
+            condition: None,
         });
     }
 
@@ -542,6 +543,7 @@ fn try_split_pump_compound(
         sub_ability,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -570,6 +572,7 @@ fn build_continuous_clause(
             sub_ability: None,
             distribute: None,
             multi_target: None,
+            condition: None,
         });
     }
 
@@ -606,6 +609,7 @@ fn build_continuous_clause(
             sub_ability: None,
             distribute: None,
             multi_target: None,
+            condition: None,
         });
     }
 
@@ -622,6 +626,7 @@ fn build_continuous_clause(
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -695,6 +700,7 @@ fn build_become_clause(
             sub_ability: None,
             distribute: None,
             multi_target: None,
+            condition: None,
         });
     }
 
@@ -717,6 +723,7 @@ fn build_become_clause(
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -770,6 +777,7 @@ fn try_parse_set_life_total(
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -845,6 +853,7 @@ fn try_parse_become_choice(
         sub_ability,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -899,6 +908,7 @@ fn build_restriction_clause(
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 

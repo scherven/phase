@@ -262,6 +262,7 @@ fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -320,6 +321,7 @@ fn try_parse_inline_delayed_trigger(tp: TextPair) -> Option<ParsedEffectClause> 
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -379,6 +381,7 @@ fn try_parse_damage_prevention_disabled(tp: TextPair) -> Option<ParsedEffectClau
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -438,6 +441,7 @@ fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<Parsed
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -538,6 +542,7 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
         ))),
         distribute: None,
         multi_target,
+        condition: None,
     })
 }
 
@@ -981,6 +986,7 @@ fn try_parse_mass_forced_block(tp: TextPair) -> Option<ParsedEffectClause> {
         },
         distribute: None,
         multi_target: None,
+        condition: None,
         duration: Some(Duration::UntilEndOfTurn),
         sub_ability: None,
     })
@@ -1011,6 +1017,7 @@ fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
         sub_ability: None,
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -1255,6 +1262,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
             sub_ability: None,
             distribute: None,
             multi_target: None,
+            condition: None,
         });
     }
 
@@ -1432,8 +1440,18 @@ fn parse_clause_ast(text: &str, ctx: &ParseContext) -> ClauseAst {
     // Mirror the CubeArtisan grammar's high-level sentence shapes:
     // 1) conditionals ("if X, Y"), 2) subject + verb phrase, 3) bare imperative.
     if let Some((condition_text, remainder)) = split_leading_conditional(text) {
-        let _ = condition_text;
+        // CR 608.2c: Parse the leading conditional guard through the nom condition pipeline.
+        // Strip "if " prefix before passing to the condition parser.
+        let condition_lower = condition_text.to_lowercase();
+        let cond_body = nom_on_lower(&condition_text, &condition_lower, |i| {
+            value((), tag("if ")).parse(i)
+        })
+        .map(|((), rest)| rest)
+        .unwrap_or(&condition_text)
+        .trim();
+        let condition = try_nom_condition_as_ability_condition(cond_body);
         return ClauseAst::Conditional {
+            condition,
             clause: Box::new(parse_clause_ast(&remainder, ctx)),
         };
     }
@@ -1481,10 +1499,13 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &ParseContext) -> ParsedEffectClause {
         ClauseAst::SubjectPredicate { subject, predicate } => {
             lower_subject_predicate_ast(*subject, *predicate, ctx)
         }
-        ClauseAst::Conditional { clause } => {
-            // Phase 2 preserves current semantics for generic leading conditionals:
-            // recognize the structure explicitly, but lower only the body.
-            lower_clause_ast(*clause, ctx)
+        ClauseAst::Conditional { condition, clause } => {
+            // CR 608.2c: Thread the leading conditional into the lowered clause's condition field.
+            let mut result = lower_clause_ast(*clause, ctx);
+            if let Some(cond) = condition {
+                result.condition = Some(cond);
+            }
+            result
         }
     }
 }
@@ -1918,6 +1939,7 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
         sub_ability: Some(Box::new(sub_ability)),
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -1978,6 +2000,7 @@ fn try_split_damage_compound(text: &str, ctx: &ParseContext) -> Option<ParsedEff
         sub_ability: Some(Box::new(sub_ability)),
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -2112,6 +2135,7 @@ fn try_parse_compound_shuffle(text: &str) -> Option<ParsedEffectClause> {
         sub_ability: Some(Box::new(sub_def)),
         distribute: None,
         multi_target: None,
+        condition: None,
     })
 }
 
@@ -2233,6 +2257,7 @@ fn lower_subject_predicate_ast(
             sub_ability,
             distribute: None,
             multi_target: None,
+            condition: None,
         },
         PredicateAst::Become {
             effect,
@@ -2244,6 +2269,7 @@ fn lower_subject_predicate_ast(
             sub_ability,
             distribute: None,
             multi_target: None,
+            condition: None,
         },
         PredicateAst::Restriction { effect, duration } => ParsedEffectClause {
             effect,
@@ -2251,6 +2277,7 @@ fn lower_subject_predicate_ast(
             sub_ability: None,
             distribute: None,
             multi_target: None,
+            condition: None,
         },
         PredicateAst::ImperativeFallback { text } => {
             let pred_lower = text.to_lowercase();
@@ -2344,6 +2371,7 @@ fn lower_subject_predicate_ast(
                         sub_ability: Some(Box::new(sub_ability)),
                         distribute: None,
                         multi_target: subject.multi_target,
+                        condition: None,
                     };
                 }
             }
@@ -2368,6 +2396,7 @@ fn lower_subject_predicate_ast(
                         sub_ability: Some(Box::new(explore)),
                         distribute: None,
                         multi_target: subject.multi_target,
+                        condition: None,
                     };
                 }
 
@@ -2380,6 +2409,7 @@ fn lower_subject_predicate_ast(
                         sub_ability: clause.sub_ability,
                         distribute: None,
                         multi_target: subject.multi_target,
+                        condition: None,
                     };
                 }
             }
@@ -3218,8 +3248,10 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         if let Some(duration) = clause.duration {
             def = def.duration(duration);
         }
-        if let Some(ref condition) = condition {
-            def = def.condition(condition.clone());
+        // CR 608.2c: Apply condition — chain-level takes priority over clause-level.
+        let effective_condition = condition.as_ref().or(clause.condition.as_ref());
+        if let Some(cond) = effective_condition {
+            def = def.condition(cond.clone());
         }
         // CR 115.1d: Apply multi-target spec — prefer strip_any_number_quantifier result,
         // fall back to clause-level spec (distribute parsers return early before the strip runs).
@@ -4269,6 +4301,7 @@ fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectCl
         sub_ability: None,
         distribute: Some(distribute_kind),
         multi_target,
+        condition: None,
     })
 }
 
@@ -4343,6 +4376,7 @@ fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffect
         sub_ability: None,
         distribute: Some(DistributionUnit::Counters(raw_type.to_string())),
         multi_target,
+        condition: None,
     })
 }
 
@@ -9802,6 +9836,85 @@ mod tests {
                 } if matches!(&type_filters[..], [TypeFilter::Non(inner)] if matches!(**inner, TypeFilter::Land))
             ),
             "expected RevealUntil nonland, got: {:?}",
+            def.effect
+        );
+    }
+
+    #[test]
+    fn leading_conditional_threads_condition_through_ast() {
+        // "if it's your turn" is parseable by try_nom_condition_as_ability_condition.
+        let ast = parse_clause_ast("if it's your turn, draw a card", &ParseContext::default());
+        assert!(
+            matches!(
+                ast,
+                ClauseAst::Conditional {
+                    condition: Some(_),
+                    ..
+                }
+            ),
+            "expected Conditional with Some condition, got: {ast:?}"
+        );
+        let clause = lower_clause_ast(ast, &ParseContext::default());
+        assert!(
+            matches!(
+                clause.condition,
+                Some(AbilityCondition::IsYourTurn { negated: false })
+            ),
+            "expected IsYourTurn condition, got: {:?}",
+            clause.condition
+        );
+        assert!(
+            matches!(clause.effect, Effect::Draw { .. }),
+            "expected Draw effect, got: {:?}",
+            clause.effect
+        );
+    }
+
+    #[test]
+    fn leading_conditional_unrecognized_produces_none() {
+        // An unrecognized condition should produce condition: None (backward-compatible).
+        let ast = parse_clause_ast(
+            "if a random unrecognized condition, draw a card",
+            &ParseContext::default(),
+        );
+        assert!(
+            matches!(
+                ast,
+                ClauseAst::Conditional {
+                    condition: None,
+                    ..
+                }
+            ),
+            "expected Conditional with None condition for unrecognized text, got: {ast:?}"
+        );
+        let clause = lower_clause_ast(ast, &ParseContext::default());
+        assert!(
+            clause.condition.is_none(),
+            "expected None condition for unrecognized text, got: {:?}",
+            clause.condition
+        );
+    }
+
+    #[test]
+    fn leading_conditional_via_parse_effect_chain() {
+        // End-to-end: parse_effect_chain sets condition on AbilityDefinition.
+        let def = parse_effect_chain("if it's your turn, draw a card", AbilityKind::Spell);
+        assert!(
+            matches!(
+                def.condition,
+                Some(AbilityCondition::IsYourTurn { negated: false })
+            ),
+            "expected IsYourTurn on AbilityDefinition, got: {:?}",
+            def.condition
+        );
+        assert!(
+            matches!(
+                *def.effect,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 }
+                }
+            ),
+            "expected Draw 1, got: {:?}",
             def.effect
         );
     }
