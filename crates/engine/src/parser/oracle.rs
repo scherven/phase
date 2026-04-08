@@ -381,6 +381,24 @@ pub fn parse_oracle_text(
             continue;
         }
 
+        // CR 711.2a + CR 711.2b: Static abilities within LEVEL blocks get a HasCounters condition.
+        // Try statics before triggers because parse_trigger_lines produces Unknown fallbacks
+        // for unrecognized text, which would incorrectly consume static ability lines.
+        let static_text = normalize_self_refs_for_static(ability_text, card_name);
+        let multi = parse_static_line_multi(&static_text);
+        if !multi.is_empty() {
+            for mut sd in multi {
+                sd.condition = Some(level_condition.clone());
+                result.statics.push(sd);
+            }
+            continue;
+        }
+        if let Some(mut sd) = parse_static_line(&static_text) {
+            sd.condition = Some(level_condition.clone());
+            result.statics.push(sd);
+            continue;
+        }
+
         // CR 711.2a + CR 711.2b: Triggered abilities within LEVEL blocks get a HasCounters condition.
         let trigger_condition = TriggerCondition::HasCounters {
             counter_type: "level".to_string(),

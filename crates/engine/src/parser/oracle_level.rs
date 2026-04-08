@@ -4,6 +4,7 @@ use crate::types::ability::{
 
 use super::oracle_keyword::parse_keyword_from_oracle;
 use super::oracle_nom::primitives as nom_primitives;
+use super::oracle_static::parse_static_line;
 
 /// CR 711: Parse LEVEL block lines from a leveler creature's Oracle text.
 ///
@@ -112,6 +113,8 @@ pub(crate) fn parse_level_blocks(
                 // a LEVEL block should be gated by the same HasCounters condition.
                 // Mark the line as consumed and record it with its level condition
                 // for re-parsing by the main Oracle dispatcher.
+                // Detection: check structural markers for activated/triggered abilities,
+                // then fall back to trying parse_static_line for static abilities.
                 let looks_like_ability = next_lower.contains(": ")
                     || next_lower.starts_with("when")
                     || next_lower.starts_with("whenever")
@@ -119,7 +122,10 @@ pub(crate) fn parse_level_blocks(
                     || next_lower.ends_with("be blocked")
                     || next_lower.contains("can't ")
                     || next_lower.contains("has ")
-                    || next_lower.contains("gets ");
+                    || next_lower.contains("gets ")
+                    || next_lower.contains("get ")
+                    || next_lower.contains("have ")
+                    || parse_static_line(next).is_some();
                 if looks_like_ability {
                     consumed_indices.push(i);
                     ability_lines.push((next.to_string(), condition.clone()));
@@ -321,5 +327,39 @@ mod tests {
 
         // All 6 lines consumed
         assert_eq!(consumed.len(), 6);
+    }
+
+    #[test]
+    fn parse_level_block_with_static_lord_ability() {
+        // Coralhelm Commander pattern: LEVEL 4+ block contains a lord static
+        let lines = vec![
+            "LEVEL 4+",
+            "4/4",
+            "Flying",
+            "Other Merfolk creatures you control get +1/+1.",
+        ];
+        let (statics, consumed, ability_lines) = parse_level_blocks(&lines);
+
+        // P/T + Flying parsed as static modifications
+        assert_eq!(statics.len(), 1);
+        assert_eq!(statics[0].modifications.len(), 3); // SetPower, SetToughness, AddKeyword
+
+        // Lord static detected and captured as ability line for re-parsing
+        assert_eq!(ability_lines.len(), 1);
+        assert_eq!(
+            ability_lines[0].0,
+            "Other Merfolk creatures you control get +1/+1."
+        );
+        assert!(matches!(
+            ability_lines[0].1,
+            StaticCondition::HasCounters {
+                minimum: 4,
+                maximum: None,
+                ..
+            }
+        ));
+
+        // All 4 lines consumed
+        assert_eq!(consumed.len(), 4);
     }
 }
