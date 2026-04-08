@@ -66,8 +66,7 @@ jobs:
           ./scripts/update-badges.sh data/coverage-stats.json
 
       - name: Create PR for updated stats and badges
-        id: badge-pr
-        uses: peter-evans/create-pull-request@v7
+        uses: ./.github/actions/create-auto-merge-pr
         with:
           token: ${{ secrets.CI_PAT }}
           add-paths: |
@@ -77,13 +76,6 @@ jobs:
           branch: chore/update-coverage-badges
           title: "chore: update coverage stats and badges"
           body: "Automated update of README coverage badges from latest card data."
-          delete-branch: true
-
-      - name: Enable auto-merge
-        if: steps.badge-pr.outputs.pull-request-number
-        run: gh pr merge ${{ steps.badge-pr.outputs.pull-request-number }} --squash --auto
-        env:
-          GH_TOKEN: ${{ secrets.CI_PAT }}
 
       - name: Upload card data to R2 (staging)
         uses: cloudflare/wrangler-action@v3

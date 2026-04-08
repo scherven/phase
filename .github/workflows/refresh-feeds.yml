@@ -40,23 +40,11 @@ jobs:
 
       - name: Create or update feed refresh PR
         if: steps.diff.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH="chore/refresh-metagame-feeds"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git add client/public/feeds/mtggoldfish-*.json
-          git commit -m "chore: refresh metagame feeds"
-          git push -f origin "$BRANCH"
-          if gh pr view "$BRANCH" --json state -q '.state' 2>/dev/null | grep -q OPEN; then
-            echo "PR already exists, updated branch."
-          else
-            gh pr create \
-              --title "chore: refresh metagame feeds" \
-              --body "Automated daily metagame feed refresh from MTGGoldfish." \
-              --label "automated" \
-              --head "$BRANCH"
-          fi
-          gh pr merge "$BRANCH" --auto --squash
+        uses: ./.github/actions/create-auto-merge-pr
+        with:
+          token: ${{ secrets.CI_PAT }}
+          add-paths: client/public/feeds/mtggoldfish-*.json
+          commit-message: "chore: refresh metagame feeds"
+          branch: chore/refresh-metagame-feeds
+          title: "chore: refresh metagame feeds"
+          body: "Automated daily metagame feed refresh from MTGGoldfish."
