@@ -1,3 +1,4 @@
+use crate::game::mana_sources;
 use crate::game::quantity::resolve_quantity;
 use crate::types::ability::{
     Effect, EffectError, EffectKind, ManaProduction, ManaSpendRestriction, ResolvedAbility,
@@ -153,6 +154,17 @@ pub(crate) fn resolve_mana_types(
                 .collect()
         }
         ManaProduction::ChosenColor { .. } => Vec::new(),
+        // CR 106.7: Produce mana of any color that a land an opponent controls could produce.
+        // Delegates to mana_sources::opponent_land_color_options for the shared computation.
+        ManaProduction::OpponentLandColors { count } => {
+            let amount = resolve_quantity(state, count, controller, source_id).max(0) as usize;
+            let color_options = mana_sources::opponent_land_color_options(state, controller);
+            // CR 106.5: If no color can be defined, produce no mana.
+            let Some(first) = color_options.first().copied() else {
+                return Vec::new();
+            };
+            vec![first; amount]
+        }
     }
 }
 
@@ -443,6 +455,126 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+    }
+
+    #[test]
+    fn opponent_land_colors_produces_from_opponent_lands() {
+        // CR 106.7: Mana of any color that a land an opponent controls could produce.
+        use crate::game::zones::create_object;
+        use crate::types::ability::{AbilityCost, AbilityDefinition, AbilityKind};
+        use crate::types::card_type::CoreType;
+        use crate::types::identifiers::CardId;
+        use crate::types::zones::Zone;
+
+        let mut state = GameState::new_two_player(42);
+
+        // Opponent (PlayerId(1)) has a Mountain on the battlefield with a red mana ability.
+        let mountain = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(1),
+            "Mountain".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&mountain).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.card_types.subtypes.push("Mountain".to_string());
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: ManaProduction::Fixed {
+                        colors: vec![ManaColor::Red],
+                    },
+                    restrictions: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+
+        let mut events = Vec::new();
+        resolve(
+            &mut state,
+            &make_mana_ability(ManaProduction::OpponentLandColors {
+                count: QuantityExpr::Fixed { value: 1 },
+            }),
+            &mut events,
+        )
+        .unwrap();
+
+        // Should produce red mana (from opponent's Mountain).
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 1);
+        assert_eq!(state.players[0].mana_pool.total(), 1);
+    }
+
+    #[test]
+    fn opponent_land_colors_no_opponent_lands_produces_nothing() {
+        // CR 106.5 + CR 106.7: If no color can be defined, produce no mana.
+        let mut state = GameState::new_two_player(42);
+        let mut events = Vec::new();
+
+        resolve(
+            &mut state,
+            &make_mana_ability(ManaProduction::OpponentLandColors {
+                count: QuantityExpr::Fixed { value: 1 },
+            }),
+            &mut events,
+        )
+        .unwrap();
+
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+    }
+
+    #[test]
+    fn opponent_land_colors_mirror_exotic_orchard_no_recursion() {
+        // CR 106.7: Two opposing Exotic Orchards with no other lands —
+        // neither can define a color, so both produce no mana (no infinite recursion).
+        use crate::game::zones::create_object;
+        use crate::types::ability::{AbilityCost, AbilityDefinition, AbilityKind};
+        use crate::types::card_type::CoreType;
+        use crate::types::identifiers::CardId;
+        use crate::types::zones::Zone;
+
+        let mut state = GameState::new_two_player(42);
+
+        // Opponent (PlayerId(1)) has an Exotic Orchard (OpponentLandColors ability).
+        let opp_orchard = create_object(
+            &mut state,
+            CardId(301),
+            PlayerId(1),
+            "Exotic Orchard".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&opp_orchard).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: ManaProduction::OpponentLandColors {
+                        count: QuantityExpr::Fixed { value: 1 },
+                    },
+                    restrictions: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+
+        // Player 0 activates their own OpponentLandColors ability.
+        let mut events = Vec::new();
+        resolve(
+            &mut state,
+            &make_mana_ability(ManaProduction::OpponentLandColors {
+                count: QuantityExpr::Fixed { value: 1 },
+            }),
+            &mut events,
+        )
+        .unwrap();
+
+        // No recursion; opponent's Exotic Orchard is skipped, so no colors available.
         assert_eq!(state.players[0].mana_pool.total(), 0);
     }
 

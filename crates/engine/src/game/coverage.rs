@@ -623,6 +623,9 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
         ManaProduction::ChosenColor { count } => {
             format!("{} of chosen color", fmt_quantity(count))
         }
+        ManaProduction::OpponentLandColors { count } => {
+            format!("{} of opponent land colors", fmt_quantity(count))
+        }
     }
 }
 

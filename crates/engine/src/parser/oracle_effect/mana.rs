@@ -62,18 +62,29 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
         let rest = rest.trim().trim_end_matches(['.', '"']).trim();
         let rest_lower = rest.to_lowercase();
 
-        if let Some((_, _)) = nom_on_lower(rest, &rest_lower, |i| {
+        if let Some((_, after_color)) = nom_on_lower(rest, &rest_lower, |i| {
             alt((
                 value((), tag("mana of any one color")),
                 value((), tag("mana of any color")),
             ))
             .parse(i)
         }) {
-            return Some(Effect::Mana {
-                produced: ManaProduction::AnyOneColor {
+            let after_lower = after_color.trim().to_lowercase();
+            // CR 106.7: "that a land an opponent controls could produce"
+            let produced = if nom_on_lower(after_color.trim(), &after_lower, |i| {
+                value((), tag("that a land an opponent controls could produce")).parse(i)
+            })
+            .is_some()
+            {
+                ManaProduction::OpponentLandColors { count }
+            } else {
+                ManaProduction::AnyOneColor {
                     count,
                     color_options: all_mana_colors(),
-                },
+                }
+            };
+            return Some(Effect::Mana {
+                produced,
                 restrictions: vec![],
                 expiry: None,
             });
@@ -449,15 +460,25 @@ fn scan_mana_production_type(text: &str, count: QuantityExpr) -> Option<ManaProd
     use nom_language::error::VerboseError;
     crate::parser::oracle_nom::primitives::scan_at_word_boundaries(text, |input| {
         alt((
+            // CR 106.7: "mana of any color that a land an opponent controls could produce"
+            // must be checked before the shorter "mana of any color" to avoid partial match.
+            value(
+                ManaProduction::OpponentLandColors {
+                    count: count.clone(),
+                },
+                alt((
+                    tag::<_, _, VerboseError<&str>>(
+                        "mana of any one color that a land an opponent controls could produce",
+                    ),
+                    tag("mana of any color that a land an opponent controls could produce"),
+                )),
+            ),
             value(
                 ManaProduction::AnyOneColor {
                     count: count.clone(),
                     color_options: all_mana_colors(),
                 },
-                alt((
-                    tag::<_, _, VerboseError<&str>>("mana of any one color"),
-                    tag("mana of any color"),
-                )),
+                alt((tag("mana of any one color"), tag("mana of any color"))),
             ),
             value(
                 ManaProduction::AnyCombination {

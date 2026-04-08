@@ -482,6 +482,12 @@ pub enum ManaProduction {
         #[serde(default = "default_quantity_one")]
         count: QuantityExpr,
     },
+    /// CR 106.7: Produce mana of any color that a land an opponent controls could produce.
+    /// Colors are computed dynamically at resolution time by inspecting opponent lands.
+    OpponentLandColors {
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+    },
 }
 
 impl<'de> serde::Deserialize<'de> for ManaProduction {
@@ -526,6 +532,10 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         #[serde(default = "default_quantity_one")]
                         count: QuantityExpr,
                     },
+                    OpponentLandColors {
+                        #[serde(default = "default_quantity_one")]
+                        count: QuantityExpr,
+                    },
                 }
                 let helper: ManaProductionHelper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -550,6 +560,9 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     },
                     ManaProductionHelper::ChosenColor { count } => {
                         ManaProduction::ChosenColor { count }
+                    }
+                    ManaProductionHelper::OpponentLandColors { count } => {
+                        ManaProduction::OpponentLandColors { count }
                     }
                 })
             }

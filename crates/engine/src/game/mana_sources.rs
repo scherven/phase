@@ -196,7 +196,7 @@ fn scan_mana_abilities(
 
         let sacrifice = cost_requires_sacrifice(&ability.cost);
         let life_payment = cost_requires_life_payment(&ability.cost);
-        for mana_type in mana_options_from_ability(ability) {
+        for mana_type in mana_options_from_ability(state, controller, ability) {
             let option = ManaSourceOption {
                 object_id,
                 ability_index: Some(ability_index),
@@ -233,14 +233,22 @@ pub(crate) fn activation_condition_satisfied(
     .is_ok()
 }
 
-fn mana_options_from_ability(ability: &AbilityDefinition) -> Vec<ManaType> {
+fn mana_options_from_ability(
+    state: &GameState,
+    controller: PlayerId,
+    ability: &AbilityDefinition,
+) -> Vec<ManaType> {
     let Effect::Mana { produced, .. } = &*ability.effect else {
         return Vec::new();
     };
-    mana_options_from_production(produced)
+    mana_options_from_production(state, controller, produced)
 }
 
-fn mana_options_from_production(produced: &ManaProduction) -> Vec<ManaType> {
+fn mana_options_from_production(
+    state: &GameState,
+    controller: PlayerId,
+    produced: &ManaProduction,
+) -> Vec<ManaType> {
     match produced {
         ManaProduction::Fixed { colors } => {
             let mut options = Vec::new();
@@ -267,7 +275,72 @@ fn mana_options_from_production(produced: &ManaProduction) -> Vec<ManaType> {
         // TODO: resolve from object's chosen_attributes when mana source analysis
         // gets access to the source object's state
         ManaProduction::ChosenColor { .. } => Vec::new(),
+        // CR 106.7: Compute colors dynamically from opponent-controlled lands.
+        ManaProduction::OpponentLandColors { .. } => opponent_land_color_options(state, controller),
     }
+}
+
+/// CR 106.7: Compute the mana colors that lands controlled by opponents could produce.
+///
+/// Iterates over all opponent-controlled lands on the battlefield and collects the
+/// union of mana colors their non-`OpponentLandColors` mana abilities could produce.
+/// `OpponentLandColors` abilities are excluded to prevent infinite recursion when
+/// an opponent also controls a card like Exotic Orchard.
+pub(crate) fn opponent_land_color_options(
+    state: &GameState,
+    controller: PlayerId,
+) -> Vec<ManaType> {
+    let opponents = super::players::opponents(state, controller);
+    let mut options = Vec::new();
+    for obj in state.objects.values() {
+        if obj.zone != Zone::Battlefield {
+            continue;
+        }
+        if !opponents.contains(&obj.controller) {
+            continue;
+        }
+        if !obj.card_types.core_types.contains(&CoreType::Land) {
+            continue;
+        }
+        // Scan each mana ability, skipping OpponentLandColors to prevent recursion.
+        for ability in &obj.abilities {
+            if ability.kind != AbilityKind::Activated
+                || !super::mana_abilities::is_mana_ability(ability)
+            {
+                continue;
+            }
+            if !has_tap_component(&ability.cost) {
+                continue;
+            }
+            let Effect::Mana { produced, .. } = &*ability.effect else {
+                continue;
+            };
+            // CR 106.7: Skip OpponentLandColors — an Exotic Orchard facing another
+            // Exotic Orchard with no other lands produces no mana.
+            if matches!(produced, ManaProduction::OpponentLandColors { .. }) {
+                continue;
+            }
+            for mana_type in mana_options_from_production(state, controller, produced) {
+                if !options.contains(&mana_type) {
+                    options.push(mana_type);
+                }
+            }
+        }
+        // Fallback: basic-land subtype-only objects (no explicit mana ability).
+        if options.is_empty() {
+            if let Some(mana_type) = obj
+                .card_types
+                .subtypes
+                .iter()
+                .find_map(|s| super::mana_payment::land_subtype_to_mana_type(s))
+            {
+                if !options.contains(&mana_type) {
+                    options.push(mana_type);
+                }
+            }
+        }
+    }
+    options
 }
 
 pub fn mana_color_to_type(color: &ManaColor) -> ManaType {
