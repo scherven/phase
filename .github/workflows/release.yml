@@ -326,37 +326,37 @@ jobs:
         with:
           projectPath: client
 
-      - name: Upload Tauri artifact (Linux)
+      - name: Stage Tauri artifacts (Linux)
         if: matrix.os == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: |
-            client/src-tauri/target/release/bundle/deb/*.deb
-            client/src-tauri/target/release/bundle/appimage/*.AppImage
-            client/src-tauri/target/release/bundle/appimage/*.AppImage.sig
-          retention-days: 90
+        run: |
+          mkdir -p staging
+          cp client/src-tauri/target/release/bundle/deb/*.deb staging/
+          cp client/src-tauri/target/release/bundle/appimage/*.AppImage staging/
+          cp client/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz staging/
+          cp client/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig staging/
 
-      - name: Upload Tauri artifact (macOS)
+      - name: Stage Tauri artifacts (macOS)
         if: matrix.os == 'macos'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: |
-            client/src-tauri/target/release/bundle/dmg/*.dmg
-            client/src-tauri/target/release/bundle/macos/*.app.tar.gz
-            client/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
-          retention-days: 90
+        run: |
+          mkdir -p staging
+          cp client/src-tauri/target/release/bundle/dmg/*.dmg staging/
+          cp client/src-tauri/target/release/bundle/macos/*.app.tar.gz staging/
+          cp client/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig staging/
 
-      - name: Upload Tauri artifact (Windows)
+      - name: Stage Tauri artifacts (Windows)
         if: matrix.os == 'windows'
+        run: |
+          mkdir staging
+          Copy-Item "client/src-tauri/target/release/bundle/nsis/*.exe" staging/
+          Copy-Item "client/src-tauri/target/release/bundle/nsis/*.nsis.zip" staging/
+          Copy-Item "client/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig" staging/
+        shell: pwsh
+
+      - name: Upload Tauri artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            client/src-tauri/target/release/bundle/nsis/*.exe
-            client/src-tauri/target/release/bundle/nsis/*.nsis.zip
-            client/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+          path: staging/*
           retention-days: 90
 
   deploy-server:
@@ -430,8 +430,9 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           REPO="${GITHUB_REPOSITORY}"
 
-          # Read signatures for available platforms (skip missing ones)
-          LINUX_SIG=$(cat artifacts/phase-tauri-linux/*.AppImage.sig 2>/dev/null || echo "")
+          # Read signatures for available platforms (skip missing ones).
+          # The updater downloads .tar.gz bundles and verifies with .tar.gz.sig.
+          LINUX_SIG=$(cat artifacts/phase-tauri-linux/*.AppImage.tar.gz.sig 2>/dev/null || echo "")
           MACOS_SIG=$(cat artifacts/phase-tauri-macos/*.app.tar.gz.sig 2>/dev/null || echo "")
           WINDOWS_SIG=$(cat artifacts/phase-tauri-windows/*.nsis.zip.sig 2>/dev/null || echo "")
 
@@ -439,7 +440,7 @@ jobs:
           PLATFORMS="{"
           SEP=""
           if [ -n "$LINUX_SIG" ]; then
-            PLATFORMS="${PLATFORMS}${SEP}\"linux-x86_64\":{\"signature\":\"${LINUX_SIG}\",\"url\":\"https://github.com/${REPO}/releases/download/${TAG}/phase_${TAG#v}_amd64.AppImage\"}"
+            PLATFORMS="${PLATFORMS}${SEP}\"linux-x86_64\":{\"signature\":\"${LINUX_SIG}\",\"url\":\"https://github.com/${REPO}/releases/download/${TAG}/phase_${TAG#v}_amd64.AppImage.tar.gz\"}"
             SEP=","
           fi
           if [ -n "$MACOS_SIG" ]; then
@@ -458,10 +459,25 @@ jobs:
               | jq . > artifacts/update.json
           fi
 
+      - name: Generate changelog
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+          else
+            RANGE="${TAG}"
+          fi
+          echo "## Changes" > changelog.md
+          git log --format="- %s" "$RANGE" -- ':!.planning' \
+            | grep -v "^- release:" \
+            | grep -v "^- chore: update coverage" \
+            >> changelog.md
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: changelog.md
           fail_on_unmatched_files: false
           files: |
             artifacts/phase-server-linux-x86_64/*.tar.gz
@@ -472,7 +488,9 @@ jobs:
             artifacts/phase-server-windows-x86_64/*.sha256
             artifacts/phase-tauri-linux/*.deb
             artifacts/phase-tauri-linux/*.AppImage
+            artifacts/phase-tauri-linux/*.AppImage.tar.gz
             artifacts/phase-tauri-macos/*.dmg
             artifacts/phase-tauri-macos/*.app.tar.gz
             artifacts/phase-tauri-windows/*.exe
+            artifacts/phase-tauri-windows/*.nsis.zip
             artifacts/update.json
