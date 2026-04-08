@@ -1,0 +1,172 @@
+/* tslint:disable */
+/* eslint-disable */
+
+/**
+ * Create a default 2-player game state.
+ */
+export function create_initial_state(): any;
+
+/**
+ * Evaluate deck compatibility and format legality using the loaded card database.
+ * Returns strict Standard/Commander checks, BO3 readiness, and selected-format compatibility.
+ */
+export function evaluate_deck_compatibility_js(request: any): any;
+
+/**
+ * Export the current game state as a JSON string.
+ * Used by the engine worker to transfer state to AI workers for root parallelism.
+ */
+export function export_game_state_json(): string;
+
+/**
+ * Get the AI's chosen action for the current game state.
+ * `difficulty` is one of: "VeryEasy", "Easy", "Medium", "Hard", "VeryHard".
+ * `player_id` is the seat index of the AI player (0-based).
+ */
+export function get_ai_action(difficulty: string, player_id: number): any;
+
+/**
+ * Score all candidate actions and return `[GameAction, score]` tuples.
+ * Used by AI workers for root parallelism — each worker scores independently,
+ * then results are merged on the main thread.
+ * `rng_seed` seeds the game state's RNG so each worker's MCTS explores
+ * different paths through the search tree, producing diverse score vectors.
+ */
+export function get_ai_scored_candidates(difficulty: string, player_id: number, rng_seed: bigint): any;
+
+/**
+ * Look up a card face by name from the loaded card database.
+ * Returns the serialized `CardFace` (keywords, abilities, triggers, static_abilities,
+ * replacements, card_type, oracle_text, etc.) or null if not found.
+ * Used by the deck builder to display engine-parsed ability data.
+ */
+export function get_card_face_data(name: string): any;
+
+/**
+ * Returns the hierarchical parse tree for a card face, with per-item support status.
+ * Each `ParsedItem` contains category, label, source_text, supported (bool), details
+ * (key-value pairs), and recursive children (sub-abilities, modal modes, costs).
+ * Returns null if the card database is not loaded or the card is not found.
+ */
+export function get_card_parse_details(name: string): any;
+
+/**
+ * Get a filtered view of the current game state for the given player.
+ */
+export function get_filtered_game_state(viewer: number): any;
+
+/**
+ * Get the current game state as JSON.
+ * Derived display fields (summoning sickness, devotion, etc.) are computed
+ * automatically by the engine in apply()/start_game().
+ */
+export function get_game_state(): any;
+
+/**
+ * Get the legal actions, auto-pass recommendation, and spell costs for the current game state.
+ * Returns `{ actions: GameAction[], autoPassRecommended: boolean, spellCosts: Record<ObjectId, ManaCost> }`.
+ */
+export function get_legal_actions_js(): any;
+
+/**
+ * Initialize panic hook for better error messages in WASM.
+ * Called automatically on first use — safe to call multiple times.
+ */
+export function init_panic_hook(): void;
+
+/**
+ * Initialize a new game.
+ * Accepts deck_data as a DeckList (name-only) or null/undefined for empty libraries.
+ * format_config_js: optional FormatConfig JSON — defaults to Standard if null/undefined.
+ * match_config_js: optional MatchConfig JSON — defaults to BO1 if null/undefined.
+ * player_count: number of players — defaults to 2 if not provided.
+ * Names are resolved against the card database loaded via load_card_database().
+ * Returns the initial ActionResult (events + waiting_for).
+ */
+export function initialize_game(deck_data: any, seed: number | null | undefined, format_config_js: any, match_config_js: any, player_count?: number | null): any;
+
+/**
+ * Load the card database from a JSON string (card-data.json contents).
+ * Must be called before initialize_game to enable name-based deck resolution.
+ */
+export function load_card_database(json_str: string): number;
+
+/**
+ * Verify WASM integration works.
+ */
+export function ping(): string;
+
+/**
+ * Restore the game state from a JSON string.
+ * Uses serde_json which handles string-keyed maps (from localStorage round-trip)
+ * correctly deserializing into HashMap<ObjectId, V>.
+ */
+export function restore_game_state(json_str: string): void;
+
+/**
+ * Select an action from merged scores using softmax.
+ * Called after collecting scored candidates from parallel workers and merging.
+ * `scores_json` is a JSON array of `[GameAction, score]` tuples.
+ * `difficulty` determines the softmax temperature (engine is the single
+ * authority for AI tuning parameters — the frontend never specifies temperature).
+ * `rng_seed` provides deterministic randomness.
+ */
+export function select_action_from_scores(scores_json: string, difficulty: string, rng_seed: bigint): any;
+
+/**
+ * Submit a game action and return the ActionResult (events + waiting_for).
+ */
+export function submit_action(action: any): any;
+
+export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
+
+export interface InitOutput {
+    readonly memory: WebAssembly.Memory;
+    readonly evaluate_deck_compatibility_js: (a: any) => [number, number, number];
+    readonly export_game_state_json: () => [number, number, number, number];
+    readonly get_ai_action: (a: number, b: number, c: number) => [number, number, number];
+    readonly get_ai_scored_candidates: (a: number, b: number, c: number, d: bigint) => [number, number, number];
+    readonly get_card_face_data: (a: number, b: number) => any;
+    readonly get_card_parse_details: (a: number, b: number) => any;
+    readonly get_filtered_game_state: (a: number) => any;
+    readonly initialize_game: (a: any, b: number, c: number, d: any, e: any, f: number) => any;
+    readonly load_card_database: (a: number, b: number) => [number, number, number];
+    readonly ping: () => [number, number];
+    readonly restore_game_state: (a: number, b: number) => [number, number];
+    readonly select_action_from_scores: (a: number, b: number, c: number, d: number, e: bigint) => [number, number, number];
+    readonly submit_action: (a: any) => any;
+    readonly get_game_state: () => any;
+    readonly get_legal_actions_js: () => any;
+    readonly init_panic_hook: () => void;
+    readonly create_initial_state: () => any;
+    readonly __wbindgen_malloc: (a: number, b: number) => number;
+    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_exn_store: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
+    readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __externref_table_dealloc: (a: number) => void;
+    readonly __wbindgen_start: () => void;
+}
+
+export type SyncInitInput = BufferSource | WebAssembly.Module;
+
+/**
+ * Instantiates the given `module`, which can either be bytes or
+ * a precompiled `WebAssembly.Module`.
+ *
+ * @param {{ module: SyncInitInput }} module - Passing `SyncInitInput` directly is deprecated.
+ *
+ * @returns {InitOutput}
+ */
+export function initSync(module: { module: SyncInitInput } | SyncInitInput): InitOutput;
+
+/**
+ * If `module_or_path` is {RequestInfo} or {URL}, makes a request and
+ * for everything else, calls `WebAssembly.instantiate` directly.
+ *
+ * @param {{ module_or_path: InitInput | Promise<InitInput> }} module_or_path - Passing `InitInput` directly is deprecated.
+ *
+ * @returns {Promise<InitOutput>}
+ */
+export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;

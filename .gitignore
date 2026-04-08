@@ -7,8 +7,10 @@ node_modules/
 # GSD
 .planning/
 
-# WASM output (generated)
-client/src/wasm/
+# WASM output (generated — keep .d.ts for CI type-checking)
+client/src/wasm/*.js
+client/src/wasm/*.wasm
+client/src/wasm/*.wasm.d.ts
 
 # Claude worktrees
 .claude/worktrees/
