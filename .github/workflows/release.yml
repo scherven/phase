@@ -402,6 +402,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: [build-wasm, build-server, build-tauri]
+    if: always() && needs.build-wasm.result == 'success' && needs.build-server.result != 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -419,44 +420,39 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           REPO="${GITHUB_REPOSITORY}"
 
-          # Read signatures — fail if any are missing
-          LINUX_SIG=$(cat artifacts/phase-tauri-linux/*.AppImage.sig)
-          MACOS_SIG=$(cat artifacts/phase-tauri-macos/*.app.tar.gz.sig)
-          WINDOWS_SIG=$(cat artifacts/phase-tauri-windows/*.nsis.zip.sig)
+          # Read signatures for available platforms (skip missing ones)
+          LINUX_SIG=$(cat artifacts/phase-tauri-linux/*.AppImage.sig 2>/dev/null || echo "")
+          MACOS_SIG=$(cat artifacts/phase-tauri-macos/*.app.tar.gz.sig 2>/dev/null || echo "")
+          WINDOWS_SIG=$(cat artifacts/phase-tauri-windows/*.nsis.zip.sig 2>/dev/null || echo "")
 
-          for sig_name in LINUX_SIG MACOS_SIG WINDOWS_SIG; do
-            if [ -z "${!sig_name}" ]; then
-              echo "::error::${sig_name} is empty — updater artifacts were not signed"
-              exit 1
-            fi
-          done
+          # Build platforms object with only available platforms
+          PLATFORMS="{"
+          SEP=""
+          if [ -n "$LINUX_SIG" ]; then
+            PLATFORMS="${PLATFORMS}${SEP}\"linux-x86_64\":{\"signature\":\"${LINUX_SIG}\",\"url\":\"https://github.com/${REPO}/releases/download/${TAG}/phase_${TAG#v}_amd64.AppImage\"}"
+            SEP=","
+          fi
+          if [ -n "$MACOS_SIG" ]; then
+            PLATFORMS="${PLATFORMS}${SEP}\"darwin-aarch64\":{\"signature\":\"${MACOS_SIG}\",\"url\":\"https://github.com/${REPO}/releases/download/${TAG}/Phase.app.tar.gz\"}"
+            SEP=","
+          fi
+          if [ -n "$WINDOWS_SIG" ]; then
+            PLATFORMS="${PLATFORMS}${SEP}\"windows-x86_64\":{\"signature\":\"${WINDOWS_SIG}\",\"url\":\"https://github.com/${REPO}/releases/download/${TAG}/Phase_${TAG#v}_x64-setup.nsis.zip\"}"
+          fi
+          PLATFORMS="${PLATFORMS}}"
 
-          cat > artifacts/update.json << MANIFEST
-          {
-            "version": "${TAG}",
-            "notes": "Release ${TAG}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "platforms": {
-              "linux-x86_64": {
-                "signature": "${LINUX_SIG}",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/phase_${TAG#v}_amd64.AppImage"
-              },
-              "darwin-aarch64": {
-                "signature": "${MACOS_SIG}",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/Phase.app.tar.gz"
-              },
-              "windows-x86_64": {
-                "signature": "${WINDOWS_SIG}",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/Phase_${TAG#v}_x64-setup.nsis.zip"
-              }
-            }
-          }
-          MANIFEST
+          if [ "$PLATFORMS" = "{}" ]; then
+            echo "::warning::No signed updater artifacts found — skipping update.json"
+          else
+            echo "{\"version\":\"${TAG}\",\"notes\":\"Release ${TAG}\",\"pub_date\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"platforms\":${PLATFORMS}}" \
+              | jq . > artifacts/update.json
+          fi
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: false
           files: |
             artifacts/phase-server-linux-x86_64/*.tar.gz
             artifacts/phase-server-linux-x86_64/*.sha256
