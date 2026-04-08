@@ -326,31 +326,17 @@ jobs:
         with:
           projectPath: client
 
-      - name: Stage Tauri artifacts (Linux)
-        if: matrix.os == 'linux'
+      - name: Stage Tauri artifacts
         run: |
           mkdir -p staging
-          cp client/src-tauri/target/release/bundle/deb/*.deb staging/
-          cp client/src-tauri/target/release/bundle/appimage/*.AppImage staging/
-          cp client/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz staging/
-          cp client/src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig staging/
-
-      - name: Stage Tauri artifacts (macOS)
-        if: matrix.os == 'macos'
-        run: |
-          mkdir -p staging
-          cp client/src-tauri/target/release/bundle/dmg/*.dmg staging/
-          cp client/src-tauri/target/release/bundle/macos/*.app.tar.gz staging/
-          cp client/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig staging/
-
-      - name: Stage Tauri artifacts (Windows)
-        if: matrix.os == 'windows'
-        run: |
-          mkdir staging
-          Copy-Item "client/src-tauri/target/release/bundle/nsis/*.exe" staging/
-          Copy-Item "client/src-tauri/target/release/bundle/nsis/*.nsis.zip" staging/
-          Copy-Item "client/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig" staging/
-        shell: pwsh
+          find client/src-tauri/target/release/bundle \
+            -maxdepth 2 \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.AppImage.tar.gz' -o -name '*.AppImage.tar.gz.sig' \
+               -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \
+               -o -name '*.exe' -o -name '*.nsis.zip' -o -name '*.nsis.zip.sig' \) \
+            -exec cp {} staging/ \;
+          ls -la staging/
+        shell: bash
 
       - name: Upload Tauri artifact
         uses: actions/upload-artifact@v4
