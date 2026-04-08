@@ -1805,9 +1805,12 @@ fn handle_play_land(
             } = event
             {
                 zones::move_to_zone(state, object_id, to, events);
+                // CR 400.7: reset_for_battlefield_entry (inside move_to_zone) sets
+                // defaults. Override only when the replacement pipeline changed them.
                 if let Some(obj) = state.objects.get_mut(&object_id) {
-                    obj.tapped = enter_tapped;
-                    obj.entered_battlefield_turn = Some(state.turn_number);
+                    if enter_tapped {
+                        obj.tapped = true;
+                    }
                     if let Some(new_controller) = controller_override {
                         obj.controller = new_controller;
                     }

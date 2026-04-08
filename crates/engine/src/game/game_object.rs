@@ -379,6 +379,47 @@ impl GameObject {
         }
     }
 
+    /// CR 400.7: Reset transient battlefield state when a permanent enters the battlefield.
+    /// A permanent entering the battlefield is a new object with no memory of its previous
+    /// existence. Callers that need enter_tapped=true override `tapped` after this call.
+    pub fn reset_for_battlefield_entry(&mut self, turn_number: u32) {
+        self.entered_battlefield_turn = Some(turn_number);
+        self.tapped = false;
+        self.damage_marked = 0;
+        self.dealt_deathtouch_damage = false;
+        self.loyalty_activated_this_turn = false;
+        self.is_suspected = false;
+        self.is_renowned = false;
+        self.monstrous = false;
+        self.chosen_attributes.clear();
+        self.ninjutsu_variant_paid = None;
+        self.goaded_by.clear();
+        self.detained_by.clear();
+
+        // CR 400.7: A Class that re-enters is a new object at level 1.
+        if self.class_level.is_some() {
+            self.class_level = Some(1);
+        }
+        // CR 719.3b: Solved designation stays until it leaves the battlefield.
+        if let Some(ref mut cs) = self.case_state {
+            cs.is_solved = false;
+        }
+    }
+
+    /// CR 400.7: Clear battlefield-only designations when a permanent leaves the battlefield.
+    /// Separate from entry reset because some state (counters, transform) is already handled
+    /// by `apply_zone_exit_cleanup` in zones.rs.
+    pub fn reset_for_battlefield_exit(&mut self) {
+        // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
+        self.monstrous = false;
+        // CR 701.15a / CR 701.35a: Goad and detain are battlefield-only designations.
+        self.goaded_by.clear();
+        self.detained_by.clear();
+        // CR 701.60a / CR 702.112b: Suspect and renowned are battlefield designations.
+        self.is_suspected = false;
+        self.is_renowned = false;
+    }
+
     /// Check if this object has a specific keyword, using discriminant-based matching.
     pub fn has_keyword(&self, keyword: &Keyword) -> bool {
         super::keywords::has_keyword(self, keyword)

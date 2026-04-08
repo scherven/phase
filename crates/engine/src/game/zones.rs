@@ -65,12 +65,8 @@ fn apply_zone_exit_cleanup(state: &mut GameState, object_id: ObjectId, from: Zon
             });
         }
 
-        // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
         if from == Zone::Battlefield {
-            obj_mut.monstrous = false;
-            // CR 701.15a / CR 701.35a: Goad and detain are battlefield-only designations.
-            obj_mut.goaded_by.clear();
-            obj_mut.detained_by.clear();
+            obj_mut.reset_for_battlefield_exit();
         }
 
         // CR 122.2: Counters cease to exist when an object changes zones.
@@ -173,15 +169,8 @@ pub fn move_to_zone(
     let obj_mut = state.objects.get_mut(&object_id).unwrap();
     obj_mut.zone = to;
 
-    // CR 302.6 + CR 403.4: Track when objects enter the battlefield (for summoning sickness).
-    // CR 403.4: A permanent entering the battlefield becomes a new object with no relationship to its previous existence.
     if to == Zone::Battlefield {
-        obj_mut.entered_battlefield_turn = Some(state.turn_number);
-
-        // CR 400.7: A Class that re-enters is a new object at level 1.
-        if obj_mut.class_level.is_some() {
-            obj_mut.class_level = Some(1);
-        }
+        obj_mut.reset_for_battlefield_entry(state.turn_number);
     }
 
     // Track descended: a permanent card was put into its owner's graveyard.
