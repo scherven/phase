@@ -6740,7 +6740,8 @@ mod phase_trigger_regression_tests {
     #[test]
     fn card_name_choice_validates_against_all_card_names() {
         let mut state = GameState::new_two_player(42);
-        state.all_card_names = vec!["Lightning Bolt".to_string(), "Counterspell".to_string()].into();
+        state.all_card_names =
+            vec!["Lightning Bolt".to_string(), "Counterspell".to_string()].into();
         state.waiting_for = WaitingFor::NamedChoice {
             player: PlayerId(0),
             choice_type: crate::types::ability::ChoiceType::CardName,
