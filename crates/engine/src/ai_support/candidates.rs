@@ -1930,7 +1930,8 @@ mod tests {
             "Lightning Bolt".to_string(),
             "Counterspell".to_string(),
             "lightning bolt".to_string(),
-        ];
+        ]
+        .into();
         state.waiting_for = WaitingFor::NamedChoice {
             player: PlayerId(0),
             choice_type: ChoiceType::CardName,

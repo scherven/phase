@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -1461,14 +1462,17 @@ pub struct GameState {
 
     /// All card names from the loaded card database, used to validate
     /// "name a card" choices. Skipped in serialization to avoid sending 30k+ names.
+    /// Wrapped in `Arc` so `GameState::clone()` during AI search is O(1) — avoids
+    /// deep-copying 34k+ strings on every candidate evaluation.
     #[serde(skip)]
-    pub all_card_names: Vec<String>,
+    pub all_card_names: Arc<[String]>,
 
     /// Card face data from the loaded card database, keyed by lowercase name.
     /// Used by the Conjure effect handler to create full cards at runtime.
     /// Skipped in serialization — repopulated by `rehydrate_game_from_card_db`.
+    /// Wrapped in `Arc` so `GameState::clone()` during AI search is O(1).
     #[serde(skip)]
-    pub card_face_registry: HashMap<String, CardFace>,
+    pub card_face_registry: Arc<HashMap<String, CardFace>>,
 
     /// Display names for log resolution. Set by server; WASM leaves empty (defaults to "Player N").
     /// Skipped in serialization — runtime context only.
@@ -1712,8 +1716,8 @@ impl GameState {
             pending_optional_effect: None,
             last_named_choice: None,
             all_creature_types: Vec::new(),
-            all_card_names: Vec::new(),
-            card_face_registry: HashMap::new(),
+            all_card_names: Arc::from([]),
+            card_face_registry: Arc::new(HashMap::new()),
             log_player_names: Vec::new(),
             last_created_token_ids: Vec::new(),
             last_revealed_ids: Vec::new(),

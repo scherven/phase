@@ -182,7 +182,7 @@ impl GameSession {
         let mut state = ps.state;
 
         // Restore #[serde(skip)] fields
-        state.all_card_names = card_names.to_vec();
+        state.all_card_names = card_names.to_vec().into();
         state.log_player_names = ps.display_names.clone();
 
         // Re-seed RNG with fresh randomness (stale rng_seed would produce
@@ -396,7 +396,7 @@ impl SessionManager {
     /// Set the full list of card names on a game session for "name a card" validation.
     pub fn set_card_names(&mut self, game_code: &str, names: Vec<String>) {
         if let Some(session) = self.sessions.get_mut(game_code) {
-            session.state.all_card_names = names;
+            session.state.all_card_names = names.into();
         }
     }
 
@@ -465,7 +465,7 @@ impl SessionManager {
             ai_decks,
         };
         load_deck_into_state(&mut session.state, &payload);
-        session.state.all_card_names = card_names;
+        session.state.all_card_names = card_names.into();
         session.state.log_player_names = session.display_names.clone();
         let _result = start_game(&mut session.state);
 

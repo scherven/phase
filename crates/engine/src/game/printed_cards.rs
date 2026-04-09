@@ -212,10 +212,11 @@ pub fn snapshot_object_face(obj: &GameObject) -> BackFaceData {
 pub fn rehydrate_game_from_card_db(state: &mut GameState, db: &CardDatabase) {
     // Populate card face registry for runtime card lookup (used by Conjure effect handler).
     if state.card_face_registry.is_empty() {
-        state.card_face_registry = db
-            .face_iter()
-            .map(|(key, face)| (key.to_string(), face.clone()))
-            .collect();
+        state.card_face_registry = std::sync::Arc::new(
+            db.face_iter()
+                .map(|(key, face)| (key.to_string(), face.clone()))
+                .collect(),
+        );
     }
 
     let object_ids: Vec<_> = state.objects.keys().copied().collect();
