@@ -3086,6 +3086,12 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         {
             *target = subject_filter;
         }
+        // CR 119.3 + CR 115.1d: "they lose N life" — inject subject's player reference.
+        // LoseLife.target is Option<TargetFilter>, unlike other effects' non-optional targets.
+        // Guard on is_none() to only inject when no target was explicitly parsed.
+        Effect::LoseLife { ref mut target, .. } if target.is_none() => {
+            *target = Some(subject_filter);
+        }
         _ => {}
     }
 }
@@ -3823,15 +3829,21 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         // "when you do, if it has N counters" patterns, WhenYouDo is always true for
         // non-optional parents (CR 603.12), so the QuantityCheck is the meaningful gate.
         let (counter_cond, text) = strip_counter_conditional(&text);
-        let (cast_from_zone, text) =
-            if condition.is_none() && if_you_do.is_none() && counter_cond.is_none() {
-                strip_cast_from_zone_conditional(&text)
-            } else {
-                (None, text)
-            };
+        // CR 202.3 + CR 608.2c: Mana value threshold condition — same priority as counter_cond.
+        let (mv_cond, text) = strip_mana_value_conditional(&text);
+        let (cast_from_zone, text) = if condition.is_none()
+            && if_you_do.is_none()
+            && counter_cond.is_none()
+            && mv_cond.is_none()
+        {
+            strip_cast_from_zone_conditional(&text)
+        } else {
+            (None, text)
+        };
         let (card_type_cond, text) = if condition.is_none()
             && if_you_do.is_none()
             && counter_cond.is_none()
+            && mv_cond.is_none()
             && cast_from_zone.is_none()
         {
             strip_card_type_conditional(&text)
@@ -3841,6 +3853,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         let (property_cond, text) = if condition.is_none()
             && if_you_do.is_none()
             && counter_cond.is_none()
+            && mv_cond.is_none()
             && cast_from_zone.is_none()
             && card_type_cond.is_none()
         {
@@ -3852,6 +3865,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         let (turn_cond, text) = if condition.is_none()
             && if_you_do.is_none()
             && counter_cond.is_none()
+            && mv_cond.is_none()
             && cast_from_zone.is_none()
             && card_type_cond.is_none()
             && property_cond.is_none()
@@ -3864,6 +3878,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         let (keyword_instead_cond, text) = if condition.is_none()
             && if_you_do.is_none()
             && counter_cond.is_none()
+            && mv_cond.is_none()
             && cast_from_zone.is_none()
             && card_type_cond.is_none()
             && property_cond.is_none()
@@ -3879,6 +3894,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         let (suffix_cond, text) = if condition.is_none()
             && if_you_do.is_none()
             && counter_cond.is_none()
+            && mv_cond.is_none()
             && cast_from_zone.is_none()
             && card_type_cond.is_none()
             && property_cond.is_none()
@@ -3891,6 +3907,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         };
         let condition = condition
             .or(counter_cond)
+            .or(mv_cond)
             .or(if_you_do)
             .or(cast_from_zone)
             .or(card_type_cond)
@@ -11259,6 +11276,87 @@ mod tests {
                 assert!(tapped);
             }
             other => panic!("expected Conjure, got: {other:?}"),
+        }
+    }
+
+    // --- strip_mana_value_conditional tests ---
+
+    #[test]
+    fn strip_mv_conditional_suffix_le() {
+        let (cond, text) =
+            strip_mana_value_conditional("Destroy target creature if it has mana value 2 or less.");
+        assert!(cond.is_some(), "should extract MV ≤ 2 condition");
+        assert_eq!(text, "Destroy target creature");
+        match cond.unwrap() {
+            AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+                assert!(!use_lki);
+                if let TargetFilter::Typed(tf) = filter {
+                    assert!(tf.properties.iter().any(|p| matches!(
+                        p,
+                        FilterProp::CmcLE {
+                            value: QuantityExpr::Fixed { value: 2 }
+                        }
+                    )));
+                } else {
+                    panic!("expected Typed filter");
+                }
+            }
+            other => panic!("expected TargetMatchesFilter, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_mv_conditional_suffix_ge() {
+        let (cond, text) =
+            strip_mana_value_conditional("Counter target spell if it has mana value 4 or greater");
+        assert!(cond.is_some(), "should extract MV ≥ 4 condition");
+        assert_eq!(text, "Counter target spell");
+        match cond.unwrap() {
+            AbilityCondition::TargetMatchesFilter { filter, .. } => {
+                if let TargetFilter::Typed(tf) = filter {
+                    assert!(tf.properties.iter().any(|p| matches!(
+                        p,
+                        FilterProp::CmcGE {
+                            value: QuantityExpr::Fixed { value: 4 }
+                        }
+                    )));
+                } else {
+                    panic!("expected Typed filter");
+                }
+            }
+            other => panic!("expected TargetMatchesFilter, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_mv_conditional_no_match() {
+        let (cond, text) = strip_mana_value_conditional("Destroy target creature");
+        assert!(cond.is_none());
+        assert_eq!(text, "Destroy target creature");
+    }
+
+    // --- Fatal Push integration test ---
+
+    #[test]
+    fn fatal_push_base_has_mv_condition() {
+        let def = parse_effect_chain(
+            "Destroy target creature if it has mana value 2 or less",
+            AbilityKind::Spell,
+        );
+        match def.condition {
+            Some(AbilityCondition::TargetMatchesFilter { ref filter, .. }) => {
+                if let TargetFilter::Typed(tf) = filter {
+                    assert!(
+                        tf.properties
+                            .iter()
+                            .any(|p| matches!(p, FilterProp::CmcLE { .. })),
+                        "should have CmcLE property"
+                    );
+                } else {
+                    panic!("expected Typed filter");
+                }
+            }
+            other => panic!("expected TargetMatchesFilter condition, got: {other:?}"),
         }
     }
 }

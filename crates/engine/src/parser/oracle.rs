@@ -236,10 +236,33 @@ impl ActivatedConstraintAst {
     }
 }
 
-/// Parse Oracle text into structured ability definitions.
-///
-/// Splits on newlines, strips reminder text, then classifies each line
-/// according to a priority table (keywords, enchant, equip, activated,
+/// CR 608.2c: Pre-strip "instead if [condition]" or trailing "instead" from effect text.
+/// The "instead" keyword signals a cross-line replacement pattern. The trailing
+/// "if [condition]" (when present after "instead") is redundant with the ability word
+/// condition already extracted at the caller level (e.g., Revolt, Corrupted).
+/// Cards without ability words using this "effect instead if condition" pattern
+/// would need separate handling.
+fn strip_instead_suffix(text: &str) -> (String, bool) {
+    let lower = text.to_lowercase();
+    let tp = TextPair::new(text, &lower);
+
+    // Pattern: " instead if [condition]" — mid-line "instead" followed by condition
+    if let Some((before, _after)) = tp.rsplit_around(" instead if ") {
+        return (before.original.trim().to_string(), true);
+    }
+
+    // Pattern: "[effect] instead" — trailing "instead" (with optional period)
+    if let Some((before, after)) = tp.rsplit_around(" instead") {
+        // Guard: "instead" must be at end of text (not "instead of" compound)
+        let remainder = after.lower.trim().trim_end_matches('.');
+        if remainder.is_empty() {
+            return (before.original.trim().to_string(), true);
+        }
+    }
+
+    (text.to_string(), false)
+}
+
 /// Map a known ability word name to a typed `StaticCondition`.
 /// Returns `None` for unrecognized ability words (Landfall, Constellation, etc.
 /// don't have implicit conditions — their trigger text encodes the condition).
@@ -356,6 +379,10 @@ fn ability_word_to_trigger_condition(
     }
 }
 
+/// Parse Oracle text into structured ability definitions.
+///
+/// Splits on newlines, strips reminder text, then classifies each line
+/// according to a priority table (keywords, enchant, equip, activated,
 /// triggered, static, replacement, spell effect, modal, loyalty, etc.).
 ///
 /// `mtgjson_keyword_names` are the raw lowercased keyword names from MTGJSON
@@ -1179,8 +1206,19 @@ pub fn parse_oracle_text(
                 } else {
                     (None, line.clone())
                 };
+            // CR 608.2c: Pre-strip "instead if [condition]" or trailing "instead"
+            // from the effect text before chain parsing. This allows
+            // strip_mana_value_conditional inside the chain parser to handle
+            // mid-position MV conditions (e.g., "if it has mana value 4 or less")
+            // that precede "instead if [ability word condition]".
+            let (effect_line_clean, is_instead) = strip_instead_suffix(&effect_line);
+            let parse_line = if is_instead {
+                &effect_line_clean
+            } else {
+                &effect_line
+            };
             let mut def = parse_effect_chain_with_context(
-                &effect_line,
+                parse_line,
                 AbilityKind::Spell,
                 &ParseContext {
                     subject: None,
@@ -1188,8 +1226,24 @@ pub fn parse_oracle_text(
                 },
             );
             def.description = Some(line.to_string());
-            if def.condition.is_none() {
-                def.condition = ability_word_to_ability_condition(&aw_condition);
+            // CR 608.2c: Compose ability word condition with chain-extracted condition.
+            // When both exist (e.g., Revolt + MV ≤ 4), compose with And so the
+            // ConditionInstead inner encodes the full resolution gate.
+            match (
+                ability_word_to_ability_condition(&aw_condition),
+                def.condition.take(),
+            ) {
+                (Some(aw), Some(chain)) => {
+                    def.condition = Some(AbilityCondition::And {
+                        conditions: vec![aw, chain],
+                    });
+                }
+                (Some(aw), None) => {
+                    def.condition = Some(aw);
+                }
+                (None, chain) => {
+                    def.condition = chain;
+                }
             }
             i += 1;
             // CR 706: If the parsed chain ends with "roll a dN", consume
@@ -1201,7 +1255,7 @@ pub fn parse_oracle_text(
             // replaces the entire preceding ability, compose them so the engine resolves
             // the binary choice correctly. The "instead" sub has the condition; the base
             // ability becomes the fallback when the condition is not met.
-            if is_instead_replacement_line(&effect_line) {
+            if is_instead || is_instead_replacement_line(&effect_line) {
                 if let Some(condition) = def.condition.take() {
                     if let Some(mut base) = result.abilities.pop() {
                         // Save the base ability's continuation chain in else_ability
@@ -5912,5 +5966,88 @@ mod tests {
 
         // No spurious triggers
         assert_eq!(r.triggers.len(), 0);
+    }
+
+    #[test]
+    fn fatal_push_full_composition() {
+        use crate::types::ability::AbilityCondition;
+
+        // CR 608.2c: Two-line "instead" composition with ability word + MV conditions.
+        // Base: Destroy target creature if MV ≤ 2
+        // Revolt: Destroy that creature if MV ≤ 4 instead (when revolt active)
+        let r = parse_oracle_text(
+            "Destroy target creature if it has mana value 2 or less.\nRevolt \u{2014} Destroy that creature if it has mana value 4 or less instead if a permanent left the battlefield under your control this turn.",
+            "Fatal Push",
+            &[],
+            &["Instant".to_string()],
+            &[],
+        );
+        assert_eq!(
+            r.abilities.len(),
+            1,
+            "should be ONE ability (instead composition)"
+        );
+        let ability = &r.abilities[0];
+
+        // Base condition: TargetMatchesFilter with CmcLE(2)
+        match &ability.condition {
+            Some(AbilityCondition::TargetMatchesFilter { filter, .. }) => {
+                if let TargetFilter::Typed(tf) = filter {
+                    assert!(
+                        tf.properties.iter().any(|p| matches!(
+                            p,
+                            FilterProp::CmcLE {
+                                value: QuantityExpr::Fixed { value: 2 }
+                            }
+                        )),
+                        "base should have CmcLE(2), got: {:?}",
+                        tf.properties
+                    );
+                } else {
+                    panic!("expected Typed filter on base condition");
+                }
+            }
+            other => panic!("expected TargetMatchesFilter on base, got: {other:?}"),
+        }
+
+        // Sub-ability: ConditionInstead with And([Revolt, CmcLE(4)])
+        let sub = ability
+            .sub_ability
+            .as_ref()
+            .expect("should have sub_ability");
+        match &sub.condition {
+            Some(AbilityCondition::ConditionInstead { inner }) => match inner.as_ref() {
+                AbilityCondition::And { conditions } => {
+                    assert_eq!(conditions.len(), 2, "And should have 2 conditions");
+                    // First: Revolt (QuantityCheck on PermanentsLeftBattlefieldThisTurn)
+                    assert!(
+                        matches!(&conditions[0], AbilityCondition::QuantityCheck { .. }),
+                        "first condition should be QuantityCheck (revolt)"
+                    );
+                    // Second: CmcLE(4)
+                    match &conditions[1] {
+                        AbilityCondition::TargetMatchesFilter { filter, .. } => {
+                            if let TargetFilter::Typed(tf) = filter {
+                                assert!(
+                                    tf.properties.iter().any(|p| matches!(
+                                        p,
+                                        FilterProp::CmcLE {
+                                            value: QuantityExpr::Fixed { value: 4 }
+                                        }
+                                    )),
+                                    "revolt sub should have CmcLE(4), got: {:?}",
+                                    tf.properties
+                                );
+                            } else {
+                                panic!("expected Typed filter on revolt sub");
+                            }
+                        }
+                        other => panic!("expected TargetMatchesFilter in And[1], got: {other:?}"),
+                    }
+                }
+                other => panic!("expected And inside ConditionInstead, got: {other:?}"),
+            },
+            other => panic!("expected ConditionInstead on sub, got: {other:?}"),
+        }
     }
 }

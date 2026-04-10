@@ -467,6 +467,12 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         Effect::Token { owner, .. } => owner,
         Effect::RevealTop { player, .. } => player,
         Effect::ExileTop { player, .. } => player,
+        // CR 119.3 + CR 603.7c: LoseLife with event-context target (e.g., TriggeringPlayer
+        // from "whenever an opponent draws a card, they lose 2 life").
+        Effect::LoseLife {
+            target: Some(ref filter),
+            ..
+        } => filter,
         _ => return None,
     };
 
@@ -554,6 +560,11 @@ pub fn resolve_ability_chain(
             if let Some(ref sub_duration) = sub.duration {
                 overridden.duration = Some(sub_duration.clone());
             }
+            // CR 608.2c: "Instead" semantics replace the entire effect clause.
+            // The ConditionInstead inner condition already encodes all resolution
+            // checks (e.g., Revolt + MV ≤ 4 via And). The parent's base condition
+            // (e.g., MV ≤ 2) is superseded — it only applies when the swap does NOT fire.
+            overridden.condition = None;
             // The override sub is consumed; its own sub_ability becomes the new chain tail.
             overridden.sub_ability = sub.sub_ability.clone();
             overridden.else_ability = sub.else_ability.clone();
@@ -1348,6 +1359,10 @@ fn evaluate_condition(
         // CR 608.2c: General "instead" — delegate to the wrapped inner condition.
         // The "instead" semantics are handled by the swap/guard in resolve_ability_chain.
         AbilityCondition::ConditionInstead { inner } => evaluate_condition(inner, state, ability),
+        // CR 608.2c: Compound condition — all inner conditions must be true.
+        AbilityCondition::And { conditions } => conditions
+            .iter()
+            .all(|c| evaluate_condition(c, state, ability)),
     }
 }
 
@@ -2545,5 +2560,95 @@ mod tests {
         // Both players owned zone-changed objects, so both draw
         assert_eq!(state.players[0].hand.len(), 1, "player 0 should have drawn");
         assert_eq!(state.players[1].hand.len(), 1, "player 1 should have drawn");
+    }
+
+    #[test]
+    fn evaluate_condition_and_all_true() {
+        let state = GameState::new_two_player(42);
+        let ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        // And([IsYourTurn(false=not negated), IsYourTurn(false=not negated)]) — both true
+        let cond = AbilityCondition::And {
+            conditions: vec![
+                AbilityCondition::IsYourTurn { negated: false },
+                AbilityCondition::IsYourTurn { negated: false },
+            ],
+        };
+        assert!(evaluate_condition(&cond, &state, &ability));
+    }
+
+    #[test]
+    fn evaluate_condition_and_one_false() {
+        let state = GameState::new_two_player(42);
+        let ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        // And([IsYourTurn(true), IsYourTurn(false)]) — one is "not your turn" which is false
+        let cond = AbilityCondition::And {
+            conditions: vec![
+                AbilityCondition::IsYourTurn { negated: true },
+                AbilityCondition::IsYourTurn { negated: false },
+            ],
+        };
+        assert!(!evaluate_condition(&cond, &state, &ability));
+    }
+
+    #[test]
+    fn condition_instead_swap_clears_parent_condition() {
+        // CR 608.2c: When ConditionInstead fires, the parent's condition should be
+        // cleared — "instead" replaces the entire clause.
+        let mut state = GameState::new_two_player(42);
+
+        // Instead sub: deal 5 damage (replaces parent when condition is met)
+        let instead_sub = ResolvedAbility::new(
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 5 },
+                target: TargetFilter::ParentTarget,
+                damage_source: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        )
+        .condition(AbilityCondition::ConditionInstead {
+            inner: Box::new(AbilityCondition::IsYourTurn { negated: false }),
+        });
+
+        // Parent: deal 2 damage with a condition that would normally block it.
+        // IsYourTurn(negated=true) = "not your turn" = false for active player.
+        // Without the swap clearing it, the parent condition would block resolution.
+        let ability = ResolvedAbility::new(
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+            vec![TargetRef::Player(PlayerId(1))],
+            ObjectId(100),
+            PlayerId(0),
+        )
+        .condition(AbilityCondition::IsYourTurn { negated: true })
+        .sub_ability(instead_sub);
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        // The swap fires (IsYourTurn is true), clearing the parent's "not your turn"
+        // condition. The overridden ability deals 5 damage.
+        assert_eq!(
+            state.players[1].life, 15,
+            "Expected 5 damage — swap should clear parent condition"
+        );
     }
 }

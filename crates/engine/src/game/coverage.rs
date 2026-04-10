@@ -3220,6 +3220,7 @@ fn condition_variant_name(cond: &AbilityCondition) -> &'static str {
         AbilityCondition::ZoneChangedThisWay { .. } => "ZoneChangedThisWay",
         AbilityCondition::SourceIsTapped { .. } => "SourceIsTapped",
         AbilityCondition::ConditionInstead { .. } => "ConditionInstead",
+        AbilityCondition::And { .. } => "And",
     }
 }
 

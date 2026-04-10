@@ -475,6 +475,18 @@ pub(super) fn parse_subject_application(
             inherits_parent: false,
         });
     }
+    // CR 608.2k: Bare pronoun "they" — context-dependent.
+    // In trigger effects: "they" refers to the triggering player (for player-type
+    // subjects like "an opponent") or the triggering source (for object subjects).
+    // Outside trigger context: anaphoric reference to previously mentioned objects.
+    if lower == "they" {
+        return Some(SubjectApplication {
+            affected: resolve_they_pronoun(ctx),
+            target: None,
+            multi_target: None,
+            inherits_parent: false,
+        });
+    }
 
     // CR 608.2c: "that creature/permanent/land" — anaphoric back-reference to a
     // previously mentioned object in the same effect sequence. Strip "that " and parse
@@ -502,6 +514,29 @@ pub(super) fn parse_subject_application(
     }
 
     None
+}
+
+/// CR 608.2k: Resolve bare pronoun "they" based on parser context.
+/// In trigger effects where the subject is a player (e.g., "an opponent"),
+/// "they" refers to the triggering player (`TriggeringPlayer`). A player-type
+/// trigger subject is identified by having no `type_filters` but a `controller`
+/// ref (e.g., `controller: Opponent`). For object-type subjects, "they" refers
+/// to the triggering source. Without trigger context, "they" is an anaphoric
+/// reference to previously mentioned objects (`ParentTarget`).
+fn resolve_they_pronoun(ctx: &ParseContext) -> TargetFilter {
+    match &ctx.subject {
+        // Player-type trigger subject: no type_filters, has controller ref
+        Some(TargetFilter::Typed(tf)) if tf.type_filters.is_empty() && tf.controller.is_some() => {
+            TargetFilter::TriggeringPlayer
+        }
+        Some(TargetFilter::Player) => TargetFilter::TriggeringPlayer,
+        // Object-type trigger subject
+        Some(subject) if !matches!(subject, TargetFilter::SelfRef | TargetFilter::Any) => {
+            TargetFilter::TriggeringSource
+        }
+        // No trigger context — anaphoric reference to previously mentioned objects
+        _ => TargetFilter::ParentTarget,
+    }
 }
 
 fn subject_filter_application(filter: TargetFilter, targeted: bool) -> Option<SubjectApplication> {

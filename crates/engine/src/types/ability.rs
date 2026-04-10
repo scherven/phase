@@ -4030,6 +4030,11 @@ pub enum AbilityCondition {
     /// Used for cross-line patterns like Delirium ("If [condition], instead [effect]")
     /// where the conditional replacement and the base effect are on separate Oracle lines.
     ConditionInstead { inner: Box<AbilityCondition> },
+    /// CR 608.2c: Compound condition — all inner conditions must be true.
+    /// Mirrors `TriggerCondition::And` for ability-level conditions.
+    /// Used when multiple independent checks gate the same resolution
+    /// (e.g., Revolt + mana value threshold on Fatal Push).
+    And { conditions: Vec<AbilityCondition> },
 }
 
 /// Casting-time facts that flow with a spell from casting through resolution.

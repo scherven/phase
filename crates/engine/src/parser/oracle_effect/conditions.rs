@@ -17,6 +17,7 @@ use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, AbilityKind, Comparator, ControllerRef, Duration, Effect,
     FilterProp, NinjutsuVariant, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
+    TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::zones::Zone;
@@ -589,6 +590,56 @@ pub(super) fn strip_counter_conditional(text: &str) -> (Option<AbilityCondition>
     }
 
     (None, text.to_string())
+}
+
+/// CR 202.3 + CR 608.2c: Strip trailing "if it has mana value N or less/greater" from
+/// effect text. Returns a `TargetMatchesFilter` condition with `CmcLE`/`CmcGE` property.
+/// Handles the class of cards that conditionally apply effects based on target mana value
+/// (Fatal Push, Anoint with Affliction, Angrath, Cosmic Rebirth, etc.).
+pub(super) fn strip_mana_value_conditional(text: &str) -> (Option<AbilityCondition>, String) {
+    let lower = text.to_lowercase();
+    let tp = TextPair::new(text, &lower);
+
+    // Suffix position: "[effect] if it has mana value N or less/greater."
+    if let Some((before, after)) = tp.rsplit_around(" if it has mana value ") {
+        if let Some((comparator, threshold)) = parse_mana_value_threshold(after.lower) {
+            let prop = match comparator {
+                Comparator::LE => FilterProp::CmcLE {
+                    value: QuantityExpr::Fixed { value: threshold },
+                },
+                Comparator::GE => FilterProp::CmcGE {
+                    value: QuantityExpr::Fixed { value: threshold },
+                },
+                _ => return (None, text.to_string()),
+            };
+            let condition = AbilityCondition::TargetMatchesFilter {
+                filter: TargetFilter::Typed(TypedFilter::default().properties(vec![prop])),
+                use_lki: false,
+            };
+            return (
+                Some(condition),
+                before.original.trim_end_matches('.').trim().to_string(),
+            );
+        }
+    }
+
+    (None, text.to_string())
+}
+
+/// Parse "N or less" / "N or greater" from mana value threshold text.
+/// Uses nom combinators to extract the numeric threshold and comparison direction.
+fn parse_mana_value_threshold(text: &str) -> Option<(Comparator, i32)> {
+    let text = text.trim().trim_end_matches('.');
+    // Parse: number + " or " + "less"/"greater"
+    let (rest, n) = nom_primitives::parse_number(text).ok()?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>(" or ").parse(rest).ok()?;
+    let (_, comparator) = alt((
+        value(Comparator::LE, tag::<_, _, VerboseError<&str>>("less")),
+        value(Comparator::GE, tag("greater")),
+    ))
+    .parse(rest)
+    .ok()?;
+    Some((comparator, n as i32))
 }
 
 fn find_last_top_level_if(text: &str) -> Option<usize> {

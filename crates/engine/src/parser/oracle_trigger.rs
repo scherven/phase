@@ -1350,6 +1350,31 @@ fn parse_single_subject(text: &str) -> (TargetFilter, &str) {
         }
     }
 
+    // CR 119.3 + CR 608.2k: Player subjects for pronoun resolution in trigger effects.
+    // "an opponent", "a player", "each opponent" — these are player-type subjects,
+    // not object types. Must fire before the generic "a "/"an " + parse_type_phrase
+    // path, which would send "opponent" to parse_type_phrase and return Any.
+    // "each opponent" maps to the same filter as "an opponent" for subject extraction;
+    // the trigger mode (not the subject filter) determines per-opponent firing.
+    if let Ok((rest, filter)) = alt((
+        value(
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+            alt((
+                tag::<_, _, VerboseError<&str>>("an opponent"),
+                tag("opponent"),
+            )),
+        ),
+        value(
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+            tag("each opponent"),
+        ),
+        value(TargetFilter::Player, alt((tag("a player"), tag("player")))),
+    ))
+    .parse(text)
+    {
+        return (filter, rest.trim_start());
+    }
+
     // "a "/"an " + type phrase (general subject)
     if let Ok((after, ())) = alt((
         value((), tag::<_, _, VerboseError<&str>>("a ")),
@@ -7150,5 +7175,56 @@ mod tests {
         );
         assert_eq!(def.mode, TriggerMode::ChangesZone);
         assert_eq!(def.condition, Some(TriggerCondition::WasNotCast));
+    }
+
+    #[test]
+    fn trigger_subject_extracts_opponent_as_player() {
+        // CR 608.2k: "an opponent" should be recognized as a player-type subject,
+        // not fall through to parse_type_phrase returning Any.
+        let (filter, rest) = parse_single_subject("an opponent draws a card");
+        assert!(
+            matches!(
+                &filter,
+                TargetFilter::Typed(tf) if tf.type_filters.is_empty()
+                    && tf.controller == Some(ControllerRef::Opponent)
+            ),
+            "expected opponent player filter, got: {filter:?}"
+        );
+        assert!(
+            rest.starts_with("draws"),
+            "rest should start with verb: {rest}"
+        );
+    }
+
+    #[test]
+    fn trigger_subject_extracts_player() {
+        let (filter, rest) = parse_single_subject("a player casts a spell");
+        assert_eq!(filter, TargetFilter::Player);
+        assert!(
+            rest.starts_with("casts"),
+            "rest should start with verb: {rest}"
+        );
+    }
+
+    #[test]
+    fn sheoldred_they_lose_life_has_triggering_player() {
+        // Sheoldred: "Whenever an opponent draws a card, they lose 2 life."
+        // The LoseLife effect should target TriggeringPlayer (the opponent who drew).
+        let def = parse_trigger_line(
+            "Whenever an opponent draws a card, they lose 2 life.",
+            "Sheoldred, the Apocalypse",
+        );
+        assert_eq!(def.mode, TriggerMode::Drawn);
+        let execute = def.execute.as_ref().expect("should have execute");
+        match &*execute.effect {
+            Effect::LoseLife { target, .. } => {
+                assert_eq!(
+                    *target,
+                    Some(TargetFilter::TriggeringPlayer),
+                    "LoseLife should target TriggeringPlayer"
+                );
+            }
+            other => panic!("expected LoseLife, got: {other:?}"),
+        }
     }
 }
