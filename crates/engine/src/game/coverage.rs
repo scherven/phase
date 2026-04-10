@@ -2007,6 +2007,9 @@ pub fn analyze_coverage(card_db: &CardDatabase) -> CoverageSummary {
         // Check replacements
         check_replacements(&face.replacements, &mut missing);
 
+        // Check parse warnings
+        check_parse_warnings(&face.parse_warnings, &mut missing);
+
         let supported = missing.is_empty();
 
         for m in &missing {
@@ -2029,7 +2032,16 @@ pub fn analyze_coverage(card_db: &CardDatabase) -> CoverageSummary {
         }
 
         let parse_details = build_parse_details(face, &trigger_registry, &static_registry);
-        let gap_details = extract_gap_details(&parse_details);
+        let mut gap_details = extract_gap_details(&parse_details);
+        // Append parse-warning gaps so they appear in per-card gap reporting.
+        for warning in &face.parse_warnings {
+            if warning.starts_with("target-fallback") {
+                gap_details.push(GapDetail {
+                    handler: "ParseWarning:target-fallback".to_string(),
+                    source_text: Some(warning.clone()),
+                });
+            }
+        }
         let gap_count = gap_details.len();
 
         cards.push(CardCoverageResult {
@@ -2403,6 +2415,31 @@ fn check_replacements(replacements: &[ReplacementDefinition], missing: &mut Vec<
 
         if let Some(ReplacementCondition::Unrecognized { ref text }) = def.condition {
             let label = format!("Replacement:Unrecognized({})", truncate_label(text, 60));
+            if !missing.contains(&label) {
+                missing.push(label);
+            }
+        }
+    }
+}
+
+/// Target-fallback warnings indicate degraded targeting (TargetFilter::Any instead of a
+/// specific filter). Cards with these have silently incorrect behavior at runtime.
+fn check_parse_warnings(warnings: &[String], missing: &mut Vec<String>) {
+    for warning in warnings {
+        if warning.starts_with("target-fallback") {
+            // Extract the sub-category for groupable gap labels:
+            // "target-fallback: parse_target could not classify 'foo'" → "ParseWarning:parse_target"
+            // "target-fallback: trigger subject parse fell back..." → "ParseWarning:trigger-subject"
+            let label = if warning.contains("trigger subject") {
+                "ParseWarning:trigger-subject".to_string()
+            } else if warning.contains("parse_target could not classify") {
+                "ParseWarning:target-fallback".to_string()
+            } else {
+                format!(
+                    "ParseWarning:{}",
+                    warning.split(':').nth(1).unwrap_or("unknown").trim().split('\'').next().unwrap_or("unknown").trim()
+                )
+            };
             if !missing.contains(&label) {
                 missing.push(label);
             }
