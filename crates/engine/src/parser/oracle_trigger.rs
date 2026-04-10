@@ -1375,8 +1375,37 @@ fn parse_single_subject(text: &str) -> (TargetFilter, &str) {
     if let Ok((after_quantifier, ())) =
         value((), tag::<_, _, VerboseError<&str>>("one or more ")).parse(text)
     {
+        // CR 122.6: Passive voice counter placement: "one or more [type] counters are put on [subject]"
+        // The subject is the object receiving counters, not the counters themselves.
+        // Use split_once_on to find the " are put on " / " are placed on " boundary.
+        if let Ok((_, (_, subject_text))) =
+            nom_primitives::split_once_on(after_quantifier, " are put on ")
+        {
+            let (filter, rest) = parse_single_subject(subject_text);
+            return (filter, rest);
+        }
+        if let Ok((_, (_, subject_text))) =
+            nom_primitives::split_once_on(after_quantifier, " are placed on ")
+        {
+            let (filter, rest) = parse_single_subject(subject_text);
+            return (filter, rest);
+        }
+
         let (filter, rest) = parse_type_phrase(after_quantifier);
         if rest.len() < after_quantifier.len() {
+            return (filter, rest);
+        }
+    }
+
+    // "you put one or more [type] counters on [subject]" — active voice counter placement.
+    // Use split_once_on to locate the " on " boundary after counter type text.
+    if let Ok((after_put, ())) =
+        value((), tag::<_, _, VerboseError<&str>>("you put one or more ")).parse(text)
+    {
+        if let Ok((_, (_, subject_text))) =
+            nom_primitives::split_once_on(after_put, " on ")
+        {
+            let (filter, rest) = parse_single_subject(subject_text);
             return (filter, rest);
         }
     }
