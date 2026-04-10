@@ -146,7 +146,22 @@ pub fn score_candidates(
                 | WaitingFor::TriggerTargetSelection { .. }
                 | WaitingFor::MultiTargetSelection { .. }
         );
-        let tactical_weight = if is_target_selection { 0.7 } else { 0.1 };
+        // Stack response decisions (counter/interact with opponent's spell) need
+        // higher tactical weight because search can't see through the full
+        // cast-target-pay-resolve chain at typical depths. Policies like
+        // counterspell_score and stack_awareness guide these reactive decisions.
+        let is_stack_response = !state.stack.is_empty()
+            && state
+                .stack
+                .iter()
+                .any(|entry| entry.controller != ai_player);
+        let tactical_weight = if is_target_selection {
+            0.7
+        } else if is_stack_response {
+            0.35
+        } else {
+            0.1
+        };
 
         let penalty_for = |candidate: &engine::ai_support::CandidateAction| {
             gated
@@ -262,15 +277,26 @@ pub(crate) fn deterministic_choice(
     }
 
     if let WaitingFor::DigChoice {
-        cards, keep_count, ..
+        selectable_cards,
+        keep_count,
+        up_to,
+        ..
     } = &state.waiting_for
     {
-        let mut scored: Vec<_> = cards
+        if selectable_cards.is_empty() {
+            return Some(GameAction::SelectCards { cards: Vec::new() });
+        }
+        let mut scored: Vec<_> = selectable_cards
             .iter()
             .map(|&id| (id, evaluate_card_value(state, id)))
             .collect();
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let kept: Vec<_> = scored.iter().take(*keep_count).map(|(id, _)| *id).collect();
+        let kept: Vec<_> = if *up_to && scored.first().is_some_and(|(_, v)| *v < 0.1) {
+            // Up-to selection with no valuable cards — take nothing
+            Vec::new()
+        } else {
+            scored.iter().take(*keep_count).map(|(id, _)| *id).collect()
+        };
         return Some(GameAction::SelectCards { cards: kept });
     }
 
@@ -356,9 +382,9 @@ pub(crate) fn deterministic_choice(
         }
     }
 
-    if let WaitingFor::OptionalCostChoice { .. } = &state.waiting_for {
-        return Some(GameAction::DecideOptionalCost { pay: true });
-    }
+    // OptionalCostChoice (kicker etc.) is handled by the normal search pipeline —
+    // validate_candidates filters out unaffordable options, and search/scoring
+    // decides between pay/decline based on value.
 
     // CR 601.2b: Defiler — accept life payment when life cushion is sufficient.
     if let WaitingFor::DefilerPayment {

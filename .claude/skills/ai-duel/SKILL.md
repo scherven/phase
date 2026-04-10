@@ -22,6 +22,8 @@ cargo run --release --bin ai-duel -- client/public --batch 20 --seed 1000 --diff
 | `--batch N` | Run N games, print summary only | 1 (verbose) |
 | `--seed S` | RNG seed for reproducibility | time-based |
 | `--difficulty LEVEL` | `VeryEasy\|Easy\|Medium\|Hard\|VeryHard` | Medium |
+| `--matchup NAME` | Deck matchup preset | red-vs-green |
+| `--list-matchups` | Show available matchups | - |
 | `--verbose` | Print every action (full trace) | off |
 
 ## Performance Guide
@@ -38,52 +40,58 @@ All times are release mode (`--release`). Debug mode is 5-10x slower.
 
 ## Deck Configuration
 
-The `ai-duel` binary uses hardcoded decks in `build_starter_decks()` at `crates/phase-ai/src/bin/ai_duel.rs:264`.
+The `ai-duel` binary uses hardcoded decks selected via `--matchup`. Deck functions are in `crates/phase-ai/src/bin/ai_duel.rs`.
 
-### Current Decks
+### Available Matchups
 
-**Player 0 — Red Aggro** (20 lands, 40 spells):
-Mountains, Goblin Guide, Monastery Swiftspear, Raging Goblin, Jackal Pup, Mogg Fanatic, Lightning Bolt, Shock, Lava Spike, Searing Spear, Skullcrack
+Use `--matchup NAME` to select a preset. Use `--list-matchups` to see all options.
 
-**Player 1 — Green Midrange** (22 lands, 38 spells):
-Forests, Llanowar Elves, Elvish Mystic, Grizzly Bears, Kalonian Tusker, Centaur Courser, Leatherback Baloth, Giant Growth, Rancor, Titanic Growth, Rabid Bite
+**Starter decks** (mono-colored, simple cards for baseline testing):
+
+| Matchup | P0 | P1 |
+|---------|----|----|
+| `red-vs-green` (default) | Red Aggro | Green Midrange |
+| `blue-vs-green` | Blue Control | Green Midrange |
+| `red-vs-blue` | Red Aggro | Blue Control |
+| `black-vs-green` | Black Midrange | Green Midrange |
+| `white-vs-red` | White Weenie | Red Aggro |
+| `black-vs-blue` | Black Midrange | Blue Control |
+| `red-mirror` | Red Aggro | Red Aggro |
+| `green-mirror` | Green Midrange | Green Midrange |
+| `blue-mirror` | Blue Control | Blue Control |
+
+**Metagame decks** (real competitive lists from MTGGoldfish feeds, 100% engine coverage):
+
+| Matchup | P0 | P1 | Tests |
+|---------|----|----|-------|
+| `azorius-vs-prowess` | Pioneer Azorius Control | Mono-Red Prowess | Aggro vs control |
+| `azorius-vs-gruul` | Pioneer Azorius Control | Gruul Prowess | Control vs aggro variant |
+| `delver-vs-prowess` | Legacy Izzet Delver | Mono-Red Prowess | Tempo vs aggro |
+| `azorius-vs-green` | Pioneer Azorius Control | Green Midrange | **Control vs midrange** |
+| `delver-vs-green` | Legacy Izzet Delver | Green Midrange | Tempo vs midrange |
+| `prowess-vs-green` | Mono-Red Prowess | Green Midrange | Aggro vs midrange |
+| `prowess-mirror` | Mono-Red Prowess | Mono-Red Prowess | Mirror match |
 
 ### Changing Decks
 
-To test different matchups, modify `build_starter_decks()` in `ai_duel.rs`. Card names must match entries in `client/public/card-data.json`. Use `jq 'keys[]' client/public/card-data.json | grep -i "card name"` to find exact names.
+To add new matchups, add a deck builder function and matchup entry in `ai_duel.rs`. Card names must match entries in `client/public/card-data.json`. Use `jq 'keys[]' client/public/card-data.json | grep -i "card name"` to find exact names.
 
-Example deck configurations for testing:
+To find high-coverage metagame decks for testing, check the feed data:
+```bash
+# List all feeds
+ls client/public/feeds/
 
-**Blue Control** (for control vs midrange):
-```rust
-let mut blue = Vec::with_capacity(60);
-blue.extend(repeat("Island", 24));
-blue.extend(repeat("Counterspell", 4));
-blue.extend(repeat("Mana Leak", 4));
-blue.extend(repeat("Unsummon", 4));
-blue.extend(repeat("Divination", 4));
-blue.extend(repeat("Air Elemental", 4));
-blue.extend(repeat("Frost Titan", 2));
-blue.extend(repeat("Think Twice", 4));
-blue.extend(repeat("Cancel", 4));
-blue.extend(repeat("Aether Gust", 2));
-blue.extend(repeat("Negate", 4));
-```
-
-**White Weenie** (for aggro mirror):
-```rust
-let mut white = Vec::with_capacity(60);
-white.extend(repeat("Plains", 20));
-white.extend(repeat("Savannah Lions", 4));
-white.extend(repeat("Elite Vanguard", 4));
-white.extend(repeat("Raise the Alarm", 4));
-white.extend(repeat("Glorious Anthem", 4));
-white.extend(repeat("Swords to Plowshares", 4));
-white.extend(repeat("Serra Angel", 4));
-white.extend(repeat("Oblivion Ring", 4));
-white.extend(repeat("Disenchant", 4));
-white.extend(repeat("Honor of the Pure", 4));
-white.extend(repeat("Militia Bugler", 4));
+# Check a deck's card coverage against the engine
+python3 -c "
+import json
+with open('client/public/card-data.json') as f:
+    db = {k.lower(): v for k, v in json.load(f).items()}
+with open('client/public/feeds/mtggoldfish-pioneer.json') as f:
+    feed = json.load(f)
+for deck in feed['decks']:
+    sup = sum(1 for e in deck['main'] if e['name'].lower() in db)
+    print(f'{sup}/{len(deck[\"main\"])} {deck[\"name\"]}')
+"
 ```
 
 ### Matchup Triangle (Expected Results)
@@ -93,11 +101,11 @@ The classic archetype triangle should hold:
 - **Control > Midrange** — removal + card draw outgrinds
 - **Midrange > Aggro** — bigger creatures brick aggro attacks
 
-If simulation results don't match this pattern, the AI has a decision quality issue.
+Control decks improve more at higher difficulty levels (they need search to time removal correctly).
 
-### Same-Archetype Testing
+### Mirror Match Testing
 
-For testing AI quality independent of deck matchup advantage, use **mirror matches** — same deck on both sides. Modify `build_starter_decks()` to use the same card list for both `player` and `opponent`. Win rates should be close to 50/50 in mirror matches.
+For testing AI quality independent of deck matchup advantage, use mirror matches (`prowess-mirror`, `red-mirror`, etc.). Win rates should be close to 50/50.
 
 ## Interpreting Results
 
