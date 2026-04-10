@@ -114,6 +114,8 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
     // Quantified target phrases routed here from callers that only need the filter,
     // not the target-count metadata.
     static QUANTIFIED_PREFIXES: &[&str] = &[
+        "any number of ",
+        "up to x ",
         "up to one ",
         "up to two ",
         "up to three ",
@@ -256,6 +258,7 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
     }) {
         return (TargetFilter::Any, rest);
     }
+
 
     // "all " + type phrase
     if let Ok((rest, _)) =
