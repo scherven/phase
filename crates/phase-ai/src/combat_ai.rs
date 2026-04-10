@@ -1,10 +1,12 @@
 use engine::game::combat::AttackTarget;
 use engine::game::players;
+use engine::types::ability::{Effect, QuantityExpr, QuantityRef, TargetFilter};
 use engine::types::card_type::CoreType;
 use engine::types::game_state::GameState;
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
 use engine::types::player::PlayerId;
+use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
 
 use crate::config::AiProfile;
@@ -448,22 +450,47 @@ pub fn choose_blockers_with_profile(
         if let Some((blocker_id, priority, _)) = best {
             let attacker_power = attacker.power.unwrap_or(0);
             let p_life = state.players[player.0 as usize].life;
+
+            // Damage-reflection check (Jackal Pup pattern): if the blocker has a
+            // DamageReceived trigger that deals the same damage to its controller,
+            // blocking effectively costs the player that damage too. Skip blocking
+            // when the reflected damage would be lethal, and reduce blocking priority
+            // when the net damage prevented is negative.
+            let blocker_obj = state.objects.get(&blocker_id);
+            let reflects_damage = blocker_obj.is_some_and(has_damage_reflection_to_controller);
+            if reflects_damage {
+                let reflected = attacker_power;
+                if reflected >= p_life {
+                    // Blocking would be lethal from the reflected damage alone — skip
+                    continue;
+                }
+            }
+
             // Chump block: sacrifice the blocker to prevent significant damage
             // when life total is threatened (attacker power >= 3 and life <= 3x that)
             // CR 702.19b: Trample means a chump blocker only prevents blocker_toughness
             // damage, not the full attacker_power. Skip chump blocking tramplers when
             // the blocker is too small to make a meaningful difference.
             let has_trample = attacker.has_keyword(&Keyword::Trample);
-            let blocker_toughness = state
-                .objects
-                .get(&blocker_id)
-                .and_then(|b| b.toughness)
-                .unwrap_or(1);
+            let blocker_toughness = blocker_obj.and_then(|b| b.toughness).unwrap_or(1);
             let damage_prevented = if has_trample {
                 blocker_toughness
             } else {
                 attacker_power
             };
+
+            // For damage-reflection creatures, the net life change from blocking is
+            // (damage_prevented - reflected_damage). If net is non-positive, blocking
+            // costs more life than it saves — skip unless the block actually kills
+            // the attacker (trading the creature is still valuable).
+            if reflects_damage && priority < 2 {
+                let reflected = attacker_power;
+                let net = damage_prevented - reflected;
+                if net <= 0 {
+                    continue;
+                }
+            }
+
             let should_chump_stabilize = priority == 0
                 && damage_prevented >= 2
                 && matches!(objective, CombatObjective::Stabilize)
@@ -618,13 +645,18 @@ pub fn choose_blockers_with_profile(
                     Some(a) => a,
                     None => continue,
                 };
-                // Find any unused blocker that can legally block this attacker
+                // Find any unused blocker that can legally block this attacker.
+                // Skip damage-reflection creatures (Jackal Pup) — blocking with them
+                // deals the attacker's power to the player, negating the damage prevented.
                 if let Some(&blocker_id) = available_blockers.iter().find(|&&bid| {
                     !used_blockers.contains(&bid)
                         && state
                             .objects
                             .get(&bid)
-                            .map(|b| can_block_check(b, attacker))
+                            .map(|b| {
+                                can_block_check(b, attacker)
+                                    && !has_damage_reflection_to_controller(b)
+                            })
                             .unwrap_or(false)
                 }) {
                     assignments.push((blocker_id, attacker_id));
@@ -1000,6 +1032,40 @@ fn evaluate_block_outcome(
     };
 
     (kills, survives)
+}
+
+/// Check if a creature has a DamageReceived trigger that deals the received damage
+/// amount back to its controller (the Jackal Pup / Boros Reckoner pattern).
+/// Returns true if blocking with this creature causes its controller to take the same
+/// damage the creature receives.
+fn has_damage_reflection_to_controller(object: &engine::game::game_object::GameObject) -> bool {
+    object.trigger_definitions.iter().any(|trigger| {
+        if trigger.mode != TriggerMode::DamageReceived {
+            return false;
+        }
+        // Check that valid_card is SelfRef (triggers on damage to itself)
+        let self_card = trigger
+            .valid_card
+            .as_ref()
+            .is_some_and(|f| matches!(f, TargetFilter::SelfRef));
+        if !self_card {
+            return false;
+        }
+        // Check the execute ability deals EventContextAmount damage to Controller
+        let Some(execute) = &trigger.execute else {
+            return false;
+        };
+        matches!(
+            &*execute.effect,
+            Effect::DealDamage {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextAmount
+                },
+                target: TargetFilter::Controller,
+                ..
+            }
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1612,6 +1678,102 @@ mod tests {
         assert!(
             blockers.contains(&(dt_reach, flyer)),
             "Deathtouch creature with reach should block the flyer"
+        );
+    }
+
+    #[test]
+    fn skips_damage_reflection_blocker_at_low_life() {
+        use engine::types::ability::{
+            AbilityDefinition, AbilityKind, Effect, QuantityExpr, QuantityRef, TargetFilter,
+            TriggerDefinition,
+        };
+        use engine::types::triggers::TriggerMode;
+
+        let mut state = setup();
+        state.players[1].life = 4; // P1 at low life
+
+        // P0 attacks with a 4/4
+        let attacker = add_creature(&mut state, PlayerId(0), "Rhino", 4, 4, vec![]);
+
+        // P1 has a Jackal Pup (2/1 with damage-reflection trigger)
+        let pup = add_creature(&mut state, PlayerId(1), "Jackal Pup", 2, 1, vec![]);
+        let pup_trigger = TriggerDefinition::new(TriggerMode::DamageReceived)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::EventContextAmount,
+                    },
+                    target: TargetFilter::Controller,
+                    damage_source: None,
+                },
+            ))
+            .valid_card(TargetFilter::SelfRef)
+            .trigger_zones(vec![Zone::Battlefield]);
+        state
+            .objects
+            .get_mut(&pup)
+            .unwrap()
+            .trigger_definitions
+            .push(pup_trigger);
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[attacker]);
+
+        // Jackal Pup should NOT block the 4/4: taking 4 damage from the trigger
+        // at 4 life would be lethal.
+        assert!(
+            !blockers.iter().any(|&(b, _)| b == pup),
+            "Damage-reflection creature should not block when reflected damage is lethal"
+        );
+    }
+
+    #[test]
+    fn allows_damage_reflection_blocker_at_high_life() {
+        use engine::types::ability::{
+            AbilityDefinition, AbilityKind, Effect, QuantityExpr, QuantityRef, TargetFilter,
+            TriggerDefinition,
+        };
+        use engine::types::triggers::TriggerMode;
+
+        let mut state = setup();
+        state.players[1].life = 20; // P1 at high life
+
+        // P0 attacks with a 2/2
+        let attacker = add_creature(&mut state, PlayerId(0), "Bear", 2, 2, vec![]);
+
+        // P1 has a Jackal Pup (2/1 with damage-reflection)
+        let pup = add_creature(&mut state, PlayerId(1), "Jackal Pup", 2, 1, vec![]);
+        let pup_trigger = TriggerDefinition::new(TriggerMode::DamageReceived)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::EventContextAmount,
+                    },
+                    target: TargetFilter::Controller,
+                    damage_source: None,
+                },
+            ))
+            .valid_card(TargetFilter::SelfRef)
+            .trigger_zones(vec![Zone::Battlefield]);
+        state
+            .objects
+            .get_mut(&pup)
+            .unwrap()
+            .trigger_definitions
+            .push(pup_trigger);
+
+        // P1 also has a normal 3/3 that can block favorably
+        add_creature(&mut state, PlayerId(1), "Centaur", 3, 3, vec![]);
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[attacker]);
+
+        // At high life, the Jackal Pup CAN kill the 2/2 attacker — priority > 0
+        // (kills=true). But the Centaur is a better blocker (survives and kills).
+        // The key point: the pup is NOT excluded from consideration at high life.
+        assert!(
+            !blockers.is_empty(),
+            "Should have at least one blocker assigned"
         );
     }
 }

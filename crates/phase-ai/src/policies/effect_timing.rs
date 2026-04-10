@@ -214,9 +214,22 @@ fn threatened_own_spell_value(state: &GameState, ai_player: PlayerId) -> f64 {
 }
 
 fn combat_trick_score(ctx: &PolicyContext<'_>) -> f64 {
-    // Pump effects expire at cleanup — casting during End/Cleanup has no lasting impact.
+    // Pump effects expire at cleanup — casting outside combat has no lasting impact.
     // Penalty must exceed max search continuation bonus to prevent selection.
-    if matches!(ctx.state.phase, Phase::End | Phase::Cleanup) {
+    if matches!(
+        ctx.state.phase,
+        Phase::End | Phase::Cleanup | Phase::Untap | Phase::Upkeep | Phase::Draw
+    ) {
+        return -2.0;
+    }
+
+    // Main phases with no active combat: pump spells waste mana for zero board impact.
+    // Apply a strong penalty that overrides other positive signals.
+    if matches!(
+        ctx.state.phase,
+        Phase::PreCombatMain | Phase::PostCombatMain
+    ) && ctx.state.combat.is_none()
+    {
         return -2.0;
     }
 
@@ -232,6 +245,7 @@ fn combat_trick_score(ctx: &PolicyContext<'_>) -> f64 {
     ) {
         (0.8 * patience.max(0.5)) + intent_bonus
     } else {
+        // EndCombat or any unrecognized phase — mild penalty
         -0.5 * patience
     }
 }
@@ -283,6 +297,91 @@ mod tests {
         assert!(
             score < -1.5,
             "Combat trick should be strongly penalized during End step, got {score}"
+        );
+    }
+
+    #[test]
+    fn combat_trick_strongly_penalized_main_phase_no_combat() {
+        let mut state = GameState::new_two_player(42);
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        // No combat state — pump has no combat relevance
+        state.combat = None;
+
+        let config = AiConfig::default();
+        let decision = AiDecisionContext {
+            waiting_for: WaitingFor::Priority {
+                player: PlayerId(0),
+            },
+            candidates: Vec::new(),
+        };
+        let candidate = CandidateAction {
+            action: GameAction::CastSpell {
+                object_id: ObjectId(0),
+                card_id: CardId(1),
+                targets: Vec::new(),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Spell,
+            },
+        };
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        let score = combat_trick_score(&ctx);
+        assert!(
+            score < -1.5,
+            "Combat trick should be strongly penalized during main phase with no combat, got {score}"
+        );
+    }
+
+    #[test]
+    fn combat_trick_strongly_penalized_postcombat_main() {
+        let mut state = GameState::new_two_player(42);
+        state.phase = Phase::PostCombatMain;
+        state.active_player = PlayerId(0);
+        state.combat = None;
+
+        let config = AiConfig::default();
+        let decision = AiDecisionContext {
+            waiting_for: WaitingFor::Priority {
+                player: PlayerId(0),
+            },
+            candidates: Vec::new(),
+        };
+        let candidate = CandidateAction {
+            action: GameAction::CastSpell {
+                object_id: ObjectId(0),
+                card_id: CardId(1),
+                targets: Vec::new(),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Spell,
+            },
+        };
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        let score = combat_trick_score(&ctx);
+        assert!(
+            score < -1.5,
+            "Combat trick should be strongly penalized during post-combat main with no combat, got {score}"
         );
     }
 }

@@ -325,6 +325,14 @@ fn score_target_object(ctx: &PolicyContext<'_>, object_id: ObjectId, beneficial:
         return -10.0;
     };
 
+    // Activated abilities with sacrifice-self cost: the source will be sacrificed when
+    // costs are paid, so targeting it wastes the ability (target becomes illegal on
+    // resolution). Applies to patterns like Mogg Fanatic ("Sacrifice ~: ~ deals 1 damage
+    // to any target") where the AI must not target the source it's about to sacrifice.
+    if target_is_sacrificed_source(ctx, object_id) {
+        return -100.0;
+    }
+
     let controller_delta = if object.controller == ctx.ai_player {
         if beneficial {
             1.0
@@ -586,6 +594,38 @@ fn ability_cost_requires_sacrifice(ability: &engine::types::ability::AbilityDefi
 
 /// Extract the fixed damage amount from the pending spell's DealDamage effect.
 /// Returns None for variable damage or non-damage spells.
+/// Returns true if `object_id` is the source of an activated ability whose cost
+/// includes sacrificing itself. Targeting such an object is wasteful because the
+/// source will be gone before the ability resolves.
+fn target_is_sacrificed_source(ctx: &PolicyContext<'_>, object_id: ObjectId) -> bool {
+    let WaitingFor::TargetSelection { pending_cast, .. } = &ctx.decision.waiting_for else {
+        return false;
+    };
+
+    // The source object for the pending ability
+    if pending_cast.object_id != object_id {
+        return false;
+    }
+
+    // Check if the activation cost includes sacrifice-self
+    let Some(activation_cost) = &pending_cast.activation_cost else {
+        return false;
+    };
+
+    cost_includes_sacrifice_self(activation_cost)
+}
+
+fn cost_includes_sacrifice_self(cost: &AbilityCost) -> bool {
+    match cost {
+        AbilityCost::Sacrifice {
+            target: TargetFilter::SelfRef,
+            ..
+        } => true,
+        AbilityCost::Composite { costs } => costs.iter().any(cost_includes_sacrifice_self),
+        _ => false,
+    }
+}
+
 fn extract_damage_amount(effects: &[&Effect]) -> Option<i32> {
     effects.iter().find_map(|effect| match effect {
         Effect::DealDamage {
@@ -2386,6 +2426,124 @@ mod tests {
                 }
             ),
             "Should see ChangeZone Exile effect"
+        );
+    }
+
+    #[test]
+    fn sacrifice_self_ability_penalizes_targeting_source() {
+        // Mogg Fanatic pattern: "Sacrifice ~: ~ deals 1 damage to any target."
+        // The AI must not target the source creature — it will be sacrificed as cost.
+        let mut state = make_state();
+        let fanatic_id = add_creature(&mut state, PlayerId(0), "Mogg Fanatic", 1, 1);
+        let opp_creature = add_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        let config = AiConfig::default();
+
+        let effect = Effect::DealDamage {
+            amount: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Any,
+            damage_source: None,
+        };
+        let ability = ResolvedAbility::new(effect, Vec::new(), fanatic_id, PlayerId(0));
+        let mut pending_cast = PendingCast::new(fanatic_id, CardId(100), ability, ManaCost::zero());
+        pending_cast.activation_cost = Some(AbilityCost::Composite {
+            costs: vec![AbilityCost::Sacrifice {
+                target: TargetFilter::SelfRef,
+                count: 1,
+            }],
+        });
+
+        let legal_targets = vec![
+            TargetRef::Object(fanatic_id),
+            TargetRef::Object(opp_creature),
+            TargetRef::Player(PlayerId(1)),
+        ];
+        let decision = AiDecisionContext {
+            waiting_for: WaitingFor::TargetSelection {
+                player: PlayerId(0),
+                pending_cast: Box::new(pending_cast),
+                target_slots: vec![TargetSelectionSlot {
+                    legal_targets,
+                    optional: false,
+                }],
+                selection: Default::default(),
+            },
+            candidates: Vec::new(),
+        };
+
+        // Score targeting the source (Mogg Fanatic itself)
+        let candidate_self = CandidateAction {
+            action: GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(fanatic_id)),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Target,
+            },
+        };
+        let ctx_self = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate_self,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+        let score_self = AntiSelfHarmPolicy.score(&ctx_self);
+
+        // Score targeting opponent creature
+        let candidate_opp = CandidateAction {
+            action: GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(opp_creature)),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Target,
+            },
+        };
+        let ctx_opp = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate_opp,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+        let score_opp = AntiSelfHarmPolicy.score(&ctx_opp);
+
+        // Score targeting opponent player
+        let candidate_player = CandidateAction {
+            action: GameAction::ChooseTarget {
+                target: Some(TargetRef::Player(PlayerId(1))),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Target,
+            },
+        };
+        let ctx_player = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate_player,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+        let score_player = AntiSelfHarmPolicy.score(&ctx_player);
+
+        assert!(
+            score_self < -50.0,
+            "Targeting sacrificed source should be heavily penalized, got {score_self}"
+        );
+        assert!(
+            score_opp > score_self,
+            "Opponent creature should score higher than sacrificed source: opp={score_opp}, self={score_self}"
+        );
+        assert!(
+            score_player > score_self,
+            "Opponent player should score higher than sacrificed source: player={score_player}, self={score_self}"
         );
     }
 }
