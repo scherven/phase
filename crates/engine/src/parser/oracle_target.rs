@@ -111,6 +111,20 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
     let text = text.trim_start();
     let lower = text.to_lowercase();
 
+    // Strip leading article ("a "/"an ") before "target" to handle "a target creature".
+    // Guard: only strip when followed by "target " to avoid over-stripping.
+    if let Ok((after_article, _)) = alt((
+        tag::<_, _, nom_language::error::VerboseError<&str>>("a "),
+        tag("an "),
+    ))
+    .parse(lower.as_str())
+    {
+        if after_article.starts_with("target ") {
+            let original_rest = &text[lower.len() - after_article.len()..];
+            return parse_target(original_rest);
+        }
+    }
+
     // Quantified target phrases routed here from callers that only need the filter,
     // not the target-count metadata.
     static QUANTIFIED_PREFIXES: &[&str] = &[
@@ -141,6 +155,7 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
                 tag::<_, _, nom_language::error::VerboseError<&str>>("target "),
                 tag("other target "),
                 tag("another target "),
+                tag("other "),
             ))
             .parse(rest)
             .is_ok()
@@ -259,7 +274,6 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         return (TargetFilter::Any, rest);
     }
 
-
     // "all " + type phrase
     if let Ok((rest, _)) =
         tag::<_, _, nom_language::error::VerboseError<&str>>("all ").parse(lower.as_str())
@@ -354,6 +368,7 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         "the exiled permanents",
         "the exiled permanent",
         "the exiled creature",
+        "both creatures",
     ];
     for phrase in TRACKED_SET_PHRASES {
         if let Ok((rest, _)) =
@@ -372,11 +387,16 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
     static SELECTED_FROM_SET_PHRASES: &[&str] = &[
         "new targets for the copies",
         "new targets for the copy",
+        "new targets for that copy",
+        "new targets for target spell",
         "new targets for it",
+        "a new target for it",
         "up to one of them",
         "either of them",
         "the chosen creature",
         "the chosen card",
+        "the chosen player",
+        "the revealed card",
         "the token",
         "one of those cards",
         "one of those permanents",
@@ -417,24 +437,23 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         }
     }
 
-    // CR 608.2c: "the player" / "the opponent" — definite anaphoric reference to a
-    // previously-mentioned player in the same instruction sequence.
-    if let Ok((rest, _)) =
-        tag::<_, _, nom_language::error::VerboseError<&str>>("the player").parse(lower.as_str())
-    {
-        return (
-            TargetFilter::ParentTarget,
-            &text[lower.len() - rest.len()..],
-        );
-    }
-    if let Ok((rest, _)) =
-        tag::<_, _, nom_language::error::VerboseError<&str>>("the creature's controller")
-            .parse(lower.as_str())
-    {
-        return (
-            TargetFilter::ParentTargetController,
-            &text[lower.len() - rest.len()..],
-        );
+    // CR 608.2c: Definite anaphoric references to previously-mentioned objects/players.
+    // Longest-match-first: "the creature's controller" before "the creature".
+    if let Some((filter, rest)) = nom_on_lower(text, &lower, |input| {
+        alt((
+            value(
+                TargetFilter::ParentTargetController,
+                tag::<_, _, nom_language::error::VerboseError<&str>>("the creature's controller"),
+            ),
+            value(TargetFilter::ParentTargetController, tag("its controller")),
+            value(TargetFilter::ParentTarget, tag("the player")),
+            value(TargetFilter::ParentTarget, tag("the creature")),
+            value(TargetFilter::ParentTarget, tag("the spell")),
+            value(TargetFilter::ParentTarget, tag("the land")),
+        ))
+        .parse(input)
+    }) {
+        return (filter, rest);
     }
     // "himself" / "herself" — archaic self-reference (e.g., "deals damage to himself")
     if let Ok((rest, _)) = alt((
@@ -446,18 +465,21 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         return (TargetFilter::SelfRef, &text[lower.len() - rest.len()..]);
     }
 
-    // "each opponent"
-    if let Some((_, rest)) = nom_on_lower(text, &lower, |input| {
-        value(
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
-            tag::<_, _, nom_language::error::VerboseError<&str>>("each opponent"),
-        )
+    // "each opponent" / "opponents" — opponent player references
+    if let Some((filter, rest)) = nom_on_lower(text, &lower, |input| {
+        alt((
+            value(
+                TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+                tag::<_, _, nom_language::error::VerboseError<&str>>("each opponent"),
+            ),
+            value(
+                TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+                tag("opponents"),
+            ),
+        ))
         .parse(input)
     }) {
-        return (
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
-            rest,
-        );
+        return (filter, rest);
     }
 
     for phrase in ["opponent's graveyard", "an opponent's graveyard"] {
@@ -524,32 +546,42 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         return (filter, rest);
     }
 
-    // "enchanted creature" / "equipped creature"
+    // "enchanted [type]" / "equipped creature"
+    // First check special case: "enchanted permanent's controller" → controller ref
     if let Some((filter, rest)) = nom_on_lower(text, &lower, |input| {
-        nom::branch::alt((
-            value(
-                TargetFilter::ParentTargetController,
-                tag("enchanted permanent's controller"),
+        value(
+            TargetFilter::ParentTargetController,
+            tag::<_, _, nom_language::error::VerboseError<&str>>(
+                "enchanted permanent's controller",
             ),
-            value(
-                TargetFilter::Typed(
-                    TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]),
-                ),
-                tag::<_, _, nom_language::error::VerboseError<&str>>("enchanted creature"),
-            ),
-            value(
-                TargetFilter::Typed(
-                    TypedFilter::permanent().properties(vec![FilterProp::EnchantedBy]),
-                ),
-                tag("enchanted permanent"),
-            ),
-            value(
-                TargetFilter::Typed(
-                    TypedFilter::creature().properties(vec![FilterProp::EquippedBy]),
-                ),
-                tag("equipped creature"),
-            ),
-        ))
+        )
+        .parse(input)
+    }) {
+        return (filter, rest);
+    }
+    // "enchanted [type phrase]" → parse the type after "enchanted " and add EnchantedBy
+    if let Ok((rest_lower, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("enchanted ").parse(lower.as_str())
+    {
+        let after_enchanted = &text[lower.len() - rest_lower.len()..];
+        let (filter, rest) = parse_type_phrase(after_enchanted);
+        if target_filter_has_meaningful_content(&filter) {
+            let enchanted = match filter {
+                TargetFilter::Typed(mut tf) => {
+                    tf.properties.push(FilterProp::EnchantedBy);
+                    TargetFilter::Typed(tf)
+                }
+                other => other,
+            };
+            return (enchanted, rest);
+        }
+    }
+    // "equipped creature" → creature with EquippedBy
+    if let Some((filter, rest)) = nom_on_lower(text, &lower, |input| {
+        value(
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EquippedBy])),
+            tag::<_, _, nom_language::error::VerboseError<&str>>("equipped creature"),
+        )
         .parse(input)
     }) {
         return (filter, rest);
@@ -579,6 +611,13 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
     // "you" — the controller (not a targeted player), with word boundary
     if let Some((_, rest)) = nom_on_lower(text, &lower, |input| parse_word_bounded(input, "you")) {
         return (TargetFilter::Controller, rest);
+    }
+
+    // "the top/bottom [N] [type] card[s] of [possessive] library/graveyard"
+    // Zone position references that appear as targets of exile/mill/reveal effects.
+    // Returns a filter with InZone for the referenced zone and controller.
+    if let Some((filter, rest)) = parse_zone_position_ref(text, &lower) {
+        return (filter, rest);
     }
 
     // CR 400.12: Bare possessive zone references ("their graveyard", "your library").
@@ -2062,6 +2101,129 @@ fn typed(
         controller: None,
         properties,
     })
+}
+
+/// Parse "the top/bottom [N] [type] card[s] of [possessive] library/graveyard".
+///
+/// Returns a `TargetFilter::Typed` with `InZone` for the referenced zone and the
+/// appropriate controller. Matches zone position references that appear as targets
+/// in exile/mill/reveal effects (e.g., "exile the top card of each player's library").
+///
+/// The remainder includes any trailing text after the zone word (e.g., " face down").
+fn parse_zone_position_ref<'a>(text: &'a str, lower: &str) -> Option<(TargetFilter, &'a str)> {
+    // Must start with "the top " or "the bottom "
+    let (after_position, _is_top) = if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("the top ").parse(lower)
+    {
+        (rest, true)
+    } else if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("the bottom ").parse(lower)
+    {
+        (rest, false)
+    } else {
+        return None;
+    };
+
+    // Optional number: "three ", "two ", etc. — skip it, we only care about the zone.
+    let after_number = if let Ok((rest, _)) = nom_primitives::parse_number(after_position) {
+        rest.trim_start()
+    } else {
+        after_position
+    };
+
+    // Optional type word before "card"/"cards": "creature card", "instant card", etc.
+    let after_type = if let Ok((rest, _)) = nom_target::parse_type_filter_word(after_number) {
+        let trimmed = rest.trim_start();
+        // Only consume if followed by "card"/"cards" (not standalone)
+        if trimmed.starts_with("card") {
+            trimmed
+        } else {
+            after_number
+        }
+    } else {
+        after_number
+    };
+
+    // Required "card " or "cards "
+    let after_card = if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("cards ").parse(after_type)
+    {
+        rest
+    } else if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("card ").parse(after_type)
+    {
+        rest
+    } else {
+        return None;
+    };
+
+    // Required "of "
+    let after_of = tag::<_, _, nom_language::error::VerboseError<&str>>("of ")
+        .parse(after_card)
+        .ok()?
+        .0;
+
+    // Possessive + zone word: "your library", "their library", "each player's library"
+    // Try possessive first, then zone word
+    let zone_words: &[(&str, &str, Zone)] = &[
+        ("library", "libraries", Zone::Library),
+        ("graveyard", "graveyards", Zone::Graveyard),
+    ];
+
+    // Check "each player's" / "each opponent's" / "target player's" / "target opponent's"
+    let (controller, after_possessive) = if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("each player's ").parse(after_of)
+    {
+        (None, rest) // All players
+    } else if let Ok((rest, _)) = alt((
+        tag::<_, _, nom_language::error::VerboseError<&str>>("each opponent's "),
+        tag("each opponents' "),
+    ))
+    .parse(after_of)
+    {
+        (Some(ControllerRef::Opponent), rest)
+    } else if let Ok((rest, _)) = alt((
+        tag::<_, _, nom_language::error::VerboseError<&str>>("target player's "),
+        tag("target opponent's "),
+    ))
+    .parse(after_of)
+    {
+        (None, rest) // Targeted player — resolved at runtime
+    } else if let Some((_, rest)) = strip_possessive(after_of) {
+        // Generic possessive: "your library", "their library"
+        let ctrl = if tag::<_, _, nom_language::error::VerboseError<&str>>("your ")
+            .parse(after_of)
+            .is_ok()
+        {
+            Some(ControllerRef::You)
+        } else {
+            None
+        };
+        (ctrl, rest)
+    } else {
+        return None;
+    };
+
+    // Required zone word
+    for &(zone_word, zone_plural, ref zone) in zone_words {
+        for word in [zone_word, zone_plural] {
+            if let Ok((zone_rest, _)) =
+                tag::<_, _, nom_language::error::VerboseError<&str>>(word).parse(after_possessive)
+            {
+                let consumed = lower.len() - zone_rest.len();
+                return Some((
+                    TargetFilter::Typed(TypedFilter {
+                        controller,
+                        properties: vec![FilterProp::InZone { zone: *zone }],
+                        ..Default::default()
+                    }),
+                    &text[consumed..],
+                ));
+            }
+        }
+    }
+
+    None
 }
 
 /// Parse a zone suffix like "card from a graveyard", "from your graveyard", "from exile".
