@@ -160,6 +160,8 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
             .parse(rest)
             .is_ok()
                 || starts_with_type_word(trimmed_rest)
+                || starts_with_type_phrase_lead(trimmed_rest)
+                || parse_combat_status_prefix(trimmed_rest).is_some()
                 || (!matches!(*prefix, "one " | "up to one ") && trimmed_rest.starts_with("of "));
             if quantified_target {
                 let original_rest = &text[lower.len() - rest.len()..];
@@ -396,6 +398,7 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         "the chosen creature",
         "the chosen card",
         "the chosen player",
+        "the last chosen card",
         "the revealed card",
         "the token",
         "one of those cards",
@@ -454,6 +457,57 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         .parse(input)
     }) {
         return (filter, rest);
+    }
+    // "the [type] card" / "the enchanted [type] card" — definite reference to a
+    // previously-mentioned typed card. Must come after tracked-set phrases.
+    if let Ok((after_the, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("the ").parse(lower.as_str())
+    {
+        // "the enchanted card" / "the enchanted instant card"
+        let type_start = if let Ok((rest, _)) =
+            tag::<_, _, nom_language::error::VerboseError<&str>>("enchanted ").parse(after_the)
+        {
+            rest
+        } else {
+            after_the
+        };
+
+        // Check for [type] card pattern: the remaining must start with a type word
+        // followed by " card"/"cards", or just be "card"/"cards" directly.
+        let has_type_card =
+            if let Ok((after_type, _)) = nom_target::parse_type_filter_word(type_start) {
+                let after_type = after_type.trim_start();
+                after_type.starts_with("card") || after_type.is_empty()
+            } else {
+                false
+            };
+
+        // Also check bare "card"/"cards" (e.g., "the enchanted card")
+        let is_bare_card = type_start.starts_with("card");
+
+        if has_type_card || is_bare_card {
+            // Find end of "card"/"cards"
+            let card_start = if is_bare_card {
+                type_start
+            } else if let Ok((after_type, _)) = nom_target::parse_type_filter_word(type_start) {
+                after_type.trim_start()
+            } else {
+                type_start
+            };
+            let rest_after_card = if let Ok((r, _)) =
+                tag::<_, _, nom_language::error::VerboseError<&str>>("cards").parse(card_start)
+            {
+                r
+            } else if let Ok((r, _)) =
+                tag::<_, _, nom_language::error::VerboseError<&str>>("card").parse(card_start)
+            {
+                r
+            } else {
+                card_start
+            };
+            let consumed = lower.len() - rest_after_card.len();
+            return (TargetFilter::ParentTarget, &text[consumed..]);
+        }
     }
     // "himself" / "herself" — archaic self-reference (e.g., "deals damage to himself")
     if let Ok((rest, _)) = alt((
