@@ -849,6 +849,17 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
         return parsed_clause(Effect::RingTemptsYou);
     }
 
+    // CR 101.4 + CR 701.21a: "For each player, you choose from among the permanents that
+    // player controls an artifact, a creature, ..." — Tragic Arrogance pattern where
+    // the spell's controller chooses for all players.
+    if let Ok((after_prefix, _)) =
+        tag::<_, _, VerboseError<&str>>("for each player, you choose ").parse(tp.lower)
+    {
+        if let Some(ast) = imperative::parse_category_and_sacrifice_rest_pub(after_prefix) {
+            return parsed_clause(imperative::lower_choose_ast(ast));
+        }
+    }
+
     if tp.lower == "start your engines!" || tp.lower == "start your engines" {
         return parsed_clause(Effect::StartYourEngines {
             player_scope: PlayerFilter::Controller,
@@ -1711,6 +1722,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
                 enters_attacking,
                 supertypes,
                 static_abilities,
+                enter_with_counters,
                 count: _,
             } => Effect::Token {
                 name,
@@ -1725,6 +1737,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
                 enters_attacking,
                 supertypes,
                 static_abilities,
+                enter_with_counters,
                 count: quantity,
             },
             other => other,

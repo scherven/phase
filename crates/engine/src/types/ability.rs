@@ -32,6 +32,18 @@ pub enum Chooser {
     Opponent,
 }
 
+/// CR 101.4: Who selects permanents in a multi-player category choice effect
+/// (e.g., Cataclysm, Tragic Arrogance). Determines whether each player independently
+/// chooses which of their permanents to keep, or the spell's controller decides for everyone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CategoryChooserScope {
+    /// Each player chooses their own permanents in APNAP order (Cataclysm, Cataclysmic Gearhulk).
+    #[default]
+    EachPlayerSelf,
+    /// The controller of the spell/ability chooses for all players (Tragic Arrogance).
+    ControllerForAll,
+}
+
 /// CR 608.2d: Who may choose to perform an optional effect during resolution.
 /// Used with `AbilityDefinition::optional_for` to route the "you may" prompt to opponents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -2058,6 +2070,11 @@ pub enum Effect {
         /// Static abilities granted to the token (e.g., "This token can't block.").
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         static_abilities: Vec<StaticDefinition>,
+        /// Counters placed on the token as it enters the battlefield.
+        /// Each entry is (counter_type, count). Used by "The token enters with
+        /// X +1/+1 counters on it" patterns.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enter_with_counters: Vec<(String, QuantityExpr)>,
     },
     GainLife {
         #[serde(default = "default_quantity_one")]
@@ -2654,6 +2671,16 @@ pub enum Effect {
         #[serde(default)]
         chooser: Chooser,
     },
+    /// CR 101.4 + CR 701.21a: Each player chooses one permanent per type category
+    /// from among the permanents they control, then sacrifices the rest.
+    /// Building block for Cataclysm, Tragic Arrogance, Cataclysmic Gearhulk.
+    ChooseAndSacrificeRest {
+        /// Which card type categories to choose from (e.g., [Artifact, Creature, Enchantment, Land]).
+        categories: Vec<CoreType>,
+        /// CR 101.4: Whether each player chooses independently or one player decides for all.
+        #[serde(default)]
+        chooser_scope: CategoryChooserScope,
+    },
     /// CR 702.110b: Exploit — sacrifice a creature you control (optional).
     /// The controller may sacrifice any creature they control, including the exploiter itself.
     Exploit {
@@ -3133,6 +3160,7 @@ impl Effect {
             | Effect::PayCost { .. }
             | Effect::GrantCastingPermission { .. }
             | Effect::ChooseFromZone { .. }
+            | Effect::ChooseAndSacrificeRest { .. }
             | Effect::GainEnergy { .. }
             | Effect::ExileFromTopUntil { .. }
             | Effect::RevealUntil { .. }
@@ -3268,6 +3296,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::TakeTheInitiative => "TakeTheInitiative",
         Effect::GrantCastingPermission { .. } => "GrantCastingPermission",
         Effect::ChooseFromZone { .. } => "ChooseFromZone",
+        Effect::ChooseAndSacrificeRest { .. } => "ChooseAndSacrificeRest",
         Effect::Exploit { .. } => "Exploit",
         Effect::GainEnergy { .. } => "GainEnergy",
         Effect::GivePlayerCounter { .. } => "GivePlayerCounter",
@@ -3409,6 +3438,7 @@ pub enum EffectKind {
     TakeTheInitiative,
     GrantCastingPermission,
     ChooseFromZone,
+    ChooseAndSacrificeRest,
     Exploit,
     GainEnergy,
     GivePlayerCounter,
@@ -3551,6 +3581,7 @@ impl From<&Effect> for EffectKind {
             Effect::TakeTheInitiative => EffectKind::TakeTheInitiative,
             Effect::GrantCastingPermission { .. } => EffectKind::GrantCastingPermission,
             Effect::ChooseFromZone { .. } => EffectKind::ChooseFromZone,
+            Effect::ChooseAndSacrificeRest { .. } => EffectKind::ChooseAndSacrificeRest,
             Effect::Exploit { .. } => EffectKind::Exploit,
             Effect::GainEnergy { .. } => EffectKind::GainEnergy,
             Effect::GivePlayerCounter { .. } => EffectKind::GivePlayerCounter,
@@ -5601,6 +5632,7 @@ mod tests {
             enters_attacking: false,
             supertypes: vec![],
             static_abilities: vec![],
+            enter_with_counters: vec![],
         };
         let json = serde_json::to_string(&effect).unwrap();
         let deserialized: Effect = serde_json::from_str(&json).unwrap();
