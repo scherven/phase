@@ -3753,6 +3753,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_choose_creature_they_control() {
+        // Imperial Edict pattern: "choose a creature they control"
+        let text = "choose a creature they control";
+        let lower = text.to_lowercase();
+        let result = parse_choose_ast(text, &lower);
+        match result {
+            Some(ChooseImperativeAst::TargetOnly { target }) => {
+                // Should extract creature filter with controller
+                assert!(
+                    matches!(target, TargetFilter::Typed { .. }),
+                    "Expected Typed filter, got {target:?}"
+                );
+            }
+            Some(ChooseImperativeAst::Reparse { .. }) => {
+                // Also acceptable — reparse path handles "they control"
+            }
+            other => panic!("Expected TargetOnly or Reparse for 'they control', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_choose_from_among_remains_unhandled() {
+        // Cataclysm pattern: "from among" should NOT be treated as targeting
+        let text =
+            "choose from among the permanents they control an artifact, a creature, an enchantment, and a land";
+        let lower = text.to_lowercase();
+        let result = parse_choose_ast(text, &lower);
+        // Should return None (falls through to Unimplemented) since "from among"
+        // multi-category selection is not yet supported.
+        assert!(
+            result.is_none(),
+            "Expected None for 'from among' pattern, got {result:?}"
+        );
+    }
+
+    #[test]
     fn lower_choose_anaphoric_to_choose_from_zone() {
         let ast = ChooseImperativeAst::FromTrackedSet {
             count: 3,

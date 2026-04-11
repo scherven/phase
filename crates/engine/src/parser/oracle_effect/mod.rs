@@ -3278,13 +3278,30 @@ fn is_choose_as_targeting(rest: &str) -> bool {
         {
             return false;
         }
-        // Must reference controller to be targeting-like
-        if scan_contains_phrase(after_article, "you control")
-            || scan_contains_phrase(after_article, "opponent controls")
-            || scan_contains_phrase(after_article, "an opponent controls")
+        // Must reference controller to be targeting-like.
+        // "they control" covers "target opponent chooses a creature they control"
+        // where "they" refers to the targeted player (CR 608.2d).
+        // Exclude "from among" patterns (Cataclysm-family multi-category selection)
+        // which require engine infrastructure not yet implemented.
+        if !scan_contains_phrase(after_article, "from among")
+            && (scan_contains_phrase(after_article, "you control")
+                || scan_contains_phrase(after_article, "opponent controls")
+                || scan_contains_phrase(after_article, "an opponent controls")
+                || scan_contains_phrase(after_article, "they control"))
         {
             return true;
         }
+    }
+
+    // General controller-reference fallback for non-article patterns:
+    // "six lands they control", "any number of creatures they control",
+    // "three permanents they control", etc.
+    // Exclude "from among" patterns (Cataclysm-family multi-category selection)
+    // which require engine infrastructure not yet implemented.
+    if !scan_contains_phrase(rest, "from among")
+        && (scan_contains_phrase(rest, "they control") || scan_contains_phrase(rest, "you control"))
+    {
+        return true;
     }
 
     false
@@ -8096,7 +8113,10 @@ mod tests {
             &ParseContext::default(),
         );
         assert!(
-            matches!(clause.effect, Effect::Mill { .. } | Effect::TargetOnly { .. }),
+            matches!(
+                clause.effect,
+                Effect::Mill { .. } | Effect::TargetOnly { .. }
+            ),
             "expected Mill or TargetOnly, got {:?}",
             clause.effect
         );
