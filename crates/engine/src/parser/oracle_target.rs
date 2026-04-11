@@ -162,6 +162,9 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
                 || starts_with_type_word(trimmed_rest)
                 || starts_with_type_phrase_lead(trimmed_rest)
                 || parse_combat_status_prefix(trimmed_rest).is_some()
+                // Pronoun references after quantity: "any number of them"
+                || parse_word_bounded(trimmed_rest, "them").is_ok()
+                || parse_word_bounded(trimmed_rest, "it").is_ok()
                 || (!matches!(*prefix, "one " | "up to one ") && trimmed_rest.starts_with("of "));
             if quantified_target {
                 let original_rest = &text[lower.len() - rest.len()..];

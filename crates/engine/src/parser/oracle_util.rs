@@ -376,7 +376,15 @@ pub fn parse_mana_symbols(text: &str) -> Option<(ManaCost, &str)> {
 }
 
 /// Possessive variants used in MTG Oracle text ("your library", "their hand", etc.).
-const POSSESSIVES: &[&str] = &["your", "their", "its owner's", "that player's"];
+const POSSESSIVES: &[&str] = &[
+    "your",
+    "their",
+    "its owner's",
+    "that player's",
+    "defending player's",
+    "each player's",
+    "each opponent's",
+];
 
 /// Object pronouns in MTG Oracle text that refer to previously-mentioned objects.
 /// Used in anaphoric references like "shuffle it into", "put them onto", "exile that card".
