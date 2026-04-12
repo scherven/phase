@@ -2390,14 +2390,19 @@ fn parse_zone_suffix(text: &str) -> Option<(FilterProp, Option<ControllerRef>, u
 
     let after_card_lower = after_card.to_lowercase();
     let zones: &[(&str, &str, Zone)] = &[
+        ("battlefield", "battlefields", Zone::Battlefield),
         ("graveyard", "graveyards", Zone::Graveyard),
         ("exile", "exiles", Zone::Exile),
         ("hand", "hands", Zone::Hand),
         ("library", "libraries", Zone::Library),
     ];
 
-    for prep in &["from", "in"] {
+    for prep in &["from", "in", "on"] {
         for &(zone_word, zone_plural, ref zone) in zones {
+            // "on" is only valid for "on the battlefield" — skip other zones.
+            if *prep == "on" && *zone != Zone::Battlefield {
+                continue;
+            }
             // Possessive: "from your graveyard", "from their graveyard"
             // Use starts_with_possessive to avoid false matches where "in" is part of "into".
             if starts_with_possessive(after_card, prep, zone_word) {
@@ -2432,6 +2437,18 @@ fn parse_zone_suffix(text: &str) -> Option<(FilterProp, Option<ControllerRef>, u
                     FilterProp::InZone { zone: *zone },
                     None,
                     leading_ws + card_skip + indef.len(),
+                ));
+            }
+
+            let definite = format!("{prep} the {zone_word}");
+            if tag::<_, _, nom_language::error::VerboseError<&str>>(definite.as_str())
+                .parse(after_card_lower.as_str())
+                .is_ok()
+            {
+                return Some((
+                    FilterProp::InZone { zone: *zone },
+                    None,
+                    leading_ws + card_skip + definite.len(),
                 ));
             }
 
@@ -2856,6 +2873,22 @@ mod tests {
             TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::InZone {
                 zone: Zone::Graveyard
             }]))
+        );
+        assert_eq!(rest.trim(), "");
+    }
+
+    #[test]
+    fn elf_on_the_battlefield() {
+        let (f, rest) = parse_type_phrase("Elf on the battlefield");
+        assert_eq!(
+            f,
+            TargetFilter::Typed(
+                TypedFilter::default()
+                    .subtype("Elf".to_string())
+                    .properties(vec![FilterProp::InZone {
+                        zone: Zone::Battlefield,
+                    }],)
+            )
         );
         assert_eq!(rest.trim(), "");
     }

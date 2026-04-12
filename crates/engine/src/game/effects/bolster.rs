@@ -94,6 +94,8 @@ pub fn resolve(
             player: controller,
             cards: tied,
             count: 1,
+            up_to: false,
+            constraint: None,
             source_id,
         };
 

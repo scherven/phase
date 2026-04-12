@@ -1,5 +1,8 @@
 use crate::game::players;
-use crate::types::ability::{Chooser, Effect, EffectError, EffectKind, ResolvedAbility, TargetRef};
+use crate::types::ability::{
+    ChooseFromZoneConstraint, Chooser, Effect, EffectError, EffectKind, ResolvedAbility, TargetRef,
+};
+use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
@@ -14,8 +17,14 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (count, chooser) = match &ability.effect {
-        Effect::ChooseFromZone { count, chooser, .. } => (*count as usize, *chooser),
+    let (count, chooser, up_to, constraint) = match &ability.effect {
+        Effect::ChooseFromZone {
+            count,
+            chooser,
+            up_to,
+            constraint,
+            ..
+        } => (*count as usize, *chooser, *up_to, constraint.clone()),
         _ => return Err(EffectError::MissingParam("ChooseFromZone".to_string())),
     };
 
@@ -61,6 +70,8 @@ pub fn resolve(
         player: choosing_player,
         cards,
         count: clamped_count,
+        up_to,
+        constraint,
         source_id: ability.source_id,
     };
 
@@ -93,6 +104,76 @@ fn resolve_chooser(state: &GameState, ability: &ResolvedAbility, chooser: Choose
                 .unwrap_or(ability.controller)
         }
     }
+}
+
+pub fn selection_satisfies_constraint(
+    state: &GameState,
+    chosen: &[ObjectId],
+    constraint: Option<&ChooseFromZoneConstraint>,
+) -> bool {
+    match constraint {
+        None => true,
+        Some(ChooseFromZoneConstraint::DistinctCardTypes { categories }) => {
+            selected_cards_cover_distinct_card_types(state, chosen, categories)
+        }
+    }
+}
+
+fn selected_cards_cover_distinct_card_types(
+    state: &GameState,
+    chosen: &[ObjectId],
+    categories: &[CoreType],
+) -> bool {
+    if chosen.is_empty() {
+        return true;
+    }
+    if chosen.len() > categories.len() {
+        return false;
+    }
+
+    let card_options: Option<Vec<Vec<usize>>> = chosen
+        .iter()
+        .map(|id| {
+            state.objects.get(id).map(|obj| {
+                categories
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, category)| {
+                        obj.card_types.core_types.contains(category).then_some(idx)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+
+    let mut card_options = match card_options {
+        Some(options) => options,
+        None => return false,
+    };
+    if card_options.iter().any(Vec::is_empty) {
+        return false;
+    }
+
+    card_options.sort_by_key(Vec::len);
+    let mut used = vec![false; categories.len()];
+    assign_distinct_categories(&card_options, &mut used, 0)
+}
+
+fn assign_distinct_categories(card_options: &[Vec<usize>], used: &mut [bool], idx: usize) -> bool {
+    if idx == card_options.len() {
+        return true;
+    }
+    for &category_idx in &card_options[idx] {
+        if used[category_idx] {
+            continue;
+        }
+        used[category_idx] = true;
+        if assign_distinct_categories(card_options, used, idx + 1) {
+            return true;
+        }
+        used[category_idx] = false;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -131,6 +212,8 @@ mod tests {
                 count: 1,
                 zone: Zone::Exile,
                 chooser: Chooser::Controller,
+                up_to: false,
+                constraint: None,
             },
             vec![],
             ObjectId(100),
@@ -145,11 +228,15 @@ mod tests {
                 player,
                 cards,
                 count,
+                up_to,
+                constraint,
                 ..
             } => {
                 assert_eq!(*player, PlayerId(0), "Controller should be the chooser");
                 assert_eq!(cards.len(), 2);
                 assert_eq!(*count, 1);
+                assert!(!up_to);
+                assert!(constraint.is_none());
             }
             other => panic!("Expected ChooseFromZoneChoice, got {:?}", other),
         }
@@ -176,6 +263,8 @@ mod tests {
                 count: 1,
                 zone: Zone::Exile,
                 chooser: Chooser::Opponent,
+                up_to: false,
+                constraint: None,
             },
             vec![],
             ObjectId(100),
@@ -216,6 +305,8 @@ mod tests {
                 count: 1,
                 zone: Zone::Exile,
                 chooser: Chooser::Opponent,
+                up_to: false,
+                constraint: None,
             },
             vec![TargetRef::Player(PlayerId(1))],
             ObjectId(100),
@@ -246,6 +337,8 @@ mod tests {
                 count: 1,
                 zone: Zone::Exile,
                 chooser: Chooser::Opponent,
+                up_to: false,
+                constraint: None,
             },
             vec![],
             ObjectId(100),
@@ -284,6 +377,8 @@ mod tests {
                 count: 3,
                 zone: Zone::Exile,
                 chooser: Chooser::Controller,
+                up_to: false,
+                constraint: None,
             },
             vec![],
             ObjectId(100),
@@ -299,5 +394,83 @@ mod tests {
             }
             other => panic!("Expected ChooseFromZoneChoice, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn distinct_card_type_constraint_accepts_valid_assignment() {
+        let mut state = GameState::new_two_player(42);
+        let artifact_creature = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Patchwork Automaton".to_string(),
+            Zone::Library,
+        );
+        state
+            .objects
+            .get_mut(&artifact_creature)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Artifact, CoreType::Creature];
+        let creature = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Elvish Mystic".to_string(),
+            Zone::Library,
+        );
+        state
+            .objects
+            .get_mut(&creature)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Creature];
+
+        assert!(selection_satisfies_constraint(
+            &state,
+            &[artifact_creature, creature],
+            Some(&ChooseFromZoneConstraint::DistinctCardTypes {
+                categories: vec![CoreType::Artifact, CoreType::Creature],
+            }),
+        ));
+    }
+
+    #[test]
+    fn distinct_card_type_constraint_rejects_duplicate_assignment_only() {
+        let mut state = GameState::new_two_player(42);
+        let creature_a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Elvish Mystic".to_string(),
+            Zone::Library,
+        );
+        state
+            .objects
+            .get_mut(&creature_a)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Creature];
+        let creature_b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Llanowar Elves".to_string(),
+            Zone::Library,
+        );
+        state
+            .objects
+            .get_mut(&creature_b)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Creature];
+
+        assert!(!selection_satisfies_constraint(
+            &state,
+            &[creature_a, creature_b],
+            Some(&ChooseFromZoneConstraint::DistinctCardTypes {
+                categories: vec![CoreType::Artifact, CoreType::Creature],
+            }),
+        ));
     }
 }

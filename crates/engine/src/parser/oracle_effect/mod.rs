@@ -31,10 +31,11 @@ use crate::parser::oracle_effect::subject::parse_subject_application;
 use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, AbilityKind, CardPlayMode, CastingPermission, ChoiceType,
-    ConjureCard, ContinuousModification, ControllerRef, DamageSource, DelayedTriggerCondition,
-    Duration, Effect, FilterProp, GameRestriction, MultiTargetSpec, PlayerFilter, PtValue,
-    QuantityExpr, QuantityRef, RestrictionExpiry, RestrictionPlayerScope, RoundingMode,
-    StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter, UnlessCost, ZoneRef,
+    ChooseFromZoneConstraint, ConjureCard, ContinuousModification, ControllerRef, DamageSource,
+    DelayedTriggerCondition, Duration, Effect, FilterProp, GameRestriction, MultiTargetSpec,
+    PlayerFilter, PtValue, QuantityExpr, QuantityRef, RestrictionExpiry, RestrictionPlayerScope,
+    RoundingMode, StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
+    UnlessCost, ZoneRef,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::game_state::{DistributionUnit, NextSpellModifier, RetargetScope};
@@ -987,6 +988,72 @@ fn try_parse_have_causative(tp: TextPair<'_>, ctx: &ParseContext) -> Option<Pars
     None
 }
 
+fn all_core_type_categories() -> Vec<CoreType> {
+    vec![
+        CoreType::Artifact,
+        CoreType::Battle,
+        CoreType::Creature,
+        CoreType::Enchantment,
+        CoreType::Instant,
+        CoreType::Land,
+        CoreType::Planeswalker,
+        CoreType::Sorcery,
+    ]
+}
+
+fn try_parse_distinct_card_types_from_revealed(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    type E<'a> = VerboseError<&'a str>;
+
+    let (rest, _) = tag::<_, _, E>("for each ").parse(tp.lower).ok()?;
+    let (rest, _) = alt((tag::<_, _, E>("card type"), tag("card types")))
+        .parse(rest)
+        .ok()?;
+    let (rest, _) = tag::<_, _, E>(", you may put ").parse(rest).ok()?;
+    let (rest, _) = nom_primitives::parse_article.parse(rest).ok()?;
+    let (rest, _) = tag::<_, _, E>("card of that type from among ")
+        .parse(rest)
+        .ok()?;
+    let (rest, _) = alt((
+        tag::<_, _, E>("the revealed cards"),
+        tag("those revealed cards"),
+    ))
+    .parse(rest)
+    .ok()?;
+    let (rest, _) = tag::<_, _, E>(" into your hand").parse(rest).ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    let categories = all_core_type_categories();
+    Some(ParsedEffectClause {
+        effect: Effect::ChooseFromZone {
+            count: categories.len() as u32,
+            zone: Zone::Library,
+            chooser: crate::types::ability::Chooser::Controller,
+            up_to: true,
+            constraint: Some(ChooseFromZoneConstraint::DistinctCardTypes { categories }),
+        },
+        duration: None,
+        sub_ability: Some(Box::new(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChangeZone {
+                origin: Some(Zone::Library),
+                destination: Zone::Hand,
+                target: TargetFilter::Any,
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+            },
+        ))),
+        distribute: None,
+        multi_target: None,
+        condition: None,
+    })
+}
+
 #[tracing::instrument(level = "debug")]
 fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     let text = strip_leading_sequence_connector(text)
@@ -1029,6 +1096,10 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     // CR 608.2d: "have it [verb]" / "have you [verb]" — causative construction
     // from "any opponent may" effects (e.g., "have it deal 4 damage to them").
     if let Some(clause) = try_parse_have_causative(tp, ctx) {
+        return clause;
+    }
+
+    if let Some(clause) = try_parse_distinct_card_types_from_revealed(tp) {
         return clause;
     }
 
@@ -9149,6 +9220,8 @@ mod tests {
                     count: 1,
                     zone: crate::types::zones::Zone::Exile,
                     chooser: crate::types::ability::Chooser::Controller,
+                    up_to: false,
+                    constraint: None,
                 }
             ),
             "Expected ChooseFromZone {{ count: 1, zone: Exile, chooser: Controller }}, got {:?}",

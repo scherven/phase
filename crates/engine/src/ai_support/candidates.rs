@@ -384,17 +384,34 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             player,
             cards,
             count,
+            up_to,
+            constraint,
             ..
-        } => combinations(cards, *count)
-            .into_iter()
-            .map(|combo| {
-                candidate(
-                    GameAction::SelectCards { cards: combo },
-                    TacticalClass::Selection,
-                    Some(*player),
-                )
-            })
-            .collect(),
+        } => {
+            let sizes = if *up_to {
+                (0..=*count).collect()
+            } else {
+                vec![*count]
+            };
+            sizes
+                .into_iter()
+                .flat_map(|size| combinations(cards, size))
+                .filter(|combo| {
+                    crate::game::effects::choose_from_zone::selection_satisfies_constraint(
+                        state,
+                        combo,
+                        constraint.as_ref(),
+                    )
+                })
+                .map(|combo| {
+                    candidate(
+                        GameAction::SelectCards { cards: combo },
+                        TacticalClass::Selection,
+                        Some(*player),
+                    )
+                })
+                .collect()
+        }
         WaitingFor::EffectZoneChoice {
             player,
             cards,

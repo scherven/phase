@@ -1098,6 +1098,8 @@ pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
             count,
             zone: Zone::Exile,
             chooser,
+            up_to: false,
+            constraint: None,
         },
         // CR 101.4 + CR 701.21a: Multi-category permanent selection + sacrifice rest.
         ChooseImperativeAst::CategoryAndSacrificeRest {
@@ -4003,10 +4005,14 @@ mod tests {
                 count,
                 zone,
                 chooser,
+                up_to,
+                constraint,
             } => {
                 assert_eq!(count, 3);
                 assert_eq!(zone, Zone::Exile);
                 assert_eq!(chooser, Chooser::Opponent);
+                assert!(!up_to);
+                assert!(constraint.is_none());
             }
             other => panic!("Expected ChooseFromZone, got {other:?}"),
         }

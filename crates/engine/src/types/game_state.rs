@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use super::ability::{
     AbilityCost, AbilityDefinition, AdditionalCost, ChoiceType, ChoiceValue,
-    ContinuousModification, DelayedTriggerCondition, Duration, GameRestriction, ModalChoice,
-    ResolvedAbility, StaticCondition, TargetFilter, TargetRef, TriggerCondition, UnlessCost,
+    ChooseFromZoneConstraint, ContinuousModification, DelayedTriggerCondition, Duration,
+    GameRestriction, ModalChoice, ResolvedAbility, StaticCondition, TargetFilter, TargetRef,
+    TriggerCondition, UnlessCost,
 };
 use super::card::CardFace;
 use super::card_type::{CoreType, Supertype};
@@ -525,6 +526,10 @@ pub enum WaitingFor {
         player: PlayerId,
         cards: Vec<ObjectId>,
         count: usize,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up_to: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        constraint: Option<ChooseFromZoneConstraint>,
         source_id: ObjectId,
     },
     /// CR 701.50a: Player chooses card(s) to discard for connive.
@@ -2141,6 +2146,8 @@ mod tests {
             player: PlayerId(0),
             cards: vec![ObjectId(1)],
             count: 1,
+            up_to: false,
+            constraint: None,
             source_id: ObjectId(100),
         }));
         variants.push(Box::new(WaitingFor::TriggerTargetSelection {

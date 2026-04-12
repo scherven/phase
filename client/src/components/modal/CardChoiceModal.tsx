@@ -1,11 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 
 import { CardImage } from "../card/CardImage.tsx";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
-import type { ManaCost, ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts";
+import type { GameObject, ManaCost, ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { ChoiceOverlay, ConfirmButton, ScrollableCardStrip } from "./ChoiceOverlay.tsx";
 import { NamedChoiceModal } from "./NamedChoiceModal.tsx";
@@ -31,6 +31,48 @@ type ManifestDreadChoice = Extract<WaitingFor, { type: "ManifestDreadChoice" }>;
 type CrewVehicle = Extract<WaitingFor, { type: "CrewVehicle" }>;
 const CHOICE_CARD_IMAGE_CLASS = "";
 const SCRY_CARD_IMAGE_CLASS = "";
+
+function canAssignDistinctCardTypes(
+  objects: Record<ObjectId, GameObject | undefined>,
+  selectedIds: ObjectId[],
+  categories: string[],
+): boolean {
+  if (selectedIds.length === 0) return true;
+  if (selectedIds.length > categories.length) return false;
+
+  const cardOptions = selectedIds
+    .map((id) => {
+      const obj = objects[id];
+      if (!obj) return null;
+      return categories
+        .map((category, index) =>
+          obj.card_types.core_types.includes(category) ? index : -1,
+        )
+        .filter((index) => index >= 0);
+    });
+
+  if (cardOptions.some((options) => !options || options.length === 0)) {
+    return false;
+  }
+
+  const sortedOptions = [...cardOptions]
+    .filter((options): options is number[] => Array.isArray(options))
+    .sort((a, b) => a.length - b.length);
+  const used = new Array(categories.length).fill(false);
+
+  const assign = (idx: number): boolean => {
+    if (idx === sortedOptions.length) return true;
+    for (const categoryIndex of sortedOptions[idx]) {
+      if (used[categoryIndex]) continue;
+      used[categoryIndex] = true;
+      if (assign(idx + 1)) return true;
+      used[categoryIndex] = false;
+    }
+    return false;
+  };
+
+  return assign(0);
+}
 
 /**
  * Generic card choice modal for Scry, Dig, Surveil, Reveal, Search, and NamedChoice.
@@ -561,6 +603,17 @@ function ChooseFromZoneModal({
   const objects = useGameStore((s) => s.gameState?.objects);
   const inspectObject = useUiStore((s) => s.inspectObject);
   const [selectedSet, setSelectedSet] = useState<Set<ObjectId>>(new Set());
+  const selectedIds = useMemo(() => Array.from(selectedSet), [selectedSet]);
+  const selectionRule = data.constraint;
+  const selectionValid =
+    !!objects &&
+    (!selectionRule ||
+      (selectionRule.type === "DistinctCardTypes" &&
+        canAssignDistinctCardTypes(objects, selectedIds, selectionRule.categories)));
+  const countValid = data.up_to
+    ? selectedSet.size <= data.count
+    : selectedSet.size === data.count;
+  const canConfirm = countValid && selectionValid;
 
   const toggleSelect = useCallback(
     (id: ObjectId) => {
@@ -578,21 +631,27 @@ function ChooseFromZoneModal({
   );
 
   const handleConfirm = useCallback(() => {
-    if (selectedSet.size === data.count) {
+    if (canConfirm) {
       dispatch({
         type: "SelectCards",
-        data: { cards: Array.from(selectedSet) },
+        data: { cards: selectedIds },
       });
     }
-  }, [dispatch, selectedSet, data.count]);
+  }, [canConfirm, dispatch, selectedIds]);
 
   if (!objects) return null;
+
+  const subtitle = selectionRule?.type === "DistinctCardTypes"
+    ? `Choose up to ${data.count} cards with distinct card types`
+    : data.up_to
+      ? `Choose up to ${data.count} card${data.count > 1 ? "s" : ""}`
+      : `Choose ${data.count} card${data.count > 1 ? "s" : ""}`;
 
   return (
     <ChoiceOverlay
       title="Choose Cards"
-      subtitle={`Choose ${data.count} card${data.count > 1 ? "s" : ""}`}
-      footer={<ConfirmButton onClick={handleConfirm} disabled={selectedSet.size !== data.count} />}
+      subtitle={subtitle}
+      footer={<ConfirmButton onClick={handleConfirm} disabled={!canConfirm} />}
     >
       <ScrollableCardStrip>
         {data.cards.map((id, index) => {

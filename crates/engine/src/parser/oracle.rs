@@ -2109,6 +2109,98 @@ mod tests {
     }
 
     #[test]
+    fn priest_of_titania_mana_ability_supported() {
+        let r = parse(
+            "{T}: Add {G} for each Elf on the battlefield.",
+            "Priest of Titania",
+            &[],
+            &["Creature"],
+            &["Elf", "Druid"],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        assert_eq!(r.abilities[0].kind, AbilityKind::Activated);
+        assert!(matches!(*r.abilities[0].effect, Effect::Mana { .. }));
+    }
+
+    #[test]
+    fn distinct_card_type_choose_wires_remainder_on_bottom() {
+        use crate::types::ability::{ChooseFromZoneConstraint, LibraryPosition};
+        let r = parse(
+            "Flying, vigilance, deathtouch, lifelink\nWhen Atraxa enters, reveal the top ten cards of your library. For each card type, you may put a card of that type from among the revealed cards into your hand. Put the rest on the bottom of your library in a random order.",
+            "Atraxa, Grand Unifier",
+            &[
+                Keyword::Flying,
+                Keyword::Vigilance,
+                Keyword::Deathtouch,
+                Keyword::Lifelink,
+            ],
+            &["Creature"],
+            &["Phyrexian", "Angel"],
+        );
+        assert_eq!(r.triggers.len(), 1);
+        let trigger = &r.triggers[0];
+        let def = trigger
+            .execute
+            .as_ref()
+            .expect("trigger should have execute");
+        assert!(
+            !has_unimplemented(def),
+            "ETB should not contain Unimplemented effects: {def:?}",
+        );
+
+        // Walk the effect chain: RevealTop → ChooseFromZone → ChangeZone(Library→Hand) → PutAtLibraryPosition(Bottom)
+        let choose_def = def
+            .sub_ability
+            .as_ref()
+            .expect("RevealTop should chain to ChooseFromZone");
+        assert!(
+            matches!(
+                &*choose_def.effect,
+                Effect::ChooseFromZone {
+                    up_to: true,
+                    constraint: Some(ChooseFromZoneConstraint::DistinctCardTypes { .. }),
+                    ..
+                }
+            ),
+            "Expected ChooseFromZone with DistinctCardTypes constraint, got {:?}",
+            choose_def.effect,
+        );
+
+        let change_zone_def = choose_def
+            .sub_ability
+            .as_ref()
+            .expect("ChooseFromZone should chain to ChangeZone(Library→Hand)");
+        assert!(
+            matches!(
+                &*change_zone_def.effect,
+                Effect::ChangeZone {
+                    origin: Some(Zone::Library),
+                    destination: Zone::Hand,
+                    ..
+                }
+            ),
+            "Expected ChangeZone(Library→Hand), got {:?}",
+            change_zone_def.effect,
+        );
+
+        let bottom_def = change_zone_def
+            .sub_ability
+            .as_ref()
+            .expect("ChangeZone should chain to PutAtLibraryPosition(Bottom) for unchosen cards");
+        assert!(
+            matches!(
+                &*bottom_def.effect,
+                Effect::PutAtLibraryPosition {
+                    position: LibraryPosition::Bottom,
+                    ..
+                }
+            ),
+            "Expected PutAtLibraryPosition(Bottom), got {:?}",
+            bottom_def.effect,
+        );
+    }
+
+    #[test]
     fn murder_spell_destroy() {
         let r = parse("Destroy target creature.", "Murder", &[], &["Instant"], &[]);
         assert_eq!(r.abilities.len(), 1);

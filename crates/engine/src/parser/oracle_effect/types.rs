@@ -165,6 +165,10 @@ pub(super) enum ContinuationAst {
     /// library-to-hand search continuation are already represented by the intrinsic
     /// SearchDestination + reveal flag and should be absorbed.
     SearchResultClauseHandled,
+    /// "Put the rest on the bottom of your library ..." after a tracked-set choice that
+    /// already moved chosen cards out of the library. Appends a library-bottom placement
+    /// step onto the preceding ChangeZone so the unchosen cards are handled by that chain.
+    PutChoiceRemainderOnBottom,
     /// "Put the rest on the bottom/into your graveyard" after Dig/RevealTop —
     /// sets `rest_destination` on the preceding Dig effect. The destination is
     /// parsed from the text (bottom of library, graveyard, hand, etc.).

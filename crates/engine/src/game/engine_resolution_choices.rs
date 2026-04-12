@@ -419,15 +419,23 @@ pub(super) fn handle_resolution_choice(
                 player,
                 cards,
                 count,
+                up_to,
+                constraint,
                 ..
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
-            if chosen.len() != count {
+            let valid_count = if up_to {
+                chosen.len() <= count
+            } else {
+                chosen.len() == count
+            };
+            if !valid_count {
                 return Err(EngineError::InvalidAction(format!(
-                    "Must select exactly {} card(s), got {}",
+                    "Must select {}{} card(s), got {}",
+                    if up_to { "up to " } else { "exactly " },
                     count,
-                    chosen.len()
+                    chosen.len(),
                 )));
             }
             for card_id in &chosen {
@@ -436,6 +444,15 @@ pub(super) fn handle_resolution_choice(
                         "Selected card not in available set".to_string(),
                     ));
                 }
+            }
+            if !effects::choose_from_zone::selection_satisfies_constraint(
+                state,
+                &chosen,
+                constraint.as_ref(),
+            ) {
+                return Err(EngineError::InvalidAction(
+                    "Selected cards do not satisfy the tracked-set choice constraint".to_string(),
+                ));
             }
 
             let unchosen: Vec<_> = cards

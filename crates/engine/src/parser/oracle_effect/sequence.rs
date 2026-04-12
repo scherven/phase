@@ -661,10 +661,46 @@ pub(super) fn apply_clause_continuation(
                     count,
                     zone: Zone::Exile,
                     chooser,
+                    up_to: false,
+                    constraint: None,
                 },
             ));
         }
         ContinuationAst::SearchResultClauseHandled => {}
+        ContinuationAst::PutChoiceRemainderOnBottom => {
+            let Some(previous) = defs.last_mut() else {
+                return;
+            };
+            let bottom_def = AbilityDefinition::new(
+                kind,
+                Effect::PutAtLibraryPosition {
+                    target: TargetFilter::Any,
+                    position: crate::types::ability::LibraryPosition::Bottom,
+                },
+            );
+            // Walk into the sub_ability chain to find the right attachment point.
+            // For ChooseFromZone, the sub_ability is ChangeZone(Library→Hand) and we
+            // attach the bottom-placement as *its* sub_ability (unchosen targets flow there).
+            // For a bare ChangeZone(Library→Hand), attach directly.
+            let target_def = if matches!(&*previous.effect, Effect::ChooseFromZone { .. }) {
+                previous.sub_ability.as_deref_mut()
+            } else {
+                Some(previous)
+            };
+            if let Some(def) = target_def {
+                if matches!(
+                    &*def.effect,
+                    Effect::ChangeZone {
+                        origin: Some(Zone::Library),
+                        destination: Zone::Hand,
+                        ..
+                    }
+                ) && def.sub_ability.is_none()
+                {
+                    def.sub_ability = Some(Box::new(bottom_def));
+                }
+            }
+        }
         ContinuationAst::EntersTappedAttacking => {
             let Some(previous) = defs.last_mut() else {
                 return;
@@ -769,6 +805,7 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::PutRest { .. } => true,
         ContinuationAst::ChooseFromExile { .. } => true,
         ContinuationAst::SearchResultClauseHandled => true,
+        ContinuationAst::PutChoiceRemainderOnBottom => true,
         ContinuationAst::EntersTappedAttacking => true,
         ContinuationAst::TokenEntersWithCounters { .. } => true,
         ContinuationAst::DigFromAmong { .. } => true,
@@ -1128,6 +1165,13 @@ pub(super) fn parse_followup_continuation_ast(
         {
             Some(ContinuationAst::CantRegenerate)
         }
+        Effect::ChooseFromZone { .. }
+            if lower == "put the rest on the bottom of your library in a random order"
+                || lower == "put the rest on the bottom of your library in any order"
+                || lower == "put the rest on the bottom of your library" =>
+        {
+            Some(ContinuationAst::PutChoiceRemainderOnBottom)
+        }
         // CR 700.2: "Choose/You choose/An opponent chooses/Target opponent chooses one/two/N
         // of them/those" after ChangeZone, ExileTop, RevealTop, or RevealHand →
         // ChooseFromZone building block
@@ -1176,6 +1220,16 @@ pub(super) fn parse_followup_continuation_ast(
         ) =>
         {
             Some(ContinuationAst::SearchResultClauseHandled)
+        }
+        Effect::ChangeZone {
+            origin: Some(Zone::Library),
+            destination: Zone::Hand,
+            ..
+        } if lower == "put the rest on the bottom of your library in a random order"
+            || lower == "put the rest on the bottom of your library in any order"
+            || lower == "put the rest on the bottom of your library" =>
+        {
+            Some(ContinuationAst::PutChoiceRemainderOnBottom)
         }
         // "Put up to N [filter] from among them/those cards onto the battlefield/into your hand"
         // and "put N of them into your hand [and the rest on the bottom]"

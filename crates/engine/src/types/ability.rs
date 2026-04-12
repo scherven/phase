@@ -45,6 +45,14 @@ pub enum CategoryChooserScope {
     ControllerForAll,
 }
 
+/// Additional selection constraints for tracked-set card picks during resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ChooseFromZoneConstraint {
+    /// The chosen cards must admit an injective assignment to distinct card types
+    /// from the listed categories.
+    DistinctCardTypes { categories: Vec<CoreType> },
+}
+
 /// CR 608.2d: Who may choose to perform an optional effect during resolution.
 /// Used with `AbilityDefinition::optional_for` to route the "you may" prompt to opponents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -2676,6 +2684,12 @@ pub enum Effect {
         /// Who makes the choice: controller (default) or opponent.
         #[serde(default)]
         chooser: Chooser,
+        /// CR 609.3: When true, the chooser may select any number from 0..=count.
+        #[serde(default)]
+        up_to: bool,
+        /// Additional validation rules for the chosen subset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        constraint: Option<ChooseFromZoneConstraint>,
     },
     /// CR 101.4 + CR 701.21a: Each player chooses one permanent per type category
     /// from among the permanents they control, then sacrifices the rest.

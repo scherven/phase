@@ -170,6 +170,8 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         player,
         ref cards,
         count,
+        up_to,
+        ref constraint,
         source_id,
     } = state.waiting_for
     {
@@ -178,6 +180,8 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                 player,
                 cards: cards.iter().map(|_| ObjectId(0)).collect(),
                 count,
+                up_to,
+                constraint: constraint.clone(),
                 source_id,
             };
         }
@@ -341,6 +345,8 @@ mod tests {
             player: PlayerId(1),
             cards: vec![card_id],
             count: 1,
+            up_to: false,
+            constraint: None,
             source_id: ObjectId(99),
         };
 
