@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetRef};
@@ -35,7 +35,8 @@ pub fn resolve(
             unless_filter,
             ..
         } => (
-            resolve_quantity(state, count, ability.controller, ability.source_id) as u32,
+            // CR 107.1b: Use ability context so X resolves against the caster's chosen value.
+            resolve_quantity_with_targets(state, count, ability) as u32,
             *up_to,
             unless_filter.clone(),
         ),

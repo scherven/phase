@@ -1,5 +1,5 @@
 use crate::game::filter::matches_target_filter;
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::types::ability::{
     Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
 };
@@ -43,8 +43,7 @@ pub fn resolve(
 
     // CR 701.20a: If a count is specified, reveal only that many cards.
     let hand = if let Some(count_expr) = &count {
-        let n = resolve_quantity(state, count_expr, ability.controller, ability.source_id).max(0)
-            as usize;
+        let n = resolve_quantity_with_targets(state, count_expr, ability).max(0) as usize;
         full_hand.into_iter().take(n).collect()
     } else {
         full_hand

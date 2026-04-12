@@ -174,7 +174,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::RoomEntered { .. }
         | GameEvent::DungeonCompleted { .. }
         | GameEvent::InitiativeTaken { .. }
-        | GameEvent::Clash { .. } => LogCategory::Special,
+        | GameEvent::Clash { .. }
+        | GameEvent::XValueChosen { .. } => LogCategory::Special,
     }
 }
 
@@ -745,6 +746,9 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
         GameEvent::DungeonCompleted { .. } => vec![text("Dungeon completed")],
         GameEvent::InitiativeTaken { .. } => vec![text("Initiative taken")],
         GameEvent::Clash { .. } => vec![text("Clash")],
+        GameEvent::XValueChosen { value, .. } => {
+            vec![text("Chose X = "), text(&value.to_string())]
+        }
     }
 }
 

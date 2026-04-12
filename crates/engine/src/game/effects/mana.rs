@@ -1,5 +1,5 @@
 use crate::game::mana_sources;
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::{resolve_quantity, resolve_quantity_with_targets};
 use crate::types::ability::{
     Effect, EffectError, EffectKind, ManaProduction, ManaSpendRestriction, ResolvedAbility,
 };
@@ -24,10 +24,14 @@ pub fn resolve(
     };
     // CR 106.3: Mana is produced by the effects of mana abilities. The source
     // of produced mana is the source of the ability.
+    // CR 107.1b: When X is part of a mana production quantity (rare — e.g., an
+    // effect on the stack that resolved via `ResolvedAbility` and produces X mana),
+    // `resolve_quantity_with_targets` threads `ability.chosen_x` through to the
+    // `Variable { name: "X" }` branch of `resolve_ref`. Non-X mana production
+    // (Fixed, ObjectCount, etc.) is unaffected.
     let mana_types = match produced {
         ManaProduction::ChosenColor { count } => {
-            let amount = resolve_quantity(&*state, count, ability.controller, ability.source_id)
-                .max(0) as usize;
+            let amount = resolve_quantity_with_targets(&*state, count, ability).max(0) as usize;
             state
                 .objects
                 .get(&ability.source_id)
@@ -35,7 +39,7 @@ pub fn resolve(
                 .map(|color| vec![mana_color_to_type(&color); amount])
                 .unwrap_or_default()
         }
-        other => resolve_mana_types(other, &*state, ability.controller, ability.source_id),
+        other => resolve_mana_types_with_ability(other, &*state, ability),
     };
 
     // Resolve restriction templates into concrete restrictions
@@ -112,12 +116,55 @@ fn resolve_restrictions(
 
 /// Resolve a typed mana production descriptor into concrete mana units.
 ///
-/// Current limitations:
-/// - Variable counts resolve to 0 units.
-/// - Chosen-color production resolves to 0 units (chosen-color runtime binding is not implemented).
+/// CR 605.3a: Mana abilities don't use the stack, so they have no `ResolvedAbility`
+/// and thus no `chosen_x` — this entry point is used by `mana_abilities::resolve_mana_ability`
+/// for that path. Effects that resolve from the stack (e.g., `Add {G}{G}` as part
+/// of a triggered-ability effect) should use `resolve_mana_types_with_ability` so
+/// `QuantityRef::Variable { name: "X" }` can resolve from the ability's chosen X.
 pub(crate) fn resolve_mana_types(
     produced: &ManaProduction,
     state: &GameState,
+    controller: crate::types::player::PlayerId,
+    source_id: crate::types::identifiers::ObjectId,
+) -> Vec<ManaType> {
+    resolve_mana_types_impl(produced, state, None, controller, source_id)
+}
+
+/// Variant of `resolve_mana_types` that threads the resolving ability's context
+/// (including `chosen_x`) into quantity resolution. Use this from stack-resolving
+/// effect handlers (`effects::mana::resolve`).
+fn resolve_mana_types_with_ability(
+    produced: &ManaProduction,
+    state: &GameState,
+    ability: &ResolvedAbility,
+) -> Vec<ManaType> {
+    resolve_mana_types_impl(
+        produced,
+        state,
+        Some(ability),
+        ability.controller,
+        ability.source_id,
+    )
+}
+
+fn resolve_count(
+    count: &crate::types::ability::QuantityExpr,
+    state: &GameState,
+    ability: Option<&ResolvedAbility>,
+    controller: crate::types::player::PlayerId,
+    source_id: crate::types::identifiers::ObjectId,
+) -> usize {
+    let raw = match ability {
+        Some(a) => resolve_quantity_with_targets(state, count, a),
+        None => resolve_quantity(state, count, controller, source_id),
+    };
+    raw.max(0) as usize
+}
+
+fn resolve_mana_types_impl(
+    produced: &ManaProduction,
+    state: &GameState,
+    ability: Option<&ResolvedAbility>,
     controller: crate::types::player::PlayerId,
     source_id: crate::types::identifiers::ObjectId,
 ) -> Vec<ManaType> {
@@ -126,10 +173,7 @@ pub(crate) fn resolve_mana_types(
         ManaProduction::Fixed { colors } => colors.iter().map(mana_color_to_type).collect(),
         // CR 106.1b: Colorless mana is a type of mana distinct from colored mana.
         ManaProduction::Colorless { count } => {
-            vec![
-                ManaType::Colorless;
-                resolve_quantity(state, count, controller, source_id).max(0) as usize
-            ]
+            vec![ManaType::Colorless; resolve_count(count, state, ability, controller, source_id)]
         }
         // CR 106.5: If an ability would produce one or more mana of an undefined type,
         // it produces no mana instead.
@@ -137,7 +181,7 @@ pub(crate) fn resolve_mana_types(
             count,
             color_options,
         } => {
-            let amount = resolve_quantity(state, count, controller, source_id).max(0) as usize;
+            let amount = resolve_count(count, state, ability, controller, source_id);
             let Some(mana_type) = color_options.first().map(mana_color_to_type) else {
                 return Vec::new();
             };
@@ -147,7 +191,7 @@ pub(crate) fn resolve_mana_types(
             count,
             color_options,
         } => {
-            let amount = resolve_quantity(state, count, controller, source_id).max(0) as usize;
+            let amount = resolve_count(count, state, ability, controller, source_id);
             if color_options.is_empty() {
                 return Vec::new();
             }
@@ -159,7 +203,7 @@ pub(crate) fn resolve_mana_types(
         // CR 106.7: Produce mana of any color that a land an opponent controls could produce.
         // Delegates to mana_sources::opponent_land_color_options for the shared computation.
         ManaProduction::OpponentLandColors { count } => {
-            let amount = resolve_quantity(state, count, controller, source_id).max(0) as usize;
+            let amount = resolve_count(count, state, ability, controller, source_id);
             let color_options = mana_sources::opponent_land_color_options(state, controller);
             // CR 106.5: If no color can be defined, produce no mana.
             let Some(first) = color_options.first().copied() else {

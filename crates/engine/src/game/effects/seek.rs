@@ -2,7 +2,7 @@ use rand::seq::SliceRandom;
 
 use crate::game::effects::change_zone;
 use crate::game::filter::matches_target_filter_controlled;
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
@@ -29,8 +29,7 @@ pub fn resolve(
         _ => return Err(EffectError::InvalidParam("Expected Seek".to_string())),
     };
 
-    let count =
-        resolve_quantity(state, &count_expr, ability.controller, ability.source_id).max(0) as usize;
+    let count = resolve_quantity_with_targets(state, &count_expr, ability).max(0) as usize;
 
     let player = state
         .players

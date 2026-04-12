@@ -1,5 +1,5 @@
 use crate::game::printed_cards::apply_card_face_to_object;
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
@@ -29,13 +29,8 @@ pub fn resolve(
     };
 
     for conjure_card in cards {
-        let count = resolve_quantity(
-            state,
-            &conjure_card.count,
-            ability.controller,
-            ability.source_id,
-        )
-        .max(0) as u32;
+        let count =
+            resolve_quantity_with_targets(state, &conjure_card.count, ability).max(0) as u32;
 
         // Look up the card face data from the registry (populated at game init).
         let card_face = state

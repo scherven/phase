@@ -453,14 +453,35 @@ fn escape_variant_preserved_through_mana_payment() {
             .expect("Exile selection should succeed");
     }
 
-    // X cost means ManaPayment should be the current state
+    // CR 107.1b + CR 601.2f: X costs divert to ChooseXValue before mana payment.
+    // The escape casting variant must be preserved through that diversion so the
+    // subsequent ManaPayment step knows it is still an escape cast.
     assert!(
-        matches!(runner.state().waiting_for, WaitingFor::ManaPayment { .. }),
-        "Expected ManaPayment for X-cost escape, got {:?}",
+        matches!(runner.state().waiting_for, WaitingFor::ChooseXValue { .. }),
+        "Expected ChooseXValue for X-cost escape after exile selection, got {:?}",
         runner.state().waiting_for
     );
 
-    // Verify pending_cast has Escape variant
+    let pending_after_exile = runner
+        .state()
+        .pending_cast
+        .as_ref()
+        .expect("pending_cast should exist during ChooseXValue");
+    assert_eq!(
+        pending_after_exile.casting_variant,
+        CastingVariant::Escape,
+        "CastingVariant::Escape must survive into ChooseXValue"
+    );
+
+    runner
+        .act(GameAction::ChooseX { value: 1 })
+        .expect("ChooseX should advance to ManaPayment");
+
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::ManaPayment { .. }),
+        "Expected ManaPayment after ChooseX, got {:?}",
+        runner.state().waiting_for
+    );
     let pending = runner
         .state()
         .pending_cast

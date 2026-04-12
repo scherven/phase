@@ -1,5 +1,5 @@
 use crate::game::filter;
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::types::ability::{
     ContinuousModification, DoublePTMode, Duration, Effect, EffectError, EffectKind, PtValue,
     ResolvedAbility, TargetFilter, TargetRef,
@@ -278,7 +278,7 @@ fn pt_modifications(
         }
         PtValue::Variable(_) => {} // X-spell: value determined at cast time (TODO)
         PtValue::Quantity(expr) => {
-            let resolved = resolve_quantity(state, expr, ability.controller, ability.source_id);
+            let resolved = resolve_quantity_with_targets(state, expr, ability);
             if resolved != 0 {
                 mods.push(ContinuousModification::AddPower { value: resolved });
             }
@@ -291,7 +291,7 @@ fn pt_modifications(
         }
         PtValue::Variable(_) => {}
         PtValue::Quantity(expr) => {
-            let resolved = resolve_quantity(state, expr, ability.controller, ability.source_id);
+            let resolved = resolve_quantity_with_targets(state, expr, ability);
             if resolved != 0 {
                 mods.push(ContinuousModification::AddToughness { value: resolved });
             }

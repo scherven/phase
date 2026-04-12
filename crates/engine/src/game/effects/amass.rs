@@ -1,5 +1,5 @@
 use crate::game::effects::counters::add_counter_with_replacement;
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::card_type::{CardType, CoreType};
@@ -27,7 +27,7 @@ pub fn resolve(
     };
 
     let controller = ability.controller;
-    let n = resolve_quantity(state, &count_expr, controller, ability.source_id).max(0) as u32;
+    let n = resolve_quantity_with_targets(state, &count_expr, ability).max(0) as u32;
 
     // CR 701.47a: Find an existing Army creature on the controller's battlefield.
     let army_id = find_army(state, controller);

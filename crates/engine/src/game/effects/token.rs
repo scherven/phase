@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::{resolve_quantity, resolve_quantity_with_targets};
 use crate::game::replacement::{self, ReplacementResult};
 use crate::game::zones;
 use crate::types::ability::{
@@ -351,7 +351,7 @@ pub fn resolve(
             colors.clone(),
             keywords.clone(),
             *tapped,
-            resolve_quantity(state, count, ability.controller, ability.source_id).max(0) as u32,
+            resolve_quantity_with_targets(state, count, ability).max(0) as u32,
             owner,
             *enters_attacking,
             supertypes.clone(),
@@ -493,13 +493,8 @@ pub fn resolve(
                     // CR 122.1a: Place counters on the token as it enters the battlefield.
                     // Used by "The token enters with X +1/+1 counters on it" patterns.
                     for (counter_type_str, qty_expr) in &etb_counters {
-                        let counter_count = resolve_quantity(
-                            state,
-                            qty_expr,
-                            ability.controller,
-                            ability.source_id,
-                        )
-                        .max(0) as u32;
+                        let counter_count =
+                            resolve_quantity_with_targets(state, qty_expr, ability).max(0) as u32;
                         if counter_count > 0 {
                             let ct = crate::types::counter::parse_counter_type(counter_type_str);
                             super::counters::add_counter_with_replacement(

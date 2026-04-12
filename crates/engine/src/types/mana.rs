@@ -474,6 +474,24 @@ impl ManaCost {
             }
         }
     }
+
+    /// CR 107.1b + CR 601.2f: Replace every `ManaCostShard::X` in this cost with
+    /// `value * x_count` generic mana. Called after the caster commits to an X
+    /// value, so mana payment sees a concrete cost with no symbolic X remaining.
+    /// Multiple X shards (e.g. `{X}{X}`) each contribute `value` generic.
+    pub fn concretize_x(&mut self, value: u32) {
+        if let ManaCost::Cost { shards, generic } = self {
+            let x_count = shards
+                .iter()
+                .filter(|s| matches!(s, ManaCostShard::X))
+                .count();
+            if x_count == 0 {
+                return;
+            }
+            shards.retain(|s| !matches!(s, ManaCostShard::X));
+            *generic += value * x_count as u32;
+        }
+    }
 }
 
 impl Default for ManaCost {

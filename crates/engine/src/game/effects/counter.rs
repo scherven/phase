@@ -1,4 +1,4 @@
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::static_abilities::{check_static_ability, StaticCheckContext};
 use crate::game::zones;
 use crate::types::ability::{
@@ -9,7 +9,6 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::{CastingVariant, GameState, StackEntryKind, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaCost;
-use crate::types::player::PlayerId;
 use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
@@ -55,8 +54,7 @@ pub fn resolve(
                 .map(|e| e.controller);
 
             if let Some(controller) = target_controller {
-                let resolved_cost =
-                    resolve_unless_cost(unless_cost, state, ability.controller, ability.source_id);
+                let resolved_cost = resolve_unless_cost(unless_cost, state, ability);
                 // CR 118.7: If the cost is {0}, the player is considered to have paid.
                 if matches!(&resolved_cost, UnlessCost::Fixed { cost } if *cost == ManaCost::zero())
                 {
@@ -228,12 +226,13 @@ fn apply_source_static(
 pub(crate) fn resolve_unless_cost(
     cost: &UnlessCost,
     state: &GameState,
-    controller: PlayerId,
-    source_id: ObjectId,
+    ability: &ResolvedAbility,
 ) -> UnlessCost {
     match cost {
         UnlessCost::DynamicGeneric { quantity } => {
-            let amount = resolve_quantity(state, quantity, controller, source_id);
+            // CR 107.1b: Ability context lets X-based unless-costs
+            // ("pay X life" / "pay {X}") read the caster-chosen X.
+            let amount = resolve_quantity_with_targets(state, quantity, ability);
             UnlessCost::Fixed {
                 cost: ManaCost::generic(amount.max(0) as u32),
             }

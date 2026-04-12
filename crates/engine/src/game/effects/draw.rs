@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::game::static_abilities::prohibition_scope_matches_player;
 use crate::game::zones;
@@ -65,9 +65,9 @@ pub fn resolve(
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
     let num_cards = match &ability.effect {
-        Effect::Draw { count } => {
-            resolve_quantity(state, count, ability.controller, ability.source_id) as u32
-        }
+        // CR 107.1b: Resolve with full ability context so `QuantityRef::Variable { "X" }`
+        // finds the caster-chosen X on the ability.
+        Effect::Draw { count } => resolve_quantity_with_targets(state, count, ability) as u32,
         _ => 1,
     };
 

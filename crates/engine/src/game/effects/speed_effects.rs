@@ -1,4 +1,4 @@
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::speed::{increase_speed, set_speed};
 use crate::types::ability::{Effect, EffectError, PlayerFilter, ResolvedAbility};
 use crate::types::events::GameEvent;
@@ -114,7 +114,7 @@ pub fn resolve_increase(
         ));
     };
 
-    let amount = resolve_quantity(state, amount, ability.controller, ability.source_id);
+    let amount = resolve_quantity_with_targets(state, amount, ability);
     let amount = u8::try_from(amount.max(0)).unwrap_or(u8::MAX);
     if amount == 0 {
         return Ok(());

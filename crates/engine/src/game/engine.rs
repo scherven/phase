@@ -789,6 +789,49 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             state.pending_cast = None;
             WaitingFor::Priority { player: *player }
         }
+        (WaitingFor::ChooseXValue { player, .. }, GameAction::CancelCast) => {
+            // CR 601.2f: Caster may back out of casting before committing to an X value.
+            state.pending_cast = None;
+            WaitingFor::Priority { player: *player }
+        }
+        (WaitingFor::ChooseXValue { .. }, GameAction::PassPriority) => {
+            // CR 601.2f: X must be chosen before the cast can proceed; passing priority
+            // is not a legal way to skip this step.
+            return Err(EngineError::ActionNotAllowed(
+                "Cannot pass priority while choosing a value for X — commit with ChooseX or CancelCast."
+                    .to_string(),
+            ));
+        }
+        // CR 107.1b + CR 601.2f: Commit the chosen X value, then advance to mana payment.
+        (
+            WaitingFor::ChooseXValue {
+                player,
+                max,
+                convoke_mode,
+                ..
+            },
+            GameAction::ChooseX { value },
+        ) => {
+            if value > *max {
+                return Err(EngineError::InvalidAction(format!(
+                    "X={value} exceeds the maximum legal value of {max}",
+                    max = *max,
+                )));
+            }
+            let player = *player;
+            let convoke_mode = *convoke_mode;
+            let pending = state.pending_cast.as_mut().ok_or_else(|| {
+                EngineError::InvalidAction("No pending cast awaiting X".to_string())
+            })?;
+            pending.ability.set_chosen_x_recursive(value);
+            pending.cost.concretize_x(value);
+            events.push(GameEvent::XValueChosen {
+                player,
+                object_id: pending.object_id,
+                value,
+            });
+            casting_costs::enter_payment_step(state, player, convoke_mode)
+        }
         // Finalize mana payment: pay cost from pool and push spell/ability to stack.
         (WaitingFor::ManaPayment { player, .. }, GameAction::PassPriority) => {
             let pending = state.pending_cast.take().ok_or_else(|| {
@@ -832,11 +875,16 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     .find(|pl| pl.id == p)
                     .map(|pl| pl.mana_pool.total())
                     .unwrap_or(0);
-                // X = total paid minus non-X colored/generic costs.
-                // ManaCost::mana_value() already excludes X shards (CR 202.3e).
+                // CR 107.1b + CR 601.2f: Prefer the explicit `chosen_x` set during
+                // `WaitingFor::ChooseXValue`. Fallback to inference (total paid minus
+                // non-X colored/generic costs) preserves behavior for any legacy paths
+                // that bypass ChooseX. ManaCost::mana_value() excludes X (CR 202.3e).
                 let non_x_cost = pending.cost.mana_value();
                 let total_paid = pool_before.saturating_sub(pool_after) as u32;
-                let x_value = total_paid.saturating_sub(non_x_cost);
+                let x_value = pending
+                    .ability
+                    .chosen_x
+                    .unwrap_or_else(|| total_paid.saturating_sub(non_x_cost));
 
                 let targets = super::ability_utils::flatten_targets_in_chain(&pending.ability);
                 // Store pending cast for post-distribution resumption.
@@ -2320,18 +2368,19 @@ pub fn new_game(seed: u64) -> GameState {
 }
 
 /// Start game with mulligan flow. If no cards in libraries, skips mulligan.
+///
+/// CR 103.1: The starting player of game 1 is chosen at random. Subsequent games
+/// in a multi-game match route through `match_flow::start_next_game`, which uses
+/// `next_game_chooser` instead, so this function is always the game-1 path.
+///
+/// Callers that need a deterministic starter (tests, fixed scenarios) must use
+/// `start_game_with_starting_player` directly.
 pub fn start_game(state: &mut GameState) -> ActionResult {
-    let starting_player = if state.match_config.match_type == MatchType::Bo3
-        && state.players.len() == 2
-        && state.game_number == 1
-    {
-        if state.rng.random_bool(0.5) {
-            PlayerId(0)
-        } else {
-            PlayerId(1)
-        }
-    } else {
+    let starting_player = if state.seat_order.is_empty() {
         PlayerId(0)
+    } else {
+        let idx = state.rng.random_range(0..state.seat_order.len());
+        state.seat_order[idx]
     };
     start_game_with_starting_player(state, starting_player)
 }
@@ -2680,7 +2729,7 @@ mod tests {
     #[test]
     fn start_game_advances_to_precombat_main() {
         let mut state = new_game(42);
-        let result = start_game(&mut state);
+        let result = start_game_with_starting_player(&mut state, PlayerId(0));
 
         assert_eq!(state.phase, Phase::PreCombatMain);
         assert_eq!(state.turn_number, 1);
@@ -2723,12 +2772,39 @@ mod tests {
             .any(|e| matches!(e, GameEvent::GameStarted)));
     }
 
+    // CR 103.1: Regression — `start_game` must randomize the starting player for
+    // all match types, not just Bo3. Previously gated on `match_type == Bo3`, which
+    // caused every Bo1 (default) game to begin with PlayerId(0).
+    #[test]
+    fn start_game_randomizes_starting_player_for_default_match_type() {
+        let mut saw_p0 = false;
+        let mut saw_p1 = false;
+
+        for seed in 0..64u64 {
+            let mut state = new_game(seed);
+            let _ = start_game(&mut state);
+            match state.current_starting_player {
+                PlayerId(0) => saw_p0 = true,
+                PlayerId(1) => saw_p1 = true,
+                _ => unreachable!("two-player game can only produce PlayerId(0) or PlayerId(1)"),
+            }
+            if saw_p0 && saw_p1 {
+                break;
+            }
+        }
+
+        assert!(
+            saw_p0 && saw_p1,
+            "start_game must randomize across both seats for default (Bo1) matches"
+        );
+    }
+
     #[test]
     fn integration_full_turn_cycle() {
         let mut state = new_game(42);
 
         // Start game (turn 1, player 0)
-        let _result = start_game(&mut state);
+        let _result = start_game_with_starting_player(&mut state, PlayerId(0));
         assert_eq!(state.phase, Phase::PreCombatMain);
         assert_eq!(state.turn_number, 1);
 
@@ -2764,7 +2840,7 @@ mod tests {
     #[test]
     fn integration_play_land_then_pass() {
         let mut state = new_game(42);
-        start_game(&mut state);
+        start_game_with_starting_player(&mut state, PlayerId(0));
 
         // Create a land in player 0's hand
         let land_id = create_object(
@@ -3192,7 +3268,7 @@ mod tests {
         }
 
         // Start game -> mulligan prompt
-        let result = start_game(&mut state);
+        let result = start_game_with_starting_player(&mut state, PlayerId(0));
         assert!(matches!(
             result.waiting_for,
             WaitingFor::MulliganDecision {

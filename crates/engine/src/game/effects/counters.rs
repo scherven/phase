@@ -86,14 +86,11 @@ pub fn resolve_add(
             count,
             ..
         } => {
-            // Resolve QuantityExpr to concrete count at runtime.
-            let resolved_count = crate::game::quantity::resolve_quantity(
-                state,
-                count,
-                ability.controller,
-                ability.source_id,
-            )
-            .max(0) as u32;
+            // CR 107.1b: Ability-context resolve so X-counter effects (e.g. "put X +1/+1 counters")
+            // pick up the caster-chosen X.
+            let resolved_count =
+                crate::game::quantity::resolve_quantity_with_targets(state, count, ability).max(0)
+                    as u32;
             (counter_type.clone(), resolved_count)
         }
         _ => ("P1P1".to_string(), 1),
@@ -134,13 +131,9 @@ pub fn resolve_add_all(
             count,
             target,
         } => {
-            let resolved = crate::game::quantity::resolve_quantity(
-                state,
-                count,
-                ability.controller,
-                ability.source_id,
-            )
-            .max(0) as u32;
+            let resolved =
+                crate::game::quantity::resolve_quantity_with_targets(state, count, ability).max(0)
+                    as u32;
             (counter_type.clone(), resolved, target.clone())
         }
         _ => return Ok(()),

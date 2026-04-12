@@ -1085,6 +1085,7 @@ impl GameRunner {
             WaitingFor::PopulateChoice { .. } => "PopulateChoice",
             WaitingFor::ClashCardPlacement { .. } => "ClashCardPlacement",
             WaitingFor::CategoryChoice { .. } => "CategoryChoice",
+            WaitingFor::ChooseXValue { .. } => "ChooseXValue",
         }
     }
 

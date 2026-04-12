@@ -1,4 +1,4 @@
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
@@ -17,7 +17,9 @@ pub fn resolve(
         Effect::Mill {
             count, destination, ..
         } => (
-            resolve_quantity(state, count, ability.controller, ability.source_id) as usize,
+            // CR 107.1b: Resolve with full ability context so `QuantityRef::Variable { "X" }`
+            // reads the caster-chosen X from the resolving ability.
+            resolve_quantity_with_targets(state, count, ability) as usize,
             *destination,
         ),
         _ => (1, Zone::Graveyard),

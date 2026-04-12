@@ -33,7 +33,7 @@ pub fn resolve_quantity(
 ) -> i32 {
     match expr {
         QuantityExpr::Fixed { value } => *value,
-        QuantityExpr::Ref { qty } => resolve_ref(state, qty, controller, source_id, &[]),
+        QuantityExpr::Ref { qty } => resolve_ref(state, qty, controller, source_id, &[], None),
         QuantityExpr::HalfRounded { inner, rounding } => {
             let base = resolve_quantity(state, inner, controller, source_id);
             half_rounded(base, *rounding)
@@ -63,6 +63,7 @@ pub fn resolve_quantity_with_targets(
             ability.controller,
             ability.source_id,
             &ability.targets,
+            ability.chosen_x,
         ),
         QuantityExpr::HalfRounded { inner, rounding } => {
             let base = resolve_quantity_with_targets(state, inner, ability);
@@ -91,7 +92,7 @@ pub(crate) fn resolve_quantity_scoped(
 ) -> i32 {
     match expr {
         QuantityExpr::Fixed { value } => *value,
-        QuantityExpr::Ref { qty } => resolve_ref(state, qty, scope_player, source_id, &[]),
+        QuantityExpr::Ref { qty } => resolve_ref(state, qty, scope_player, source_id, &[], None),
         QuantityExpr::HalfRounded { inner, rounding } => {
             let base = resolve_quantity_scoped(state, inner, source_id, scope_player);
             half_rounded(base, *rounding)
@@ -119,6 +120,7 @@ fn resolve_ref(
     controller: PlayerId,
     source_id: ObjectId,
     targets: &[TargetRef],
+    chosen_x: Option<u32>,
 ) -> i32 {
     let player = state.players.iter().find(|p| p.id == controller);
     match qty {
@@ -155,6 +157,17 @@ fn resolve_ref(
                 obj.counters.get(&ct).copied().unwrap_or(0) as i32
             })
             .unwrap_or(0),
+        // CR 107.1b + CR 601.2f: "X" resolves exclusively to the value chosen at
+        // cast time, carried on the resolving ability's `chosen_x`. Any path that
+        // reaches this branch without `chosen_x` set indicates a bug (missed
+        // propagation, non-ability-context resolver, or a casting flow that
+        // bypassed `ChooseXValue`) — returning 0 surfaces it visibly rather than
+        // masking via `last_named_choice`.
+        //
+        // Other named variables (set by `NamedChoice` handlers for things like
+        // "chosen number") keep their single-responsibility path through
+        // `last_named_choice`.
+        QuantityRef::Variable { name } if name == "X" => chosen_x.map(|x| x as i32).unwrap_or(0),
         QuantityRef::Variable { .. } => state
             .last_named_choice
             .as_ref()

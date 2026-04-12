@@ -1,4 +1,4 @@
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
@@ -22,8 +22,7 @@ pub fn resolve(
                 reveal,
             } => {
                 let resolved_count =
-                    resolve_quantity(state, count, ability.controller, ability.source_id).max(0)
-                        as usize;
+                    resolve_quantity_with_targets(state, count, ability).max(0) as usize;
                 (
                     resolved_count,
                     keep_count.unwrap_or(1) as usize,

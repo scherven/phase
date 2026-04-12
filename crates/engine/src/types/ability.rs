@@ -5077,6 +5077,11 @@ pub struct ResolvedAbility {
     /// When set, the effect iterates over matching players (each becomes the acting player).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player_scope: Option<PlayerFilter>,
+    /// CR 107.1b + CR 601.2f: The value of X chosen by the caster when this
+    /// ability was cast/activated. `None` for abilities whose cost has no X.
+    /// Read during resolution by `QuantityRef::Variable { name: "X" }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chosen_x: Option<u32>,
 }
 
 impl ResolvedAbility {
@@ -5108,6 +5113,19 @@ impl ResolvedAbility {
             unless_pay: None,
             distribution: None,
             player_scope: None,
+            chosen_x: None,
+        }
+    }
+
+    /// Propagate a chosen X value to this ability and every sub/else branch.
+    /// CR 107.1b: X is one value per cast — the same for all effects produced.
+    pub fn set_chosen_x_recursive(&mut self, value: u32) {
+        self.chosen_x = Some(value);
+        if let Some(sub) = self.sub_ability.as_mut() {
+            sub.set_chosen_x_recursive(value);
+        }
+        if let Some(else_branch) = self.else_ability.as_mut() {
+            else_branch.set_chosen_x_recursive(value);
         }
     }
 

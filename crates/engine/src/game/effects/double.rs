@@ -288,6 +288,7 @@ mod tests {
             condition: None,
             context: SpellContext::default(),
             player_scope: None,
+            chosen_x: None,
             optional_targeting: false,
             optional: false,
             optional_for: None,

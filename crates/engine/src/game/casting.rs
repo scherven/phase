@@ -24,7 +24,7 @@ use super::ability_utils::{
     target_constraints_from_modal,
 };
 use super::casting_costs::{
-    auto_tap_mana_sources, check_additional_cost_or_pay, pay_and_push_adventure,
+    self, auto_tap_mana_sources, check_additional_cost_or_pay, pay_and_push_adventure,
 };
 use super::engine::EngineError;
 use super::mana_payment;
@@ -2297,10 +2297,24 @@ pub fn handle_activate_ability(
             pending_wb.activation_cost = Some(cost.clone());
             pending_wb.activation_ability_index = Some(ability_index);
             state.pending_cast = Some(Box::new(pending_wb));
-            return Ok(WaitingFor::ManaPayment {
+            return Ok(casting_costs::enter_payment_step(
+                state,
                 player,
-                convoke_mode: Some(ConvokeMode::Waterbend),
-            });
+                Some(ConvokeMode::Waterbend),
+            ));
+        }
+
+        // CR 107.1b + CR 601.2f: When an activated ability's cost includes a mana
+        // cost containing X — either directly (`Mana { cost }`) or as a sub-cost
+        // of a Composite (e.g., `Tap + Pay {X}`) — divert to ChooseXValue so X is
+        // chosen before mana payment. The remaining non-mana sub-costs (Tap,
+        // Sacrifice, etc.) are paid after ManaPayment via `activation_cost`.
+        if let Some((mana_cost, remaining)) = casting_costs::extract_x_mana_cost(cost) {
+            let mut pending_x = PendingCast::new(source_id, CardId(0), resolved, mana_cost);
+            pending_x.activation_cost = remaining;
+            pending_x.activation_ability_index = Some(ability_index);
+            state.pending_cast = Some(Box::new(pending_x));
+            return Ok(casting_costs::enter_payment_step(state, player, None));
         }
     }
 
@@ -2744,7 +2758,9 @@ mod tests {
         QuantityExpr, RestrictionExpiry, RestrictionPlayerScope, StaticDefinition, TypeFilter,
         TypedFilter,
     };
+    use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
+    use crate::types::events::GameEvent;
     use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
     use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
     use crate::types::phase::Phase;
@@ -3002,6 +3018,792 @@ mod tests {
         assert!(matches!(result, WaitingFor::Priority { .. }));
         assert_eq!(state.stack.len(), 1);
         assert!(state.players[0].hand.is_empty());
+    }
+
+    /// CR 107.1b + CR 601.2f: Casting a spell with X in its cost enters
+    /// `ChooseXValue` first; after `ChooseX(n)` the cost is concretized and
+    /// payment proceeds against the now-definite total.
+    #[test]
+    fn x_cost_spell_prompts_for_x_then_pays_concretized_cost() {
+        use super::super::engine::apply;
+        use crate::types::ability::QuantityRef;
+
+        let mut state = setup_game_at_main_phase();
+
+        // Build an X-cost sorcery: cost {X}{G}{G}, effect "Draw X cards"
+        // (stand-in for the Nature's Rhythm pattern where resolution reads X).
+        let obj_id = create_object(
+            &mut state,
+            CardId(900),
+            PlayerId(0),
+            "Synthetic X Sorcery".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X, ManaCostShard::Green, ManaCostShard::Green],
+                generic: 0,
+            };
+        }
+
+        // Pool: 5 green. Fixed portion is GG = 2. Pool alone gives max X = 3.
+        add_mana(&mut state, PlayerId(0), ManaType::Green, 5);
+
+        // Cast — expect ChooseXValue (not ManaPayment).
+        let result = apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(900),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        let max = match result.waiting_for {
+            WaitingFor::ChooseXValue { max, .. } => max,
+            other => panic!("expected ChooseXValue, got {other:?}"),
+        };
+        assert_eq!(max, 3, "pool of 5 minus fixed GG=2 should bound X at 3");
+
+        // Commit X = 3.
+        let result = apply(&mut state, GameAction::ChooseX { value: 3 }).unwrap();
+        assert!(matches!(result.waiting_for, WaitingFor::ManaPayment { .. }));
+        assert!(
+            result
+                .events
+                .iter()
+                .any(|e| matches!(e, GameEvent::XValueChosen { value: 3, .. })),
+            "should emit XValueChosen event"
+        );
+
+        // Pending cost is now concretized: X shard replaced with 3 generic.
+        let pending = state.pending_cast.as_ref().expect("pending cast present");
+        match &pending.cost {
+            ManaCost::Cost { shards, generic } => {
+                assert!(
+                    !shards.iter().any(|s| matches!(s, ManaCostShard::X)),
+                    "X shard should be removed after concretize"
+                );
+                assert_eq!(*generic, 3, "generic should hold the chosen X value");
+            }
+            other => panic!("expected concrete cost, got {other:?}"),
+        }
+        assert_eq!(
+            pending.ability.chosen_x,
+            Some(3),
+            "chosen_x should propagate to the ability for resolution-time lookup"
+        );
+
+        // Finalize payment — spell resolves and draws X = 3 cards.
+        // Seed 3 cards in library so Draw can succeed.
+        for i in 0..3 {
+            create_object(
+                &mut state,
+                CardId(910 + i),
+                PlayerId(0),
+                format!("Library Card {i}"),
+                Zone::Library,
+            );
+        }
+        // First PassPriority pays mana and moves the spell from hand to stack;
+        // after that, driving priority resolves the stack and Draw fires.
+        let _ = apply(&mut state, GameAction::PassPriority).unwrap();
+        let hand_after_mana_paid = state.players[0].hand.len();
+        assert_eq!(hand_after_mana_paid, 0, "spell moved from hand to stack");
+        assert_eq!(state.stack.len(), 1, "spell on stack");
+
+        for _ in 0..4 {
+            if state.stack.is_empty() && matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+                break;
+            }
+            let _ = apply(&mut state, GameAction::PassPriority).unwrap();
+        }
+        let hand_after = state.players[0].hand.len();
+        assert_eq!(
+            hand_after, 3,
+            "X=3 should result in drawing 3 cards at resolution (hand_after={hand_after})"
+        );
+    }
+
+    /// CR 601.2f: Player can cancel a cast before committing to an X value.
+    #[test]
+    fn x_cost_cancellation_returns_to_priority() {
+        use super::super::engine::apply;
+        use crate::types::ability::QuantityRef;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(901),
+            PlayerId(0),
+            "Synthetic X Sorcery".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X],
+                generic: 0,
+            };
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+
+        let result = apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(901),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::ChooseXValue { .. }
+        ));
+
+        let result = apply(&mut state, GameAction::CancelCast).unwrap();
+        assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.pending_cast.is_none());
+        assert!(!state.players[0].hand.is_empty(), "spell returned to hand");
+    }
+
+    /// Blaze pattern (CR 107.1b): {X}{R} "Deal X damage to target creature."
+    /// Validates that Effect::DealDamage resolves X via ability context
+    /// (not the deprecated last_named_choice fallback).
+    #[test]
+    fn x_cost_deal_x_damage_lands_for_chosen_x() {
+        use super::super::engine::apply;
+        use crate::types::ability::{QuantityRef, TargetFilter};
+
+        let mut state = setup_game_at_main_phase();
+
+        // Create a creature to target.
+        let creature = create_object(
+            &mut state,
+            CardId(990),
+            PlayerId(1),
+            "Target Creature".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(5);
+            obj.toughness = Some(5);
+        }
+
+        let obj_id = create_object(
+            &mut state,
+            CardId(903),
+            PlayerId(0),
+            "Synthetic Blaze".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                    target: TargetFilter::Any,
+                    damage_source: None,
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X, ManaCostShard::Red],
+                generic: 0,
+            };
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Red, 5);
+
+        let result = apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(903),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ));
+
+        // Select the creature as target — flow then advances to ChooseXValue.
+        let result = apply(
+            &mut state,
+            GameAction::SelectTargets {
+                targets: vec![crate::types::ability::TargetRef::Object(creature)],
+            },
+        )
+        .unwrap();
+        let max = match result.waiting_for {
+            WaitingFor::ChooseXValue { max, .. } => max,
+            other => panic!("expected ChooseXValue after targets selected, got {other:?}"),
+        };
+        assert_eq!(max, 4, "pool=5 minus fixed R=1 should bound X at 4");
+
+        apply(&mut state, GameAction::ChooseX { value: 4 }).unwrap();
+
+        // Drive priority passes until the stack resolves.
+        for _ in 0..5 {
+            if state.stack.is_empty() && matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+                break;
+            }
+            let _ = apply(&mut state, GameAction::PassPriority).unwrap();
+        }
+
+        // X=4 damage applied to a 5-toughness creature — marked damage or destroyed.
+        // Check via the DamageDealt events the flow emitted.
+        // The creature should have damage_marked == 4 (or be in graveyard if damage >= toughness).
+        // Here 4 < 5, so it's still on battlefield with damage marked.
+        let target = state
+            .objects
+            .get(&creature)
+            .expect("creature still on battlefield");
+        assert_eq!(
+            target.damage_marked, 4,
+            "X=4 should mark 4 damage on the target (actual={})",
+            target.damage_marked
+        );
+    }
+
+    /// Passing priority during `ChooseXValue` is illegal — caster must commit
+    /// or cancel (CR 601.2f).
+    #[test]
+    fn x_cost_pass_priority_rejected_during_choose_x() {
+        use super::super::engine::apply;
+        use crate::types::ability::QuantityRef;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(905),
+            PlayerId(0),
+            "Synthetic X".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X],
+                generic: 0,
+            };
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
+
+        apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(905),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(state.waiting_for, WaitingFor::ChooseXValue { .. }));
+
+        let result = apply(&mut state, GameAction::PassPriority);
+        assert!(
+            result.is_err(),
+            "PassPriority must be rejected during ChooseXValue"
+        );
+    }
+
+    /// AI legal actions: `candidates::candidate_actions_broad` enumerates
+    /// every legal X value (0..=max) when in `ChooseXValue`.
+    #[test]
+    fn x_cost_ai_enumerates_full_range() {
+        use crate::ai_support::candidate_actions_broad;
+        use crate::types::ability::QuantityRef;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(906),
+            PlayerId(0),
+            "Synthetic X".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X],
+                generic: 0,
+            };
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+
+        super::super::engine::apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(906),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+
+        let max = match state.waiting_for {
+            WaitingFor::ChooseXValue { max, .. } => max,
+            ref other => panic!("expected ChooseXValue, got {other:?}"),
+        };
+        assert_eq!(max, 3);
+
+        let candidates = candidate_actions_broad(&state);
+        let choose_x: Vec<u32> = candidates
+            .iter()
+            .filter_map(|c| match c.action {
+                GameAction::ChooseX { value } => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            choose_x,
+            vec![0, 1, 2, 3],
+            "AI should enumerate one ChooseX candidate per legal value"
+        );
+    }
+
+    /// `ChooseXValue` preserves `convoke_mode` so a spell with both X and
+    /// Waterbend/Convoke reaches `ManaPayment` with the mode intact.
+    #[test]
+    fn x_cost_preserves_convoke_mode_through_choice() {
+        use crate::game::casting_costs::enter_payment_step;
+        use crate::types::ability::QuantityRef;
+
+        let mut state = setup_game_at_main_phase();
+        // Construct a pending cast directly so we can exercise enter_payment_step
+        // with a non-None convoke_mode (normal flow doesn't compose X+convoke
+        // without extra setup, but the helper is the single authority that must
+        // thread convoke_mode through).
+        let mut pending = PendingCast::new(
+            ObjectId(123),
+            CardId(0),
+            ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+                Vec::new(),
+                ObjectId(123),
+                PlayerId(0),
+            ),
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::X],
+                generic: 0,
+            },
+        );
+        pending.activation_ability_index = None;
+        state.pending_cast = Some(Box::new(pending));
+
+        let waiting = enter_payment_step(&state, PlayerId(0), Some(ConvokeMode::Waterbend));
+        match waiting {
+            WaitingFor::ChooseXValue { convoke_mode, .. } => {
+                assert_eq!(
+                    convoke_mode,
+                    Some(ConvokeMode::Waterbend),
+                    "convoke_mode must pass through ChooseXValue"
+                );
+            }
+            other => panic!("expected ChooseXValue, got {other:?}"),
+        }
+    }
+
+    /// Activated abilities with composite costs like `Tap + Pay {X}` must route
+    /// through ChooseXValue (X is chosen before mana payment per CR 601.2f), and
+    /// the Tap sub-cost must be deferred to `activation_cost` so it is paid after
+    /// ManaPayment completes — not during the announce-X phase.
+    #[test]
+    fn x_cost_activated_composite_tap_prompts_for_x_and_taps_on_resolution() {
+        use super::super::engine::apply;
+        use crate::types::ability::{AbilityCost, QuantityRef};
+
+        let mut state = setup_game_at_main_phase();
+        let source = create_object(
+            &mut state,
+            CardId(950),
+            PlayerId(0),
+            "Composite X Relic".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Draw {
+                        count: QuantityExpr::Ref {
+                            qty: QuantityRef::Variable {
+                                name: "X".to_string(),
+                            },
+                        },
+                    },
+                )
+                .cost(AbilityCost::Composite {
+                    costs: vec![
+                        AbilityCost::Tap,
+                        AbilityCost::Mana {
+                            cost: ManaCost::Cost {
+                                shards: vec![ManaCostShard::X],
+                                generic: 0,
+                            },
+                        },
+                    ],
+                }),
+            );
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
+
+        // Activate — expect ChooseXValue, source not yet tapped.
+        apply(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: source,
+                ability_index: 0,
+            },
+        )
+        .unwrap();
+        let max = match state.waiting_for {
+            WaitingFor::ChooseXValue { max, .. } => max,
+            ref other => panic!("expected ChooseXValue, got {other:?}"),
+        };
+        assert_eq!(max, 2, "pool of 2 bounds X at 2");
+        assert!(
+            !state.objects[&source].tapped,
+            "source must not be tapped before ManaPayment completes"
+        );
+        let pending = state.pending_cast.as_ref().expect("pending cast present");
+        assert!(
+            matches!(pending.activation_cost, Some(AbilityCost::Tap)),
+            "activation_cost must hold the deferred Tap sub-cost, got {:?}",
+            pending.activation_cost
+        );
+
+        // Commit X = 1.
+        apply(&mut state, GameAction::ChooseX { value: 1 }).unwrap();
+        assert!(matches!(state.waiting_for, WaitingFor::ManaPayment { .. }));
+        assert!(
+            !state.objects[&source].tapped,
+            "source still must not be tapped — mana payment hasn't completed"
+        );
+
+        // Drive priority: first pass pays mana + deferred Tap, pushing the ability
+        // to the stack. Subsequent passes resolve the ability.
+        apply(&mut state, GameAction::PassPriority).unwrap();
+        assert!(
+            state.objects[&source].tapped,
+            "source must be tapped after ManaPayment completes and activation_cost pays the Tap"
+        );
+        assert_eq!(state.stack.len(), 1, "activated ability on stack");
+    }
+
+    /// Composite costs with Sacrifice + Pay {X}{G}: the fixed G contributes to
+    /// the cost floor, so `max_x_value` computes the available X after reserving
+    /// 1 mana for the G shard. The Sacrifice sub-cost is deferred to
+    /// `activation_cost` and consumed during stack push.
+    #[test]
+    fn x_cost_activated_composite_sacrifice_bounds_x_by_fixed_portion() {
+        use crate::types::ability::{AbilityCost, QuantityRef, TargetFilter};
+
+        let mut state = setup_game_at_main_phase();
+        let source = create_object(
+            &mut state,
+            CardId(951),
+            PlayerId(0),
+            "Composite X Sac Altar".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Draw {
+                        count: QuantityExpr::Ref {
+                            qty: QuantityRef::Variable {
+                                name: "X".to_string(),
+                            },
+                        },
+                    },
+                )
+                .cost(AbilityCost::Composite {
+                    costs: vec![
+                        AbilityCost::Sacrifice {
+                            target: TargetFilter::SelfRef,
+                            count: 1,
+                        },
+                        AbilityCost::Mana {
+                            cost: ManaCost::Cost {
+                                shards: vec![ManaCostShard::X, ManaCostShard::Green],
+                                generic: 0,
+                            },
+                        },
+                    ],
+                }),
+            );
+        }
+        // Pool: 1 green + 3 colorless = 4 total. Fixed portion = G (1).
+        // Max X = (4 - 1) / 1 = 3.
+        add_mana(&mut state, PlayerId(0), ManaType::Green, 1);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+
+        super::super::engine::apply(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: source,
+                ability_index: 0,
+            },
+        )
+        .unwrap();
+        let max = match state.waiting_for {
+            WaitingFor::ChooseXValue { max, .. } => max,
+            ref other => panic!("expected ChooseXValue, got {other:?}"),
+        };
+        assert_eq!(
+            max, 3,
+            "pool 4 minus fixed G=1 should bound X at 3 for composite Sacrifice + {{X}}{{G}}"
+        );
+
+        // activation_cost should hold the deferred Sacrifice sub-cost.
+        let pending = state.pending_cast.as_ref().expect("pending cast present");
+        assert!(
+            matches!(
+                pending.activation_cost,
+                Some(AbilityCost::Sacrifice {
+                    target: TargetFilter::SelfRef,
+                    count: 1
+                })
+            ),
+            "activation_cost must hold the deferred Sacrifice sub-cost, got {:?}",
+            pending.activation_cost
+        );
+    }
+
+    /// CR 601.2f: Cost reductions are applied during cost determination (before
+    /// `enter_payment_step` runs), so `max_x_value` sees the reduced cost and
+    /// bounds X accordingly. A pending "next spell costs {1} less" reduction on
+    /// a {X}{2}{G} spell raises the affordable X by 1.
+    #[test]
+    fn x_cost_accounts_for_pending_cost_reduction_in_max() {
+        use super::super::engine::apply;
+        use crate::types::ability::QuantityRef;
+        use crate::types::game_state::PendingSpellCostReduction;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(960),
+            PlayerId(0),
+            "Synthetic X Reduced".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X, ManaCostShard::Green],
+                generic: 2,
+            };
+        }
+        // Pool: 4 green. Without reduction: fixed = 1 (G) + 2 (generic) = 3, max X = 1.
+        // With reduction of 1: fixed = 1 (G) + 1 (reduced generic) = 2, max X = 2.
+        add_mana(&mut state, PlayerId(0), ManaType::Green, 4);
+        state
+            .pending_spell_cost_reductions
+            .push(PendingSpellCostReduction {
+                player: PlayerId(0),
+                amount: 1,
+                spell_filter: None,
+            });
+
+        apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(960),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        let max = match state.waiting_for {
+            WaitingFor::ChooseXValue { max, .. } => max,
+            ref other => panic!("expected ChooseXValue, got {other:?}"),
+        };
+        assert_eq!(
+            max, 2,
+            "cost reduction of 1 should raise affordable X from 1 to 2"
+        );
+    }
+
+    /// Multi-X costs ({X}{X}): each point of X costs 2 mana, so `max_x_value`
+    /// must divide remaining capacity by the X-count.
+    #[test]
+    fn x_cost_double_x_max_divides_by_count() {
+        use super::super::engine::apply;
+        use crate::types::ability::QuantityRef;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(904),
+            PlayerId(0),
+            "Synthetic {X}{X}".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X, ManaCostShard::X],
+                generic: 0,
+            };
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 7);
+
+        let result = apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(904),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        match result.waiting_for {
+            WaitingFor::ChooseXValue { max, .. } => {
+                assert_eq!(max, 3, "pool=7, x_count=2, so max X = 7 / 2 = 3");
+            }
+            other => panic!("expected ChooseXValue, got {other:?}"),
+        }
+    }
+
+    /// Invalid X values (exceeding max) must be rejected.
+    #[test]
+    fn x_cost_rejects_value_above_max() {
+        use super::super::engine::apply;
+        use crate::types::ability::QuantityRef;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(902),
+            PlayerId(0),
+            "Synthetic X Sorcery".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::X],
+                generic: 0,
+            };
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
+
+        apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(902),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+
+        // Pool of 2, no free producers → max X = 2. Requesting 5 must fail.
+        let result = apply(&mut state, GameAction::ChooseX { value: 5 });
+        assert!(result.is_err(), "ChooseX above max should error");
+        // State remains in ChooseXValue.
+        assert!(matches!(state.waiting_for, WaitingFor::ChooseXValue { .. }));
     }
 
     #[test]

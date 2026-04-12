@@ -9,17 +9,12 @@ import { ManaSymbol } from "./ManaSymbol.tsx";
 
 const MANA_ORDER: ManaType[] = ["White", "Blue", "Black", "Red", "Green", "Colorless"];
 
+// Hybrid/Phyrexian shards still resolve interactively during ManaPayment.
+// X no longer appears here — `ChooseXValueUI` handles X selection before
+// payment (CR 601.2f) and concretizes the cost, so any `ManaCostShard::X`
+// has already been replaced with generic by the time this UI renders.
 function hasAmbiguousCost(shards: string[]): boolean {
-  return shards.some((s) => s.includes("/") || s === "X");
-}
-
-/** Calculate max X value based on available mana minus fixed cost requirements */
-function computeMaxX(
-  shards: string[],
-  totalManaInPool: number,
-): number {
-  const fixedCount = shards.filter((s) => s !== "X").length;
-  return Math.max(0, totalManaInPool - fixedCount);
+  return shards.some((s) => s.includes("/"));
 }
 
 export function ManaPaymentUI() {
@@ -52,8 +47,7 @@ export function ManaPaymentUI() {
 
   const isAmbiguous = costShards != null && hasAmbiguousCost(costShards);
 
-  // Local state for ambiguous cost choices
-  const [xValue, setXValue] = useState(0);
+  // Local state for ambiguous cost choices (hybrid/phyrexian).
   const [phyrexianChoices, setPhyrexianChoices] = useState<Map<number, "mana" | "life">>(
     () => new Map(),
   );
@@ -62,7 +56,6 @@ export function ManaPaymentUI() {
   );
 
   useEffect(() => {
-    setXValue(0);
     setPhyrexianChoices(new Map());
     setHybridChoices(new Map());
   }, [costShards]);
@@ -78,16 +71,6 @@ export function ManaPaymentUI() {
     }
     return MANA_ORDER.filter((c) => counts[c] > 0).map((c) => ({ color: c, amount: counts[c] }));
   }, [player]);
-
-  const totalManaInPool = useMemo(() => {
-    if (!player) return 0;
-    return player.mana_pool.mana.length;
-  }, [player]);
-
-  const maxX = useMemo(() => {
-    if (!costShards) return 0;
-    return computeMaxX(costShards, totalManaInPool);
-  }, [costShards, totalManaInPool]);
 
   const togglePhyrexian = useCallback((idx: number) => {
     setPhyrexianChoices((prev) => {
@@ -156,26 +139,6 @@ export function ManaPaymentUI() {
                   <ManaSymbol key={idx} shard={shard} size="lg" />
                 ))}
               </div>
-
-              {/* X cost slider */}
-              {isAmbiguous && costShards.some((s) => s === "X") && (
-                <div className="mb-3 px-2">
-                  <label className="flex items-center gap-2 text-xs text-gray-400">
-                    <span className="shrink-0">X = {xValue}</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={maxX}
-                      value={xValue}
-                      onChange={(e) => setXValue(Number(e.target.value))}
-                      className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-cyan-500"
-                    />
-                    <span className="shrink-0 text-gray-500">
-                      Total: {costShards.filter((s) => s !== "X").length + xValue}
-                    </span>
-                  </label>
-                </div>
-              )}
 
               {/* Phyrexian toggles */}
               {isAmbiguous && costShards.some((s) => s.endsWith("/P")) && (

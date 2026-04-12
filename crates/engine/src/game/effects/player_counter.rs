@@ -27,7 +27,7 @@ pub fn resolve(
     };
 
     // CR 122.1: Resolve the quantity to a concrete count.
-    let raw = quantity::resolve_quantity(state, count, ability.controller, ability.source_id);
+    let raw = quantity::resolve_quantity_with_targets(state, count, ability);
     let amount = raw.max(0) as u32;
     if amount == 0 {
         return Ok(());
@@ -109,6 +109,7 @@ mod tests {
             multi_target: None,
             description: None,
             player_scope: None,
+            chosen_x: None,
             repeat_for: None,
             forward_result: false,
             unless_pay: None,

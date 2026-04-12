@@ -98,6 +98,7 @@ mod tests {
             multi_target: None,
             description: None,
             player_scope: None,
+            chosen_x: None,
             repeat_for: None,
             forward_result: false,
             unless_pay: None,

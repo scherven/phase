@@ -8,7 +8,7 @@ use crate::types::game_state::{
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::Keyword;
-use crate::types::mana::{ManaCostShard, ManaType};
+use crate::types::mana::{ManaCost, ManaCostShard, ManaType};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
@@ -839,10 +839,11 @@ fn pay_additional_cost(
                 cost: combined,
                 ..pending
             }));
-            return Ok(WaitingFor::ManaPayment {
+            return Ok(enter_payment_step(
+                state,
                 player,
-                convoke_mode: Some(ConvokeMode::Waterbend),
-            });
+                Some(ConvokeMode::Waterbend),
+            ));
         }
         AbilityCost::Exile {
             count,
@@ -1024,17 +1025,16 @@ pub(super) fn pay_and_push_adventure(
             .any(|o| o.is_convoke_eligible(player))
     });
 
-    // Enter ManaPayment if the cost has X (needs player input) or convoke/waterbend is available.
-    let has_x = matches!(cost, crate::types::mana::ManaCost::Cost { shards, .. } if shards.contains(&ManaCostShard::X));
+    // Enter the payment step if cost needs player input (X) or convoke/waterbend is active.
+    // `enter_payment_step` diverts to `ChooseXValue` when the cost has an unchosen X,
+    // per CR 601.2f (X chosen before mana is paid).
+    let has_x = cost_has_x(cost);
     if has_x || convoke_mode.is_some() {
         let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
         pending.casting_variant = casting_variant;
         pending.distribute = distribute;
         state.pending_cast = Some(Box::new(pending));
-        return Ok(WaitingFor::ManaPayment {
-            player,
-            convoke_mode,
-        });
+        return Ok(enter_payment_step(state, player, convoke_mode));
     }
 
     finalize_cast(
@@ -1391,6 +1391,149 @@ pub(super) fn auto_tap_mana_sources(
                 events,
             );
         }
+    }
+}
+
+/// Compute the maximum legal value of X the caster can choose for a pending cast.
+///
+/// Upper bound = (mana currently in pool) + (mana producible from untapped,
+/// free-to-tap sources under the caster's control) − (fixed portion of cost).
+///
+/// Free-to-tap = mana abilities whose only cost is {T}: i.e., `ManaSourceOption`
+/// entries with `requires_sacrifice == false` and `requires_life_payment == false`.
+/// Costed mana abilities (e.g. "1, T: Add {C}") are excluded for v1 — they cascade
+/// and would require a search to bound precisely. Treasure tokens are likewise
+/// excluded because they require sacrifice.
+///
+/// Each untapped producer counts once, regardless of how many color options it
+/// offers (a shock land is still one tap → one mana).
+///
+/// This is an upper bound used for UI display and AI action enumeration only.
+/// `ManaPayment` remains the authoritative check for whether the full colored
+/// cost is actually payable after the player commits an X value.
+///
+/// CR 107.1b + CR 601.2f: X is chosen as part of determining total cost,
+/// before mana is paid.
+pub fn max_x_value(state: &GameState, player: PlayerId, cost: &ManaCost) -> u32 {
+    let ManaCost::Cost { shards, generic } = cost else {
+        return 0;
+    };
+    let x_count = shards
+        .iter()
+        .filter(|s| matches!(s, ManaCostShard::X))
+        .count() as u32;
+    if x_count == 0 {
+        return 0;
+    }
+
+    let fixed_portion: u32 = shards
+        .iter()
+        .filter(|s| !matches!(s, ManaCostShard::X))
+        .map(|s| s.mana_value_contribution())
+        .sum::<u32>()
+        + *generic;
+
+    let pool = state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .map_or(0, |p| p.mana_pool.total() as u32);
+
+    let free_producers: u32 = state
+        .battlefield
+        .iter()
+        .filter(|&&id| {
+            mana_sources::activatable_mana_options(state, id, player)
+                .iter()
+                .any(|opt| !opt.requires_sacrifice && !opt.requires_life_payment)
+        })
+        .count() as u32;
+
+    // CR 107.1b: Each `ManaCostShard::X` in the cost contributes `value` generic,
+    // so for `{X}{X}` each point of X costs 2 mana. Dividing by `x_count` yields
+    // the largest X the caster can actually afford.
+    let remaining = (pool + free_producers).saturating_sub(fixed_portion);
+    remaining / x_count
+}
+
+/// Single authority for transitioning into the payment step of a cast.
+///
+/// If the pending cast's cost contains `ManaCostShard::X` and no X value has
+/// been chosen yet, diverts to `WaitingFor::ChooseXValue` so the caster can
+/// pick X before paying mana (CR 601.2f). Otherwise enters `WaitingFor::ManaPayment`
+/// normally. `convoke_mode` passes through either way.
+///
+/// All sites that would otherwise construct `WaitingFor::ManaPayment` during a
+/// cast must go through this helper so X-selection is never bypassed.
+pub fn enter_payment_step(
+    state: &GameState,
+    player: PlayerId,
+    convoke_mode: Option<ConvokeMode>,
+) -> WaitingFor {
+    if let Some(pending) = state.pending_cast.as_ref() {
+        if pending.ability.chosen_x.is_none() && cost_has_x(&pending.cost) {
+            let max = max_x_value(state, player, &pending.cost);
+            let pending_cast = pending.clone();
+            return WaitingFor::ChooseXValue {
+                player,
+                max,
+                pending_cast,
+                convoke_mode,
+            };
+        }
+    }
+    WaitingFor::ManaPayment {
+        player,
+        convoke_mode,
+    }
+}
+
+/// Return true if the given cost contains a `ManaCostShard::X` shard.
+pub fn cost_has_x(cost: &crate::types::mana::ManaCost) -> bool {
+    match cost {
+        crate::types::mana::ManaCost::Cost { shards, .. } => {
+            shards.iter().any(|s| matches!(s, ManaCostShard::X))
+        }
+        _ => false,
+    }
+}
+
+/// Extract a mana sub-cost containing X from an activated ability cost.
+///
+/// CR 107.1b + CR 601.2f: X must be chosen before mana is paid. For composite
+/// activation costs (e.g., `Tap + Pay {X}`), the mana sub-cost with X is
+/// routed through `ChooseXValue`/`ManaPayment` while the remaining sub-costs
+/// (Tap, Sacrifice, etc.) are deferred to after payment via the pending cast's
+/// `activation_cost`.
+///
+/// Returns `Some((mana_cost, remaining))` where `mana_cost` is the extracted
+/// Mana cost and `remaining` is the rest of the cost (None if the whole cost
+/// was the Mana sub-cost). Returns `None` if no X mana cost is present.
+pub fn extract_x_mana_cost(
+    cost: &crate::types::ability::AbilityCost,
+) -> Option<(
+    crate::types::mana::ManaCost,
+    Option<crate::types::ability::AbilityCost>,
+)> {
+    use crate::types::ability::AbilityCost;
+    match cost {
+        AbilityCost::Mana { cost: mana } if cost_has_x(mana) => Some((mana.clone(), None)),
+        AbilityCost::Composite { costs } => {
+            let idx = costs
+                .iter()
+                .position(|sub| matches!(sub, AbilityCost::Mana { cost: m } if cost_has_x(m)))?;
+            let mut remaining = costs.clone();
+            let AbilityCost::Mana { cost: extracted } = remaining.remove(idx) else {
+                unreachable!("position guarantees Mana variant")
+            };
+            let remaining_cost = match remaining.len() {
+                0 => None,
+                1 => Some(remaining.into_iter().next().unwrap()),
+                _ => Some(AbilityCost::Composite { costs: remaining }),
+            };
+            Some((extracted, remaining_cost))
+        }
+        _ => None,
     }
 }
 

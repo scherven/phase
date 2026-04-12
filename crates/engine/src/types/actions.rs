@@ -194,6 +194,12 @@ pub enum GameAction {
     SelectCategoryPermanents {
         choices: Vec<Option<ObjectId>>,
     },
+    /// CR 107.1b + CR 601.2f: Choose the value of X for a spell or activated
+    /// ability whose cost contains X. Chosen as part of determining total cost,
+    /// before mana is paid.
+    ChooseX {
+        value: u32,
+    },
 }
 
 /// CR 701.48a: Learn choice — rummage a specific card, or skip entirely.

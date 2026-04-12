@@ -1,5 +1,5 @@
 use crate::game::casting;
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::speed::{effective_speed, set_speed};
 use crate::types::ability::{Effect, PaymentCost};
 use crate::types::events::GameEvent;
@@ -64,7 +64,7 @@ pub fn resolve(
             }
         }
         PaymentCost::Speed { amount } => {
-            let amount = resolve_quantity(state, amount, ability.controller, ability.source_id);
+            let amount = resolve_quantity_with_targets(state, amount, ability);
             let amount = u8::try_from(amount.max(0)).unwrap_or(u8::MAX);
             let current_speed = effective_speed(state, ability.controller);
             if amount <= current_speed {
@@ -80,7 +80,7 @@ pub fn resolve(
         }
         // CR 107.14: A player can pay {E} only if they have enough energy counters.
         PaymentCost::Energy { amount } => {
-            let amount = resolve_quantity(state, amount, ability.controller, ability.source_id);
+            let amount = resolve_quantity_with_targets(state, amount, ability);
             let amount = u32::try_from(amount.max(0)).unwrap_or(0);
             let can_pay = state
                 .players

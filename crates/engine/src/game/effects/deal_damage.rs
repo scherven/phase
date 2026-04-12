@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use crate::game::filter;
 use crate::game::keywords;
-use crate::game::quantity::resolve_quantity;
 use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::types::ability::{
@@ -363,8 +362,9 @@ pub fn resolve_all(
 ) -> Result<(), EffectError> {
     let (num_dmg, target_filter): (u32, TargetFilter) = match &ability.effect {
         Effect::DamageAll { amount, target } => {
-            let dmg = resolve_quantity(state, amount, ability.controller, ability.source_id).max(0)
-                as u32;
+            // CR 107.1b: Ability-context resolve so X-damage-to-all ("Deal X damage to each...")
+            // reads the caster-chosen X.
+            let dmg = resolve_quantity_with_targets(state, amount, ability).max(0) as u32;
             (dmg, target.clone())
         }
         _ => return Err(EffectError::MissingParam("DamageAll amount".to_string())),

@@ -414,6 +414,20 @@ pub enum WaitingFor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         convoke_mode: Option<ConvokeMode>,
     },
+    /// CR 107.1b + CR 601.2f: Caster chooses the value of X for a pending cast
+    /// whose cost contains `ManaCostShard::X`. Fires after target selection and
+    /// before `ManaPayment`. `max` is the engine-computed upper bound for UI
+    /// display and AI enumeration (see `casting_costs::max_x_value`).
+    /// `convoke_mode` passes through to the subsequent `ManaPayment` step.
+    /// `pending_cast` is embedded so filtered state snapshots (multiplayer)
+    /// still carry enough context for the UI to render the spell name/cost.
+    ChooseXValue {
+        player: PlayerId,
+        max: u32,
+        pending_cast: Box<PendingCast>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        convoke_mode: Option<ConvokeMode>,
+    },
     TargetSelection {
         player: PlayerId,
         pending_cast: Box<PendingCast>,
@@ -1022,6 +1036,7 @@ impl WaitingFor {
             | WaitingFor::MulliganDecision { player, .. }
             | WaitingFor::MulliganBottomCards { player, .. }
             | WaitingFor::ManaPayment { player, .. }
+            | WaitingFor::ChooseXValue { player, .. }
             | WaitingFor::TargetSelection { player, .. }
             | WaitingFor::DeclareAttackers { player, .. }
             | WaitingFor::DeclareBlockers { player, .. }

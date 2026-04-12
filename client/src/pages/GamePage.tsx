@@ -26,6 +26,7 @@ import { CombatPhaseIndicator } from "../components/controls/PhaseStopBar.tsx";
 import { OpponentHand } from "../components/hand/OpponentHand.tsx";
 import { PlayerHand } from "../components/hand/PlayerHand.tsx";
 import { GameLogPanel } from "../components/log/GameLogPanel.tsx";
+import { ChooseXValueUI } from "../components/mana/ChooseXValueUI.tsx";
 import { ManaPaymentUI } from "../components/mana/ManaPaymentUI.tsx";
 import { CardDataMissingModal } from "../components/modal/CardDataMissingModal.tsx";
 import { AdventureCastModal } from "../components/modal/AdventureCastModal.tsx";
@@ -845,6 +846,8 @@ function GamePageContent({
         canActForWaitingState && <TargetingOverlay />}
       {waitingFor?.type === "ManaPayment" &&
         canActForWaitingState && <ManaPaymentUI />}
+      {waitingFor?.type === "ChooseXValue" &&
+        canActForWaitingState && <ChooseXValueUI />}
       {waitingFor?.type === "ReplacementChoice" &&
         canActForWaitingState && <ReplacementModal />}
       <ModeChoiceModal />

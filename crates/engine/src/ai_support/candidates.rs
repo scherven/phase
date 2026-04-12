@@ -1168,6 +1168,15 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        WaitingFor::ChooseXValue { player, max, .. } => (0..=*max)
+            .map(|value| {
+                candidate(
+                    GameAction::ChooseX { value },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         WaitingFor::GameOver { .. } => Vec::new(),
         WaitingFor::ReplacementChoice { .. }
         | WaitingFor::CopyTargetChoice { .. }

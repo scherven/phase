@@ -1,4 +1,4 @@
-use crate::game::quantity::resolve_quantity;
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -15,7 +15,7 @@ pub fn resolve(
 ) -> Result<(), EffectError> {
     let count = match &ability.effect {
         Effect::Manifest { count } => {
-            resolve_quantity(state, count, ability.controller, ability.source_id).max(0) as usize
+            resolve_quantity_with_targets(state, count, ability).max(0) as usize
         }
         _ => return Err(EffectError::MissingParam("count".to_string())),
     };

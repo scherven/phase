@@ -418,6 +418,7 @@ export type WaitingFor =
   | { type: "MulliganDecision"; data: { player: PlayerId; mulligan_count: number } }
   | { type: "MulliganBottomCards"; data: { player: PlayerId; count: number } }
   | { type: "ManaPayment"; data: { player: PlayerId } }
+  | { type: "ChooseXValue"; data: { player: PlayerId; max: number; pending_cast: PendingCast } }
   | { type: "TargetSelection"; data: { player: PlayerId; pending_cast: PendingCast; target_slots: TargetSelectionSlot[]; selection: TargetSelectionProgress } }
   | { type: "DeclareAttackers"; data: { player: PlayerId; valid_attacker_ids: ObjectId[]; valid_attack_targets?: AttackTarget[] } }
   | { type: "DeclareBlockers"; data: { player: PlayerId; valid_blocker_ids: ObjectId[]; valid_block_targets: Record<string, ObjectId[]> } }
@@ -598,7 +599,8 @@ export type GameAction =
   | { type: "LearnDecision"; data: { choice: LearnOption } }
   | { type: "ChooseDungeon"; data: { dungeon: DungeonId } }
   | { type: "ChooseDungeonRoom"; data: { room_index: number } }
-  | { type: "SelectCategoryPermanents"; data: { choices: (ObjectId | null)[] } };
+  | { type: "SelectCategoryPermanents"; data: { choices: (ObjectId | null)[] } }
+  | { type: "ChooseX"; data: { value: number } };
 
 // ── Game Events (discriminated union, tag="type", content="data") ────────
 
@@ -608,6 +610,7 @@ export type GameEvent =
   | { type: "PhaseChanged"; data: { phase: Phase } }
   | { type: "PriorityPassed"; data: { player_id: PlayerId } }
   | { type: "SpellCast"; data: { card_id: CardId; controller: PlayerId; object_id: ObjectId } }
+  | { type: "XValueChosen"; data: { player: PlayerId; object_id: ObjectId; value: number } }
   | { type: "AbilityActivated"; data: { source_id: ObjectId } }
   | { type: "ZoneChanged"; data: { object_id: ObjectId; from: Zone; to: Zone } }
   | { type: "LifeChanged"; data: { player_id: PlayerId; amount: number } }

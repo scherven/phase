@@ -53,6 +53,13 @@ pub enum GameEvent {
         controller: PlayerId,
         object_id: ObjectId, // CR 601.2a: The spell object on the stack
     },
+    /// CR 107.1b + CR 601.2f: The caster has chosen the value of X for a
+    /// pending cast whose cost contained `ManaCostShard::X`.
+    XValueChosen {
+        player: PlayerId,
+        object_id: ObjectId,
+        value: u32,
+    },
     AbilityActivated {
         source_id: ObjectId,
     },
