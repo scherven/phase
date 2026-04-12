@@ -353,6 +353,7 @@ fn scenario_very_hard_wasm_passes_on_redundant_removal() {
                 )),
                 card_id: CardId(300),
                 casting_variant: Default::default(),
+                actual_mana_spent: 0,
             },
         });
     }

@@ -3,7 +3,7 @@ use engine::ai_support::{
     project_copy_mana_spent_for_x,
 };
 use engine::game::filter::{matches_target_filter, FilterContext};
-use engine::types::ability::{AbilityDefinition, TargetFilter, TargetRef};
+use engine::types::ability::{AbilityDefinition, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::Supertype;
 use engine::types::game_state::{GameState, PendingCast, WaitingFor};
@@ -97,9 +97,9 @@ fn preferred_x_value(scores: &[(u32, f64)]) -> u32 {
         best = match best {
             None => Some((x_value, score)),
             Some((best_x, best_score)) => {
-                if score > best_score + 0.05 {
-                    Some((x_value, score))
-                } else if (score - best_score).abs() <= 0.05 && x_value < best_x {
+                if score > best_score + 0.05
+                    || ((score - best_score).abs() <= 0.05 && x_value < best_x)
+                {
                     Some((x_value, score))
                 } else {
                     Some((best_x, best_score))
@@ -238,7 +238,7 @@ mod tests {
     use engine::game::zones::create_object;
     use engine::types::ability::{
         AbilityKind, ContinuousModification, CopyManaValueLimit, Effect, QuantityExpr,
-        ReplacementDefinition,
+        ReplacementDefinition, TargetFilter,
     };
     use engine::types::card_type::CoreType;
     use engine::types::game_state::PendingCast;
