@@ -153,15 +153,26 @@ fn assert_zone_consistency(state: &GameState) {
         );
     }
 
+    // CR 601.2a: a spell enters the stack at announcement, but the engine
+    // defers the origin-zone → Stack `obj.zone` flip to `finalize_cast` so
+    // off-zone statics (escape, flashback, cast-from-exile) still apply
+    // during cost/target/mode resolution. For that one in-flight entry,
+    // `obj.zone` is allowed to equal the pending cast's `origin_zone`.
+    let pending_cast = state
+        .waiting_for
+        .pending_cast_ref()
+        .or(state.pending_cast.as_deref());
     for entry in &state.stack {
         let obj = state
             .objects
             .get(&entry.source_id)
             .expect("stack source object must exist");
-        assert_eq!(
-            obj.zone,
-            Zone::Stack,
-            "stack source must be in the stack zone"
+        let pre_commit_ok = pending_cast
+            .is_some_and(|pc| pc.object_id == entry.source_id && obj.zone == pc.origin_zone);
+        assert!(
+            obj.zone == Zone::Stack || pre_commit_ok,
+            "stack source must be in the stack zone (or in its pre-commit origin zone for a pending cast); got {:?}",
+            obj.zone
         );
     }
 }
