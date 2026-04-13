@@ -1,4 +1,4 @@
-//! `LandfallKeepablesHand` — feature-driven mulligan policy for landfall decks.
+//! `LandfallKeepablesMulligan` — feature-driven mulligan policy for landfall decks.
 //!
 //! CR 103.5 (`docs/MagicCompRules.txt:295`): deciding to keep after the
 //! mulligan process. When a deck's landfall commitment is meaningful, opening
@@ -23,11 +23,11 @@ use super::{MulliganPolicy, MulliganScore, TurnOrder};
 /// warrant landfall-specific mulligan preferences.
 const COMMITMENT_THRESHOLD: f32 = 0.3;
 
-pub struct LandfallKeepablesHand;
+pub struct LandfallKeepablesMulligan;
 
-impl MulliganPolicy for LandfallKeepablesHand {
+impl MulliganPolicy for LandfallKeepablesMulligan {
     fn id(&self) -> PolicyId {
-        PolicyId::LandfallKeepablesHand
+        PolicyId::LandfallKeepablesMulligan
     }
 
     fn evaluate(
@@ -195,8 +195,14 @@ mod tests {
     fn opts_out_when_commitment_low() {
         let features = features_with_commitment(0.1, vec!["Omnath"]);
         let (state, hand) = make_hand(3, &[], 4);
-        let score =
-            LandfallKeepablesHand.evaluate(&hand, &state, &features, &plan(), TurnOrder::OnPlay, 0);
+        let score = LandfallKeepablesMulligan.evaluate(
+            &hand,
+            &state,
+            &features,
+            &plan(),
+            TurnOrder::OnPlay,
+            0,
+        );
         match score {
             MulliganScore::Score { delta, reason } => {
                 assert_eq!(delta, 0.0);
@@ -211,8 +217,14 @@ mod tests {
         let features = features_with_commitment(0.9, vec!["Omnath"]);
         // 3 lands + 1 payoff + 3 filler = 7 cards
         let (state, hand) = make_hand(3, &["Omnath"], 3);
-        let score =
-            LandfallKeepablesHand.evaluate(&hand, &state, &features, &plan(), TurnOrder::OnPlay, 0);
+        let score = LandfallKeepablesMulligan.evaluate(
+            &hand,
+            &state,
+            &features,
+            &plan(),
+            TurnOrder::OnPlay,
+            0,
+        );
         match score {
             MulliganScore::Score { delta, reason } => {
                 assert!(delta > 0.0);
@@ -227,8 +239,14 @@ mod tests {
         let features = features_with_commitment(0.9, vec!["Omnath"]);
         // 1 land + 1 payoff + 5 filler.
         let (state, hand) = make_hand(1, &["Omnath"], 5);
-        let score =
-            LandfallKeepablesHand.evaluate(&hand, &state, &features, &plan(), TurnOrder::OnPlay, 0);
+        let score = LandfallKeepablesMulligan.evaluate(
+            &hand,
+            &state,
+            &features,
+            &plan(),
+            TurnOrder::OnPlay,
+            0,
+        );
         match score {
             MulliganScore::Score { delta, reason } => {
                 assert!(delta > 0.0);
@@ -242,8 +260,14 @@ mod tests {
     fn lands_no_payoffs_penalty() {
         let features = features_with_commitment(0.9, vec!["Omnath"]);
         let (state, hand) = make_hand(3, &[], 4);
-        let score =
-            LandfallKeepablesHand.evaluate(&hand, &state, &features, &plan(), TurnOrder::OnPlay, 0);
+        let score = LandfallKeepablesMulligan.evaluate(
+            &hand,
+            &state,
+            &features,
+            &plan(),
+            TurnOrder::OnPlay,
+            0,
+        );
         match score {
             MulliganScore::Score { delta, reason } => {
                 assert!(delta < 0.0);
@@ -258,8 +282,14 @@ mod tests {
         let features = features_with_commitment(0.9, vec!["Omnath"]);
         // 0 lands, 0 payoffs, 7 filler.
         let (state, hand) = make_hand(0, &[], 7);
-        let score =
-            LandfallKeepablesHand.evaluate(&hand, &state, &features, &plan(), TurnOrder::OnPlay, 0);
+        let score = LandfallKeepablesMulligan.evaluate(
+            &hand,
+            &state,
+            &features,
+            &plan(),
+            TurnOrder::OnPlay,
+            0,
+        );
         match score {
             MulliganScore::Score { delta, reason } => {
                 assert_eq!(delta, 0.0);

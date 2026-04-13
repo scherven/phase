@@ -78,7 +78,9 @@ where
 
 const AI: PlayerId = PlayerId(0);
 
-/// CR 701.23 + CR 305.4: fetch-shaped activated ability.
+/// CR 701.21 + CR 305.4 + CR 701.23: fetch-shaped activated ability — pays a
+/// sacrifice cost (CR 701.21), searches the library (CR 701.23), and puts a
+/// land onto the battlefield (CR 305.4).
 fn make_fetch_ability() -> AbilityDefinition {
     let mut ability = AbilityDefinition::new(
         AbilityKind::Activated,

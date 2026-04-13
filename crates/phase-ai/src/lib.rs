@@ -1,3 +1,4 @@
+pub mod ability_chain;
 pub mod auto_play;
 pub mod card_advantage;
 pub mod card_hints;

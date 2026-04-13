@@ -20,6 +20,8 @@ use engine::types::statics::StaticMode;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
 
+use crate::ability_chain::collect_chain_effects;
+
 /// CR 603.6a: Per-deck landfall classification.
 ///
 /// Populated once per game from `DeckEntry` data. Detection is structural over
@@ -109,7 +111,12 @@ fn filter_matches_land_you_control(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::Typed(typed) => typed_filter_is_land_you_control(typed),
         TargetFilter::Or { filters } => filters.iter().any(filter_matches_land_you_control),
-        TargetFilter::And { filters } => filters.iter().any(filter_matches_land_you_control),
+        // CR 109.3 conjunction: every constraint of an `And` must hold. An
+        // `And { [Typed(Land, You), Typed(Flying)] }` is not a "land you
+        // control" match — there are no flying lands. Use `.all()` so a
+        // conjunction only matches when every sub-constraint is itself a
+        // land-you-control match (mirrors `engine::game::filter`'s `.all()`).
+        TargetFilter::And { filters } => filters.iter().all(filter_matches_land_you_control),
         _ => false,
     }
 }
@@ -136,7 +143,8 @@ fn type_filter_is_land(tf: &TypeFilter) -> bool {
 /// An enabler either:
 /// - Has an activated ability whose cost sacrifices a permanent AND whose
 ///   effect (including sub-abilities) searches the library for a land and
-///   puts it onto the battlefield — i.e., a fetchland (CR 305.4 + CR 701.23).
+///   puts it onto the battlefield — i.e., a fetchland
+///   (CR 701.21 sacrifice + CR 305.4 put-land-onto-battlefield + CR 701.23 search).
 /// - Has a static granting extra land drops (`AdditionalLandDrop`,
 ///   `MayPlayAdditionalLand`) — Azusa / Exploration / Oracle of Mul Daya
 ///   (CR 305.2).
@@ -179,16 +187,6 @@ fn ability_searches_library_for_land(ability: &AbilityDefinition) -> bool {
         )
     });
     searches_land && puts_onto_battlefield
-}
-
-fn collect_chain_effects(ability: &AbilityDefinition) -> Vec<&Effect> {
-    let mut effects: Vec<&Effect> = vec![&ability.effect];
-    let mut current = &ability.sub_ability;
-    while let Some(sub) = current {
-        effects.push(&sub.effect);
-        current = &sub.sub_ability;
-    }
-    effects
 }
 
 fn target_filter_references_land(filter: &TargetFilter) -> bool {

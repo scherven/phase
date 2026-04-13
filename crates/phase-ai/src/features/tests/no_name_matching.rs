@@ -1,11 +1,27 @@
 // allow: no_name_matching_self
-//! Architectural lint: feature modules must classify cards structurally —
-//! over `CardFace` triggers, effects, and filters — never by literal name.
+//! Architectural lint: feature modules AND policy modules must classify
+//! cards structurally — over `CardFace` triggers, effects, and filters —
+//! never by literal name.
 //!
-//! Greps every `.rs` file under `crates/phase-ai/src/features/` for the
-//! anti-patterns documented in the design plan. Files containing the marker
-//! `allow: no_name_matching_self` (used by this lint module to talk about the
-//! patterns it detects) are exempted.
+//! Greps every `.rs` file under `crates/phase-ai/src/features/` and
+//! `crates/phase-ai/src/policies/` for the anti-patterns listed in
+//! `ANTI_PATTERNS`. Files containing the marker `allow: no_name_matching_self`
+//! (used by this lint module to talk about the patterns it detects) are
+//! exempted.
+//!
+//! ## What is explicitly allowed
+//!
+//! The `ANTI_PATTERNS` list intentionally does NOT catch
+//! `payoff_names.contains(&obj.name)` or similar identity-lookup patterns.
+//! Those are legitimate uses of a feature's pre-computed name set for
+//! runtime battlefield/hand identity checks (e.g., "is a landfall payoff
+//! currently on my battlefield?"). Classification — deciding whether a
+//! given card is a landfall payoff — must be done structurally at feature
+//! detection time and never by name. The distinction is:
+//!
+//! - **Forbidden** (classification by name): `obj.name == "Omnath"`.
+//! - **Allowed** (identity lookup of already-classified cards):
+//!   `features.landfall.payoff_names.contains(&obj.name)`.
 
 use std::fs;
 use std::path::Path;
@@ -21,13 +37,18 @@ const ANTI_PATTERNS: &[&str] = &[
 const ALLOW_MARKER: &str = "allow: no_name_matching_self";
 
 #[test]
-fn feature_modules_have_no_card_name_matching() {
-    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/features"));
+fn feature_and_policy_modules_have_no_card_name_matching() {
+    let roots = [
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/features")),
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/policies")),
+    ];
     let mut violations: Vec<String> = Vec::new();
-    walk(root, &mut violations);
+    for root in roots {
+        walk(root, &mut violations);
+    }
     assert!(
         violations.is_empty(),
-        "Feature modules contain card-name matching anti-patterns:\n{}",
+        "Feature/policy modules contain card-name matching anti-patterns:\n{}",
         violations.join("\n")
     );
 }

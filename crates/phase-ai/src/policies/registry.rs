@@ -52,7 +52,7 @@ pub enum PolicyId {
     CardAdvantage,
     LandfallTiming,
     KeepablesByLandCount,
-    LandfallKeepablesHand,
+    LandfallKeepablesMulligan,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which

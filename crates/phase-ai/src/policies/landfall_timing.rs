@@ -5,10 +5,11 @@
 //!
 //! CR 305.2: Players normally play one land per turn; continuous effects may
 //! raise that limit. CR 305.4: Effects that put lands onto the battlefield do
-//! not count as land drops. CR 701.23: Search is a keyword action — fetches
-//! resolve as activated abilities that search the library for a land and put
-//! it onto the battlefield. CR 603: triggered abilities (the payoffs fetches
-//! feed) fire when their event occurs on the stack.
+//! not count as land drops. CR 701.21: Sacrifice — the controller moves a
+//! permanent they control from the battlefield into its owner's graveyard (the
+//! fetchland's payment step). CR 701.23: Search is a keyword action — the
+//! fetch's effect searches the library for a land. CR 603: triggered abilities
+//! (the payoffs fetches feed) fire when their event occurs on the stack.
 
 use engine::game::game_object::GameObject;
 use engine::types::ability::{AbilityDefinition, CostCategory, Effect, TargetFilter, TypeFilter};
@@ -19,6 +20,7 @@ use engine::types::zones::Zone;
 
 use super::context::PolicyContext;
 use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
+use crate::ability_chain::collect_chain_effects;
 use crate::features::DeckFeatures;
 
 /// Penalty applied when the AI would crack a fetchland with no payoff in play.
@@ -59,8 +61,10 @@ impl TacticalPolicy for LandfallTimingPolicy {
 
     fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
         // Only fetch-shaped activations are in scope. Everything else is a no-op.
-        // CR 305.4 + CR 701.23: fetchlands sacrifice themselves and put a land
-        // onto the battlefield — they do not play a land (CR 305.2).
+        // CR 701.21 + CR 305.4 + CR 701.23: fetchlands pay a sacrifice cost
+        // (CR 701.21), their effect searches the library (CR 701.23), and puts
+        // a land onto the battlefield (CR 305.4) — they do not play a land
+        // (CR 305.2).
         if !is_fetch_shaped_activation(ctx) {
             return PolicyVerdict::Score {
                 delta: 0.0,
@@ -99,10 +103,11 @@ impl TacticalPolicy for LandfallTimingPolicy {
     }
 }
 
-/// CR 305.4 + CR 701.23: a fetch-shaped activation has a sacrifice cost and
-/// an effect chain that searches the library and moves a land onto the
-/// battlefield. Never destructures `AbilityCost::Sacrifice` — consumes the
-/// `CostCategory` taxonomy instead (single-authority invariant).
+/// CR 701.21 + CR 305.4 + CR 701.23: a fetch-shaped activation has a
+/// sacrifice cost (CR 701.21) and an effect chain that searches the library
+/// (CR 701.23) and moves a land onto the battlefield (CR 305.4). Never
+/// destructures `AbilityCost::Sacrifice` — consumes the `CostCategory`
+/// taxonomy instead (single-authority invariant).
 fn is_fetch_shaped_activation(ctx: &PolicyContext<'_>) -> bool {
     let GameAction::ActivateAbility {
         source_id,
@@ -154,16 +159,6 @@ fn ability_searches_library_for_land(ability: &AbilityDefinition) -> bool {
 fn ability_is_pure_mana(ability: &AbilityDefinition) -> bool {
     let effects = collect_chain_effects(ability);
     effects.iter().all(|e| matches!(e, Effect::Mana { .. }))
-}
-
-fn collect_chain_effects(ability: &AbilityDefinition) -> Vec<&Effect> {
-    let mut effects: Vec<&Effect> = vec![&ability.effect];
-    let mut current = &ability.sub_ability;
-    while let Some(sub) = current {
-        effects.push(&sub.effect);
-        current = &sub.sub_ability;
-    }
-    effects
 }
 
 fn target_filter_references_land(filter: &TargetFilter) -> bool {

@@ -32,7 +32,7 @@ pub mod keepables_by_land_count;
 pub mod landfall_keepables;
 
 pub use keepables_by_land_count::KeepablesByLandCount;
-pub use landfall_keepables::LandfallKeepablesHand;
+pub use landfall_keepables::LandfallKeepablesMulligan;
 
 /// Whether the player under consideration is on the play or on the draw this
 /// game. Derived from `GameState::current_starting_player` at call time —
@@ -88,7 +88,7 @@ impl Default for MulliganRegistry {
         Self {
             policies: vec![
                 Box::new(KeepablesByLandCount),
-                Box::new(LandfallKeepablesHand),
+                Box::new(LandfallKeepablesMulligan),
             ],
         }
     }

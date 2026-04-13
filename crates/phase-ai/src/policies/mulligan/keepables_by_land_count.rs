@@ -42,8 +42,12 @@ impl MulliganPolicy for KeepablesByLandCount {
     ) -> MulliganScore {
         let hand_size = hand.len();
 
-        // Always keep at 4 or fewer cards — London mulligan leaves too little
-        // material to further mulligan fruitfully.
+        // Defensive short-hand keep. Under the London Mulligan (CR 103.5) the
+        // engine always presents a 7-card hand at `WaitingFor::MulliganDecision`
+        // (bottoming happens *after* the keep decision), so this branch is
+        // unreachable from production paths today. It stays as a guard against
+        // direct `evaluate()` invocations (tests, hypothetical non-London
+        // mulligan flows) so no caller can observe an unkeepable tiny hand.
         if hand_size <= 4 {
             return MulliganScore::Score {
                 delta: 5.0,
