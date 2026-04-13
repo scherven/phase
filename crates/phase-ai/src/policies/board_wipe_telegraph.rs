@@ -130,6 +130,20 @@ impl BoardWipeTelegraphPolicy {
             penalty *= 0.6;
         }
 
+        // Tokens-wide amplification: a deck that floods the board with creatures
+        // has more to lose from a board wipe — amplify the penalty proportionally
+        // to tokens_wide commitment. Max 50% amplification at full commitment.
+        let session_features = ctx
+            .context
+            .session
+            .features
+            .get(&ctx.ai_player)
+            .cloned()
+            .unwrap_or_default();
+        let tokens_wide_amp =
+            1.0 + (session_features.tokens_wide.commitment as f64).clamp(0.0, 1.0) * 0.5;
+        penalty *= tokens_wide_amp;
+
         penalty.max(-2.0)
     }
 }
@@ -338,6 +352,130 @@ mod tests {
         assert!(
             score.abs() < 0.01,
             "No penalty when wrath risk is low, got {score}"
+        );
+    }
+
+    #[test]
+    fn amplifies_with_high_tokens_wide_commitment() {
+        use crate::features::tokens_wide::TokensWideFeature;
+        use crate::features::DeckFeatures;
+        use crate::session::AiSession;
+        use std::sync::Arc;
+
+        let mut state = GameState::new_two_player(42);
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.turn_number = 5;
+
+        // AI has 3 creatures on the battlefield.
+        for i in 0..3 {
+            let id = create_object(
+                &mut state,
+                CardId(i),
+                PlayerId(0),
+                format!("Token {i}"),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(1);
+            obj.toughness = Some(1);
+        }
+
+        // Opponent: no creatures, 2 cards in hand, 5 lands — high wrath risk.
+        state.players[1].hand = vec![
+            engine::types::identifiers::ObjectId(90),
+            engine::types::identifiers::ObjectId(91),
+        ];
+        for i in 10..15 {
+            let id = create_object(
+                &mut state,
+                CardId(i),
+                PlayerId(1),
+                format!("Land {i}"),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+        }
+
+        // Spell: another creature.
+        let spell = create_object(
+            &mut state,
+            CardId(50),
+            PlayerId(0),
+            "Another Token".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&spell).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.power = Some(1);
+        obj.toughness = Some(1);
+
+        // First: score without tokens_wide commitment.
+        let config = AiConfig::default();
+        let decision = AiDecisionContext {
+            waiting_for: WaitingFor::Priority {
+                player: PlayerId(0),
+            },
+            candidates: Vec::new(),
+        };
+        let candidate = CandidateAction {
+            action: GameAction::CastSpell {
+                object_id: spell,
+                card_id: CardId(50),
+                targets: Vec::new(),
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Spell,
+            },
+        };
+        let base_ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+        let base_score = BoardWipeTelegraphPolicy.score(&base_ctx);
+
+        // Second: score with high tokens_wide commitment (1.0).
+        let mut session = AiSession::empty();
+        session.features.insert(
+            PlayerId(0),
+            DeckFeatures {
+                tokens_wide: TokensWideFeature {
+                    commitment: 1.0,
+                    ..TokensWideFeature::default()
+                },
+                ..DeckFeatures::default()
+            },
+        );
+        let mut context_with_tokens = crate::context::AiContext::empty(&config.weights);
+        context_with_tokens.session = Arc::new(session);
+        let amp_ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &context_with_tokens,
+            cast_facts: None,
+        };
+        let amp_score = BoardWipeTelegraphPolicy.score(&amp_ctx);
+
+        // Both should be negative; amp_score should be more negative than base_score.
+        assert!(
+            base_score < -0.3,
+            "base score should penalize, got {base_score}"
+        );
+        assert!(
+            amp_score < base_score,
+            "tokens_wide amplification should increase penalty: base={base_score} amp={amp_score}"
         );
     }
 }

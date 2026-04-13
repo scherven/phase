@@ -277,7 +277,9 @@ fn is_creature_dies_trigger(trigger: &engine::types::ability::TriggerDefinition)
 /// True if the filter references a creature whose controller is `You` or unset.
 /// Opponent-scoped triggers (e.g., "when an opponent's creature dies") do not
 /// qualify — they don't fire when the AI sacrifices its own creatures.
-fn filter_references_creature_you_control_or_any(filter: &TargetFilter) -> bool {
+///
+/// Shared with `tokens_wide` for anthem-affected-filter detection.
+pub(crate) fn filter_references_creature_you_control_or_any(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::Typed(typed) => typed_filter_is_creature_you_control_or_any(typed),
         TargetFilter::Or { filters } => filters
@@ -290,7 +292,8 @@ fn filter_references_creature_you_control_or_any(filter: &TargetFilter) -> bool 
     }
 }
 
-fn typed_filter_is_creature_you_control_or_any(typed: &TypedFilter) -> bool {
+/// Shared with `tokens_wide` for anthem-affected-filter detection.
+pub(crate) fn typed_filter_is_creature_you_control_or_any(typed: &TypedFilter) -> bool {
     // Reject opponent-scoped filters — those don't benefit from sacrificing your
     // own creatures.
     if matches!(typed.controller, Some(ControllerRef::Opponent)) {

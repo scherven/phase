@@ -11,6 +11,7 @@ use crate::features::aggro_pressure::{
     AGGRO_TEMPO_FLOOR as AGGRO_PRESSURE_TEMPO_FLOOR,
     MULLIGAN_FLOOR as AGGRO_PRESSURE_MULLIGAN_FLOOR,
 };
+use crate::features::tokens_wide::COMMITMENT_FLOOR as TOKENS_WIDE_TEMPO_FLOOR;
 use crate::features::tribal::{
     AGGRO_TEMPO_FLOOR as TRIBAL_AGGRO_TEMPO_FLOOR, MULLIGAN_FLOOR as TRIBAL_MULLIGAN_FLOOR,
 };
@@ -53,6 +54,13 @@ fn tempo_class_for(features: &DeckFeatures) -> TempoClass {
     // evasion, burn) reads as Aggro. Placed AFTER tribal so tribal+aggro
     // reads as Aggro and ramp+aggro reads as Ramp. Placed BEFORE control.
     if features.aggro_pressure.commitment >= AGGRO_PRESSURE_TEMPO_FLOOR {
+        return TempoClass::Aggro;
+    }
+    // A tokens-wide deck (mass token generation + anthem amplification) plays
+    // like an aggro deck — it wins through board-wide combat pressure.
+    // Placed AFTER ramp branches (ramp+tokens reads as Ramp) and AFTER tribal
+    // (tribal+tokens reads as Aggro already), BEFORE control.
+    if features.tokens_wide.commitment > TOKENS_WIDE_TEMPO_FLOOR {
         return TempoClass::Aggro;
     }
     // A control deck with high commitment AND meaningful reactive_tempo reads

@@ -11,6 +11,7 @@ pub mod aristocrats;
 pub mod control;
 pub mod landfall;
 pub mod mana_ramp;
+pub mod tokens_wide;
 pub mod tribal;
 
 #[cfg(test)]
@@ -21,6 +22,7 @@ pub use aristocrats::AristocratsFeature;
 pub use control::ControlFeature;
 pub use landfall::LandfallFeature;
 pub use mana_ramp::ManaRampFeature;
+pub use tokens_wide::TokensWideFeature;
 pub use tribal::TribalFeature;
 
 use crate::deck_profile::DeckArchetype;
@@ -42,4 +44,5 @@ pub struct DeckFeatures {
     pub control: ControlFeature,
     pub aristocrats: AristocratsFeature,
     pub aggro_pressure: AggroPressureFeature,
+    pub tokens_wide: TokensWideFeature,
 }

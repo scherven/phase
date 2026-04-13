@@ -1,5 +1,6 @@
 pub(crate) mod activation;
 mod aggro_pressure;
+mod anthem_priority;
 mod anti_self_harm;
 mod board_development;
 mod board_wipe_telegraph;
@@ -29,6 +30,7 @@ pub(crate) mod strategy_helpers;
 mod sweeper_timing;
 mod synergy_casting;
 mod tempo_curve;
+mod tokens_wide;
 mod tribal_lord_priority;
 pub(crate) mod tutor;
 
