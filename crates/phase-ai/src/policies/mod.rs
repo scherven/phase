@@ -1,3 +1,4 @@
+pub(crate) mod activation;
 mod anti_self_harm;
 mod board_development;
 mod board_wipe_telegraph;
@@ -15,7 +16,7 @@ mod lethality_awareness;
 mod life_total_resource;
 mod mana_efficiency;
 mod recursion_awareness;
-mod registry;
+pub mod registry;
 mod sacrifice_value;
 pub(crate) mod stack_awareness;
 pub(crate) mod strategy_helpers;
@@ -23,4 +24,9 @@ mod synergy_casting;
 mod tempo_curve;
 pub(crate) mod tutor;
 
-pub use registry::PolicyRegistry;
+#[cfg(test)]
+pub mod tests;
+
+pub use registry::{
+    DecisionKind, PolicyId, PolicyReason, PolicyRegistry, PolicyVerdict, TacticalPolicy,
+};

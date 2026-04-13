@@ -2,17 +2,22 @@ use engine::game::game_object::GameObject;
 use engine::types::ability::{Effect, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
 
+use crate::features::DeckFeatures;
+
+use super::activation::turn_only;
 use super::context::PolicyContext;
 use super::effect_classify::{effect_polarity, EffectPolarity};
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 
 pub struct RecursionAwarenessPolicy;
 
-impl TacticalPolicy for RecursionAwarenessPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl RecursionAwarenessPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         let GameAction::ChooseTarget {
             target: Some(TargetRef::Object(target_id)),
         } = &ctx.candidate.action
@@ -80,6 +85,32 @@ impl TacticalPolicy for RecursionAwarenessPolicy {
         }
 
         score
+    }
+}
+
+impl TacticalPolicy for RecursionAwarenessPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::RecursionAwareness
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::SelectTarget]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("recursion_awareness_score"),
+        }
     }
 }
 

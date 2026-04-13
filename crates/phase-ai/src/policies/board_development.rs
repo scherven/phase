@@ -1,15 +1,19 @@
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::{best_proactive_cast_score, board_presence_score, is_own_main_phase};
 use crate::deck_profile::DeckArchetype;
+use crate::features::DeckFeatures;
 
 pub struct BoardDevelopmentPolicy;
 
-impl TacticalPolicy for BoardDevelopmentPolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl BoardDevelopmentPolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 1.0,
             DeckArchetype::Control => 1.0,
@@ -19,7 +23,10 @@ impl TacticalPolicy for BoardDevelopmentPolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    /// Inherent helper preserved for direct test invocation; mirrors the
+    /// scalar produced by the trait's `verdict` (without registry-level
+    /// activation scaling).
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !is_own_main_phase(ctx) {
             return 0.0;
         }
@@ -35,6 +42,37 @@ impl TacticalPolicy for BoardDevelopmentPolicy {
                 }
             }
             _ => 0.0,
+        }
+    }
+}
+
+impl TacticalPolicy for BoardDevelopmentPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::BoardDevelopment
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[
+            DecisionKind::CastSpell,
+            DecisionKind::ActivateAbility,
+            DecisionKind::PlayLand,
+        ]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        let delta = self.score(ctx);
+        PolicyVerdict::Score {
+            delta,
+            reason: PolicyReason::new("board_development_score"),
         }
     }
 }

@@ -7,9 +7,11 @@ use engine::types::game_state::GameState;
 use engine::types::player::PlayerId;
 
 use crate::cast_facts::CastFacts;
+use crate::features::DeckFeatures;
 
+use super::activation::turn_only;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::best_proactive_cast_score;
 
 pub struct HandDisruptionPolicy;
@@ -20,8 +22,8 @@ pub(crate) struct DisruptionWindow {
     pub hint_priority: f64,
 }
 
-impl TacticalPolicy for HandDisruptionPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl HandDisruptionPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !matches!(ctx.candidate.action, GameAction::CastSpell { .. }) {
             return 0.0;
         }
@@ -39,6 +41,32 @@ impl TacticalPolicy for HandDisruptionPolicy {
         }
 
         score
+    }
+}
+
+impl TacticalPolicy for HandDisruptionPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::HandDisruption
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("hand_disruption_score"),
+        }
     }
 }
 

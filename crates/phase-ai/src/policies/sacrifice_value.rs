@@ -1,14 +1,18 @@
 use engine::types::actions::GameAction;
-use engine::types::game_state::WaitingFor;
+use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::player::PlayerId;
 
+use crate::features::DeckFeatures;
+
+use super::activation::turn_only;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::sacrifice_cost;
 
 pub struct SacrificeValuePolicy;
 
-impl TacticalPolicy for SacrificeValuePolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl SacrificeValuePolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         // Guard: only score SelectCards during sacrifice decisions
         let GameAction::SelectCards { cards } = &ctx.candidate.action else {
             return 0.0;
@@ -26,6 +30,32 @@ impl TacticalPolicy for SacrificeValuePolicy {
             .map(|&obj_id| sacrifice_cost(ctx.state, obj_id, ctx.penalties()))
             .sum();
         -total_cost
+    }
+}
+
+impl TacticalPolicy for SacrificeValuePolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::SacrificeValue
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::ActivateAbility]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("sacrifice_value_score"),
+        }
     }
 }
 

@@ -10,14 +10,16 @@ use engine::types::player::PlayerId;
 
 use crate::deck_knowledge::remaining_deck_view;
 use crate::eval::StrategicIntent;
+use crate::features::DeckFeatures;
 
+use super::activation::turn_only;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 
 pub struct TutorPolicy;
 
-impl TacticalPolicy for TutorPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl TutorPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !matches!(ctx.candidate.action, GameAction::CastSpell { .. }) {
             return 0.0;
         }
@@ -42,6 +44,32 @@ impl TacticalPolicy for TutorPolicy {
             .fold(0.0, f64::max);
 
         0.34 + best_follow_up * 0.8
+    }
+}
+
+impl TacticalPolicy for TutorPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::Tutor
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("tutor_score"),
+        }
     }
 }
 

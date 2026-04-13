@@ -251,9 +251,25 @@ fn build_ai_context(state: &GameState, player: PlayerId, config: &AiConfig) -> A
         .map(|p| p.current_main.as_slice())
         .unwrap_or(&[]);
     if deck.is_empty() {
-        return AiContext::empty(&config.weights);
+        let mut ctx = AiContext::empty(&config.weights);
+        ctx.player = player;
+        return ctx;
     }
     let mut ctx = AiContext::analyze_with(deck, &config.weights, &config.archetype_multipliers);
+    ctx.player = player;
+    // Re-key the session map under the actual AI player (analyze_with keys by PlayerId(0)).
+    if player != engine::types::player::PlayerId(0) {
+        let session = std::sync::Arc::make_mut(&mut ctx.session);
+        if let Some(graph) = session.synergy.remove(&engine::types::player::PlayerId(0)) {
+            session.synergy.insert(player, graph);
+        }
+        if let Some(features) = session.features.remove(&engine::types::player::PlayerId(0)) {
+            session.features.insert(player, features);
+        }
+        if let Some(plan) = session.plan.remove(&engine::types::player::PlayerId(0)) {
+            session.plan.insert(player, plan);
+        }
+    }
 
     // Compute opponent threat profile based on difficulty setting.
     ctx.opponent_threat = match config.search.threat_awareness {

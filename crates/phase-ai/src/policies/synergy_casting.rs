@@ -1,11 +1,15 @@
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::is_own_main_phase;
 use crate::deck_profile::DeckArchetype;
+use crate::features::DeckFeatures;
 
 /// Rewards casting spells that have synergy with existing board presence.
 ///
@@ -14,8 +18,8 @@ use crate::deck_profile::DeckArchetype;
 /// against creatures currently on the battlefield.
 pub struct SynergyCastingPolicy;
 
-impl TacticalPolicy for SynergyCastingPolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl SynergyCastingPolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 1.0,
             DeckArchetype::Control => 1.0,
@@ -25,7 +29,7 @@ impl TacticalPolicy for SynergyCastingPolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !is_own_main_phase(ctx) {
             return 0.0;
         }
@@ -47,7 +51,7 @@ impl TacticalPolicy for SynergyCastingPolicy {
         let max_bonus = ctx.config.policy_penalties.synergy_casting_bonus;
 
         // Axis 1: Pre-computed synergy score from the deck graph.
-        let graph_score = ctx.context.synergy_graph.card_score(&object.name);
+        let graph_score = ctx.context.synergy_graph().card_score(&object.name);
 
         // Axis 2: Runtime tribal overlap — does this creature share a subtype
         // with creatures already on our battlefield?
@@ -60,6 +64,32 @@ impl TacticalPolicy for SynergyCastingPolicy {
         // Combine both axes, capped at max_bonus.
         let raw = graph_score * 0.5 * max_bonus + tribal_bonus * 0.5 * max_bonus;
         raw.min(max_bonus)
+    }
+}
+
+impl TacticalPolicy for SynergyCastingPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::SynergyCasting
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("synergy_casting_score"),
+        }
     }
 }
 

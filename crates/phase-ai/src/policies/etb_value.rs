@@ -1,15 +1,19 @@
 use crate::cast_facts::collect_definition_effects;
+use crate::features::DeckFeatures;
 use engine::types::ability::{Effect, PtValue};
 use engine::types::actions::GameAction;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 
+use super::activation::turn_only;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::visible_opponent_creature_value;
 
 pub struct EtbValuePolicy;
 
-impl TacticalPolicy for EtbValuePolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl EtbValuePolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !matches!(ctx.candidate.action, GameAction::CastSpell { .. }) {
             return 0.0;
         }
@@ -56,6 +60,32 @@ impl TacticalPolicy for EtbValuePolicy {
         }
 
         score.min(0.9)
+    }
+}
+
+impl TacticalPolicy for EtbValuePolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::EtbValue
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("etb_value_score"),
+        }
     }
 }
 

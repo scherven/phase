@@ -16,18 +16,22 @@ use engine::types::zones::Zone;
 
 use crate::eval::{evaluate_creature, threat_level};
 
+use super::activation::turn_only;
 use super::context::PolicyContext;
 use super::effect_classify::{
     aggregate_player_impact, aura_polarity, effect_polarity, extract_target_filter,
     is_spell_beneficial, targeted_player_impact, targets_creatures, targets_creatures_only,
     EffectPolarity,
 };
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
+use crate::features::DeckFeatures;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 
 pub struct AntiSelfHarmPolicy;
 
-impl TacticalPolicy for AntiSelfHarmPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl AntiSelfHarmPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         match &ctx.candidate.action {
             GameAction::CastSpell { .. } | GameAction::ActivateAbility { .. } => {
                 score_pre_cast(ctx)
@@ -42,6 +46,36 @@ impl TacticalPolicy for AntiSelfHarmPolicy {
             // Penalise accepting an optional effect whose life cost would kill or nearly kill us.
             GameAction::DecideOptionalEffect { accept: true } => score_optional_effect_accept(ctx),
             _ => 0.0,
+        }
+    }
+}
+
+impl TacticalPolicy for AntiSelfHarmPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::AntiSelfHarm
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[
+            DecisionKind::CastSpell,
+            DecisionKind::ActivateAbility,
+            DecisionKind::SelectTarget,
+        ]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("anti_self_harm_score"),
         }
     }
 }

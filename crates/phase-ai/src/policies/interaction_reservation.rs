@@ -1,11 +1,15 @@
 use engine::game::keywords::has_flash;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 
 use crate::cast_facts::cast_facts_for_action;
+use crate::features::DeckFeatures;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::{
     battlefield_pressure_delta, best_proactive_cast_score, is_own_main_phase,
 };
@@ -13,8 +17,8 @@ use crate::deck_profile::DeckArchetype;
 
 pub struct InteractionReservationPolicy;
 
-impl TacticalPolicy for InteractionReservationPolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl InteractionReservationPolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 0.4,
             DeckArchetype::Control => 2.0,
@@ -24,7 +28,7 @@ impl TacticalPolicy for InteractionReservationPolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !is_own_main_phase(ctx) || !matches!(ctx.candidate.action, GameAction::PassPriority) {
             return 0.0;
         }
@@ -94,6 +98,32 @@ impl TacticalPolicy for InteractionReservationPolicy {
             -0.16
         } else {
             0.0
+        }
+    }
+}
+
+impl TacticalPolicy for InteractionReservationPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::InteractionReservation
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::ActivateAbility, DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("interaction_reservation_score"),
         }
     }
 }

@@ -1,18 +1,22 @@
 use engine::types::ability::Effect;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
 use engine::types::keywords::GiftKind;
+use engine::types::player::PlayerId;
 
 use crate::eval::evaluate_creature;
+use crate::features::DeckFeatures;
 
+use super::activation::turn_only;
 use super::context::PolicyContext;
 use super::effect_classify::{effect_polarity, EffectPolarity};
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 
 pub struct DownsideAwarenessPolicy;
 
-impl TacticalPolicy for DownsideAwarenessPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl DownsideAwarenessPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         // Only at cast time — gift cost is paid regardless of target
         if !matches!(ctx.candidate.action, GameAction::CastSpell { .. }) {
             return 0.0;
@@ -46,6 +50,32 @@ impl TacticalPolicy for DownsideAwarenessPolicy {
         }
 
         gift_penalty
+    }
+}
+
+impl TacticalPolicy for DownsideAwarenessPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::DownsideAwareness
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("downside_awareness_score"),
+        }
     }
 }
 

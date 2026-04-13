@@ -1,13 +1,17 @@
 use engine::types::actions::GameAction;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use crate::deck_profile::DeckArchetype;
+use crate::features::DeckFeatures;
 
 pub struct CardAdvantagePolicy;
 
-impl TacticalPolicy for CardAdvantagePolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl CardAdvantagePolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 0.5,
             DeckArchetype::Control => 1.8,
@@ -17,7 +21,7 @@ impl TacticalPolicy for CardAdvantagePolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         match &ctx.candidate.action {
             GameAction::CastSpell { .. } | GameAction::ActivateAbility { .. } => {}
             _ => return 0.0,
@@ -55,6 +59,32 @@ impl TacticalPolicy for CardAdvantagePolicy {
         let turn_scale = (10.0 - turn) / 10.0;
 
         positional_bonus * turn_scale
+    }
+}
+
+impl TacticalPolicy for CardAdvantagePolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::CardAdvantage
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell, DecisionKind::ActivateAbility]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("card_advantage_score"),
+        }
     }
 }
 

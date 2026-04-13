@@ -3,18 +3,21 @@ use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, StackEntry, StackEntryKind};
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
+use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
 
 use crate::eval::evaluate_creature;
+use crate::features::DeckFeatures;
 
+use super::activation::turn_only;
 use super::context::{collect_ability_effects, PolicyContext};
 use super::effect_classify::{effect_polarity, is_spell_beneficial, EffectPolarity};
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 
 pub struct StackAwarenessPolicy;
 
-impl TacticalPolicy for StackAwarenessPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl StackAwarenessPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         match &ctx.candidate.action {
             GameAction::ChooseTarget {
                 target: Some(TargetRef::Object(id)),
@@ -27,6 +30,32 @@ impl TacticalPolicy for StackAwarenessPolicy {
                 })
                 .sum(),
             _ => 0.0,
+        }
+    }
+}
+
+impl TacticalPolicy for StackAwarenessPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::StackAwareness
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::SelectTarget]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("stack_awareness_score"),
         }
     }
 }

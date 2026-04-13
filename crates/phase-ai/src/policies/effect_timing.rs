@@ -9,17 +9,19 @@ use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
 use crate::eval::{evaluate_creature, threat_level, StrategicIntent};
+use crate::features::DeckFeatures;
 
+use super::activation::turn_only;
 use super::context::{collect_ability_effects, PolicyContext};
 use super::effect_classify::{extract_target_filter, targets_creatures_only};
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::stack_awareness::assess_spell_impact;
 use super::strategy_helpers::{targetable_threat_value, untapped_opponent_blocker_value};
 
 pub struct EffectTimingPolicy;
 
-impl TacticalPolicy for EffectTimingPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl EffectTimingPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         let mut score = score_action_shape(ctx);
 
         for effect in ctx.effects() {
@@ -33,6 +35,36 @@ impl TacticalPolicy for EffectTimingPolicy {
         }
 
         score
+    }
+}
+
+impl TacticalPolicy for EffectTimingPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::EffectTiming
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[
+            DecisionKind::PlayLand,
+            DecisionKind::CastSpell,
+            DecisionKind::ActivateAbility,
+        ]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("effect_timing_score"),
+        }
     }
 }
 

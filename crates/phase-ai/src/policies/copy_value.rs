@@ -14,14 +14,16 @@ use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
 
 use crate::eval::{evaluate_creature, strategic_intent, StrategicIntent};
+use crate::features::DeckFeatures;
 
+use super::activation::turn_only;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 
 pub struct CopyValuePolicy;
 
-impl TacticalPolicy for CopyValuePolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl CopyValuePolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         match (&ctx.decision.waiting_for, &ctx.candidate.action) {
             (
                 WaitingFor::ChooseXValue {
@@ -42,6 +44,32 @@ impl TacticalPolicy for CopyValuePolicy {
                 score_target_choice(ctx.state, ctx.ai_player, *source_id, *target_id)
             }
             _ => 0.0,
+        }
+    }
+}
+
+impl TacticalPolicy for CopyValuePolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::CopyValue
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::ChooseX, DecisionKind::SelectTarget]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("copy_value_score"),
         }
     }
 }

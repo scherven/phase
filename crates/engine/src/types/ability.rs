@@ -1842,6 +1842,79 @@ pub enum AbilityCost {
     },
 }
 
+/// CR 118: Cost taxonomy — a structural classifier over `AbilityCost` variants.
+///
+/// Provides a single-authority view of what an ability "does" to pay itself
+/// without forcing callers to destructure individual cost variants. Policies,
+/// AI heuristics, and other consumers should ask
+/// `ability.cost_categories().contains(&CostCategory::SacrificesPermanent)`
+/// rather than match on `AbilityCost::Sacrifice { .. }` directly. This
+/// preserves the "single authority for ability costs" invariant from CLAUDE.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CostCategory {
+    ManaOnly,
+    TapsSelf,
+    UntapsSelf,
+    SacrificesPermanent,
+    PaysLife,
+    PaysLoyalty,
+    Discards,
+    ExilesCards,
+    TapsOtherCreatures,
+    RemovesCounters,
+    PaysEnergy,
+    PaysSpeed,
+    ReturnsToHand,
+    Mills,
+    PutsCounters,
+    Reveals,
+    Exerts,
+    KeywordCost,
+}
+
+impl AbilityCost {
+    /// CR 118: Classify this cost into one or more `CostCategory` buckets.
+    ///
+    /// `Composite` recurses, flattening every sub-cost. Variants that pay
+    /// nothing real (`Unimplemented`) return an empty vec.
+    pub fn categories(&self) -> Vec<CostCategory> {
+        match self {
+            AbilityCost::Mana { .. } => vec![CostCategory::ManaOnly],
+            AbilityCost::Tap => vec![CostCategory::TapsSelf],
+            AbilityCost::Untap => vec![CostCategory::UntapsSelf],
+            AbilityCost::Loyalty { .. } => vec![CostCategory::PaysLoyalty],
+            AbilityCost::Sacrifice { .. } => vec![CostCategory::SacrificesPermanent],
+            AbilityCost::PayLife { .. } => vec![CostCategory::PaysLife],
+            AbilityCost::Discard { .. } => vec![CostCategory::Discards],
+            AbilityCost::Exile { .. } => vec![CostCategory::ExilesCards],
+            AbilityCost::CollectEvidence { .. } => vec![CostCategory::ExilesCards],
+            AbilityCost::TapCreatures { .. } => vec![CostCategory::TapsOtherCreatures],
+            AbilityCost::RemoveCounter { .. } => vec![CostCategory::RemovesCounters],
+            AbilityCost::PayEnergy { .. } => vec![CostCategory::PaysEnergy],
+            AbilityCost::PaySpeed { .. } => vec![CostCategory::PaysSpeed],
+            AbilityCost::ReturnToHand { .. } => vec![CostCategory::ReturnsToHand],
+            AbilityCost::Mill { .. } => vec![CostCategory::Mills],
+            AbilityCost::Exert => vec![CostCategory::Exerts],
+            AbilityCost::Blight { .. } => vec![CostCategory::PutsCounters],
+            AbilityCost::Reveal { .. } => vec![CostCategory::Reveals],
+            AbilityCost::Composite { costs } => {
+                let mut out = Vec::with_capacity(costs.len());
+                for cost in costs {
+                    for cat in cost.categories() {
+                        if !out.contains(&cat) {
+                            out.push(cat);
+                        }
+                    }
+                }
+                out
+            }
+            AbilityCost::Waterbend { .. } => vec![CostCategory::KeywordCost],
+            AbilityCost::NinjutsuFamily { .. } => vec![CostCategory::KeywordCost],
+            AbilityCost::Unimplemented { .. } => Vec::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AdditionalCost — models the different "as an additional cost" patterns
 // ---------------------------------------------------------------------------
@@ -3952,6 +4025,16 @@ impl AbilityDefinition {
         self
     }
 
+    /// CR 118: Return the structural cost categories for this ability's cost,
+    /// or an empty vec if the ability has no cost. Delegates to
+    /// `AbilityCost::categories`.
+    pub fn cost_categories(&self) -> Vec<CostCategory> {
+        self.cost
+            .as_ref()
+            .map(AbilityCost::categories)
+            .unwrap_or_default()
+    }
+
     pub fn sub_ability(mut self, ability: AbilityDefinition) -> Self {
         self.sub_ability = Some(Box::new(ability));
         self
@@ -5844,6 +5927,233 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // CR 118: Cost taxonomy mapping — exhaustive per-variant coverage.
+    mod cost_category {
+        use super::*;
+
+        #[test]
+        fn mana_only() {
+            let cost = AbilityCost::Mana {
+                cost: ManaCost::zero(),
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::ManaOnly]);
+        }
+
+        #[test]
+        fn tap_self() {
+            assert_eq!(AbilityCost::Tap.categories(), vec![CostCategory::TapsSelf]);
+        }
+
+        #[test]
+        fn untap_self() {
+            assert_eq!(
+                AbilityCost::Untap.categories(),
+                vec![CostCategory::UntapsSelf]
+            );
+        }
+
+        #[test]
+        fn loyalty() {
+            assert_eq!(
+                AbilityCost::Loyalty { amount: -2 }.categories(),
+                vec![CostCategory::PaysLoyalty]
+            );
+        }
+
+        #[test]
+        fn sacrifice_permanent() {
+            let cost = AbilityCost::Sacrifice {
+                target: TargetFilter::Any,
+                count: 1,
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::SacrificesPermanent]);
+        }
+
+        #[test]
+        fn pay_life() {
+            assert_eq!(
+                AbilityCost::PayLife { amount: 2 }.categories(),
+                vec![CostCategory::PaysLife]
+            );
+        }
+
+        #[test]
+        fn discard() {
+            let cost = AbilityCost::Discard {
+                count: 1,
+                filter: None,
+                random: false,
+                self_ref: false,
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::Discards]);
+        }
+
+        #[test]
+        fn exile_cards() {
+            let cost = AbilityCost::Exile {
+                count: 1,
+                zone: None,
+                filter: None,
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::ExilesCards]);
+        }
+
+        #[test]
+        fn collect_evidence() {
+            assert_eq!(
+                AbilityCost::CollectEvidence { amount: 4 }.categories(),
+                vec![CostCategory::ExilesCards]
+            );
+        }
+
+        #[test]
+        fn tap_other_creatures() {
+            let cost = AbilityCost::TapCreatures {
+                count: 2,
+                filter: TargetFilter::Any,
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::TapsOtherCreatures]);
+        }
+
+        #[test]
+        fn remove_counter() {
+            let cost = AbilityCost::RemoveCounter {
+                count: 1,
+                counter_type: "+1/+1".to_string(),
+                target: None,
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::RemovesCounters]);
+        }
+
+        #[test]
+        fn pay_energy() {
+            assert_eq!(
+                AbilityCost::PayEnergy { amount: 3 }.categories(),
+                vec![CostCategory::PaysEnergy]
+            );
+        }
+
+        #[test]
+        fn pay_speed() {
+            let cost = AbilityCost::PaySpeed {
+                amount: QuantityExpr::Fixed { value: 1 },
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::PaysSpeed]);
+        }
+
+        #[test]
+        fn return_to_hand() {
+            let cost = AbilityCost::ReturnToHand {
+                count: 1,
+                filter: None,
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::ReturnsToHand]);
+        }
+
+        #[test]
+        fn mill() {
+            assert_eq!(
+                AbilityCost::Mill { count: 3 }.categories(),
+                vec![CostCategory::Mills]
+            );
+        }
+
+        #[test]
+        fn exert() {
+            assert_eq!(AbilityCost::Exert.categories(), vec![CostCategory::Exerts]);
+        }
+
+        #[test]
+        fn blight_puts_counters() {
+            assert_eq!(
+                AbilityCost::Blight { count: 1 }.categories(),
+                vec![CostCategory::PutsCounters]
+            );
+        }
+
+        #[test]
+        fn reveal() {
+            let cost = AbilityCost::Reveal {
+                count: 1,
+                filter: None,
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::Reveals]);
+        }
+
+        #[test]
+        fn waterbend_keyword_cost() {
+            let cost = AbilityCost::Waterbend {
+                cost: ManaCost::zero(),
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::KeywordCost]);
+        }
+
+        #[test]
+        fn ninjutsu_keyword_cost() {
+            let cost = AbilityCost::NinjutsuFamily {
+                variant: NinjutsuVariant::Ninjutsu,
+                mana_cost: ManaCost::zero(),
+            };
+            assert_eq!(cost.categories(), vec![CostCategory::KeywordCost]);
+        }
+
+        #[test]
+        fn unimplemented_returns_empty() {
+            let cost = AbilityCost::Unimplemented {
+                description: "foo".to_string(),
+            };
+            assert!(cost.categories().is_empty());
+        }
+
+        #[test]
+        fn composite_flattens_and_dedupes() {
+            // Tap + Sacrifice + Tap (duplicate) should yield [TapsSelf, SacrificesPermanent].
+            let cost = AbilityCost::Composite {
+                costs: vec![
+                    AbilityCost::Tap,
+                    AbilityCost::Sacrifice {
+                        target: TargetFilter::Any,
+                        count: 1,
+                    },
+                    AbilityCost::Tap,
+                ],
+            };
+            assert_eq!(
+                cost.categories(),
+                vec![CostCategory::TapsSelf, CostCategory::SacrificesPermanent]
+            );
+        }
+
+        #[test]
+        fn ability_definition_cost_categories_none_when_no_cost() {
+            let def = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+            );
+            assert!(def.cost_categories().is_empty());
+        }
+
+        #[test]
+        fn ability_definition_cost_categories_delegates() {
+            let def = AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+            )
+            .cost(AbilityCost::Sacrifice {
+                target: TargetFilter::Any,
+                count: 1,
+            });
+            assert_eq!(
+                def.cost_categories(),
+                vec![CostCategory::SacrificesPermanent]
+            );
+        }
     }
 }
 

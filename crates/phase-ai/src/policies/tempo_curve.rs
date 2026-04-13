@@ -1,9 +1,13 @@
 use engine::types::actions::GameAction;
+use engine::types::game_state::GameState;
+use engine::types::player::PlayerId;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::is_own_main_phase;
 use crate::deck_profile::DeckArchetype;
+use crate::features::DeckFeatures;
 use crate::zone_eval;
 
 /// Rewards playing spells on-curve (matching mana value to available mana),
@@ -15,8 +19,8 @@ use crate::zone_eval;
 /// especially during the critical early turns when falling off-curve is costly.
 pub struct TempoCurvePolicy;
 
-impl TacticalPolicy for TempoCurvePolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl TempoCurvePolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 1.8,
             DeckArchetype::Control => 0.5,
@@ -26,7 +30,7 @@ impl TacticalPolicy for TempoCurvePolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !is_own_main_phase(ctx) {
             return 0.0;
         }
@@ -67,6 +71,32 @@ impl TacticalPolicy for TempoCurvePolicy {
         };
 
         efficiency * early_game_scale * ctx.config.policy_penalties.tempo_curve_bonus
+    }
+}
+
+impl TacticalPolicy for TempoCurvePolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::TempoCurve
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("tempo_curve_score"),
+        }
     }
 }
 

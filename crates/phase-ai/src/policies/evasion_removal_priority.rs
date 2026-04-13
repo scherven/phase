@@ -1,17 +1,22 @@
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
 use engine::types::keywords::Keyword;
+use engine::types::player::PlayerId;
 
+use crate::features::DeckFeatures;
+
+use super::activation::turn_only;
 use super::context::PolicyContext;
 use super::effect_classify::is_spell_beneficial;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::ai_can_block;
 
 pub struct EvasionRemovalPriorityPolicy;
 
-impl TacticalPolicy for EvasionRemovalPriorityPolicy {
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+impl EvasionRemovalPriorityPolicy {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         let GameAction::ChooseTarget {
             target: Some(TargetRef::Object(target_id)),
         } = &ctx.candidate.action
@@ -73,6 +78,32 @@ impl TacticalPolicy for EvasionRemovalPriorityPolicy {
             }
         } else {
             0.0
+        }
+    }
+}
+
+impl TacticalPolicy for EvasionRemovalPriorityPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::EvasionRemovalPriority
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::SelectTarget]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        turn_only(features, state)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("evasion_removal_priority_score"),
         }
     }
 }

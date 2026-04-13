@@ -2,15 +2,17 @@ use engine::types::actions::GameAction;
 use engine::types::game_state::GameState;
 use engine::types::player::PlayerId;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::{is_own_main_phase, opponent_lethal_damage};
 use crate::deck_profile::DeckArchetype;
+use crate::features::DeckFeatures;
 
 pub struct LethalityAwarenessPolicy;
 
-impl TacticalPolicy for LethalityAwarenessPolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl LethalityAwarenessPolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 1.5,
             DeckArchetype::Control => 1.0,
@@ -20,7 +22,7 @@ impl TacticalPolicy for LethalityAwarenessPolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         let ai_life = ctx.state.players[ctx.ai_player.0 as usize].life;
         let lethal_damage = opponent_lethal_damage(ctx.state, ctx.ai_player);
 
@@ -37,6 +39,32 @@ impl TacticalPolicy for LethalityAwarenessPolicy {
                 score_pass_under_lethal(ctx.state, ctx.ai_player)
             }
             _ => 0.0,
+        }
+    }
+}
+
+impl TacticalPolicy for LethalityAwarenessPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::LethalityAwareness
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell, DecisionKind::ActivateAbility]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("lethality_awareness_score"),
         }
     }
 }

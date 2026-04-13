@@ -1,18 +1,22 @@
 use engine::game::players;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
 use engine::types::keywords::Keyword;
+use engine::types::player::PlayerId;
 
 use crate::eval::board_stats;
+use crate::features::DeckFeatures;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use crate::deck_profile::DeckArchetype;
 
 pub struct LifeTotalResourcePolicy;
 
-impl TacticalPolicy for LifeTotalResourcePolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl LifeTotalResourcePolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 1.3,
             DeckArchetype::Control => 0.8,
@@ -22,7 +26,7 @@ impl TacticalPolicy for LifeTotalResourcePolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         match &ctx.candidate.action {
             GameAction::CastSpell { .. } | GameAction::ActivateAbility { .. } => {}
             _ => return 0.0,
@@ -72,6 +76,32 @@ impl TacticalPolicy for LifeTotalResourcePolicy {
         }
 
         score
+    }
+}
+
+impl TacticalPolicy for LifeTotalResourcePolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::LifeTotalResource
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell, DecisionKind::ActivateAbility]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("life_total_resource_score"),
+        }
     }
 }
 

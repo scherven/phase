@@ -345,7 +345,7 @@ impl<'a> PlannerServices<'a> {
 
         let synergy = self
             .context
-            .synergy_graph
+            .synergy_graph()
             .board_synergy_bonus(state, self.ai_player)
             * weights.synergy;
 

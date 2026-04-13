@@ -6,15 +6,17 @@ use engine::types::game_state::GameState;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use crate::deck_profile::DeckArchetype;
+use crate::features::DeckFeatures;
 use crate::zone_eval;
 
 pub struct ManaEfficiencyPolicy;
 
-impl TacticalPolicy for ManaEfficiencyPolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl ManaEfficiencyPolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 1.5,
             DeckArchetype::Control => 0.6,
@@ -24,7 +26,7 @@ impl TacticalPolicy for ManaEfficiencyPolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         if !is_own_main_phase(ctx) {
             return 0.0;
         }
@@ -48,6 +50,32 @@ impl TacticalPolicy for ManaEfficiencyPolicy {
             (mv as f64 / available as f64).min(1.0) * 0.2
         } else {
             0.0
+        }
+    }
+}
+
+impl TacticalPolicy for ManaEfficiencyPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::ManaEfficiency
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell, DecisionKind::ActivateAbility]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("mana_efficiency_score"),
         }
     }
 }

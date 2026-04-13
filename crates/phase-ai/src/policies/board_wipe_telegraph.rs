@@ -1,19 +1,23 @@
 use engine::game::players;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::GameState;
 use engine::types::keywords::Keyword;
+use engine::types::player::PlayerId;
 
+use super::activation::arch_times_turn;
 use super::context::PolicyContext;
-use super::registry::TacticalPolicy;
+use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, TacticalPolicy};
 use super::strategy_helpers::is_own_main_phase;
 use crate::config::ThreatAwareness;
 use crate::deck_profile::DeckArchetype;
+use crate::features::DeckFeatures;
 use crate::threat_profile::castable_probabilities;
 
 pub struct BoardWipeTelegraphPolicy;
 
-impl TacticalPolicy for BoardWipeTelegraphPolicy {
-    fn archetype_scale(&self, archetype: DeckArchetype) -> f64 {
+impl BoardWipeTelegraphPolicy {
+    fn archetype_scale(archetype: DeckArchetype) -> f64 {
         match archetype {
             DeckArchetype::Aggro => 0.5,
             DeckArchetype::Control => 1.5,
@@ -23,7 +27,7 @@ impl TacticalPolicy for BoardWipeTelegraphPolicy {
         }
     }
 
-    fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
+    pub fn score(&self, ctx: &PolicyContext<'_>) -> f64 {
         // Guard: only CastSpell during own main phase
         if !matches!(ctx.candidate.action, GameAction::CastSpell { .. }) {
             return 0.0;
@@ -127,6 +131,32 @@ impl TacticalPolicy for BoardWipeTelegraphPolicy {
         }
 
         penalty.max(-2.0)
+    }
+}
+
+impl TacticalPolicy for BoardWipeTelegraphPolicy {
+    fn id(&self) -> PolicyId {
+        PolicyId::BoardWipeTelegraph
+    }
+
+    fn decision_kinds(&self) -> &'static [DecisionKind] {
+        &[DecisionKind::CastSpell]
+    }
+
+    fn activation(
+        &self,
+        features: &DeckFeatures,
+        state: &GameState,
+        _player: PlayerId,
+    ) -> Option<f32> {
+        arch_times_turn(features, state, Self::archetype_scale)
+    }
+
+    fn verdict(&self, ctx: &PolicyContext<'_>) -> PolicyVerdict {
+        PolicyVerdict::Score {
+            delta: self.score(ctx),
+            reason: PolicyReason::new("board_wipe_telegraph_score"),
+        }
     }
 }
 

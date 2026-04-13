@@ -8,9 +8,10 @@ use crate::eval::EvalWeights;
 
 /// High-level deck strategy classification derived from card composition.
 /// Used to adjust evaluation weights, timing policies, and combat aggression.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeckArchetype {
     Aggro,
+    #[default]
     Midrange,
     Control,
     Combo,
