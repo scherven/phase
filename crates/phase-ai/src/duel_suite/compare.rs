@@ -340,6 +340,7 @@ mod tests {
             } else {
                 None
             },
+            attribution: None,
         }
     }
 

@@ -13,10 +13,12 @@ use engine::game::deck_loading::{
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::layer::SubscriberExt;
 
 use crate::auto_play::run_ai_actions;
 use crate::config::{create_config_for_players, AiConfig, AiDifficulty, Platform};
 
+use super::attribution::{aggregate_events, CaptureLayer, MatchupAttribution};
 use super::{all_matchups, resolve_deck_ref, Expected, FeatureKind, MatchupSpec};
 
 /// Safety cap on total AI actions per game — matches the constant in
@@ -47,6 +49,11 @@ pub struct MatchupResult {
     pub avg_duration_ms: f64,
     pub status: SuiteStatus,
     pub fail_reason: Option<String>,
+    /// Per-player policy attribution, populated when
+    /// `phase_ai::decision_trace` tracing is enabled during the suite run.
+    /// Absent from the JSON when tracing is off (zero overhead path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<MatchupAttribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +66,17 @@ pub struct SuiteReport {
     pub results: Vec<MatchupResult>,
 }
 
+/// Controls decision-trace attribution capture during a suite run. When set
+/// to `Enabled`, the runner installs a `CaptureLayer` subscriber with an env
+/// filter that enables `phase_ai::decision_trace=debug`. When `Disabled`,
+/// no subscriber is installed and the tactical search incurs zero overhead
+/// (gated on `tracing::event_enabled!`).
+#[derive(Debug, Clone, Copy)]
+pub enum AttributionMode {
+    Disabled,
+    Enabled,
+}
+
 #[derive(Debug)]
 pub struct SuiteOptions {
     pub difficulty: AiDifficulty,
@@ -66,6 +84,7 @@ pub struct SuiteOptions {
     pub base_seed: u64,
     pub output_path: PathBuf,
     pub filter: Option<String>,
+    pub attribution: AttributionMode,
 }
 
 impl SuiteOptions {
@@ -76,6 +95,7 @@ impl SuiteOptions {
             base_seed,
             output_path: PathBuf::from("target/duel-suite-results.json"),
             filter: None,
+            attribution: AttributionMode::Disabled,
         }
     }
 }
@@ -83,6 +103,37 @@ impl SuiteOptions {
 /// Run every registered matchup, write the report to `options.output_path`,
 /// and return the in-memory report for the caller to print.
 pub fn run_suite(db: &CardDatabase, options: &SuiteOptions) -> Result<SuiteReport, std::io::Error> {
+    let capture = match options.attribution {
+        AttributionMode::Enabled => Some(CaptureLayer::new()),
+        AttributionMode::Disabled => None,
+    };
+
+    // Install the subscriber for the duration of this call. When attribution
+    // is disabled, skip subscriber installation entirely — the
+    // `event_enabled!` gate inside `emit_decision_trace` short-circuits and
+    // `PolicyRegistry::verdicts()` is never invoked.
+    if let Some(layer) = capture.as_ref() {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new("phase_ai::decision_trace=debug")
+        });
+        let subscriber = tracing_subscriber::registry::Registry::default()
+            .with(filter)
+            .with(layer.clone());
+        let results = tracing::subscriber::with_default(subscriber, || {
+            run_all_matchups(db, options, capture.as_ref())
+        });
+        return finalize_report(options, results);
+    }
+
+    let results = run_all_matchups(db, options, None);
+    finalize_report(options, results)
+}
+
+fn run_all_matchups(
+    db: &CardDatabase,
+    options: &SuiteOptions,
+    capture: Option<&CaptureLayer>,
+) -> Vec<MatchupResult> {
     let matchups = all_matchups();
     let mut results: Vec<MatchupResult> = Vec::with_capacity(matchups.len());
 
@@ -99,12 +150,27 @@ pub fn run_suite(db: &CardDatabase, options: &SuiteOptions) -> Result<SuiteRepor
             id = spec.id,
             games = options.games_per_matchup,
         );
+        // Drain any stale events captured before this matchup started — e.g.
+        // from the previous matchup's cooldown.
+        if let Some(layer) = capture {
+            let _ = layer.drain();
+        }
         let matchup_seed = options.base_seed.wrapping_add(idx as u64 * 1_000);
-        let result = run_single_matchup(db, spec, options, matchup_seed);
+        let mut result = run_single_matchup(db, spec, options, matchup_seed);
+        if let Some(layer) = capture {
+            let events = layer.drain();
+            result.attribution = Some(aggregate_events(&events));
+        }
         print_matchup_row(&result);
         results.push(result);
     }
+    results
+}
 
+fn finalize_report(
+    options: &SuiteOptions,
+    results: Vec<MatchupResult>,
+) -> Result<SuiteReport, std::io::Error> {
     let report = SuiteReport {
         schema_version: 1,
         unix_timestamp_secs: SystemTime::now()
@@ -173,6 +239,7 @@ fn run_single_matchup(
         avg_duration_ms,
         status,
         fail_reason,
+        attribution: None,
     }
 }
 
@@ -211,6 +278,7 @@ fn failed_result(spec: &MatchupSpec, reason: &str) -> MatchupResult {
         avg_duration_ms: 0.0,
         status: SuiteStatus::Fail,
         fail_reason: Some(format!("setup error: {reason}")),
+        attribution: None,
     }
 }
 
@@ -314,9 +382,19 @@ fn print_matchup_row(r: &MatchupResult) {
 }
 
 fn print_markdown_table(report: &SuiteReport) {
+    let has_attribution = report.results.iter().any(|r| r.attribution.is_some());
     println!();
-    println!("| matchup | exercises | p0% | avg turns | status |");
-    println!("|---------|-----------|-----|-----------|--------|");
+    if has_attribution {
+        println!(
+            "| matchup | exercises | p0% | avg turns | top-policy p0 | top-policy p1 | status |"
+        );
+        println!(
+            "|---------|-----------|-----|-----------|---------------|---------------|--------|"
+        );
+    } else {
+        println!("| matchup | exercises | p0% | avg turns | status |");
+        println!("|---------|-----------|-----|-----------|--------|");
+    }
     for r in &report.results {
         let total = r.p0_wins + r.p1_wins + r.draws;
         let p0_pct = if total > 0 {
@@ -330,14 +408,38 @@ fn print_markdown_table(report: &SuiteReport) {
             SuiteStatus::Fail => "FAIL",
             SuiteStatus::Open => "OPEN",
         };
-        println!(
-            "| {} | {} | {:.0}% | {:.1} | {} |",
-            r.matchup_id,
-            exercises.join(", "),
-            p0_pct,
-            r.avg_turns,
-            status_str,
-        );
+        if has_attribution {
+            let (p0_top, p1_top) = match &r.attribution {
+                Some(a) => (format_top(&a.p0), format_top(&a.p1)),
+                None => ("—".to_string(), "—".to_string()),
+            };
+            println!(
+                "| {} | {} | {:.0}% | {:.1} | {} | {} | {} |",
+                r.matchup_id,
+                exercises.join(", "),
+                p0_pct,
+                r.avg_turns,
+                p0_top,
+                p1_top,
+                status_str,
+            );
+        } else {
+            println!(
+                "| {} | {} | {:.0}% | {:.1} | {} |",
+                r.matchup_id,
+                exercises.join(", "),
+                p0_pct,
+                r.avg_turns,
+                status_str,
+            );
+        }
+    }
+}
+
+fn format_top(attribution: &super::attribution::PolicyAttribution) -> String {
+    match attribution.top_scores.first() {
+        Some(e) => format!("{}:{}={:+.2}", e.policy_id, e.kind, e.mean_delta),
+        None => "—".to_string(),
     }
 }
 

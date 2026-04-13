@@ -13,7 +13,7 @@ use phase_ai::duel_suite::compare::{
     compare as compare_reports, load_report, print_markdown as print_compare_markdown,
     CompareOptions,
 };
-use phase_ai::duel_suite::run::{resolve_matchup, run_suite, SuiteOptions};
+use phase_ai::duel_suite::run::{resolve_matchup, run_suite, AttributionMode, SuiteOptions};
 use phase_ai::duel_suite::{all_matchups, find_matchup};
 
 const MAX_TOTAL_ACTIONS: usize = 10_000;
@@ -42,6 +42,7 @@ fn main() {
     let mut suite_games: Option<usize> = None;
     let mut output: Option<PathBuf> = None;
     let mut suite_filter: Option<String> = None;
+    let mut attribution = AttributionMode::Disabled;
 
     let mut args_iter = args.iter().skip(1).peekable();
     while let Some(arg) = args_iter.next() {
@@ -63,6 +64,7 @@ fn main() {
             "--games" => suite_games = args_iter.next().and_then(|v| v.parse().ok()),
             "--output" => output = args_iter.next().map(PathBuf::from),
             "--suite-filter" => suite_filter = args_iter.next().cloned(),
+            "--show-attribution" => attribution = AttributionMode::Enabled,
             "--list-matchups" => {
                 list_matchups();
                 return;
@@ -111,6 +113,7 @@ fn main() {
             let mut options = SuiteOptions::new(difficulty, games, base_seed);
             options.output_path = output_path.clone();
             options.filter = suite_filter;
+            options.attribution = attribution;
             match run_suite(&db, &options) {
                 Ok(_) => {
                     eprintln!("\nSuite report written to {}", output_path.display());
@@ -347,6 +350,8 @@ fn print_usage() {
         "  --output PATH      Write JSON report to PATH (default: target/duel-suite-results.json)"
     );
     eprintln!("  --suite-filter STR Only run matchups whose id contains STR");
+    eprintln!("  --show-attribution Capture per-policy decision traces and include");
+    eprintln!("                     them in the JSON + markdown output.");
     eprintln!();
     eprintln!("Compare mode (CI regression gate):");
     eprintln!("  compare BASELINE CURRENT   Diff two suite reports");

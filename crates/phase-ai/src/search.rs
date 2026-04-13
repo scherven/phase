@@ -152,6 +152,7 @@ pub fn emit_trace_for_candidate(
 
     tracing::debug!(
         target: "phase_ai::decision_trace",
+        ai_player = ai_player.0,
         action = ?std::mem::discriminant(&candidate.action),
         top_policies = ?top_fmt,
         rejects = ?rejects_fmt,
