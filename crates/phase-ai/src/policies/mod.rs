@@ -25,6 +25,7 @@ pub(crate) mod stack_awareness;
 pub(crate) mod strategy_helpers;
 mod synergy_casting;
 mod tempo_curve;
+mod tribal_lord_priority;
 pub(crate) mod tutor;
 
 #[cfg(test)]

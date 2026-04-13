@@ -31,10 +31,12 @@ use crate::policies::registry::{PolicyId, PolicyReason};
 pub mod keepables_by_land_count;
 pub mod landfall_keepables;
 pub mod ramp_keepables;
+pub mod tribal_density;
 
 pub use keepables_by_land_count::KeepablesByLandCount;
 pub use landfall_keepables::LandfallKeepablesMulligan;
 pub use ramp_keepables::RampKeepablesMulligan;
+pub use tribal_density::TribalDensityMulligan;
 
 /// Whether the player under consideration is on the play or on the draw this
 /// game. Derived from `GameState::current_starting_player` at call time —
@@ -92,6 +94,7 @@ impl Default for MulliganRegistry {
                 Box::new(KeepablesByLandCount),
                 Box::new(LandfallKeepablesMulligan),
                 Box::new(RampKeepablesMulligan),
+                Box::new(TribalDensityMulligan),
             ],
         }
     }

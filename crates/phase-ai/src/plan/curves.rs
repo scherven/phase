@@ -36,6 +36,12 @@ fn tempo_class_for(features: &DeckFeatures) -> TempoClass {
     if features.landfall.commitment > 0.5 || features.mana_ramp.commitment > 0.5 {
         return TempoClass::Ramp;
     }
+    // A tribal deck with high commitment plays aggressively — the lord-anthem
+    // pattern means threat density and attack pressure dominate the game plan.
+    // Placed AFTER the ramp branch so a tribal+ramp hybrid reads as Ramp.
+    if features.tribal.commitment > 0.55 {
+        return TempoClass::Aggro;
+    }
     match features.archetype {
         DeckArchetype::Aggro => TempoClass::Aggro,
         DeckArchetype::Control => TempoClass::Control,
@@ -108,12 +114,24 @@ fn expected_threats_for(features: &DeckFeatures) -> [u8; SCHEDULE_LEN] {
             _ => turn.saturating_sub(2).min(5),
         };
     }
+    // Tribal decks with meaningful commitment front-load creature deployment
+    // on turns 2–4 — each lord or tribe member now matters, so threat density
+    // peaks early to maximize lord anthem value.
+    if features.tribal.commitment > 0.4 {
+        for (turn_idx, slot) in threats.iter_mut().enumerate() {
+            let turn = turn_idx + 1;
+            if (2..=4).contains(&turn) {
+                *slot = slot.saturating_add(1);
+            }
+        }
+    }
     threats
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::tribal::TribalFeature;
     use crate::features::{DeckFeatures, LandfallFeature, ManaRampFeature};
 
     #[test]
@@ -237,5 +255,87 @@ mod tests {
         };
         let snapshot = derive_snapshot(&features);
         assert_eq!(snapshot.tempo_class, TempoClass::Ramp);
+    }
+
+    #[test]
+    fn tribal_commitment_bumps_threats() {
+        let baseline = derive_snapshot(&DeckFeatures::default());
+
+        let features = DeckFeatures {
+            tribal: TribalFeature {
+                dominant_tribe: Some("Elf".to_string()),
+                commitment: 0.7,
+                tribes: Vec::new(),
+                payoff_names: Vec::new(),
+            },
+            ..Default::default()
+        };
+        let bumped = derive_snapshot(&features);
+
+        // Turns 2–4 (indices 1–3) should each be +1.
+        assert_eq!(
+            bumped.expected_threats[1],
+            baseline.expected_threats[1] + 1,
+            "turn 2 threats should be bumped"
+        );
+        assert_eq!(
+            bumped.expected_threats[2],
+            baseline.expected_threats[2] + 1,
+            "turn 3 threats should be bumped"
+        );
+        assert_eq!(
+            bumped.expected_threats[3],
+            baseline.expected_threats[3] + 1,
+            "turn 4 threats should be bumped"
+        );
+        // Turn 1 and 5+ should be unchanged.
+        assert_eq!(
+            bumped.expected_threats[0], baseline.expected_threats[0],
+            "turn 1 should not be bumped"
+        );
+        assert_eq!(
+            bumped.expected_threats[4], baseline.expected_threats[4],
+            "turn 5 should not be bumped"
+        );
+    }
+
+    #[test]
+    fn high_tribal_commitment_picks_aggro_tempo() {
+        let features = DeckFeatures {
+            tribal: TribalFeature {
+                dominant_tribe: Some("Goblin".to_string()),
+                commitment: 0.8,
+                tribes: Vec::new(),
+                payoff_names: Vec::new(),
+            },
+            ..Default::default()
+        };
+        let snapshot = derive_snapshot(&features);
+        assert_eq!(snapshot.tempo_class, TempoClass::Aggro);
+    }
+
+    #[test]
+    fn tribal_plus_ramp_picks_ramp_tempo() {
+        // Ramp branch fires before tribal — tribal+ramp hybrid reads as Ramp.
+        let features = DeckFeatures {
+            tribal: TribalFeature {
+                dominant_tribe: Some("Elf".to_string()),
+                commitment: 0.8,
+                tribes: Vec::new(),
+                payoff_names: Vec::new(),
+            },
+            mana_ramp: ManaRampFeature {
+                dork_count: 8,
+                commitment: 0.6,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let snapshot = derive_snapshot(&features);
+        assert_eq!(
+            snapshot.tempo_class,
+            TempoClass::Ramp,
+            "ramp+tribal hybrid should read as Ramp"
+        );
     }
 }

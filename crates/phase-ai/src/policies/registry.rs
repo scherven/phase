@@ -17,6 +17,7 @@ use super::life_total_resource::LifeTotalResourcePolicy;
 use super::ramp_timing::RampTimingPolicy;
 use super::recursion_awareness::RecursionAwarenessPolicy;
 use super::sacrifice_value::SacrificeValuePolicy;
+use super::tribal_lord_priority::TribalLordPriorityPolicy;
 use super::tutor::TutorPolicy;
 use crate::cast_facts::cast_facts_for_action;
 use crate::config::AiConfig;
@@ -56,6 +57,8 @@ pub enum PolicyId {
     KeepablesByLandCount,
     LandfallKeepablesMulligan,
     RampKeepablesMulligan,
+    TribalLordPriority,
+    TribalDensityMulligan,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -165,6 +168,7 @@ impl Default for PolicyRegistry {
             Box::new(CardAdvantagePolicy),
             Box::new(LandfallTimingPolicy),
             Box::new(RampTimingPolicy),
+            Box::new(TribalLordPriorityPolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {

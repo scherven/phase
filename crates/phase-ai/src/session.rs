@@ -16,7 +16,7 @@ use engine::types::game_state::GameState;
 use engine::types::player::PlayerId;
 
 use crate::deck_profile::{ArchetypeClassification, DeckProfile};
-use crate::features::{landfall, mana_ramp, DeckFeatures};
+use crate::features::{landfall, mana_ramp, tribal, DeckFeatures};
 use crate::plan::{derive_snapshot, PlanSnapshot};
 use crate::policies::registry::PolicyId;
 use crate::strategy_profile::StrategyProfile;
@@ -34,6 +34,7 @@ fn features_for(deck: &[DeckEntry]) -> DeckFeatures {
         strategy,
         landfall: landfall::detect(deck),
         mana_ramp: mana_ramp::detect(deck),
+        tribal: tribal::detect(deck),
         ..DeckFeatures::default()
     }
 }
