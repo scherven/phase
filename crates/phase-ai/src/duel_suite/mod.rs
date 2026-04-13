@@ -6,6 +6,7 @@
 //! Every `DeckFeatures` axis is exercised by at least one matchup; a
 //! compile-time test in `tests.rs` enforces the invariant.
 
+pub mod compare;
 pub mod inline_decks;
 pub mod run;
 pub mod snapshots;

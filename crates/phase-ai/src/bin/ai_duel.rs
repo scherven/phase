@@ -9,6 +9,10 @@ use engine::types::log::{GameLogEntry, LogCategory, LogSegment};
 use engine::types::player::PlayerId;
 use phase_ai::auto_play::run_ai_actions;
 use phase_ai::config::{create_config_for_players, AiDifficulty, Platform};
+use phase_ai::duel_suite::compare::{
+    compare as compare_reports, load_report, print_markdown as print_compare_markdown,
+    CompareOptions,
+};
 use phase_ai::duel_suite::run::{resolve_matchup, run_suite, SuiteOptions};
 use phase_ai::duel_suite::{all_matchups, find_matchup};
 
@@ -21,6 +25,13 @@ enum Mode {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // `compare` subcommand: `ai-duel compare BASELINE CURRENT [--warn-pp N] [--fail-pp N]`
+    // Does not require a card database or any of the single/suite-mode flags.
+    if args.get(1).map(|s| s.as_str()) == Some("compare") {
+        let exit = run_compare(&args[1..]);
+        std::process::exit(exit);
+    }
 
     let mut verbose = false;
     let mut batch: Option<usize> = None;
@@ -318,6 +329,7 @@ fn parse_difficulty(s: &str) -> AiDifficulty {
 
 fn print_usage() {
     eprintln!("Usage: ai-duel <data-root> [OPTIONS]");
+    eprintln!("       ai-duel compare BASELINE.json CURRENT.json [--warn-pp N] [--fail-pp N]");
     eprintln!("  Or set PHASE_CARDS_PATH environment variable");
     eprintln!();
     eprintln!("Single-matchup mode:");
@@ -335,6 +347,71 @@ fn print_usage() {
         "  --output PATH      Write JSON report to PATH (default: target/duel-suite-results.json)"
     );
     eprintln!("  --suite-filter STR Only run matchups whose id contains STR");
+    eprintln!();
+    eprintln!("Compare mode (CI regression gate):");
+    eprintln!("  compare BASELINE CURRENT   Diff two suite reports");
+    eprintln!("  --warn-pp N                Winrate drift warn threshold in pp (default: 8.0)");
+    eprintln!("  --fail-pp N                Winrate drift fail threshold in pp (default: 15.0)");
+    eprintln!("  Exit code 0 if no regressions; 1 if any matchup FAILs.");
+}
+
+/// Parse `compare` subcommand arguments and run the comparison. Returns the
+/// process exit code.
+fn run_compare(args: &[String]) -> i32 {
+    // args[0] == "compare"
+    if args.len() < 3 {
+        eprintln!("Usage: ai-duel compare BASELINE.json CURRENT.json [--warn-pp N] [--fail-pp N]");
+        return 2;
+    }
+    let baseline_path = PathBuf::from(&args[1]);
+    let current_path = PathBuf::from(&args[2]);
+
+    let mut options = CompareOptions::default();
+    let mut iter = args.iter().skip(3);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--warn-pp" => {
+                if let Some(v) = iter.next().and_then(|v| v.parse().ok()) {
+                    options.warn_pp = v;
+                }
+            }
+            "--fail-pp" => {
+                if let Some(v) = iter.next().and_then(|v| v.parse().ok()) {
+                    options.fail_pp = v;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let baseline = match load_report(&baseline_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to load baseline {}: {e}", baseline_path.display());
+            return 2;
+        }
+    };
+    let current = match load_report(&current_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to load current {}: {e}", current_path.display());
+            return 2;
+        }
+    };
+
+    let report = match compare_reports(&baseline, &current, &options) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Compare failed: {e}");
+            return 2;
+        }
+    };
+    print_compare_markdown(&report);
+    if report.any_fail() {
+        1
+    } else {
+        0
+    }
 }
 
 fn list_matchups() {
