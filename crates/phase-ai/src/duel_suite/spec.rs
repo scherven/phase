@@ -212,6 +212,18 @@ pub static MATCHUPS: &[MatchupSpec] = &[
         },
     },
     MatchupSpec {
+        // TODO(perf): greasefang-mirror games run notably longer than other
+        // matchups (~160s vs <30s) because the deck's "Discard a card:
+        // <redundant-effect>" activated abilities (Fleeting Spirit,
+        // Iron-Shield Elf, Guardian of New Benalia) combine with Monument to
+        // Endurance's discard-triggered draw to produce a card-neutral loop
+        // that the AI's softmax scores net-positive. The
+        // `pending_activations` guard + per-source per-turn activation cap
+        // in `phase-ai/src/search.rs` bound the pathology (game completes
+        // naturally), but the remaining slowness reflects a legitimate AI
+        // search cost on the cluttered board. Fixing the underlying eval
+        // pathology (penalize activations whose effect would be a no-op
+        // against current state) is out of scope for the initial fix.
         id: "greasefang-mirror",
         p0_label: "Orzhov Greasefang (P0)",
         p1_label: "Orzhov Greasefang (P1)",

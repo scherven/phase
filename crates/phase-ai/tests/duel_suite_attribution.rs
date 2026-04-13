@@ -17,10 +17,13 @@
 //!    `PolicyId` actually observed in the attribution (top_scores or
 //!    rejects), in either p0 or p1.
 //!
-//! The empirical test excludes `greasefang-mirror` while the engine-perf
-//! issue tracked as duel-suite follow-up 1 is outstanding — that matchup
-//! consistently exhausts the per-game `MAX_TOTAL_ACTIONS` cap and would
-//! dominate the runtime budget.
+//! The empirical test excludes `greasefang-mirror`. Follow-up 1 bounded
+//! the runaway-activation pathology (`pending_activations` guard +
+//! per-source-per-turn activation cap in `phase-ai/src/search.rs`), so the
+//! matchup completes naturally, but the remaining AI-search cost on the
+//! cluttered board makes it ~5× slower than other matchups; running it in
+//! the attribution suite would dominate the budget. The skip is a perf
+//! concession, not a correctness issue.
 
 use std::path::PathBuf;
 
