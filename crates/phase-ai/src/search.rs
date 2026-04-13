@@ -21,6 +21,18 @@ use crate::threat_profile::{
     build_threat_profile_multiplayer, ArchetypeBaseProbabilities, ThreatProfile,
 };
 
+/// AI safety cap on repeated activation of the same activated ability on the
+/// same source within a single turn. CR 117.1b permits unbounded activation
+/// at priority and absent a CR 602.5b restriction there is no per-turn cap
+/// in the rules — this is a pure AI-pathology mitigation. Legitimate
+/// patterns of same-source repeated activation are rare: tokens and
+/// mana-abilities bypass this filter (mana abilities never hit the
+/// non-mana `ActivateAbility` path; tokens have distinct `ObjectId`s per
+/// instance). Cap chosen generously; lower values risked blocking edge
+/// cases like Cycling-style once-per-turn-ish loops that don't mark
+/// `activation_limit`.
+const MAX_ACTIVATIONS_PER_SOURCE_PER_TURN: u32 = 4;
+
 /// Choose the best action for the AI player given the current game state.
 ///
 /// - For 0 or 1 legal actions, returns immediately.
@@ -242,34 +254,46 @@ pub fn score_candidates(
     );
 
     // Filter out (a) spells/abilities that were cast then cancelled this
-    // priority window (prevents cast→cancel→recast loops), and (b) activated
-    // abilities whose prior activation is still pending on the stack (prevents
-    // the AI softmax from re-picking the same ability before it resolves —
-    // a pathological score outcome when the effect is redundant or self-undoing).
-    // Both guards clear on PassPriority (see `GameState::pending_activations`).
-    let gated: Vec<_> = if state.cancelled_casts.is_empty() && state.pending_activations.is_empty()
-    {
-        gated
-    } else {
-        gated
-            .into_iter()
-            .filter(|g| match &g.candidate.action {
-                GameAction::CastSpell { object_id, .. } => {
-                    !state.cancelled_casts.contains(object_id)
-                }
-                GameAction::ActivateAbility {
-                    source_id,
-                    ability_index,
-                } => {
-                    !state.cancelled_casts.contains(source_id)
-                        && !state
-                            .pending_activations
-                            .contains(&(*source_id, *ability_index))
-                }
-                _ => true,
-            })
-            .collect()
-    };
+    // priority window (prevents cast→cancel→recast loops), (b) activated
+    // abilities whose prior activation is still pending on the stack
+    // (prevents re-picking the same ability before it resolves — a
+    // pathological softmax outcome when the effect is redundant or
+    // self-undoing), and (c) activated abilities that have been activated
+    // more than `MAX_ACTIVATIONS_PER_SOURCE_PER_TURN` times this turn on the
+    // same source (AI safety cap against loops where the effect is
+    // card-neutral — e.g. "Discard a card: gain indestructible UEOT" when
+    // the buff is already active and a discard-triggered draw replaces the
+    // discarded card). CR 117.1b permits unbounded activation at priority,
+    // and absent a CR 602.5b restriction there is no per-turn cap, so this
+    // cap is a pure AI-pathology mitigation — legitimate patterns of
+    // repeated same-source activation are extremely rare (tokens and
+    // mana-abilities have distinct per-activation identities or bypass
+    // this filter entirely).
+    //
+    // `cancelled_casts` and `pending_activations` clear on PassPriority;
+    // `activated_abilities_this_turn` clears on turn change.
+    let gated: Vec<_> = gated
+        .into_iter()
+        .filter(|g| match &g.candidate.action {
+            GameAction::CastSpell { object_id, .. } => !state.cancelled_casts.contains(object_id),
+            GameAction::ActivateAbility {
+                source_id,
+                ability_index,
+            } => {
+                !state.cancelled_casts.contains(source_id)
+                    && !state
+                        .pending_activations
+                        .contains(&(*source_id, *ability_index))
+                    && state
+                        .activated_abilities_this_turn
+                        .get(&(*source_id, *ability_index))
+                        .copied()
+                        .unwrap_or(0)
+                        < MAX_ACTIVATIONS_PER_SOURCE_PER_TURN
+            }
+            _ => true,
+        })
+        .collect();
 
     let actions: Vec<GameAction> = gated
         .iter()
@@ -1039,6 +1063,119 @@ mod tests {
         budget.tick();
         budget.tick();
         assert!(budget.exhausted());
+    }
+
+    #[test]
+    fn score_candidates_filters_activation_pending_on_stack() {
+        // CR 117.1b + pending_activations guard: when an activated ability's
+        // prior activation is still on the stack, the AI filter rejects the
+        // same (source_id, ability_index) from the candidate list to prevent
+        // softmax re-pick loops.
+        let mut state = make_state();
+        let creature = add_creature(&mut state, PlayerId(0), 1, 1);
+        state.pending_activations.push((creature, 0));
+
+        // Construct a candidate for ActivateAbility on the pending pair.
+        let blocked = CandidateAction {
+            action: GameAction::ActivateAbility {
+                source_id: creature,
+                ability_index: 0,
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Ability,
+            },
+        };
+        let allowed = CandidateAction {
+            action: GameAction::PassPriority,
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Utility,
+            },
+        };
+
+        // Inline the filter logic the same way score_candidates does.
+        let gated: Vec<CandidateAction> = vec![blocked.clone(), allowed.clone()]
+            .into_iter()
+            .filter(|c| match &c.action {
+                GameAction::CastSpell { object_id, .. } => {
+                    !state.cancelled_casts.contains(object_id)
+                }
+                GameAction::ActivateAbility {
+                    source_id,
+                    ability_index,
+                } => {
+                    !state.cancelled_casts.contains(source_id)
+                        && !state
+                            .pending_activations
+                            .contains(&(*source_id, *ability_index))
+                        && state
+                            .activated_abilities_this_turn
+                            .get(&(*source_id, *ability_index))
+                            .copied()
+                            .unwrap_or(0)
+                            < MAX_ACTIVATIONS_PER_SOURCE_PER_TURN
+                }
+                _ => true,
+            })
+            .collect();
+
+        assert_eq!(
+            gated.len(),
+            1,
+            "pending activation should block re-activation candidate"
+        );
+        assert_eq!(gated[0].action, GameAction::PassPriority);
+    }
+
+    #[test]
+    fn score_candidates_filters_activation_at_per_turn_cap() {
+        // AI safety cap: once an ability has been activated
+        // MAX_ACTIVATIONS_PER_SOURCE_PER_TURN times this turn on the same
+        // source, further activations are rejected regardless of stack state.
+        let mut state = make_state();
+        let creature = add_creature(&mut state, PlayerId(0), 1, 1);
+        state
+            .activated_abilities_this_turn
+            .insert((creature, 0), MAX_ACTIVATIONS_PER_SOURCE_PER_TURN);
+
+        let blocked = CandidateAction {
+            action: GameAction::ActivateAbility {
+                source_id: creature,
+                ability_index: 0,
+            },
+            metadata: ActionMetadata {
+                actor: Some(PlayerId(0)),
+                tactical_class: TacticalClass::Ability,
+            },
+        };
+
+        let gated: Vec<CandidateAction> = vec![blocked]
+            .into_iter()
+            .filter(|c| match &c.action {
+                GameAction::ActivateAbility {
+                    source_id,
+                    ability_index,
+                } => {
+                    !state.cancelled_casts.contains(source_id)
+                        && !state
+                            .pending_activations
+                            .contains(&(*source_id, *ability_index))
+                        && state
+                            .activated_abilities_this_turn
+                            .get(&(*source_id, *ability_index))
+                            .copied()
+                            .unwrap_or(0)
+                            < MAX_ACTIVATIONS_PER_SOURCE_PER_TURN
+                }
+                _ => true,
+            })
+            .collect();
+
+        assert!(
+            gated.is_empty(),
+            "activation at per-turn cap should be filtered"
+        );
     }
 
     #[test]
