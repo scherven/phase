@@ -7,6 +7,10 @@
 //! Phase B).
 
 use crate::deck_profile::DeckArchetype;
+use crate::features::aggro_pressure::{
+    AGGRO_TEMPO_FLOOR as AGGRO_PRESSURE_TEMPO_FLOOR,
+    MULLIGAN_FLOOR as AGGRO_PRESSURE_MULLIGAN_FLOOR,
+};
 use crate::features::tribal::{
     AGGRO_TEMPO_FLOOR as TRIBAL_AGGRO_TEMPO_FLOOR, MULLIGAN_FLOOR as TRIBAL_MULLIGAN_FLOOR,
 };
@@ -43,6 +47,12 @@ fn tempo_class_for(features: &DeckFeatures) -> TempoClass {
     // pattern means threat density and attack pressure dominate the game plan.
     // Placed AFTER the ramp branch so a tribal+ramp hybrid reads as Ramp.
     if features.tribal.commitment > TRIBAL_AGGRO_TEMPO_FLOOR {
+        return TempoClass::Aggro;
+    }
+    // A deck with high aggro pressure commitment (dense low-curve creatures,
+    // evasion, burn) reads as Aggro. Placed AFTER tribal so tribal+aggro
+    // reads as Aggro and ramp+aggro reads as Ramp. Placed BEFORE control.
+    if features.aggro_pressure.commitment >= AGGRO_PRESSURE_TEMPO_FLOOR {
         return TempoClass::Aggro;
     }
     // A control deck with high commitment AND meaningful reactive_tempo reads
@@ -135,6 +145,16 @@ fn expected_threats_for(features: &DeckFeatures) -> [u8; SCHEDULE_LEN] {
         for (turn_idx, slot) in threats.iter_mut().enumerate() {
             let turn = turn_idx + 1;
             if (2..=4).contains(&turn) {
+                *slot = slot.saturating_add(1);
+            }
+        }
+    }
+    // Aggro pressure decks front-load threat deployment on turns 1–3 — cheap
+    // creatures and burn compress the clock, so expected threats peak early.
+    if features.aggro_pressure.commitment >= AGGRO_PRESSURE_MULLIGAN_FLOOR {
+        for (turn_idx, slot) in threats.iter_mut().enumerate() {
+            let turn = turn_idx + 1;
+            if (1..=3).contains(&turn) {
                 *slot = slot.saturating_add(1);
             }
         }
@@ -431,6 +451,66 @@ mod tests {
             control_snapshot.expected_threats[3] < baseline.expected_threats[3]
                 || control_snapshot.expected_threats[3] == 0,
             "turn 4 threats should be delayed by control commitment"
+        );
+    }
+
+    #[test]
+    fn aggro_pressure_commitment_picks_aggro_tempo() {
+        let features = DeckFeatures {
+            aggro_pressure: crate::features::aggro_pressure::AggroPressureFeature {
+                commitment: 0.8,
+                low_curve_creature_count: 20,
+                hasty_creature_count: 8,
+                evasion_creature_count: 8,
+                burn_spell_count: 8,
+                combat_pump_count: 4,
+                total_nonland: 40,
+                low_curve_density: 0.5,
+            },
+            ..Default::default()
+        };
+        let snapshot = derive_snapshot(&features);
+        assert_eq!(
+            snapshot.tempo_class,
+            TempoClass::Aggro,
+            "high aggro-pressure commitment should pick Aggro tempo"
+        );
+    }
+
+    #[test]
+    fn aggro_pressure_bumps_threats_turns_one_to_three() {
+        let baseline = derive_snapshot(&DeckFeatures::default());
+
+        let features = DeckFeatures {
+            aggro_pressure: crate::features::aggro_pressure::AggroPressureFeature {
+                commitment: 0.8,
+                low_curve_creature_count: 20,
+                hasty_creature_count: 8,
+                evasion_creature_count: 8,
+                burn_spell_count: 8,
+                combat_pump_count: 4,
+                total_nonland: 40,
+                low_curve_density: 0.5,
+            },
+            ..Default::default()
+        };
+        let bumped = derive_snapshot(&features);
+
+        // Turns 1–3 (indices 0–2) should each be +1 above the aggro-archetype baseline.
+        // Note: derive_snapshot uses archetype default (Midrange) for baseline.
+        for turn in 1..=3 {
+            let idx = turn - 1;
+            assert!(
+                bumped.expected_threats[idx] > baseline.expected_threats[idx],
+                "turn {turn} threats should be bumped by aggro_pressure, got {} vs baseline {}",
+                bumped.expected_threats[idx],
+                baseline.expected_threats[idx]
+            );
+        }
+        // Turn 4 (index 3) should not be bumped by aggro_pressure alone.
+        assert_eq!(
+            bumped.expected_threats[3], baseline.expected_threats[3],
+            "turn 4 threats should not be bumped by aggro_pressure"
         );
     }
 }

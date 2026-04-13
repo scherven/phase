@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::aggro_pressure::AggroPressurePolicy;
 use super::anti_self_harm::AntiSelfHarmPolicy;
 use super::board_development::BoardDevelopmentPolicy;
 use super::board_wipe_telegraph::BoardWipeTelegraphPolicy;
@@ -66,6 +67,8 @@ pub enum PolicyId {
     SweeperTiming,
     FreeOutletActivation,
     AristocratsKeepablesMulligan,
+    AggroPressure,
+    AggroKeepablesMulligan,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -179,6 +182,7 @@ impl Default for PolicyRegistry {
             Box::new(HoldManaUpForInteractionPolicy),
             Box::new(SweeperTimingPolicy),
             Box::new(FreeOutletActivationPolicy),
+            Box::new(AggroPressurePolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {

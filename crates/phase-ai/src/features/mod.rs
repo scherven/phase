@@ -6,6 +6,7 @@
 //! matching). See `features/tests/no_name_matching.rs` for the enforced
 //! anti-pattern lint.
 
+pub mod aggro_pressure;
 pub mod aristocrats;
 pub mod control;
 pub mod landfall;
@@ -15,6 +16,7 @@ pub mod tribal;
 #[cfg(test)]
 pub mod tests;
 
+pub use aggro_pressure::AggroPressureFeature;
 pub use aristocrats::AristocratsFeature;
 pub use control::ControlFeature;
 pub use landfall::LandfallFeature;
@@ -39,4 +41,5 @@ pub struct DeckFeatures {
     pub tribal: TribalFeature,
     pub control: ControlFeature,
     pub aristocrats: AristocratsFeature,
+    pub aggro_pressure: AggroPressureFeature,
 }
