@@ -6,12 +6,15 @@ import type { FeedDeck } from "../../types/feed";
 import { ACTIVE_DECK_KEY, listSavedDeckNames, getDeckMeta, deleteDeck } from "../../constants/storage";
 import {
   getDeckFeedOrigin,
-  getCachedFeed,
   listSubscriptions,
   refreshAllFeeds,
   adoptFeedDeck,
   feedDeckToParsedDeck,
 } from "../../services/feedService";
+import {
+  useCachedFeed,
+  useFeedCacheSnapshot,
+} from "../../services/feedPersistence";
 import { FeedManagerModal } from "./FeedManagerModal";
 import { useCardImage } from "../../hooks/useCardImage";
 import type { ParsedDeck } from "../../services/deckParser";
@@ -112,7 +115,8 @@ function DeckTile({ deckName, isActive, compatibility, onClick, onDelete, onAdop
     ? (feedDeckOverride.commander?.[0] ?? feedDeckOverride.main.find((e) => !BASIC_LANDS.has(e.name))?.name ?? null)
     : getRepresentativeCard(deckName);
   const feedOrigin = getDeckFeedOrigin(deckName);
-  const feedBadge = !hideFeedBadge && feedOrigin ? (getCachedFeed(feedOrigin)?.name ?? "Feed") : null;
+  const feedForBadge = useCachedFeed(feedOrigin ?? "");
+  const feedBadge = !hideFeedBadge && feedOrigin ? (feedForBadge?.name ?? "Feed") : null;
   const isPrecon = deckName.startsWith(PRECON_PREFIX);
   const displayName = isPrecon ? deckName.slice(PRECON_PREFIX.length) : deckName;
 
@@ -286,6 +290,7 @@ export function MyDecks({
   const [compatibilities, setCompatibilities] = useState<Record<string, DeckCompatibilityResult>>({});
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [compatibilityError, setCompatibilityError] = useState<string | null>(null);
+  const feedCache = useFeedCacheSnapshot();
 
   const contextualFilter = useMemo<DeckFilter | null>(() => {
     if (!selectedFormat) return null;
@@ -338,7 +343,7 @@ export function MyDecks({
 
       // Collect feed decks not already in localStorage
       for (const sub of listSubscriptions()) {
-        const feed = getCachedFeed(sub.sourceId);
+        const feed = feedCache[sub.sourceId];
         if (!feed) continue;
         for (const feedDeck of feed.decks) {
           if (!seen.has(feedDeck.name)) {
@@ -384,7 +389,7 @@ export function MyDecks({
     return () => {
       cancelled = true;
     };
-  }, [deckNames, selectedFormat, selectedMatchType, onCompatibilityUpdate]);
+  }, [deckNames, selectedFormat, selectedMatchType, onCompatibilityUpdate, feedCache]);
 
   const filteredDeckNames = useMemo(() => {
     return deckNames.filter((deckName) => {
@@ -802,6 +807,7 @@ function SubscriptionsView({
   onAdopt,
 }: SubscriptionsViewProps) {
   const subs = listSubscriptions();
+  const feedCache = useFeedCacheSnapshot();
 
   if (subs.length === 0) {
     return (
@@ -817,7 +823,7 @@ function SubscriptionsView({
   return (
     <div className="flex w-full flex-col gap-6">
       {subs.map((sub) => {
-        const feed = getCachedFeed(sub.sourceId);
+        const feed = feedCache[sub.sourceId] ?? null;
         const feedDecks = feed?.decks ?? [];
         const deckCount = feedDecks.length;
         const lastRefreshed = new Date(sub.lastRefreshedAt).toLocaleDateString();

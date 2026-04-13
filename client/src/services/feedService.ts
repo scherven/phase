@@ -4,16 +4,19 @@ import { FEED_REGISTRY } from "../data/feedRegistry";
 import {
   ACTIVE_DECK_KEY,
   STORAGE_KEY_PREFIX,
-  getCachedFeed,
   loadDeckOrigins,
   loadFeedSubscriptions,
-  removeCachedFeed,
   removeDeckMeta,
   saveDeckOrigins,
   saveFeedSubscriptions,
-  setCachedFeed,
   stampDeckMeta,
 } from "../constants/storage";
+import {
+  getCachedFeed,
+  hydrateFeedCache,
+  removeCachedFeed,
+  setCachedFeed,
+} from "./feedPersistence";
 
 // --- Validation ---
 
@@ -48,6 +51,11 @@ export function validateFeed(data: unknown): Feed | null {
   if (!data.decks.every(isValidFeedDeck)) return null;
   return data as unknown as Feed;
 }
+
+// --- Constants ---
+
+/** Auto-refresh any subscription whose cached data is older than this. */
+const FEED_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 // --- Internal helpers ---
 
@@ -120,6 +128,8 @@ function syncFeedDecksToStorage(feed: Feed): void {
 // --- Public API ---
 
 export async function initializeFeeds(): Promise<void> {
+  await hydrateFeedCache();
+
   const subs = loadFeedSubscriptions();
   const subscribedIds = new Set(subs.map((s) => s.sourceId));
   let changed = false;
@@ -136,7 +146,7 @@ export async function initializeFeeds(): Promise<void> {
       // fetched feed.id differs from the registry.
       const feedId = source.id;
       const normalizedFeed = { ...feed, id: feedId, format: source.format ?? feed.format };
-      setCachedFeed(feedId, normalizedFeed);
+      await setCachedFeed(feedId, normalizedFeed);
       syncFeedDecksToStorage(normalizedFeed);
 
       subs.push({
@@ -153,15 +163,17 @@ export async function initializeFeeds(): Promise<void> {
     }
   }
 
-  // Re-fetch bundled feeds to pick up updated data (they're local static assets, no real network cost)
+  // Auto-refresh any subscription whose cache is older than FEED_STALE_AFTER_MS.
+  // Applies to both bundled (local static assets) and remote (network) feeds.
+  // Manual "Refresh all" / per-feed Refresh buttons bypass the TTL via refreshFeed().
+  const now = Date.now();
   for (const sub of subs) {
     if (!subscribedIds.has(sub.sourceId)) continue;
-    if (sub.type !== "bundled") {
-      // Remote feeds: sync from cache only
+
+    const isStale = now - sub.lastRefreshedAt >= FEED_STALE_AFTER_MS;
+    if (!isStale) {
       const cached = getCachedFeed(sub.sourceId);
-      if (cached) {
-        syncFeedDecksToStorage(cached);
-      }
+      if (cached) syncFeedDecksToStorage(cached);
       continue;
     }
 
@@ -170,12 +182,15 @@ export async function initializeFeeds(): Promise<void> {
       if (feed.version !== sub.lastVersion || !getCachedFeed(sub.sourceId)?.decks.length) {
         const registrySource = FEED_REGISTRY.find((r) => r.id === sub.sourceId);
         const normalizedFeed = { ...feed, id: sub.sourceId, format: registrySource?.format ?? feed.format };
-        setCachedFeed(sub.sourceId, normalizedFeed);
+        await setCachedFeed(sub.sourceId, normalizedFeed);
         syncFeedDecksToStorage(normalizedFeed);
-        sub.lastRefreshedAt = Date.now();
         sub.lastVersion = feed.version;
-        changed = true;
       }
+      // Always stamp lastRefreshedAt on a successful fetch so the TTL check
+      // doesn't re-fetch every boot when content is unchanged.
+      sub.lastRefreshedAt = Date.now();
+      if (sub.error !== undefined) sub.error = undefined;
+      changed = true;
     } catch {
       // Fall back to cached data
       const cached = getCachedFeed(sub.sourceId);
@@ -198,7 +213,7 @@ export async function subscribe(sourceOrUrl: string): Promise<Feed> {
 
   const feed = await fetchFeed(url);
 
-  setCachedFeed(feed.id, feed);
+  await setCachedFeed(feed.id, feed);
   syncFeedDecksToStorage(feed);
 
   const subs = loadFeedSubscriptions();
@@ -249,7 +264,7 @@ export function listSubscriptions(): FeedSubscription[] {
   return loadFeedSubscriptions();
 }
 
-export { getCachedFeed } from "../constants/storage";
+export { getCachedFeed } from "./feedPersistence";
 
 export function getDeckFeedOrigin(deckName: string): string | null {
   return loadDeckOrigins()[deckName] ?? null;
@@ -262,7 +277,7 @@ export async function refreshFeed(feedId: string): Promise<Feed> {
 
   try {
     const feed = await fetchFeed(sub.url);
-    setCachedFeed(feed.id, feed);
+    await setCachedFeed(feed.id, feed);
     syncFeedDecksToStorage(feed);
 
     sub.lastRefreshedAt = Date.now();

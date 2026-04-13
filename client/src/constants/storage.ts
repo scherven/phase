@@ -1,4 +1,4 @@
-import type { Feed, FeedSubscription } from "../types/feed";
+import type { FeedSubscription } from "../types/feed";
 import type { ParsedDeck } from "../services/deckParser";
 
 /** Prefix for saved deck data in localStorage. Full key: `${STORAGE_KEY_PREFIX}${deckName}` */
@@ -21,9 +21,6 @@ export const DECK_METADATA_KEY = "phase-deck-metadata";
 
 /** Key for the list of subscribed feeds */
 export const FEED_SUBSCRIPTIONS_KEY = "phase-feed-subscriptions";
-
-/** Prefix for cached feed data. Full key: `${FEED_CACHE_PREFIX}${feedId}` */
-export const FEED_CACHE_PREFIX = "phase-feed:";
 
 /** Key for mapping deck names to their originating feed ID */
 export const FEED_DECK_ORIGINS_KEY = "phase-feed-deck-origins";
@@ -130,23 +127,6 @@ export function loadFeedSubscriptions(): FeedSubscription[] {
 
 export function saveFeedSubscriptions(subs: FeedSubscription[]): void {
   localStorage.setItem(FEED_SUBSCRIPTIONS_KEY, JSON.stringify(subs));
-}
-
-export function getCachedFeed(feedId: string): Feed | null {
-  try {
-    const raw = localStorage.getItem(FEED_CACHE_PREFIX + feedId);
-    return raw ? (JSON.parse(raw) as Feed) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function setCachedFeed(feedId: string, feed: Feed): void {
-  localStorage.setItem(FEED_CACHE_PREFIX + feedId, JSON.stringify(feed));
-}
-
-export function removeCachedFeed(feedId: string): void {
-  localStorage.removeItem(FEED_CACHE_PREFIX + feedId);
 }
 
 export function loadDeckOrigins(): Record<string, string> {

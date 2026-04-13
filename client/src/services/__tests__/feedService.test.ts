@@ -1,4 +1,26 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+vi.mock("idb-keyval", () => {
+  const db = new Map<string, unknown>();
+  return {
+    createStore: vi.fn(() => ({})),
+    get: vi.fn((key: string) => Promise.resolve(db.get(key) ?? undefined)),
+    set: vi.fn((key: string, value: unknown) => {
+      db.set(key, value);
+      return Promise.resolve();
+    }),
+    del: vi.fn((key: string) => {
+      db.delete(key);
+      return Promise.resolve();
+    }),
+    entries: vi.fn(() => Promise.resolve([...db.entries()])),
+    _db: db,
+  };
+});
+
+import * as idbKeyval from "idb-keyval";
+const getIdbDb = () => (idbKeyval as unknown as { _db: Map<string, unknown> })._db;
+
 import {
   validateFeed,
   initializeFeeds,
@@ -11,6 +33,7 @@ import {
   getCachedFeed,
   getFeedDecksByFeed,
 } from "../feedService";
+import { _resetFeedCacheForTests } from "../feedPersistence";
 import {
   STORAGE_KEY_PREFIX,
   ACTIVE_DECK_KEY,
@@ -105,6 +128,8 @@ function mockFetch(data: unknown, ok = true) {
 
 beforeEach(() => {
   localStorage.clear();
+  getIdbDb().clear();
+  _resetFeedCacheForTests();
   vi.restoreAllMocks();
 });
 

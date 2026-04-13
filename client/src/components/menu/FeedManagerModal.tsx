@@ -9,6 +9,7 @@ import {
   subscribe,
   unsubscribe,
   refreshFeed,
+  refreshAllFeeds,
 } from "../../services/feedService";
 import type { FeedSubscription } from "../../types/feed";
 
@@ -56,6 +57,17 @@ export function FeedManagerModal({ open, onClose }: FeedManagerModalProps) {
     }
   };
 
+  const handleRefreshAll = async () => {
+    setLoading("all");
+    setError(null);
+    try {
+      await refreshAllFeeds();
+      setSubs(listSubscriptions());
+    } finally {
+      setLoading(null);
+    }
+  };
+
   const handleCustomSubscribe = async () => {
     const url = customUrl.trim();
     if (!url) return;
@@ -83,14 +95,24 @@ export function FeedManagerModal({ open, onClose }: FeedManagerModalProps) {
           onClick={onClose}
         >
           <motion.div
-            className="mx-4 w-full max-w-lg rounded-2xl border border-white/10 bg-[#0c1120] p-6 shadow-2xl"
+            className="mx-4 flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl border border-white/10 bg-[#0c1120] shadow-2xl"
             initial={{ scale: 0.95, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.95, opacity: 0 }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="mb-4 text-lg font-semibold text-white">Manage Feeds</h2>
+            <div className="shrink-0 flex items-center justify-between gap-3 px-6 pb-4 pt-6">
+              <h2 className="text-lg font-semibold text-white">Manage Feeds</h2>
+              <button
+                onClick={handleRefreshAll}
+                disabled={loading === "all" || subs.length === 0}
+                className="rounded px-3 py-1 text-xs text-slate-300 ring-1 ring-white/10 transition-colors hover:bg-white/5 hover:text-white disabled:opacity-40"
+              >
+                {loading === "all" ? "Refreshing…" : "Refresh all"}
+              </button>
+            </div>
 
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4">
             {error && (
               <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                 {error}
@@ -208,7 +230,9 @@ export function FeedManagerModal({ open, onClose }: FeedManagerModalProps) {
               </div>
             </div>
 
-            <div className="mt-4 flex justify-end">
+            </div>
+
+            <div className="shrink-0 flex justify-end border-t border-white/10 px-6 py-4">
               <button
                 onClick={onClose}
                 className={menuButtonClass({ tone: "neutral", size: "sm" })}
