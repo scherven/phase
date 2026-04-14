@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 
+use crate::game::ability_utils::append_to_sub_chain;
+use crate::game::effects::append_to_pending_continuation;
 use crate::game::filter;
 use crate::game::keywords;
 use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::types::ability::{
-    DamageSource, Effect, EffectError, EffectKind, PlayerFilter, ResolvedAbility, TargetFilter,
-    TargetRef,
+    DamageSource, Effect, EffectError, EffectKind, PlayerFilter, QuantityExpr, ResolvedAbility,
+    TargetFilter, TargetRef,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
@@ -296,6 +298,65 @@ pub(crate) fn apply_damage_to_target(
     }
 }
 
+/// CR 120.3 + CR 616.1e: Build a one-shot, single-target non-combat `DealDamage`
+/// node for a remaining-target damage continuation. The node's `source_id` is set
+/// to the original damage-source id so `DamageContext::from_source` reproduces the
+/// original source's keywords at resume time; `amount` is captured as `Fixed` so
+/// it does not re-resolve against mutated state.
+fn build_remaining_damage_node(
+    damage_source_id: ObjectId,
+    controller: PlayerId,
+    target: TargetRef,
+    amount: u32,
+) -> ResolvedAbility {
+    ResolvedAbility::new(
+        Effect::DealDamage {
+            amount: QuantityExpr::Fixed {
+                value: amount as i32,
+            },
+            target: TargetFilter::Any,
+            damage_source: None,
+        },
+        vec![target],
+        damage_source_id,
+        controller,
+    )
+}
+
+/// CR 120.3 + CR 616.1e: Build a linked sub_ability chain from a sequence of
+/// (target, amount) pairs and stash it as `pending_continuation`. If the parent
+/// ability has an existing `sub_ability` chain, it is appended to the tail so
+/// downstream effects still fire after the batch completes. `damage_source_id`
+/// controls which object's keywords/LKI drive each resumed damage event.
+fn stash_remaining_damage_chain(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    damage_source_id: ObjectId,
+    remaining: impl IntoIterator<Item = (TargetRef, u32)>,
+) {
+    let controller = ability.controller;
+    let mut iter = remaining.into_iter();
+    let Some((first_target, first_amount)) = iter.next() else {
+        // No remaining batch work — still forward the parent's sub_ability so the
+        // downstream chain resumes after the pending replacement choice resolves.
+        if let Some(sub) = ability.sub_ability.as_ref() {
+            append_to_pending_continuation(state, Some(Box::new(sub.as_ref().clone())));
+        }
+        return;
+    };
+
+    let mut head =
+        build_remaining_damage_node(damage_source_id, controller, first_target, first_amount);
+    for (target, amount) in iter {
+        let node = build_remaining_damage_node(damage_source_id, controller, target, amount);
+        append_to_sub_chain(&mut head, node);
+    }
+    if let Some(sub) = ability.sub_ability.as_ref() {
+        append_to_sub_chain(&mut head, sub.as_ref().clone());
+    }
+    append_to_pending_continuation(state, Some(Box::new(head)));
+}
+
 /// CR 120.1: Deal N damage — reduces life for players, marks damage on creatures.
 /// Reads amount from `Effect::DealDamage { amount }`.
 pub fn resolve(
@@ -350,17 +411,32 @@ pub fn resolve(
     // CR 601.2d: If the caster distributed damage among targets at cast time,
     // apply per-target amounts from ability.distribution instead of uniform damage.
     if let Some(distribution) = &ability.distribution {
-        for (target, amount) in distribution {
+        for (i, (target, amount)) in distribution.iter().enumerate() {
             match apply_damage_to_target(state, &ctx, target.clone(), *amount, false, events)? {
                 DamageResult::Applied(_) => {}
-                DamageResult::NeedsChoice => return Ok(()),
+                DamageResult::NeedsChoice => {
+                    // CR 120.3 + CR 616.1e: Remaining distributed targets must resume
+                    // after the replacement choice resolves. Stash each as a chained
+                    // DealDamage continuation keyed to the same damage-source id.
+                    let remaining = distribution[i + 1..].iter().map(|(t, a)| (t.clone(), *a));
+                    stash_remaining_damage_chain(state, ability, ctx.source_id, remaining);
+                    return Ok(());
+                }
             }
         }
     } else {
-        for target in effective_targets {
+        for (i, target) in effective_targets.iter().enumerate() {
             match apply_damage_to_target(state, &ctx, target.clone(), num_dmg, false, events)? {
                 DamageResult::Applied(_) => {}
-                DamageResult::NeedsChoice => return Ok(()),
+                DamageResult::NeedsChoice => {
+                    // CR 120.3 + CR 616.1e: Remaining targets must resume after the
+                    // replacement choice resolves.
+                    let remaining = effective_targets[i + 1..]
+                        .iter()
+                        .map(|t| (t.clone(), num_dmg));
+                    stash_remaining_damage_chain(state, ability, ctx.source_id, remaining);
+                    return Ok(());
+                }
             }
         }
     }
@@ -407,12 +483,10 @@ pub fn resolve_all(
     // TODO(CR 120.3h): Battle card type not handled — damage to a battle should remove defense counters.
     // Player damage uses the separate DamageEachPlayer effect type (PlayerFilter +
     // per-player quantity resolution). DamageAll is intentionally object-only.
-    // TODO(CR 120.3): NeedsChoice during batch damage returns early — remaining targets skip damage.
-    //   This is an engine-wide replacement-choice limitation, not specific to resolve_all.
     let ctx = DamageContext::from_source(state, ability.source_id)
         .unwrap_or_else(|| DamageContext::fallback(ability.source_id, ability.controller));
 
-    for obj_id in matching {
+    for (i, &obj_id) in matching.iter().enumerate() {
         match apply_damage_to_target(
             state,
             &ctx,
@@ -422,7 +496,15 @@ pub fn resolve_all(
             events,
         )? {
             DamageResult::Applied(_) => {}
-            DamageResult::NeedsChoice => return Ok(()),
+            DamageResult::NeedsChoice => {
+                // CR 120.3 + CR 616.1e: Remaining batch targets must resume after the
+                // replacement choice resolves — chain them as DealDamage continuations.
+                let remaining = matching[i + 1..]
+                    .iter()
+                    .map(|&id| (TargetRef::Object(id), num_dmg));
+                stash_remaining_damage_chain(state, ability, ctx.source_id, remaining);
+                return Ok(());
+            }
         }
     }
 
@@ -492,19 +574,39 @@ pub fn resolve_each_player(
         .map(|p| p.id)
         .collect();
 
-    for pid in player_ids {
+    for (i, pid) in player_ids.iter().enumerate() {
         // CR 120.3: Resolve quantity scoped to this player.
         let dmg = crate::game::quantity::resolve_quantity_scoped(
             state,
             amount_expr,
             ability.source_id,
-            pid,
+            *pid,
         )
         .max(0) as u32;
         if dmg > 0 {
-            match apply_damage_to_target(state, &ctx, TargetRef::Player(pid), dmg, false, events)? {
+            match apply_damage_to_target(state, &ctx, TargetRef::Player(*pid), dmg, false, events)?
+            {
                 DamageResult::Applied(_) => {}
-                DamageResult::NeedsChoice => return Ok(()),
+                DamageResult::NeedsChoice => {
+                    // CR 120.3 + CR 616.1e: Remaining players must resume after the
+                    // replacement choice resolves. Pre-resolve per-player amounts now
+                    // so each continuation node carries a Fixed quantity.
+                    let remaining: Vec<(TargetRef, u32)> = player_ids[i + 1..]
+                        .iter()
+                        .filter_map(|&next_pid| {
+                            let next_dmg = crate::game::quantity::resolve_quantity_scoped(
+                                state,
+                                amount_expr,
+                                ability.source_id,
+                                next_pid,
+                            )
+                            .max(0) as u32;
+                            (next_dmg > 0).then_some((TargetRef::Player(next_pid), next_dmg))
+                        })
+                        .collect();
+                    stash_remaining_damage_chain(state, ability, ctx.source_id, remaining);
+                    return Ok(());
+                }
             }
         }
     }
@@ -1157,5 +1259,260 @@ mod tests {
         assert!(!events
             .iter()
             .any(|e| matches!(e, GameEvent::DamageDealt { .. })));
+    }
+
+    /// Helper: install an Optional DamageDone replacement on a fresh battlefield
+    /// object so every damage event pauses for a player choice.
+    fn install_optional_damage_replacement(state: &mut GameState) -> ObjectId {
+        use crate::game::game_object::GameObject;
+        use crate::types::ability::{ReplacementDefinition, ReplacementMode};
+        use crate::types::replacements::ReplacementEvent;
+
+        let id = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let mut shield = GameObject::new(
+            id,
+            CardId(999),
+            PlayerId(1),
+            "Shield".to_string(),
+            Zone::Battlefield,
+        );
+        shield.replacement_definitions.push(
+            ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                .mode(ReplacementMode::Optional { decline: None })
+                .description("Shield".to_string()),
+        );
+        state.objects.insert(id, shield);
+        state.battlefield.push(id);
+        id
+    }
+
+    /// Walk a sub_ability chain and collect each node's (source_id, target, amount).
+    /// Used to verify a stashed batch continuation encodes the expected remaining work.
+    fn collect_chain_summary(head: &ResolvedAbility) -> Vec<(ObjectId, TargetRef, i32)> {
+        let mut out = Vec::new();
+        let mut cursor = Some(head);
+        while let Some(node) = cursor {
+            if let Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value },
+                ..
+            } = &node.effect
+            {
+                let target = node
+                    .targets
+                    .first()
+                    .cloned()
+                    .expect("chain node must carry a target");
+                out.push((node.source_id, target, *value));
+            }
+            cursor = node.sub_ability.as_deref();
+        }
+        out
+    }
+
+    /// CR 120.3 + CR 616.1e: When a DamageAll batch pauses on a replacement
+    /// choice after the first target, remaining targets must be stashed as a
+    /// chained continuation — not silently dropped. Previously the batch
+    /// returned early with no continuation, losing 2/3 of the damage.
+    ///
+    /// NOTE: This verifies the continuation structure only. End-to-end resume
+    /// through `handle_replacement_choice` for Damage events is blocked by a
+    /// separate gap in that handler (it only re-applies ZoneChange events).
+    #[test]
+    fn damage_all_with_replacement_on_first_target() {
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        let bear1 = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Bear1".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&bear1)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let bear2 = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Bear2".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&bear2)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let bear3 = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Bear3".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&bear3)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let source_id = ObjectId(100);
+        install_optional_damage_replacement(&mut state);
+
+        let ability = ResolvedAbility::new(
+            Effect::DamageAll {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![crate::types::ability::TypeFilter::Creature],
+                    controller: None,
+                    properties: vec![],
+                }),
+            },
+            vec![],
+            source_id,
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve_all(&mut state, &ability, &mut events).unwrap();
+
+        // First target paused on the replacement choice.
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ));
+        let cont = state
+            .pending_continuation
+            .as_ref()
+            .expect("expected pending_continuation for remaining batch targets");
+
+        // Every remaining creature must be encoded as its own chain node.
+        let summary = collect_chain_summary(cont);
+        assert_eq!(
+            summary.len(),
+            2,
+            "two remaining creatures after the paused first; got {summary:?}"
+        );
+        let expected_targets: Vec<TargetRef> =
+            vec![TargetRef::Object(bear2), TargetRef::Object(bear3)];
+        let actual_targets: Vec<TargetRef> = summary.iter().map(|(_, t, _)| t.clone()).collect();
+        assert_eq!(actual_targets, expected_targets);
+        for (node_source, _, amount) in &summary {
+            assert_eq!(
+                *node_source, source_id,
+                "continuation preserves damage source"
+            );
+            assert_eq!(*amount, 2, "continuation preserves amount");
+        }
+    }
+
+    /// CR 120.3 + CR 616.1e: DamageEachPlayer must stash remaining players as
+    /// continuation nodes after the first player pauses on a replacement choice.
+    ///
+    /// NOTE: Structural assertion only — see `damage_all_with_replacement_on_first_target`.
+    #[test]
+    fn damage_each_player_with_replacement() {
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        let source_id = ObjectId(100);
+        install_optional_damage_replacement(&mut state);
+
+        let ability = ResolvedAbility::new(
+            Effect::DamageEachPlayer {
+                amount: QuantityExpr::Fixed { value: 2 },
+                player_filter: PlayerFilter::All,
+            },
+            vec![],
+            source_id,
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve_each_player(&mut state, &ability, &mut events).unwrap();
+
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ));
+        let cont = state
+            .pending_continuation
+            .as_ref()
+            .expect("expected pending_continuation for remaining-player damage");
+
+        let summary = collect_chain_summary(cont);
+        assert_eq!(
+            summary.len(),
+            1,
+            "one remaining player (PlayerId(1)) after the paused first; got {summary:?}"
+        );
+        assert_eq!(summary[0].1, TargetRef::Player(PlayerId(1)));
+        assert_eq!(summary[0].2, 2);
+        assert_eq!(summary[0].0, source_id);
+    }
+
+    /// CR 120.3 + CR 616.1e: Multi-target `DealDamage` ("deal 1 to any number of
+    /// targets") must stash remaining targets after the first pauses.
+    ///
+    /// NOTE: Structural assertion only — see `damage_all_with_replacement_on_first_target`.
+    #[test]
+    fn deal_damage_multi_target_with_replacement_on_first_target() {
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        let a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "A".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&a)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "B".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&b)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        install_optional_damage_replacement(&mut state);
+
+        let ability = make_ability(1, vec![TargetRef::Object(a), TargetRef::Object(b)]);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ));
+        let cont = state
+            .pending_continuation
+            .as_ref()
+            .expect("expected pending_continuation for remaining multi-target damage");
+        let summary = collect_chain_summary(cont);
+        assert_eq!(summary.len(), 1, "one remaining target; got {summary:?}");
+        assert_eq!(summary[0].1, TargetRef::Object(b));
+        assert_eq!(summary[0].2, 1);
     }
 }

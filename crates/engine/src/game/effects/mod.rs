@@ -149,7 +149,10 @@ fn matches_player_scope(
         })
 }
 
-fn append_to_pending_continuation(state: &mut GameState, tail: Option<Box<ResolvedAbility>>) {
+pub(crate) fn append_to_pending_continuation(
+    state: &mut GameState,
+    tail: Option<Box<ResolvedAbility>>,
+) {
     let Some(tail) = tail else {
         return;
     };

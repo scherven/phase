@@ -1,6 +1,8 @@
+use crate::game::ability_utils::append_to_sub_chain;
+use crate::game::effects::append_to_pending_continuation;
 use crate::game::effects::deal_damage::{apply_damage_to_target, DamageContext, DamageResult};
 use crate::types::ability::{
-    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    Effect, EffectError, EffectKind, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -86,8 +88,6 @@ pub fn resolve(
     if source_power > 0 {
         let source_ctx = DamageContext::from_source(state, source_id)
             .unwrap_or_else(|| DamageContext::fallback(source_id, source_controller));
-        // TODO(CR 701.14a): NeedsChoice on first direction skips second direction of fight damage.
-        //   Engine-wide replacement-choice limitation.
         if let DamageResult::NeedsChoice = apply_damage_to_target(
             state,
             &source_ctx,
@@ -96,6 +96,26 @@ pub fn resolve(
             false,
             events,
         )? {
+            // CR 701.14a: First direction is waiting on a replacement choice.
+            // Stash a continuation so the second direction (target → source) resumes
+            // after the choice resolves. The parent's sub_ability (if any) is appended
+            // to the continuation's tail so downstream effects still fire.
+            if target_power > 0 {
+                // Second direction: target_id (the fight target) deals damage equal
+                // to its power to source_id (the fighter).
+                let mut second = build_fight_damage_node(
+                    target_id,
+                    source_id,
+                    target_power as u32,
+                    target_controller,
+                );
+                if let Some(sub) = ability.sub_ability.as_ref() {
+                    append_to_sub_chain(&mut second, sub.as_ref().clone());
+                }
+                append_to_pending_continuation(state, Some(Box::new(second)));
+            } else if let Some(sub) = ability.sub_ability.as_ref() {
+                append_to_pending_continuation(state, Some(Box::new(sub.as_ref().clone())));
+            }
             return Ok(());
         }
     }
@@ -112,6 +132,11 @@ pub fn resolve(
             false,
             events,
         )? {
+            // CR 701.14a: Second direction is waiting on a replacement choice — no more
+            // damage to deal, but propagate the parent's sub_ability if present.
+            if let Some(sub) = ability.sub_ability.as_ref() {
+                append_to_pending_continuation(state, Some(Box::new(sub.as_ref().clone())));
+            }
             return Ok(());
         }
     }
@@ -122,6 +147,30 @@ pub fn resolve(
     });
 
     Ok(())
+}
+
+/// CR 701.14a: Build a one-shot, single-target non-combat `DealDamage` node representing
+/// one direction of a fight. `source_id` deals `amount` damage to `target_id`.
+/// Used as a continuation when the first direction of fight damage pauses for a
+/// replacement choice.
+fn build_fight_damage_node(
+    source_id: ObjectId,
+    target_id: ObjectId,
+    amount: u32,
+    controller: crate::types::player::PlayerId,
+) -> ResolvedAbility {
+    ResolvedAbility::new(
+        Effect::DealDamage {
+            amount: QuantityExpr::Fixed {
+                value: amount as i32,
+            },
+            target: TargetFilter::Any,
+            damage_source: None,
+        },
+        vec![TargetRef::Object(target_id)],
+        source_id,
+        controller,
+    )
 }
 
 #[cfg(test)]
@@ -287,5 +336,77 @@ mod tests {
         // Bear (3/3) should fight Wolf (2/2), not the Aura
         assert_eq!(state.objects[&wolf].damage_marked, 3);
         assert_eq!(state.objects[&bear].damage_marked, 2);
+    }
+
+    /// CR 120.3 + CR 616.1e: When the first direction of fight damage pauses on a
+    /// replacement choice, the second direction must be stashed as
+    /// `pending_continuation` so it resumes after the choice is answered — not
+    /// silently vanish.
+    ///
+    /// NOTE: This verifies the continuation structure only. End-to-end resolution
+    /// through `handle_replacement_choice` for Damage events is tracked separately
+    /// — that handler currently only re-applies ZoneChange results post-choice.
+    #[test]
+    fn fight_with_damage_replacement_on_first_direction() {
+        use crate::game::game_object::GameObject;
+        use crate::types::ability::{ReplacementDefinition, ReplacementMode};
+        use crate::types::game_state::WaitingFor;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let bear = make_creature(&mut state, PlayerId(0), "Bear", 3, 3);
+        let wolf = make_creature(&mut state, PlayerId(1), "Wolf", 2, 2);
+
+        // Install an Optional DamageDone replacement on a host object so the first
+        // damage event (bear → wolf) pauses for a player choice.
+        let shield_id = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let mut shield = GameObject::new(
+            shield_id,
+            CardId(99),
+            PlayerId(1),
+            "Shield".to_string(),
+            Zone::Battlefield,
+        );
+        shield.replacement_definitions.push(
+            ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                .mode(ReplacementMode::Optional { decline: None })
+                .description("Shield".to_string()),
+        );
+        state.objects.insert(shield_id, shield);
+        state.battlefield.push(shield_id);
+
+        let ability = make_fight_ability(bear, wolf);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // First direction paused on the replacement choice.
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ));
+        // A continuation was stashed for the second direction — previously this
+        // branch silently returned Ok(()) and the second direction was dropped.
+        let cont = state
+            .pending_continuation
+            .as_ref()
+            .expect("expected pending_continuation for second-direction fight damage");
+        // Continuation is a single-target DealDamage from wolf to bear.
+        match &cont.effect {
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value },
+                ..
+            } => {
+                assert_eq!(*value, 2, "wolf.power = 2 should drive second direction");
+            }
+            other => panic!("expected DealDamage continuation, got {other:?}"),
+        }
+        assert_eq!(
+            cont.source_id, wolf,
+            "wolf deals the second-direction damage"
+        );
+        assert_eq!(cont.targets, vec![TargetRef::Object(bear)]);
+        // Bear hasn't taken damage yet — second direction is still pending.
+        assert_eq!(state.objects[&bear].damage_marked, 0);
     }
 }
