@@ -54,22 +54,6 @@ const STARTER_FEED = {
   ],
 };
 
-const COMMANDER_FEED = {
-  id: "commander-precons",
-  name: "Commander Precons",
-  version: 1,
-  updated: "2026-03-20T00:00:00Z",
-  decks: [
-    {
-      name: "[Pre-built] Test Commander",
-      colors: ["W"],
-      main: [{ count: 1, name: "Sol Ring" }],
-      sideboard: [],
-      commander: ["Kemba, Kha Regent"],
-    },
-  ],
-};
-
 function makeMtgGoldfishFeed(id: string, format: string) {
   return {
     id,
@@ -89,7 +73,6 @@ function makeMtgGoldfishFeed(id: string, format: string) {
 
 const ALL_BUNDLED_FEEDS: Record<string, unknown> = {
   "starter-decks": STARTER_FEED,
-  "commander-precons": COMMANDER_FEED,
   "mtggoldfish-standard": makeMtgGoldfishFeed("mtggoldfish-standard", "Standard"),
   "mtggoldfish-modern": makeMtgGoldfishFeed("mtggoldfish-modern", "Modern"),
   "mtggoldfish-pioneer": makeMtgGoldfishFeed("mtggoldfish-pioneer", "Pioneer"),
@@ -209,17 +192,12 @@ describe("initializeFeeds", () => {
     const deck = JSON.parse(raw!);
     expect(deck.main[0].name).toBe("Lightning Bolt");
 
-    // Commander deck should be in localStorage
-    const cmdRaw = localStorage.getItem(STORAGE_KEY_PREFIX + "[Pre-built] Test Commander");
-    expect(cmdRaw).not.toBeNull();
-
     // Origins tracked with registry IDs (not feed.id)
     expect(getDeckFeedOrigin("Test Deck")).toBe("starter-decks");
-    expect(getDeckFeedOrigin("[Pre-built] Test Commander")).toBe("commander-precons");
 
-    // All bundled subscriptions created
+    // All bundled subscriptions created (one per mocked feed in ALL_BUNDLED_FEEDS)
     const subs = listSubscriptions();
-    expect(subs).toHaveLength(6);
+    expect(subs).toHaveLength(5);
 
   });
 
@@ -227,11 +205,11 @@ describe("initializeFeeds", () => {
     // First call subscribes to all bundled feeds
     mockFetchByUrl(ALL_BUNDLED_FEEDS);
     await initializeFeeds();
-    expect(listSubscriptions()).toHaveLength(6);
+    expect(listSubscriptions()).toHaveLength(5);
 
     // Second call re-fetches for updates but should not create new subscriptions
     await initializeFeeds();
-    expect(listSubscriptions()).toHaveLength(6);
+    expect(listSubscriptions()).toHaveLength(5);
   });
 
   it("does not overwrite existing user decks", async () => {

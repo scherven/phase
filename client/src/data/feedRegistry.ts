@@ -10,14 +10,6 @@ export const FEED_REGISTRY: FeedSource[] = [
     url: "/feeds/starter-decks.json",
   },
   {
-    id: "commander-precons",
-    name: "Commander Precons",
-    description: "Pre-built Commander decks for immediate play",
-    icon: "C",
-    type: "bundled",
-    url: "/feeds/commander-precons.json",
-  },
-  {
     id: "mtggoldfish-standard",
     name: "Standard Meta",
     description: "Top Standard metagame decks",

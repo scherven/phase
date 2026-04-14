@@ -69,7 +69,25 @@ async function fetchFeed(url: string): Promise<Feed> {
   if (!feed) {
     throw new Error("Invalid feed format: missing required fields or malformed deck entries");
   }
-  return feed;
+  return normalizeFeed(feed);
+}
+
+/**
+ * For commander-format feeds, MTGGoldfish-style decks store `commander: null`
+ * with the convention that the deck NAME is the commander (and is included in
+ * `main`). Without this normalization, deck-compatibility evaluation gets an
+ * empty commander array and rejects the deck as commander-illegal.
+ */
+function normalizeFeed(feed: Feed): Feed {
+  if (feed.format !== "commander") return feed;
+  return {
+    ...feed,
+    decks: feed.decks.map((deck) => {
+      if (deck.commander && deck.commander.length > 0) return deck;
+      if (!deck.main.some((entry) => entry.name === deck.name)) return deck;
+      return { ...deck, commander: [deck.name] };
+    }),
+  };
 }
 
 export function feedDeckToParsedDeck(deck: FeedDeck): ParsedDeck {
