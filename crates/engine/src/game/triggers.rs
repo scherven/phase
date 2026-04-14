@@ -179,7 +179,8 @@ fn collect_matching_triggers(
 
 fn trigger_source_ids_for_zone(state: &GameState, zone: Zone) -> Vec<ObjectId> {
     match zone {
-        Zone::Battlefield => state.battlefield.clone(),
+        // CR 702.26b: Phased-out permanents don't trigger.
+        Zone::Battlefield => state.battlefield_phased_in_ids(),
         Zone::Graveyard => state
             .players
             .iter()
@@ -887,8 +888,11 @@ fn apply_trigger_doubling(state: &GameState, pending: &mut Vec<PendingTrigger>) 
 /// State triggers fire when a game-state condition is true, rather than in response
 /// to events. A state trigger doesn't trigger again until its ability has resolved,
 /// been countered, or otherwise left the stack.
+///
+/// CR 702.26b: Phased-out permanents are treated as though they don't exist
+/// — their state triggers don't fire.
 pub fn check_state_triggers(state: &mut GameState) {
-    let source_ids: Vec<ObjectId> = state.battlefield.to_vec();
+    let source_ids: Vec<ObjectId> = state.battlefield_phased_in_ids();
 
     let mut pending: Vec<PendingTrigger> = Vec::new();
 

@@ -2640,6 +2640,13 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    /// CR 702.26c: Target phased-out permanent phases in. Rare — used by cards
+    /// that explicitly phase a previously-phased-out object back in (e.g.,
+    /// Teferi's Veil / Wake of Destruction-style effects).
+    PhaseIn {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
     /// CR 509.1g: Target creature must block this turn if able.
     ForceBlock {
         #[serde(default = "default_target_filter_any")]
@@ -3217,6 +3224,7 @@ impl Effect {
             | Effect::Suspect { target, .. }
             | Effect::Connive { target, .. }
             | Effect::PhaseOut { target, .. }
+            | Effect::PhaseIn { target, .. }
             | Effect::ForceBlock { target, .. }
             | Effect::CastFromZone { target, .. }
             | Effect::PreventDamage { target, .. }
@@ -3398,6 +3406,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Suspect { .. } => "Suspect",
         Effect::Connive { .. } => "Connive",
         Effect::PhaseOut { .. } => "PhaseOut",
+        Effect::PhaseIn { .. } => "PhaseIn",
         Effect::ForceBlock { .. } => "ForceBlock",
         Effect::SolveCase => "SolveCase",
         Effect::SetClassLevel { .. } => "SetClassLevel",
@@ -3541,6 +3550,7 @@ pub enum EffectKind {
     Suspect,
     Connive,
     PhaseOut,
+    PhaseIn,
     ForceBlock,
     SolveCase,
     SetClassLevel,
@@ -3687,6 +3697,7 @@ impl From<&Effect> for EffectKind {
             Effect::Suspect { .. } => EffectKind::Suspect,
             Effect::Connive { .. } => EffectKind::Connive,
             Effect::PhaseOut { .. } => EffectKind::PhaseOut,
+            Effect::PhaseIn { .. } => EffectKind::PhaseIn,
             Effect::ForceBlock { .. } => EffectKind::ForceBlock,
             Effect::SolveCase => EffectKind::SolveCase,
             Effect::SetClassLevel { .. } => EffectKind::SetClassLevel,

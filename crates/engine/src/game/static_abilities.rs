@@ -424,6 +424,12 @@ pub fn check_static_ability(
             continue;
         }
 
+        // CR 702.26b: Phased-out permanents are treated as though they don't
+        // exist — their static abilities don't function.
+        if obj.is_phased_out() {
+            continue;
+        }
+
         for def in &obj.static_definitions {
             if def.mode != mode {
                 continue;
@@ -498,6 +504,10 @@ fn check_static_other_by_name(state: &GameState, name: &str, context: &StaticChe
             None => continue,
         };
         if obj.zone == crate::types::zones::Zone::Command && !obj.is_emblem {
+            continue;
+        }
+        // CR 702.26b: Phased-out permanents don't function.
+        if obj.is_phased_out() {
             continue;
         }
         for def in &obj.static_definitions {

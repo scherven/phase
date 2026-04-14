@@ -110,6 +110,18 @@ pub enum GameEvent {
     PermanentUntapped {
         object_id: ObjectId,
     },
+    /// CR 702.26b: A permanent phased out (status changed to phased out).
+    /// `indirect` is true iff this permanent was phased out because a host
+    /// it was attached to phased out (CR 702.26g).
+    PermanentPhasedOut {
+        object_id: ObjectId,
+        #[serde(default)]
+        indirect: bool,
+    },
+    /// CR 702.26c: A permanent phased in (status changed to phased in).
+    PermanentPhasedIn {
+        object_id: ObjectId,
+    },
     LandPlayed {
         object_id: ObjectId,
         player_id: PlayerId,

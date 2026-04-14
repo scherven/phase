@@ -1862,6 +1862,18 @@ pub struct ScheduledTurnControl {
 }
 
 impl GameState {
+    /// CR 702.26b: Returns battlefield object ids filtered to only phased-in
+    /// permanents. Use this instead of `state.battlefield.iter()` anywhere a
+    /// rule would otherwise treat a phased-out permanent as existing
+    /// (state-based actions, combat scans, trigger source scans, etc.).
+    pub fn battlefield_phased_in_ids(&self) -> Vec<ObjectId> {
+        self.battlefield
+            .iter()
+            .copied()
+            .filter(|id| self.objects.get(id).is_some_and(|obj| obj.is_phased_in()))
+            .collect()
+    }
+
     /// Create a new game with the given format configuration and player count.
     pub fn new(config: FormatConfig, player_count: u8, seed: u64) -> Self {
         let players: Vec<Player> = (0..player_count)

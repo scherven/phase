@@ -1187,10 +1187,37 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     }
 
     // "Of"-based short name: "Rosie Cotton of South Lane" → "Rosie Cotton"
+    //
+    // Guard: case-insensitive matching here can collide with common English
+    // words that appear in Oracle text (e.g., "Out of Time" → short name
+    // "Out" would replace "out" in "phase out"). Skip the short-name
+    // strategy when the prefix is a single common English word.
     if !result.contains('~') {
         if let Some(of_pos) = effective_name.find(" of ") {
             let short_name = &effective_name[..of_pos];
-            if short_name.len() >= 3 {
+            let lower_short = short_name.to_lowercase();
+            // structural: not dispatch — guarding single-word short names only
+            let is_common_english_word = !short_name.contains(' ')
+                && matches!(
+                    lower_short.as_str(),
+                    "out"
+                        | "in"
+                        | "on"
+                        | "at"
+                        | "by"
+                        | "for"
+                        | "to"
+                        | "of"
+                        | "the"
+                        | "a"
+                        | "an"
+                        | "up"
+                        | "down"
+                        | "back"
+                        | "away"
+                        | "off"
+                );
+            if short_name.len() >= 3 && !is_common_english_word {
                 result = replace_all_words(&result, short_name, "~");
             }
         }

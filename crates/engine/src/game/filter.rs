@@ -174,6 +174,16 @@ fn filter_inner(
     source_controller: Option<PlayerId>,
     ability: Option<&ResolvedAbility>,
 ) -> bool {
+    // CR 702.26b: a phased-out permanent is treated as though it does not
+    // exist. The only exception the rules allow — "rules and effects that
+    // specifically mention phased-out permanents" — is extraordinarily rare
+    // and handled by targeted callers that bypass this choke point; the
+    // safe default here is to exclude.
+    if let Some(obj) = state.objects.get(&object_id) {
+        if obj.is_phased_out() {
+            return false;
+        }
+    }
     match filter {
         TargetFilter::None => false,
         TargetFilter::Any => true,

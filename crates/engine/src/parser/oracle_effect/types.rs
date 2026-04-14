@@ -228,8 +228,6 @@ pub(super) enum ImperativeFamilyAst {
     Explore,
     /// CR 702.162a: Connive.
     Connive,
-    /// CR 702.26a: Phase out.
-    PhaseOut,
     /// CR 509.1g: Block this turn if able.
     ForceBlock,
     /// CR 701.15a: Goad target creature.

@@ -213,6 +213,11 @@ pub fn validate_attackers(state: &GameState, attacker_ids: &[ObjectId]) -> Resul
         if !obj.card_types.core_types.contains(&CoreType::Creature) {
             return Err(format!("{:?} is not a creature", id));
         }
+        // CR 702.26b: Phased-out permanents are treated as though they don't
+        // exist — they can't attack.
+        if obj.is_phased_out() {
+            return Err(format!("{:?} is phased out", id));
+        }
 
         // Must be controlled by active player
         if obj.controller != active {
@@ -309,6 +314,11 @@ pub fn validate_blockers(
         }
         if !blocker.card_types.core_types.contains(&CoreType::Creature) {
             return Err(format!("{:?} is not a creature", blocker_id));
+        }
+        // CR 702.26b: Phased-out permanents are treated as though they don't
+        // exist — they can't block.
+        if blocker.is_phased_out() {
+            return Err(format!("{:?} is phased out", blocker_id));
         }
 
         // CR 509.1a: Only untapped creatures controlled by the defending player may block.
@@ -1028,12 +1038,13 @@ pub fn has_summoning_sickness(obj: &GameObject, turn_number: u32) -> bool {
 }
 
 /// CR 508.1a / CR 302.6: Untapped creature controlled since turn started, without Defender.
+/// CR 702.26b: Phased-out creatures can't attack.
 pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
     let active = state.active_player;
     let turn = state.turn_number;
 
     state
-        .battlefield
+        .battlefield_phased_in_ids()
         .iter()
         .filter_map(|id| {
             let obj = state.objects.get(id)?;
@@ -1256,8 +1267,9 @@ pub fn get_valid_blocker_ids(state: &GameState) -> Vec<ObjectId> {
                 .collect()
         });
 
+    // CR 702.26b: Phased-out creatures can't block.
     state
-        .battlefield
+        .battlefield_phased_in_ids()
         .iter()
         .filter_map(|id| {
             let obj = state.objects.get(id)?;

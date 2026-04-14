@@ -252,8 +252,15 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     });
 }
 
-/// CR 502.3: During the untap step, the active player untaps each permanent they control.
+/// CR 502.1 + CR 502.3: During the untap step, first the phasing turn-based
+/// action runs (CR 702.26a), then the active player untaps each permanent
+/// they control. CR 702.26m: If the untap step is skipped, phasing is also
+/// skipped — callers must gate this whole function on `should_skip_step`.
 pub fn execute_untap(state: &mut GameState, events: &mut Vec<GameEvent>) {
+    // CR 502.1 + CR 702.26a: Phasing happens first, before any permanents
+    // untap. Simultaneous phase-in + phase-out for the active player.
+    super::phasing::execute_untap_step_phasing(state, events);
+
     let active = state.active_player;
 
     // CR 514.2: Prune "until your next turn" transient effects for the active player.

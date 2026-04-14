@@ -298,15 +298,16 @@ fn check_commander_damage(
 }
 
 /// CR 704.5f: A creature with toughness 0 or less is put into its owner's graveyard.
+/// CR 702.26b: Phased-out permanents are treated as though they don't exist —
+/// state-based actions scan only phased-in permanents.
 fn check_zero_toughness(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
     any_performed: &mut bool,
 ) {
     let to_destroy: Vec<_> = state
-        .battlefield
-        .iter()
-        .copied()
+        .battlefield_phased_in_ids()
+        .into_iter()
         .filter(|id| {
             state
                 .objects
@@ -326,15 +327,15 @@ fn check_zero_toughness(
 }
 
 /// CR 704.5g / CR 704.5h: A creature with lethal damage (or deathtouch damage) is destroyed.
+/// CR 702.26b: Phased-out permanents are treated as though they don't exist.
 fn check_lethal_damage(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
     any_performed: &mut bool,
 ) {
     let to_destroy: Vec<_> = state
-        .battlefield
-        .iter()
-        .copied()
+        .battlefield_phased_in_ids()
+        .into_iter()
         .filter(|id| {
             state
                 .objects
@@ -463,15 +464,16 @@ fn check_legend_rule(
 }
 
 /// CR 704.5m: An Aura attached to an illegal object is put into its owner's graveyard.
+/// CR 702.26b: Phased-out Auras are treated as though they don't exist; their
+/// attachment-legality isn't checked by this SBA.
 fn check_unattached_auras(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
     any_performed: &mut bool,
 ) {
     let to_remove: Vec<_> = state
-        .battlefield
-        .iter()
-        .copied()
+        .battlefield_phased_in_ids()
+        .into_iter()
         .filter(|id| {
             state
                 .objects
@@ -493,11 +495,11 @@ fn check_unattached_auras(
 }
 
 /// CR 704.5n + CR 301.5c: Equipment attached to an illegal permanent becomes unattached.
+/// CR 702.26b: Phased-out Equipment is treated as though it doesn't exist.
 fn check_unattached_equipment(state: &mut GameState, any_performed: &mut bool) {
     let to_unattach: Vec<_> = state
-        .battlefield
-        .iter()
-        .copied()
+        .battlefield_phased_in_ids()
+        .into_iter()
         .filter(|id| {
             state
                 .objects
@@ -810,8 +812,10 @@ fn check_saga_sacrifice(
 
 /// CR 704.5q: If a permanent has both +1/+1 and -1/-1 counters, remove pairs until
 /// only one type remains.
+/// CR 702.26b: Phased-out permanents are treated as though they don't exist;
+/// their counters aren't touched by this SBA.
 fn check_counter_cancellation(state: &mut GameState, any_performed: &mut bool) {
-    let bf_ids: Vec<_> = state.battlefield.to_vec();
+    let bf_ids: Vec<_> = state.battlefield_phased_in_ids();
     for obj_id in bf_ids {
         let Some(obj) = state.objects.get_mut(&obj_id) else {
             continue;

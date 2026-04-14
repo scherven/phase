@@ -569,9 +569,19 @@ fn can_target(
 ///
 /// Per-player zones (Hand, Library, Graveyard) are aggregated across all players.
 /// Shared zones (Battlefield, Exile, Stack, Command) return the global list.
+///
+/// CR 702.26b: Phased-out battlefield permanents are treated as though they
+/// don't exist — excluded from the `Zone::Battlefield` listing. Zones other
+/// than battlefield can't contain phased-out permanents (phasing is a
+/// battlefield-only status, CR 702.26d).
 pub(crate) fn zone_object_ids(state: &GameState, zone: Zone) -> Vec<ObjectId> {
     match zone {
-        Zone::Battlefield => state.battlefield.clone(),
+        Zone::Battlefield => state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|id| state.objects.get(id).is_some_and(|obj| obj.is_phased_in()))
+            .collect(),
         Zone::Stack => state.stack.iter().map(|e| e.id).collect(),
         Zone::Exile => state.exile.clone(),
         Zone::Graveyard => state

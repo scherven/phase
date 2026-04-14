@@ -16,6 +16,42 @@ use crate::types::mana::{ColoredManaCount, ManaColor, ManaCost};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
+/// CR 702.26b / CR 702.26c: Whether a permanent is phased in (normal) or
+/// phased out (treated as though it doesn't exist). CR 702.26d: the phasing
+/// event doesn't change the object's zone — status is the sole encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(tag = "status")]
+pub enum PhaseStatus {
+    #[default]
+    PhasedIn,
+    /// CR 702.26g: A phased-out permanent remembers how it phased out so it
+    /// phases back in correctly. Indirectly-phased objects don't phase in on
+    /// their own — they ride along with the host they were attached to.
+    PhasedOut { cause: PhaseOutCause },
+}
+
+impl PhaseStatus {
+    pub fn is_phased_in(&self) -> bool {
+        matches!(self, PhaseStatus::PhasedIn)
+    }
+
+    pub fn is_phased_out(&self) -> bool {
+        matches!(self, PhaseStatus::PhasedOut { .. })
+    }
+}
+
+/// CR 702.26g: How a permanent came to be phased out. Determines whether it
+/// phases back in on its own (direct) or alongside the host it was attached
+/// to (indirect).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PhaseOutCause {
+    /// Phased out via the phasing keyword or an explicit "phase out" effect.
+    Directly,
+    /// Phased out because an attached-to permanent phased out. CR 702.26g:
+    /// won't phase in alone — phases in with its host.
+    Indirectly,
+}
+
 /// Stored back-face data for double-faced cards (DFCs).
 /// Populated when a Transform-layout card enters the game.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +320,12 @@ pub struct GameObject {
     /// (see `triggers::clear_transient_cast_state`).
     #[serde(default, skip_serializing_if = "ColoredManaCount::is_empty")]
     pub colors_spent_to_cast: ColoredManaCount,
+
+    /// CR 702.26b / CR 702.26d: Phasing status. A phased-out permanent stays
+    /// on the battlefield but is treated as though it doesn't exist for almost
+    /// all rules queries. Defaults to `PhasedIn` for replay compatibility.
+    #[serde(default)]
+    pub phase_status: PhaseStatus,
 }
 
 impl GameObject {
@@ -437,6 +479,7 @@ impl GameObject {
             cast_from_zone: None,
             mana_spent_to_cast: false,
             colors_spent_to_cast: ColoredManaCount::default(),
+            phase_status: PhaseStatus::PhasedIn,
         }
     }
 
@@ -484,6 +527,17 @@ impl GameObject {
     /// Check if this object has a specific keyword, using discriminant-based matching.
     pub fn has_keyword(&self, keyword: &Keyword) -> bool {
         super::keywords::has_keyword(self, keyword)
+    }
+
+    /// CR 702.26b: Whether this object is currently phased in (normal state).
+    pub fn is_phased_in(&self) -> bool {
+        self.phase_status.is_phased_in()
+    }
+
+    /// CR 702.26b: Whether this object is currently phased out (treated as
+    /// though it doesn't exist for almost all rules queries).
+    pub fn is_phased_out(&self) -> bool {
+        self.phase_status.is_phased_out()
     }
 
     pub fn has_keyword_kind(&self, kind: KeywordKind) -> bool {

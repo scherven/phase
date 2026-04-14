@@ -38,6 +38,7 @@ pub mod match_flow;
 pub mod morph;
 pub mod mulligan;
 pub(crate) mod off_zone_characteristics;
+pub mod phasing;
 pub mod planeswalker;
 pub mod players;
 pub mod printed_cards;
@@ -74,7 +75,7 @@ pub use engine::{
     apply, new_game, start_game, start_game_skip_mulligan, start_game_with_starting_player,
     EngineError,
 };
-pub use game_object::{BackFaceData, GameObject};
+pub use game_object::{BackFaceData, GameObject, PhaseOutCause, PhaseStatus};
 pub use keywords::parse_keywords;
 pub use layers::evaluate_layers;
 pub use mana_payment::{can_pay, pay_cost, produce_mana, PaymentError};

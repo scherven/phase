@@ -33,6 +33,13 @@ use super::super::oracle_util::{
     parse_ordinal, split_around, starts_with_possessive, strip_after, TextPair,
 };
 
+/// CR 702.26: Phasing direction used by the "phase in"/"phase out" dispatch.
+#[derive(Copy, Clone)]
+enum PhaseDir {
+    In,
+    Out,
+}
+
 /// Earthbend keyword action default target: "target land you control".
 /// Used when the Earthbend verb appears without an explicit target (e.g., after
 /// reminder text stripping removes the parenthetical that contains the target).
@@ -2458,13 +2465,42 @@ pub(super) fn parse_imperative_family_ast(
                 None
             }
         }
-        // CR 702.26a: "phase out"
+        // CR 702.26a + CR 702.26c: "phase out" / "phases out" / "phase in" /
+        // "phases in" — with optional "target ..." clause. Nom-combinator
+        // dispatch on the lowercase input; the target extraction delegates
+        // to the shared `parse_target` helper so the full typed filter
+        // vocabulary (target creature, each creature you control, etc.) is
+        // reused. A leading "~" placeholder (post-subject-strip self-ref)
+        // is accepted implicitly: the subject-strip pipeline collapses
+        // "~ phases out" to "phases out" before this match runs.
         "phase" | "phases" => {
-            if lower == "phase out" || lower == "phases out" {
-                Some(ImperativeFamilyAst::PhaseOut)
-            } else {
-                None
-            }
+            // Verb head: "phase out" / "phases out" / "phase in" / "phases in"
+            let parsed = alt((
+                value(PhaseDir::Out, tag::<_, _, VerboseError<&str>>("phase out")),
+                value(PhaseDir::Out, tag("phases out")),
+                value(PhaseDir::In, tag("phase in")),
+                value(PhaseDir::In, tag("phases in")),
+            ))
+            .parse(lower)
+            .ok();
+
+            parsed.map(|(rest, dir)| {
+                // Extract optional "target ..." / filter tail. Empty tail =
+                // self-reference (the imperative subject handles the
+                // attachment); a non-empty tail routes through parse_target
+                // for full filter vocabulary.
+                let tail = rest.trim_start_matches([' ', ',', '.', ';']).trim();
+                let target = if tail.is_empty() {
+                    TargetFilter::Any
+                } else {
+                    let (t, _) = parse_target(tail);
+                    t
+                };
+                match dir {
+                    PhaseDir::Out => ImperativeFamilyAst::GainKeyword(Effect::PhaseOut { target }),
+                    PhaseDir::In => ImperativeFamilyAst::GainKeyword(Effect::PhaseIn { target }),
+                }
+            })
         }
 
         // CR 701.15a: "goad target creature" / "goads target creature" / "goad it"
@@ -2818,9 +2854,6 @@ fn lower_imperative_family_effect(ast: ImperativeFamilyAst) -> Effect {
         ImperativeFamilyAst::Connive => Effect::Connive {
             target: TargetFilter::Any,
             count: 1,
-        },
-        ImperativeFamilyAst::PhaseOut => Effect::PhaseOut {
-            target: TargetFilter::Any,
         },
         ImperativeFamilyAst::ForceBlock => Effect::ForceBlock {
             target: TargetFilter::Any,

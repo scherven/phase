@@ -3420,6 +3420,7 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
     match effect {
         Effect::Connive { target, .. }
         | Effect::PhaseOut { target }
+        | Effect::PhaseIn { target }
         | Effect::ForceBlock { target }
         | Effect::Suspect { target }
         | Effect::Goad { target }
@@ -8849,6 +8850,79 @@ mod tests {
             "Expected PhaseOut with typed target, got {:?}",
             e
         );
+    }
+
+    #[test]
+    fn phase_out_bare_self_reference() {
+        // "Phase out" (no target) — self-reference form used after subject
+        // stripping of "~ phases out" on a Breezekeeper-class card.
+        let e = parse_effect("Phase out");
+        assert!(
+            matches!(e, Effect::PhaseOut { .. }),
+            "Expected PhaseOut, got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn phase_in_targeted() {
+        let e = parse_effect("Target creature phases in");
+        assert!(
+            matches!(
+                e,
+                Effect::PhaseIn {
+                    target: TargetFilter::Typed(_)
+                }
+            ),
+            "Expected PhaseIn with typed target, got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn phase_out_those_creatures() {
+        // Out of Time-class: "those creatures phase out" after subject
+        // strip should produce PhaseOut with ParentTarget (the tracked set
+        // from the preceding UntapAll).
+        let e = parse_effect("those creatures phase out");
+        assert!(
+            matches!(e, Effect::PhaseOut { .. }),
+            "Expected PhaseOut, got {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn out_of_time_name_normalization() {
+        use crate::parser::oracle_util::normalize_card_name_refs;
+        let text = "When this enchantment enters, untap all creatures, then those creatures phase out until this enchantment leaves the battlefield.";
+        let normalized = normalize_card_name_refs(text, "Out of Time");
+        // No capital "Out" in text body — "out" should remain.
+        assert!(
+            normalized.contains("phase out"),
+            "Normalization should preserve 'phase out', got: {}",
+            normalized
+        );
+    }
+
+    #[test]
+    fn phase_out_in_effect_chain_out_of_time() {
+        // The full Out of Time trigger text after `~` normalization.
+        let chain = parse_effect_chain(
+            "Untap all creatures, then those creatures phase out until ~ leaves the battlefield. Put a time counter on ~ for each creature that phased out this way.",
+            AbilityKind::Spell,
+        );
+        // Walk the chain to find PhaseOut.
+        let mut cur = Some(&chain);
+        let mut found = false;
+        while let Some(ab) = cur {
+            if matches!(*ab.effect, Effect::PhaseOut { .. }) {
+                found = true;
+                break;
+            }
+            cur = ab.sub_ability.as_deref();
+        }
+        assert!(found, "PhaseOut not found in chain: {:?}", chain);
     }
 
     #[test]

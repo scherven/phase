@@ -266,6 +266,7 @@ fn redundancy_delta(
         | Effect::Suspect { .. }
         | Effect::Connive { .. }
         | Effect::PhaseOut { .. }
+        | Effect::PhaseIn { .. }
         | Effect::ForceBlock { .. }
         | Effect::SolveCase
         | Effect::SetClassLevel { .. }
