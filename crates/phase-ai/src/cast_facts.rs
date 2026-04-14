@@ -452,6 +452,7 @@ mod tests {
             valid_player: None,
             is_consumed: false,
             redirect_target: None,
+            mana_modification: None,
         });
         object.replacement_definitions.push(ReplacementDefinition {
             destination_zone: None,

@@ -6178,10 +6178,7 @@ mod tests {
         // `game::sacrifice` (`object_has_static_other(id, "CantBeSacrificed")`)
         // can observe it.
         let def = parse_static_line("Sigarda, Host of Herons can't be sacrificed.").unwrap();
-        assert_eq!(
-            def.mode,
-            StaticMode::Other("CantBeSacrificed".to_string())
-        );
+        assert_eq!(def.mode, StaticMode::Other("CantBeSacrificed".to_string()));
         assert!(def.description.is_some());
     }
 

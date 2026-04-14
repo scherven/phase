@@ -22,12 +22,12 @@ use super::oracle_util::{
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ChoiceType, CombatDamageScope, Comparator,
     ContinuousModification, ControllerRef, CopyManaValueLimit, DamageModification,
-    DamageTargetFilter, Effect, FilterProp, PreventionAmount, QuantityExpr, QuantityRef,
-    ReplacementCondition, ReplacementDefinition, ReplacementMode, TargetFilter, TypeFilter,
-    TypedFilter,
+    DamageTargetFilter, Effect, FilterProp, ManaModification, PreventionAmount, QuantityExpr,
+    QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode, TargetFilter,
+    TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
-use crate::types::mana::ManaColor;
+use crate::types::mana::{ManaColor, ManaType};
 use crate::types::replacements::ReplacementEvent;
 use crate::types::zones::Zone;
 
@@ -1753,21 +1753,93 @@ fn parse_event_substitution_replacement(
     None
 }
 
-/// CR 614.1a: Parse mana replacement effects.
+/// CR 106.3 + CR 614.1a: Parse mana replacement effects.
 /// Handles "if a land [you control] would produce mana, it produces [X] instead"
-/// (Chromatic Lantern, Dryad of the Ilysian Grove, Blood Moon color override).
+/// (Contamination, Infernal Darkness, Deep Water, Pale Moon, Ritual of Subdual,
+/// Chromatic Lantern, Dryad of the Ilysian Grove, Blood Moon color override).
+///
+/// When the target mana type is extractable (e.g., "{B}" or "colorless mana"),
+/// the definition carries a typed `ManaModification::ReplaceWith { ... }` payload
+/// so the runtime applier can substitute the produced mana type. When the target
+/// type is more exotic ("mana of any color", "mana of a color of your choice"),
+/// the bare definition is returned and the static effect is recorded without
+/// functional replacement (pending follow-up work for color-choice cards).
 fn parse_mana_replacement(norm_lower: &str, original_text: &str) -> Option<ReplacementDefinition> {
-    // "would produce mana" / "is tapped for mana"
-    if nom_primitives::scan_contains(norm_lower, "would produce mana")
-        || nom_primitives::scan_contains(norm_lower, "tapped for mana")
+    if !nom_primitives::scan_contains(norm_lower, "would produce mana")
+        && !nom_primitives::scan_contains(norm_lower, "tapped for mana")
     {
-        return Some(
-            ReplacementDefinition::new(ReplacementEvent::ProduceMana)
-                .description(original_text.to_string()),
-        );
+        return None;
     }
 
+    let def = ReplacementDefinition::new(ReplacementEvent::ProduceMana)
+        .description(original_text.to_string());
+
+    match scan_produces_replacement(norm_lower) {
+        // CR 106.3: The mana source must be a land — scope the replacement so it
+        // only fires on mana produced by lands (Contamination et al.). Applied
+        // only when the payload is concretely known so pre-existing
+        // color-choice / any-color replacements (not yet wired) retain their
+        // parse-only behavior.
+        Some(mana_type) => Some(
+            def.mana_modification(ManaModification::ReplaceWith { mana_type })
+                .valid_card(TargetFilter::Typed(TypedFilter::land())),
+        ),
+        None => Some(def),
+    }
+}
+
+/// Walk `text` forward, trying `parse_produces_replacement` at each word boundary.
+/// Returns the first extracted `ManaType` from a "produces {X} instead" /
+/// "produces colorless mana instead" clause, or `None` if no such clause is found.
+fn scan_produces_replacement(text: &str) -> Option<ManaType> {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((_rest, mana_type)) = parse_produces_replacement(remaining) {
+            return Some(mana_type);
+        }
+        // structural: not dispatch — advance to the next word boundary so the
+        // combinator is retried at each word start (mirror of
+        // `scan_timing_restrictions` in oracle_casting.rs).
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
     None
+}
+
+/// CR 106.3 + CR 614.1a: Parse the "produces X instead" clause after "produces ",
+/// returning the target `ManaType`. Handles `{W}`/`{U}`/`{B}`/`{R}`/`{G}` for
+/// colored replacements and `colorless mana` for colorless replacements.
+fn parse_produces_replacement(input: &str) -> super::oracle_nom::error::OracleResult<'_, ManaType> {
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("produces ").parse(input)?;
+    alt((parse_braced_mana_type, parse_colorless_mana)).parse(rest)
+}
+
+/// Parse a single colored-mana brace symbol into `ManaType`: `{W}`/`{U}`/`{B}`/`{R}`/`{G}`.
+fn parse_braced_mana_type(input: &str) -> super::oracle_nom::error::OracleResult<'_, ManaType> {
+    use nom::sequence::delimited;
+    delimited(
+        char::<_, VerboseError<&str>>('{'),
+        alt((
+            value(ManaType::White, tag("w")),
+            value(ManaType::Blue, tag("u")),
+            value(ManaType::Black, tag("b")),
+            value(ManaType::Red, tag("r")),
+            value(ManaType::Green, tag("g")),
+            value(ManaType::Colorless, tag("c")),
+        )),
+        char('}'),
+    )
+    .parse(input)
+}
+
+/// Parse "colorless mana" into `ManaType::Colorless`.
+fn parse_colorless_mana(input: &str) -> super::oracle_nom::error::OracleResult<'_, ManaType> {
+    value(
+        ManaType::Colorless,
+        tag::<_, _, VerboseError<&str>>("colorless mana"),
+    )
+    .parse(input)
 }
 
 /// CR 614.1d: Parse "enters tapped unless a player has N or less life" (bond lands).
@@ -3447,6 +3519,46 @@ mod tests {
                 comparator: Comparator::LE,
                 rhs: QuantityExpr::Fixed { value: 6 },
                 active_player_req: Some(ControllerRef::You),
+            })
+        );
+    }
+
+    #[test]
+    fn mana_replacement_produces_black_instead() {
+        // CR 106.3 + CR 614.1a: Contamination ("If a land is tapped for mana, it
+        // produces {B} instead of any other type.") must carry a typed
+        // ManaModification::ReplaceWith { Black } payload.
+        let def = parse_replacement_line(
+            "If a land is tapped for mana, it produces {B} instead of any other type.",
+            "Contamination",
+        )
+        .expect("Should parse Contamination as ProduceMana replacement");
+        assert_eq!(def.event, ReplacementEvent::ProduceMana);
+        assert_eq!(
+            def.mana_modification,
+            Some(ManaModification::ReplaceWith {
+                mana_type: ManaType::Black
+            })
+        );
+        // Mana source must be a land for the replacement to fire.
+        assert!(matches!(def.valid_card, Some(TargetFilter::Typed(_))));
+    }
+
+    #[test]
+    fn mana_replacement_produces_colorless_instead() {
+        // CR 106.3 + CR 614.1a: Pale Moon ("If a nonbasic land is tapped for mana,
+        // it produces colorless mana instead of any other type of mana.") extracts
+        // ManaType::Colorless.
+        let def = parse_replacement_line(
+            "If a land would produce mana, it produces colorless mana instead.",
+            "Ritual of Subdual",
+        )
+        .expect("Should parse colorless mana replacement");
+        assert_eq!(def.event, ReplacementEvent::ProduceMana);
+        assert_eq!(
+            def.mana_modification,
+            Some(ManaModification::ReplaceWith {
+                mana_type: ManaType::Colorless
             })
         );
     }

@@ -9,7 +9,7 @@ use super::events::BendingType;
 use super::game_state::{DistributionUnit, RetargetScope};
 use super::identifiers::ObjectId;
 use super::keywords::{Keyword, KeywordKind};
-use super::mana::{ManaColor, ManaCost};
+use super::mana::{ManaColor, ManaCost, ManaType};
 use super::phase::Phase;
 use super::player::{PlayerCounterKind, PlayerId};
 use super::replacements::ReplacementEvent;
@@ -4785,6 +4785,17 @@ pub enum QuantityModification {
     Minus { value: u32 },
 }
 
+/// CR 106.3 + CR 614.1a: Mana-production replacement payload.
+/// Used by `ReplacementEvent::ProduceMana` to describe HOW the produced mana
+/// should be modified before entering the player's mana pool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ManaModification {
+    /// CR 614.1a: Replace with a specific mana type regardless of what was produced.
+    /// e.g., Contamination ("produces {B} instead"), Pale Moon ("produces colorless instead").
+    ReplaceWith { mana_type: ManaType },
+}
+
 /// CR 614.1a: Restricts which damage targets a replacement applies to.
 /// Dedicated enum because `TargetRef` can be `Player` (not handled by `matches_target_filter`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4878,6 +4889,10 @@ pub struct ReplacementDefinition {
     /// to you is dealt to ~ instead" → SelfRef, meaning the enchanted permanent/source).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect_target: Option<TargetFilter>,
+    /// CR 106.3 + CR 614.1a: Mana modification for `ProduceMana` replacements.
+    /// e.g., Contamination ("produces {B} instead") → `ReplaceWith { Black }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mana_modification: Option<ManaModification>,
 }
 
 impl ReplacementDefinition {
@@ -4902,6 +4917,7 @@ impl ReplacementDefinition {
             valid_player: None,
             is_consumed: false,
             redirect_target: None,
+            mana_modification: None,
         }
     }
 
@@ -4981,6 +4997,12 @@ impl ReplacementDefinition {
     /// CR 615.1a: Set the redirect target filter for damage redirection replacements.
     pub fn redirect_target(mut self, target: TargetFilter) -> Self {
         self.redirect_target = Some(target);
+        self
+    }
+
+    /// CR 106.3 + CR 614.1a: Set the mana modification for `ProduceMana` replacements.
+    pub fn mana_modification(mut self, modification: ManaModification) -> Self {
+        self.mana_modification = Some(modification);
         self
     }
 }

@@ -6,6 +6,7 @@ use super::counter::CounterType;
 
 use super::ability::TargetRef;
 use super::identifiers::ObjectId;
+use super::mana::ManaType;
 use super::phase::Phase;
 use super::player::PlayerId;
 use super::zones::Zone;
@@ -126,6 +127,16 @@ pub enum ProposedEvent {
         phase: Phase,
         applied: HashSet<ReplacementId>,
     },
+    /// CR 106.3 + CR 614.1a: Mana is about to be produced by a source and added
+    /// to a player's mana pool. Carried through the replacement pipeline so
+    /// static effects like Contamination ("produces {B} instead") can replace
+    /// the produced mana type before it enters the pool.
+    ProduceMana {
+        source_id: ObjectId,
+        player_id: PlayerId,
+        mana_type: ManaType,
+        applied: HashSet<ReplacementId>,
+    },
 }
 
 impl ProposedEvent {
@@ -162,6 +173,16 @@ impl ProposedEvent {
         }
     }
 
+    /// CR 106.3 + CR 614.1a: Construct a `ProduceMana` proposed event.
+    pub fn produce_mana(source_id: ObjectId, player_id: PlayerId, mana_type: ManaType) -> Self {
+        Self::ProduceMana {
+            source_id,
+            player_id,
+            mana_type,
+            applied: HashSet::new(),
+        }
+    }
+
     pub fn applied_set(&self) -> &HashSet<ReplacementId> {
         match self {
             ProposedEvent::ZoneChange { applied, .. }
@@ -178,7 +199,8 @@ impl ProposedEvent {
             | ProposedEvent::Destroy { applied, .. }
             | ProposedEvent::Sacrifice { applied, .. }
             | ProposedEvent::BeginTurn { applied, .. }
-            | ProposedEvent::BeginPhase { applied, .. } => applied,
+            | ProposedEvent::BeginPhase { applied, .. }
+            | ProposedEvent::ProduceMana { applied, .. } => applied,
         }
     }
 
@@ -198,7 +220,8 @@ impl ProposedEvent {
             | ProposedEvent::Destroy { applied, .. }
             | ProposedEvent::Sacrifice { applied, .. }
             | ProposedEvent::BeginTurn { applied, .. }
-            | ProposedEvent::BeginPhase { applied, .. } => applied,
+            | ProposedEvent::BeginPhase { applied, .. }
+            | ProposedEvent::ProduceMana { applied, .. } => applied,
         }
     }
 
@@ -236,7 +259,8 @@ impl ProposedEvent {
             | ProposedEvent::Discard { player_id, .. }
             | ProposedEvent::Sacrifice { player_id, .. }
             | ProposedEvent::BeginTurn { player_id, .. }
-            | ProposedEvent::BeginPhase { player_id, .. } => *player_id,
+            | ProposedEvent::BeginPhase { player_id, .. }
+            | ProposedEvent::ProduceMana { player_id, .. } => *player_id,
             ProposedEvent::CreateToken { owner, .. } => *owner,
         }
     }
@@ -252,6 +276,9 @@ impl ProposedEvent {
             | ProposedEvent::RemoveCounter { object_id, .. }
             | ProposedEvent::Discard { object_id, .. }
             | ProposedEvent::Sacrifice { object_id, .. } => Some(*object_id),
+            // CR 106.3: The mana source (land being tapped) is the affected object —
+            // this is what `valid_card` filters are matched against.
+            ProposedEvent::ProduceMana { source_id, .. } => Some(*source_id),
             ProposedEvent::Damage { target, .. } => match target {
                 TargetRef::Object(oid) => Some(*oid),
                 TargetRef::Player(_) => None,
@@ -271,8 +298,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proposed_event_has_15_variants() {
-        // Verify all 15 variants compile
+    fn proposed_event_has_16_variants() {
+        // Verify all 16 variants compile
         let events: Vec<ProposedEvent> = vec![
             ProposedEvent::zone_change(ObjectId(1), Zone::Battlefield, Zone::Graveyard, None),
             ProposedEvent::Damage {
@@ -341,8 +368,9 @@ mod tests {
             },
             ProposedEvent::begin_turn(PlayerId(0), false),
             ProposedEvent::begin_phase(PlayerId(0), Phase::Untap),
+            ProposedEvent::produce_mana(ObjectId(1), PlayerId(0), ManaType::Green),
         ];
-        assert_eq!(events.len(), 15);
+        assert_eq!(events.len(), 16);
     }
 
     #[test]

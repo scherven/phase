@@ -95,6 +95,9 @@ pub struct LifePayment {
 /// CR 106.3: Mana is produced by mana abilities. The source of the mana is the
 /// source of the ability that produced it (CR 113.7).
 /// CR 106.4: When an effect instructs a player to add mana, it goes into their mana pool.
+/// CR 614.1a: Before adding, the proposed `ProduceMana` event is routed through
+/// the replacement pipeline so static effects (Contamination, Pale Moon, etc.)
+/// can rewrite the mana type or prevent production entirely.
 pub fn produce_mana(
     state: &mut GameState,
     source_id: ObjectId,
@@ -103,8 +106,25 @@ pub fn produce_mana(
     tapped_for_mana: bool,
     events: &mut Vec<GameEvent>,
 ) {
+    use crate::game::replacement::{self, ReplacementResult};
+    use crate::types::proposed_event::ProposedEvent;
+
+    let proposed = ProposedEvent::produce_mana(source_id, player_id, mana_type);
+    let final_mana_type = match replacement::replace_event(state, proposed, events) {
+        ReplacementResult::Execute(ProposedEvent::ProduceMana {
+            mana_type: resolved,
+            ..
+        }) => resolved,
+        // CR 614.1: A fully-prevented mana production produces no mana.
+        ReplacementResult::Prevented => return,
+        // CR 614.5: Mana-type replacements do not require a player choice; any
+        // other outcome (including unexpected pipeline results) falls back to
+        // the original type so mana production is never silently dropped.
+        _ => mana_type,
+    };
+
     let unit = ManaUnit {
-        color: mana_type,
+        color: final_mana_type,
         source_id,
         snow: false,
         restrictions: Vec::new(),
@@ -121,7 +141,7 @@ pub fn produce_mana(
 
     events.push(GameEvent::ManaAdded {
         player_id,
-        mana_type,
+        mana_type: final_mana_type,
         source_id,
         tapped_for_mana,
     });
@@ -807,6 +827,67 @@ mod tests {
                 tapped_for_mana: true,
             }
         ));
+    }
+
+    #[test]
+    fn produce_mana_routes_through_replacement_pipeline() {
+        // CR 106.3 + CR 614.1a: A Contamination-style ProduceMana replacement on a
+        // battlefield object must rewrite produced mana as it enters the pool.
+        use crate::game::game_object::GameObject;
+        use crate::types::ability::{ManaModification, ReplacementDefinition};
+        use crate::types::identifiers::CardId;
+        use crate::types::replacements::ReplacementEvent;
+        use crate::types::zones::Zone;
+
+        let mut state = GameState::new_two_player(42);
+        // Build a Contamination object with a ProduceMana replacement that
+        // rewrites to Black.
+        let repl = ReplacementDefinition::new(ReplacementEvent::ProduceMana).mana_modification(
+            ManaModification::ReplaceWith {
+                mana_type: ManaType::Black,
+            },
+        );
+        let contamination_id = ObjectId(99);
+        let mut contamination = GameObject::new(
+            contamination_id,
+            CardId(1),
+            PlayerId(0),
+            "Contamination".to_string(),
+            Zone::Battlefield,
+        );
+        contamination.replacement_definitions = vec![repl];
+        state.objects.insert(contamination_id, contamination);
+        state.battlefield.push(contamination_id);
+
+        // Build a Forest (land) that will "produce" Green.
+        let land_id = ObjectId(10);
+        let mut forest = GameObject::new(
+            land_id,
+            CardId(2),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        forest
+            .card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        state.objects.insert(land_id, forest);
+        state.battlefield.push(land_id);
+
+        let mut events = Vec::new();
+        produce_mana(
+            &mut state,
+            land_id,
+            ManaType::Green,
+            PlayerId(0),
+            true,
+            &mut events,
+        );
+
+        // Pool should hold Black, not Green.
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 1);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Green), 0);
     }
 
     // --- can_pay tests ---

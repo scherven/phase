@@ -650,6 +650,54 @@ fn create_token_applier(
     }
 }
 
+// --- 10. ProduceMana ---
+
+/// CR 106.3 + CR 614.1a: Matches any mana-production event. The replacement def's
+/// optional `valid_card` filter (checked in the dispatcher against the mana source)
+/// further gates whether this specific definition applies.
+fn produce_mana_matcher(event: &ProposedEvent, _source: ObjectId, _state: &GameState) -> bool {
+    matches!(event, ProposedEvent::ProduceMana { .. })
+}
+
+/// CR 106.3 + CR 614.1a: Applies a `ManaModification` to a produced mana unit,
+/// replacing its type before it enters the player's mana pool.
+fn produce_mana_applier(
+    event: ProposedEvent,
+    rid: ReplacementId,
+    state: &mut GameState,
+    _events: &mut Vec<GameEvent>,
+) -> ApplyResult {
+    use crate::types::ability::ManaModification;
+    let modification = state
+        .objects
+        .get(&rid.source)
+        .and_then(|obj| obj.replacement_definitions.get(rid.index))
+        .and_then(|def| def.mana_modification.clone());
+
+    if let ProposedEvent::ProduceMana {
+        source_id,
+        player_id,
+        mana_type,
+        applied,
+    } = event
+    {
+        let new_mana_type = match modification {
+            Some(ManaModification::ReplaceWith {
+                mana_type: replacement,
+            }) => replacement,
+            None => mana_type,
+        };
+        ApplyResult::Modified(ProposedEvent::ProduceMana {
+            source_id,
+            player_id,
+            mana_type: new_mana_type,
+            applied,
+        })
+    } else {
+        ApplyResult::Modified(event)
+    }
+}
+
 // --- 11. Tap ---
 
 fn tap_matcher(event: &ProposedEvent, _source: ObjectId, _state: &GameState) -> bool {
@@ -985,17 +1033,22 @@ pub fn build_replacement_registry() -> IndexMap<ReplacementEvent, ReplacementHan
             applier: pay_life_applier,
         },
     );
+    // CR 106.3 + CR 614.1a: ProduceMana routes through the replacement pipeline
+    // so cards like Contamination ("produces {B} instead") can rewrite produced
+    // mana. The parser extracts the target type into `ReplacementDefinition::
+    // mana_modification`; the applier substitutes it before the mana enters the
+    // pool.
+    registry.insert(
+        ReplacementEvent::ProduceMana,
+        ReplacementHandlerEntry {
+            matcher: produce_mana_matcher,
+            applier: produce_mana_applier,
+        },
+    );
     let placeholder = || ReplacementHandlerEntry {
         matcher: placeholder_matcher,
         applier: placeholder_applier,
     };
-    // CR 106.6a: ProduceMana is parser-emitted by cards that override what
-    // mana a land produces (Contamination, Infernal Darkness, Naked Singularity,
-    // Pulse of Llanowar, Reality Twist, Ritual of Subdual, Mirri). These are
-    // currently silent no-ops at runtime because the parser does not yet
-    // extract the "produces X instead" payload into typed data — the matcher
-    // has no information to act on. Proper wiring is tracked as a follow-up.
-    registry.insert(ReplacementEvent::ProduceMana, placeholder());
     registry.insert(ReplacementEvent::TurnFaceUp, placeholder());
 
     // CR 614.1b + CR 614.10: BeginTurn skip replacements (Stranglehold, etc.)
@@ -2455,8 +2508,9 @@ mod tests {
     #[test]
     fn test_registry_has_all_types() {
         let registry = build_replacement_registry();
-        // Count reflects first-class matchers + placeholders for parser-emitted
-        // but not-yet-typed events (ProduceMana, TurnFaceUp) + stubs for
+        // Count reflects first-class matchers (including ProduceMana — CR 106.3 +
+        // CR 614.1a wiring for Contamination-class cards) + placeholders for
+        // parser-emitted but not-yet-typed events (TurnFaceUp) + stubs for
         // parser-emitted events whose semantics live in statics (GameLoss,
         // GameWin). Phantom ReplacementEvent variants with zero parser
         // emission are intentionally NOT registered — their absence is a
@@ -3793,5 +3847,65 @@ mod tests {
         let proposed = ProposedEvent::begin_phase(PlayerId(0), crate::types::phase::Phase::Upkeep);
 
         assert!(begin_phase_matcher(&proposed, ObjectId(10), &state));
+    }
+
+    #[test]
+    fn produce_mana_replacement_replaces_type() {
+        // CR 106.3 + CR 614.1a: Contamination-style replacement rewrites Green → Black.
+        use crate::types::ability::ManaModification;
+        use crate::types::mana::ManaType;
+
+        let land_id = ObjectId(10);
+        let contamination_id = ObjectId(20);
+        let repl = ReplacementDefinition::new(ReplacementEvent::ProduceMana).mana_modification(
+            ManaModification::ReplaceWith {
+                mana_type: ManaType::Black,
+            },
+        );
+        let mut state = test_state_with_object(contamination_id, Zone::Battlefield, vec![repl]);
+        // Add the land as a separate object so `valid_card` gating isn't exercised here.
+        let land = GameObject::new(
+            land_id,
+            CardId(2),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.insert(land_id, land);
+        state.battlefield.push(land_id);
+
+        let mut events = Vec::new();
+        let proposed = ProposedEvent::produce_mana(land_id, PlayerId(0), ManaType::Green);
+        let result = replace_event(&mut state, proposed, &mut events);
+
+        match result {
+            ReplacementResult::Execute(ProposedEvent::ProduceMana { mana_type, .. }) => {
+                assert_eq!(
+                    mana_type,
+                    ManaType::Black,
+                    "Green should be rewritten to Black"
+                );
+            }
+            other => panic!("expected Execute(ProduceMana), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn produce_mana_no_replacement_passthrough() {
+        // CR 106.3: Without any ProduceMana replacement, the event passes through unchanged.
+        use crate::types::mana::ManaType;
+
+        let land_id = ObjectId(10);
+        let mut state = test_state_with_object(land_id, Zone::Battlefield, vec![]);
+        let mut events = Vec::new();
+        let proposed = ProposedEvent::produce_mana(land_id, PlayerId(0), ManaType::Green);
+        let result = replace_event(&mut state, proposed, &mut events);
+
+        match result {
+            ReplacementResult::Execute(ProposedEvent::ProduceMana { mana_type, .. }) => {
+                assert_eq!(mana_type, ManaType::Green, "no replacement → pass through");
+            }
+            other => panic!("expected Execute(ProduceMana), got {:?}", other),
+        }
     }
 }
