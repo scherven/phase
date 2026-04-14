@@ -1805,3 +1805,180 @@ fn test_ai_passes_priority_on_earthbender_landfall() {
         state.stack.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Earthbend return + shock-land replacement interaction
+// ---------------------------------------------------------------------------
+//
+// CR 614.7: An Optional replacement whose decline branch would be a no-op on
+// the current event must not be presented as a dominated choice. When a shock
+// land is returned to the battlefield tapped by an Earthbend delayed trigger,
+// the shock land's own "pay 2 life or enter tapped" prompt must be skipped —
+// the decline's `Tap SelfRef` would do nothing (the land is tapping anyway),
+// and paying 2 life to avoid a tap that isn't happening is strictly worse.
+
+/// Build a shock-land replacement definition matching the parser's output for
+/// "As ~ enters, you may pay 2 life. If you don't, it enters tapped."
+fn shock_land_replacement() -> engine::types::ability::ReplacementDefinition {
+    use engine::types::ability::{
+        AbilityDefinition, AbilityKind, Effect, QuantityExpr, ReplacementDefinition,
+        ReplacementMode, TargetFilter,
+    };
+    use engine::types::replacements::ReplacementEvent;
+
+    let lose_life = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::LoseLife {
+            amount: QuantityExpr::Fixed { value: 2 },
+            target: None,
+        },
+    );
+    let tap_self = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::Tap {
+            target: TargetFilter::SelfRef,
+        },
+    );
+    ReplacementDefinition::new(ReplacementEvent::Moved)
+        .execute(lose_life)
+        .mode(ReplacementMode::Optional {
+            decline: Some(Box::new(tap_self)),
+        })
+        .valid_card(TargetFilter::SelfRef)
+        .description("As ~ enters, you may pay 2 life. If you don't, it enters tapped.".to_string())
+}
+
+fn install_shock_land(state: &mut GameState, card_id: CardId, zone: Zone, name: &str) -> ObjectId {
+    let land_id = create_object(state, card_id, P0, name.to_string(), zone);
+    let obj = state.objects.get_mut(&land_id).unwrap();
+    obj.card_types.core_types.push(CoreType::Land);
+    obj.base_card_types = obj.card_types.clone();
+    let repl = shock_land_replacement();
+    obj.replacement_definitions.push(repl.clone());
+    obj.base_replacement_definitions.push(repl);
+    land_id
+}
+
+/// Drive the Earthbend delayed-trigger resolution for a shock land that died
+/// while animated: the ChangeZone effect carries `enter_tapped=true` and
+/// `under_your_control=true` (the fields set by the Earthbending trigger).
+/// The shock land's own Optional replacement must NOT prompt the player — the
+/// decline branch (`Tap SelfRef`) is a no-op when `enter_tapped` is already
+/// `true`, and presenting "pay 2 life or decline" would be a dominated choice.
+#[test]
+fn earthbend_return_skips_shock_land_pay_life_prompt() {
+    use engine::game::replacement::{replace_event, ReplacementResult};
+    use engine::types::proposed_event::ProposedEvent;
+
+    let mut state = GameState::new_two_player(42);
+    state.phase = Phase::PreCombatMain;
+    state.active_player = P0;
+    state.priority_player = P0;
+    state.waiting_for = WaitingFor::Priority { player: P0 };
+
+    let land_id = install_shock_land(&mut state, CardId(100), Zone::Graveyard, "Watery Grave");
+    let p0_starting_life = state.players.iter().find(|p| p.id == P0).unwrap().life;
+
+    // Simulate the Earthbend delayed trigger resolving: a ChangeZone effect
+    // constructs a ProposedEvent::ZoneChange with enter_tapped/controller_override
+    // set before entering the replacement pipeline.
+    let proposed = ProposedEvent::ZoneChange {
+        object_id: land_id,
+        from: Zone::Graveyard,
+        to: Zone::Battlefield,
+        cause: None,
+        enter_tapped: true,
+        enter_with_counters: Vec::new(),
+        controller_override: Some(P0),
+        enter_transformed: false,
+        applied: std::collections::HashSet::new(),
+    };
+
+    let mut events = Vec::new();
+    let result = replace_event(&mut state, proposed, &mut events);
+
+    // CR 614.7: With enter_tapped already true, the shock land's Optional
+    // replacement's decline branch (Tap SelfRef) is a no-op. The pipeline
+    // must NOT surface a NeedsChoice — it proceeds straight to Execute.
+    match result {
+        ReplacementResult::Execute(ProposedEvent::ZoneChange {
+            enter_tapped,
+            controller_override,
+            to,
+            ..
+        }) => {
+            assert_eq!(to, Zone::Battlefield);
+            assert!(enter_tapped, "enter_tapped must remain true after pipeline");
+            assert_eq!(
+                controller_override,
+                Some(P0),
+                "controller override must be preserved"
+            );
+        }
+        other => panic!(
+            "Earthbend return of shock land must skip the pay-life prompt; got {:?}",
+            other
+        ),
+    }
+
+    // No replacement choice should be pending.
+    assert!(
+        state.pending_replacement.is_none(),
+        "pending_replacement must be cleared — no dominated choice allowed"
+    );
+
+    // No life was lost in the pipeline.
+    let p0_life_after = state.players.iter().find(|p| p.id == P0).unwrap().life;
+    assert_eq!(
+        p0_life_after, p0_starting_life,
+        "P0's life must be unchanged — no 2-life payment was offered"
+    );
+}
+
+/// Regression: a plain shock-land ETB from hand (no pre-existing
+/// `enter_tapped`) must STILL prompt the player with the pay-2-life choice.
+/// This guards against the dominance check becoming too aggressive.
+#[test]
+fn plain_shock_land_etb_still_prompts_for_life_payment() {
+    use engine::game::replacement::{replace_event, ReplacementResult};
+    use engine::types::proposed_event::ProposedEvent;
+
+    let mut state = GameState::new_two_player(42);
+    state.phase = Phase::PreCombatMain;
+    state.active_player = P0;
+    state.priority_player = P0;
+    state.waiting_for = WaitingFor::Priority { player: P0 };
+
+    let land_id = install_shock_land(&mut state, CardId(101), Zone::Hand, "Watery Grave");
+
+    let proposed = ProposedEvent::ZoneChange {
+        object_id: land_id,
+        from: Zone::Hand,
+        to: Zone::Battlefield,
+        cause: None,
+        enter_tapped: false,
+        enter_with_counters: Vec::new(),
+        controller_override: None,
+        enter_transformed: false,
+        applied: std::collections::HashSet::new(),
+    };
+
+    let mut events = Vec::new();
+    let result = replace_event(&mut state, proposed, &mut events);
+
+    // Normal shock-land behavior: enter_tapped is false → decline's Tap SelfRef
+    // is NOT a no-op → the Optional remains applicable → player is prompted.
+    match result {
+        ReplacementResult::NeedsChoice(player) => {
+            assert_eq!(player, P0, "affected player must receive the choice");
+        }
+        other => panic!(
+            "Plain shock-land ETB must prompt the player; got {:?}",
+            other
+        ),
+    }
+    assert!(
+        state.pending_replacement.is_some(),
+        "pending_replacement must be populated for the player's choice"
+    );
+}

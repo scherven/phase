@@ -1444,6 +1444,16 @@ pub fn find_applicable_replacements(
                             continue;
                         }
                     }
+                    // CR 614.7: Skip an Optional replacement whose decline branch is a
+                    // no-op on the current event. E.g., a shock land whose `enter_tapped`
+                    // is already set by an Earthbending return: declining would tap it,
+                    // but it's tapping anyway — the player shouldn't be offered the
+                    // dominated "pay 2 life to avoid a tap that isn't happening" choice.
+                    if let ReplacementMode::Optional { decline } = &repl_def.mode {
+                        if optional_decline_is_noop(event, decline.as_deref()) {
+                            continue;
+                        }
+                    }
                     candidates.push(rid);
                 }
             }
@@ -1516,10 +1526,21 @@ pub fn find_applicable_replacements(
 
 const MAX_REPLACEMENT_DEPTH: u16 = 16;
 
-/// Extract ETB counter data from a replacement's execute effect.
+/// Identifies which ability branch of a `ReplacementDefinition` is being applied.
+/// CR 614.1a + CR 614.1c: `ReplacementMode::Optional` carries both an `execute` ability
+/// (accept branch) and a `decline` ability (decline branch); both branches may introduce
+/// ProposedEvent modifications (enter_tapped, counters) and must flow through the same
+/// propagation logic so the replacement pipeline sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplacementBranch {
+    Execute,
+    Decline,
+}
+
+/// Extract ETB counter data from a replacement ability's effect.
 /// Handles `PutCounter` and `AddCounter` effects, returning (counter_type, count) pairs.
-fn extract_etb_counters(execute: Option<&AbilityDefinition>) -> Vec<(String, u32)> {
-    let exec = match execute {
+fn extract_etb_counters(ability: Option<&AbilityDefinition>) -> Vec<(String, u32)> {
+    let exec = match ability {
         Some(e) => e,
         None => return Vec::new(),
     };
@@ -1544,10 +1565,122 @@ fn extract_etb_counters(execute: Option<&AbilityDefinition>) -> Vec<(String, u32
     }
 }
 
+/// CR 614.1c + CR 614.12: ProposedEvent modifications that a replacement ability would
+/// introduce onto a `ZoneChange` to the battlefield — enters-tapped, ETB counters, and
+/// zone redirection. Used by `apply_single_replacement` to propagate the ability's effect
+/// onto the ProposedEvent, and by `find_applicable_replacements` to detect Optional
+/// replacements whose decline branch would be a no-op (CR 614.7).
+#[derive(Debug, Clone, Default)]
+struct EventModifiers {
+    enters_tapped: bool,
+    etb_counters: Vec<(String, u32)>,
+    redirect_zone: Option<Zone>,
+}
+
+impl EventModifiers {
+    /// True if this ability has any effect on the ProposedEvent beyond the event-modifier
+    /// fields tracked here (i.e., it still needs to run as a post-replacement side effect).
+    /// An ability that is *purely* a Tap SelfRef / PutCounter-SelfRef / ChangeZone has no
+    /// remaining work after its modifiers are applied to the event.
+    fn has_only_event_modifier(ability: Option<&AbilityDefinition>) -> bool {
+        let Some(def) = ability else {
+            return false;
+        };
+        matches!(
+            &*def.effect,
+            Effect::Tap {
+                target: TargetFilter::SelfRef,
+            } | Effect::PutCounter {
+                target: TargetFilter::SelfRef,
+                ..
+            } | Effect::AddCounter {
+                target: TargetFilter::SelfRef,
+                ..
+            } | Effect::ChangeZone { .. }
+        )
+    }
+}
+
+/// Compute the ProposedEvent modifications an ability would introduce.
+fn event_modifiers_for_ability(ability: Option<&AbilityDefinition>) -> EventModifiers {
+    let tapped = ability.is_some_and(|def| {
+        matches!(
+            *def.effect,
+            Effect::Tap {
+                target: TargetFilter::SelfRef,
+            }
+        )
+    });
+    let counters = extract_etb_counters(ability);
+    let redirect = ability.and_then(|def| match &*def.effect {
+        Effect::ChangeZone { destination, .. } => Some(*destination),
+        _ => None,
+    });
+    EventModifiers {
+        enters_tapped: tapped,
+        etb_counters: counters,
+        redirect_zone: redirect,
+    }
+}
+
+/// CR 614.7: "If a replacement effect would replace an event, but that event never
+/// happens, the replacement effect simply doesn't do anything."
+///
+/// An `Optional` replacement's decline branch is the player's "default" — what happens
+/// if they decline the accept cost. If the decline branch is a pure ProposedEvent
+/// modifier (e.g., shock-land `Tap SelfRef`) and every modification it would introduce
+/// is already present on the event (e.g., `enter_tapped` is already `true` from an
+/// earlier Earthbending return), declining would do nothing. Presenting the Optional
+/// to the player becomes a dominated choice: accepting costs something (life, discard,
+/// etc.) to avoid a modification that was going to happen anyway. Skip the Optional
+/// entirely in that case — the event proceeds with its existing modifications.
+///
+/// The check only skips when the decline branch's work is fully subsumed. If decline
+/// has any non-modifier effect (e.g., a choice, a draw) or a modification not already
+/// present, the Optional remains applicable so the player can still be offered the
+/// choice when it is meaningful.
+fn optional_decline_is_noop(event: &ProposedEvent, decline: Option<&AbilityDefinition>) -> bool {
+    // Dominance only applies to ZoneChange events — that's where enter_tapped /
+    // etb_counters / redirect_zone live. For other event kinds, never skip.
+    let ProposedEvent::ZoneChange {
+        enter_tapped,
+        enter_with_counters,
+        ..
+    } = event
+    else {
+        return false;
+    };
+
+    // No decline branch at all → the Optional has nothing to do on decline. But it may
+    // still have a meaningful accept branch, so do NOT dominate.
+    let Some(def) = decline else {
+        return false;
+    };
+
+    // If decline has any non-modifier effect, it still has real work on decline.
+    if !EventModifiers::has_only_event_modifier(Some(def)) {
+        return false;
+    }
+
+    let mods = event_modifiers_for_ability(Some(def));
+    let tap_already = !mods.enters_tapped || *enter_tapped;
+    let counters_already = mods.etb_counters.iter().all(|(ct, n)| {
+        enter_with_counters
+            .iter()
+            .any(|(existing_ct, existing_n)| existing_ct == ct && existing_n >= n)
+    });
+    // Redirect: a redirect-bearing decline always has work to do, so it is never a
+    // no-op regardless of the current `to` zone.
+    let redirect_noop = mods.redirect_zone.is_none();
+
+    tap_already && counters_already && redirect_noop
+}
+
 fn apply_single_replacement(
     state: &mut GameState,
     proposed: ProposedEvent,
     rid: ReplacementId,
+    branch: ReplacementBranch,
     registry: &IndexMap<ReplacementEvent, ReplacementHandlerEntry>,
     events: &mut Vec<GameEvent>,
 ) -> Result<ProposedEvent, ApplyResult> {
@@ -1563,26 +1696,20 @@ fn apply_single_replacement(
     };
 
     // Extract replacement metadata before mutably borrowing state for the applier.
-    let (event_key, enters_tapped, etb_counters, redirect_zone) = match repl_def_ref {
+    // CR 614.1c: ProposedEvent modifiers (enter_tapped, ETB counters, zone redirect)
+    // come from whichever branch is being applied — `execute` on accept / mandatory,
+    // `decline` on decline. Both must flow through the pipeline so dominance and
+    // downstream replacements see a consistent ProposedEvent (CR 614.5).
+    let (event_key, modifiers) = match repl_def_ref {
         Some(repl_def) => {
-            let tapped = repl_def.execute.as_ref().is_some_and(|exec| {
-                matches!(
-                    *exec.effect,
-                    crate::types::ability::Effect::Tap {
-                        target: crate::types::ability::TargetFilter::SelfRef,
-                    }
-                )
-            });
-            let counters = extract_etb_counters(repl_def.execute.as_deref());
-            // CR 614.6: Zone-change replacement — redirect destination.
-            let redirect_zone = repl_def
-                .execute
-                .as_ref()
-                .and_then(|exec| match &*exec.effect {
-                    Effect::ChangeZone { destination, .. } => Some(*destination),
-                    _ => None,
-                });
-            (repl_def.event.clone(), tapped, counters, redirect_zone)
+            let ability = match branch {
+                ReplacementBranch::Execute => repl_def.execute.as_deref(),
+                ReplacementBranch::Decline => match &repl_def.mode {
+                    ReplacementMode::Optional { decline } => decline.as_deref(),
+                    ReplacementMode::Mandatory => None,
+                },
+            };
+            (repl_def.event.clone(), event_modifiers_for_ability(ability))
         }
         None => return Ok(proposed),
     };
@@ -1591,8 +1718,8 @@ fn apply_single_replacement(
         let event_type = event_key.to_string();
         match (handler.applier)(proposed, rid, state, events) {
             ApplyResult::Modified(mut new_event) => {
-                // If the replacement carries a Tap execute (ETB tapped), mark the zone change.
-                if enters_tapped {
+                // CR 614.1c: If the applied branch is a Tap SelfRef (ETB tapped), mark the zone change.
+                if modifiers.enters_tapped {
                     if let ProposedEvent::ZoneChange {
                         ref mut enter_tapped,
                         ..
@@ -1602,19 +1729,19 @@ fn apply_single_replacement(
                     }
                 }
                 // CR 614.6: Apply zone redirect (e.g., graveyard → exile for Rest in Peace).
-                if let Some(zone) = redirect_zone {
+                if let Some(zone) = modifiers.redirect_zone {
                     if let ProposedEvent::ZoneChange { ref mut to, .. } = new_event {
                         *to = zone;
                     }
                 }
-                // If the replacement carries counter data, add to the zone change.
-                if !etb_counters.is_empty() {
+                // CR 614.1c: Applied branch carries ETB counter data; add to the zone change.
+                if !modifiers.etb_counters.is_empty() {
                     if let ProposedEvent::ZoneChange {
                         ref mut enter_with_counters,
                         ..
                     } = new_event
                     {
-                        enter_with_counters.extend(etb_counters.iter().cloned());
+                        enter_with_counters.extend(modifiers.etb_counters.iter().cloned());
                     }
                 }
                 events.push(GameEvent::ReplacementApplied {
@@ -1676,7 +1803,14 @@ fn pipeline_loop(
             }
 
             proposed.mark_applied(rid);
-            match apply_single_replacement(state, proposed, rid, registry, events) {
+            match apply_single_replacement(
+                state,
+                proposed,
+                rid,
+                ReplacementBranch::Execute,
+                registry,
+                events,
+            ) {
                 Ok(new_event) => proposed = new_event,
                 Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
                 Err(ApplyResult::Modified(_)) => unreachable!(),
@@ -1707,7 +1841,14 @@ fn pipeline_loop(
             // All mandatory: apply the first candidate; remaining will be picked up next iteration.
             let rid = candidates[0];
             proposed.mark_applied(rid);
-            match apply_single_replacement(state, proposed, rid, registry, events) {
+            match apply_single_replacement(
+                state,
+                proposed,
+                rid,
+                ReplacementBranch::Execute,
+                registry,
+                events,
+            ) {
                 Ok(new_event) => proposed = new_event,
                 Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
                 Err(ApplyResult::Modified(_)) => unreachable!(),
@@ -1762,24 +1903,37 @@ pub fn continue_replacement(
                 let accept = repl.execute.clone();
                 let decline = match &repl.mode {
                     ReplacementMode::Optional { decline } => decline.clone(),
-                    _ => None,
+                    ReplacementMode::Mandatory => None,
                 };
                 (accept, decline)
             })
             .unwrap_or((None, None));
 
-        if chosen_index == 0 {
-            // Accept: apply the replacement, store accept effect for post-zone-change
-            match apply_single_replacement(state, proposed, rid, &registry, events) {
-                Ok(new_event) => proposed = new_event,
-                Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
-                Err(ApplyResult::Modified(_)) => unreachable!(),
-            }
-            state.post_replacement_effect = accept_effect;
+        let (branch, post_effect) = if chosen_index == 0 {
+            // Accept: `execute` runs post-zone-change (e.g., shock lands pay 2 life).
+            (ReplacementBranch::Execute, accept_effect)
         } else {
-            // Decline: skip the replacement, store decline effect for post-zone-change
-            state.post_replacement_effect = decline_effect;
+            // CR 614.1c + CR 614.12: Decline's ProposedEvent modifications (enter_tapped,
+            // counters, zone redirect) must flow through the replacement pipeline so the
+            // next iteration sees the current state of the event. If the decline branch
+            // is a pure event modifier (e.g., shock-land Tap SelfRef), no post-effect is
+            // needed — the modifier has already been applied to the ProposedEvent.
+            // If the decline branch has non-modifier work (e.g., a choice side-effect),
+            // it is retained as a post-replacement side effect.
+            let post = if EventModifiers::has_only_event_modifier(decline_effect.as_deref()) {
+                None
+            } else {
+                decline_effect
+            };
+            (ReplacementBranch::Decline, post)
+        };
+
+        match apply_single_replacement(state, proposed, rid, branch, &registry, events) {
+            Ok(new_event) => proposed = new_event,
+            Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
+            Err(ApplyResult::Modified(_)) => unreachable!(),
         }
+        state.post_replacement_effect = post_effect;
 
         return pipeline_loop(state, proposed, pending.depth + 1, &registry, events);
     }
@@ -1792,7 +1946,14 @@ pub fn continue_replacement(
     let mut proposed = pending.proposed;
     proposed.mark_applied(rid);
 
-    match apply_single_replacement(state, proposed, rid, &registry, events) {
+    match apply_single_replacement(
+        state,
+        proposed,
+        rid,
+        ReplacementBranch::Execute,
+        &registry,
+        events,
+    ) {
         Ok(new_event) => proposed = new_event,
         Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
         Err(ApplyResult::Modified(_)) => unreachable!(),
