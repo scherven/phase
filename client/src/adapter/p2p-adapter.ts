@@ -1,5 +1,9 @@
+import type Peer from "peerjs";
+import type { DataConnection } from "peerjs";
+
 import type {
   EngineAdapter,
+  FormatConfig,
   GameAction,
   GameEvent,
   GameState,
@@ -11,10 +15,16 @@ import type {
 
 import { AdapterError } from "./types";
 import { WasmAdapter } from "./wasm-adapter";
-import type { PeerSession } from "../network/peer";
+import { createPeerSession, type PeerSession } from "../network/peer";
 import type { P2PMessage } from "../network/protocol";
+import { saveP2PSession } from "../services/p2pSession";
 
-/** Events emitted by P2P adapters for UI state updates. */
+/**
+ * Adapter-level events emitted to the UI. Wire-protocol messages are
+ * snake_case (`player_kicked`); adapter events stay camelCase
+ * (`playerKicked`). The adapter performs the remap inside its message
+ * handlers — the UI never sees wire types.
+ */
 export type P2PAdapterEvent =
   | { type: "playerIdentity"; playerId: PlayerId }
   | { type: "roomCreated"; roomCode: string }
@@ -23,7 +33,26 @@ export type P2PAdapterEvent =
   | { type: "opponentDisconnected"; reason: string }
   | { type: "gameOver"; winner: PlayerId | null; reason: string }
   | { type: "error"; message: string }
-  | { type: "stateChanged"; state: GameState; events: GameEvent[]; legalResult: LegalActionsResult };
+  | {
+      type: "stateChanged";
+      state: GameState;
+      events: GameEvent[];
+      legalResult: LegalActionsResult;
+    }
+  // 3-4p multiplayer additions:
+  | {
+      type: "opponentDisconnectedWithChoice";
+      playerId: PlayerId;
+      gracePeriodMs: number;
+    }
+  | { type: "playerKicked"; playerId: PlayerId; reason: string }
+  | { type: "playerConceded"; playerId: PlayerId; reason: string }
+  | { type: "playerReconnected"; playerId: PlayerId }
+  | { type: "gamePaused"; reason: string }
+  | { type: "gameResumed" }
+  | { type: "lobbyProgress"; joined: number; total: number }
+  | { type: "reconnecting"; attempt: number }
+  | { type: "reconnectFailed"; reason: string };
 
 type P2PAdapterEventListener = (event: P2PAdapterEvent) => void;
 
@@ -34,35 +63,112 @@ interface DeckListPayload {
 }
 
 /**
- * Host-side P2P adapter. Runs the WASM engine locally and relays
- * filtered state to the guest via WebRTC DataChannel.
+ * Game-run state. Typed enum (per CLAUDE.md §4: no raw bool flags).
+ * - `running`     — normal play, `submitAction` accepted.
+ * - `paused-disconnect` — automatic pause due to a guest dropping; auto-resumes
+ *   on reconnect or auto-concedes at grace expiry. Blocks `submitAction`.
+ * - `paused-manual` — host-initiated pause (either via "Pause and wait" on the
+ *   disconnect dialog, or an explicit pause request). Released by host or by
+ *   the dropped player reconnecting (see plan §6 DisconnectChoiceDialog
+ *   semantics). Blocks `submitAction`.
+ */
+type GameRunState = "running" | "paused-disconnect" | "paused-manual";
+
+/** Default grace window for guest auto-reconnect, in milliseconds. */
+const DEFAULT_GRACE_PERIOD_MS = 30_000;
+
+/** Guest auto-reconnect backoff schedule (ms). Stops after the last entry. */
+const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+
+/**
+ * Build the engine deck payload from per-seat decks.
+ *
+ * The WASM `initialize_game` accepts `{ player, opponent, ai_decks }` where
+ * `ai_decks[i]` becomes seat `PlayerId(i + 2)`. For 3-4p P2P we use the same
+ * shape: host is `player`, guest 1 is `opponent`, guests 2..N go into
+ * `ai_decks` in seat order.
+ */
+function buildDeckPayload(
+  hostDeck: DeckListPayload["player"],
+  guestDecks: Map<PlayerId, DeckListPayload["player"]>,
+): DeckListPayload {
+  const sortedSeats = [...guestDecks.keys()].sort((a, b) => a - b);
+  if (sortedSeats.length === 0) {
+    throw new AdapterError(
+      "P2P_NO_GUESTS",
+      "Cannot start P2P game with zero guests",
+      false,
+    );
+  }
+  const opponent = guestDecks.get(sortedSeats[0])!;
+  const aiDecks = sortedSeats.slice(1).map((seat) => guestDecks.get(seat)!);
+  return {
+    player: hostDeck,
+    opponent,
+    ai_decks: aiDecks,
+  };
+}
+
+/**
+ * Host-side P2P adapter.
+ *
+ * Hub-and-spoke topology: the host runs the authoritative WASM engine and
+ * maintains one `PeerSession` per guest. State updates are filtered per-seat
+ * via `wasm.getFilteredState(pid)` and fanned out to each guest. Guest
+ * actions are routed through the host's WASM and re-broadcast as filtered
+ * state.
+ *
+ * The host does NOT destroy the parent `Peer` on per-session disconnects —
+ * that lifetime is owned by `dispose()`. Per-session cleanup releases only
+ * the `DataConnection` (see `peer.ts` `onSessionEnd` contract).
  */
 export class P2PHostAdapter implements EngineAdapter {
   private wasm = new WasmAdapter();
   private listeners: P2PAdapterEventListener[] = [];
-  private messageUnsub: (() => void) | null = null;
-  private disconnectUnsub: (() => void) | null = null;
 
-  // Promise + resolver created eagerly so guest_deck messages arriving
-  // before initializeGame() are captured instead of silently dropped.
-  private guestDeckPromise: Promise<unknown>;
-  private guestDeckResolve!: (deckData: unknown) => void;
+  private guestSessions = new Map<PlayerId, PeerSession>();
+  private guestDecks = new Map<PlayerId, unknown>();
+  private playerTokens = new Map<PlayerId, string>();
+  /**
+   * Mid-game disconnect tracker. `timer` is nullable: it is set when the grace
+   * window is armed (auto-concede on expiry) and nulled by `holdForReconnect`
+   * (indefinite wait). Using `Timer | null` in the shape instead of a cast
+   * keeps the "manual pause" transition type-honest (per CLAUDE.md: no raw
+   * bool flags, no cast-arounds).
+   */
+  private disconnectedSeats = new Map<
+    PlayerId,
+    { disconnectedAt: number; timer: ReturnType<typeof setTimeout> | null }
+  >();
+  private kickedTokens = new Set<string>();
+  /**
+   * Seats whose engine `PlayerId` has been conceded (CR 800.4a). Populated by
+   * `concedePlayer`; used by `handleGuestMessage` to short-circuit actions
+   * from already-eliminated guests without a WASM round-trip.
+   */
+  private eliminatedSeats = new Set<PlayerId>();
+  private gameRunState: GameRunState = "running";
+
+  private nextSeat: PlayerId = 1;
+  private gameStarted = false;
+  private guestDeckResolvers: Array<() => void> = [];
+  private hostConnectionUnsub: (() => void) | null = null;
 
   constructor(
-    private readonly deckData: unknown,
-    private readonly session: PeerSession,
-    playerCount = 2,
+    private readonly hostDeckData: unknown,
+    private readonly hostPeer: Peer,
+    private readonly playerCount: number,
+    private readonly formatConfig?: FormatConfig,
+    private readonly matchConfig?: MatchConfig,
+    private readonly gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
   ) {
-    if (playerCount > 2) {
+    if (playerCount < 2 || playerCount > 4) {
       throw new AdapterError(
-        "P2P_PLAYER_LIMIT",
-        "P2P is only available for 2-player games. Use server mode for multiplayer.",
+        "P2P_PLAYER_COUNT",
+        `P2P supports 2-4 players; got ${playerCount}`,
         false,
       );
     }
-    this.guestDeckPromise = new Promise<unknown>((resolve) => {
-      this.guestDeckResolve = resolve;
-    });
   }
 
   onEvent(listener: P2PAdapterEventListener): () => void {
@@ -80,69 +186,185 @@ export class P2PHostAdapter implements EngineAdapter {
 
   async initialize(): Promise<void> {
     await this.wasm.initialize();
+    // Subscribe to incoming guest connections via the Peer directly. We don't
+    // route through `connection.ts` `onGuestConnected` here because the
+    // adapter owns the Peer reference and per-conn wiring needs the assigned
+    // PlayerId in scope.
+    const handleConnection = (conn: DataConnection) => {
+      conn.on("open", () => {
+        this.handleNewConnection(conn);
+      });
+    };
+    this.hostPeer.on("connection", handleConnection);
+    this.hostConnectionUnsub = () => {
+      this.hostPeer.off("connection", handleConnection);
+    };
+  }
 
-    // Listen for guest messages
-    this.messageUnsub = this.session.onMessage((msg) => {
-      this.handleGuestMessage(msg);
+  private handleNewConnection(conn: DataConnection): void {
+    // Reconnect path: the first message determines whether this is a fresh
+    // join or a reconnect. We attach a one-shot pre-handler to peek at the
+    // first message before wrapping in a PeerSession with full handlers.
+    const session = createPeerSession(conn, {
+      onSessionEnd: () => {
+        // Find which seat this session belonged to (if any) and route to the
+        // appropriate disconnect handler.
+        for (const [pid, s] of this.guestSessions.entries()) {
+          if (s === session) {
+            this.handleGuestDisconnect(pid);
+            return;
+          }
+        }
+      },
     });
 
-    this.disconnectUnsub = this.session.onDisconnect((reason) => {
-      this.emit({ type: "opponentDisconnected", reason });
+    let identified = false;
+    const unsub = session.onMessage((msg) => {
+      if (identified) return;
+      identified = true;
+      unsub();
+
+      if (msg.type === "reconnect") {
+        this.handleReconnect(session, msg.playerToken);
+      } else if (msg.type === "guest_deck") {
+        this.handleNewGuest(session, msg.deckData);
+      } else {
+        // Unexpected first message — reject.
+        session.send({
+          type: "reconnect_rejected",
+          reason: "Expected guest_deck or reconnect as first message",
+        });
+        session.close("Protocol violation");
+      }
     });
+  }
+
+  private handleNewGuest(session: PeerSession, deckData: unknown): void {
+    if (this.gameStarted) {
+      // Lobby is closed; reject. (Reconnect should have been used instead.)
+      session.send({ type: "kick", reason: "Game already in progress" });
+      session.close("Game in progress");
+      return;
+    }
+    if (this.guestSessions.size >= this.playerCount - 1) {
+      session.send({ type: "kick", reason: "Lobby full" });
+      session.close("Lobby full");
+      return;
+    }
+
+    const pid = this.nextSeat;
+    this.nextSeat++;
+
+    // Issue a token immediately on join. The guest needs it for reconnect
+    // even during the deck-collection window.
+    const token = crypto.randomUUID();
+    this.playerTokens.set(pid, token);
+    this.guestSessions.set(pid, session);
+    this.guestDecks.set(pid, deckData);
+
+    // Route subsequent messages from this guest.
+    session.onMessage((msg) => this.handleGuestMessage(pid, msg));
+
+    this.broadcastLobbyProgress();
+
+    // If all guest decks are in, resolve the deck-collection promise.
+    if (this.guestDecks.size === this.playerCount - 1) {
+      const resolvers = this.guestDeckResolvers.splice(0);
+      for (const r of resolvers) r();
+    }
+  }
+
+  private broadcastLobbyProgress(): void {
+    const joined = this.guestSessions.size + 1;
+    const total = this.playerCount;
+    for (const [, session] of this.guestSessions) {
+      session.send({ type: "lobby_progress", joined, total });
+    }
+    this.emit({ type: "lobbyProgress", joined, total });
   }
 
   async initializeGame(
     _deckData?: unknown,
-    _formatConfig?: unknown,
+    _formatConfig?: FormatConfig,
     _playerCount?: number,
-    matchConfig?: MatchConfig,
+    _matchConfig?: MatchConfig,
     _firstPlayer?: number,
   ): Promise<SubmitResult> {
-    // Await the eagerly-created promise — resolves immediately if
-    // guest_deck arrived during initialize(), otherwise waits.
-    const guestDeckData = await this.guestDeckPromise;
+    // Wait until all guest decks are in.
+    if (this.guestDecks.size < this.playerCount - 1) {
+      await new Promise<void>((resolve) => {
+        this.guestDeckResolvers.push(resolve);
+      });
+    }
 
-    // Build combined deck payload for WASM
-    const hostDeck = this.deckData as DeckListPayload;
-    const guestDeck = guestDeckData as DeckListPayload;
-    const deckPayload = {
-      player: hostDeck.player,
-      opponent: guestDeck.player,
-      ai_decks: [],
-    };
+    const hostDeck = this.hostDeckData as DeckListPayload;
+    const guestDeckMap = new Map<PlayerId, DeckListPayload["player"]>();
+    for (const [pid, raw] of this.guestDecks) {
+      guestDeckMap.set(pid, (raw as DeckListPayload).player);
+    }
+    const deckPayload = buildDeckPayload(hostDeck.player, guestDeckMap);
 
-    const result = await this.wasm.initializeGame(deckPayload, undefined, 2, matchConfig);
-    const legalResult = await this.wasm.getLegalActions();
+    const result = await this.wasm.initializeGame(
+      deckPayload,
+      this.formatConfig,
+      this.playerCount,
+      this.matchConfig,
+      undefined,
+    );
+    this.gameStarted = true;
     this.emit({ type: "playerIdentity", playerId: 0 });
 
-    // Send initial state to guest (filtered) with legal actions
-    const filteredState = await this.wasm.getFilteredState(1);
-    this.session.send({
-      type: "game_setup",
-      state: filteredState,
-      events: result.events,
-      legalActions: legalResult.actions,
-      autoPassRecommended: legalResult.autoPassRecommended,
-    });
+    // Per-guest game_setup: each guest receives their unique
+    // assignedPlayerId, playerToken, and filtered state.
+    const legal = await this.wasm.getLegalActions();
+    for (const [pid, session] of this.guestSessions) {
+      const token = this.playerTokens.get(pid)!;
+      const filteredState = await this.wasm.getFilteredState(pid);
+      session.send({
+        type: "game_setup",
+        assignedPlayerId: pid,
+        playerToken: token,
+        state: filteredState,
+        events: result.events,
+        legalActions: legal.actions,
+        autoPassRecommended: legal.autoPassRecommended,
+      });
+    }
 
     return result;
   }
 
   async submitAction(action: GameAction): Promise<SubmitResult> {
+    if (this.gameRunState !== "running") {
+      throw new AdapterError(
+        "P2P_PAUSED",
+        `Cannot submit action while game state is ${this.gameRunState}`,
+        true,
+      );
+    }
     const result = await this.wasm.submitAction(action);
-    const legalResult = await this.wasm.getLegalActions();
-
-    // Send filtered state update to guest with legal actions
-    const filteredState = await this.wasm.getFilteredState(1);
-    this.session.send({
-      type: "state_update",
-      state: filteredState,
-      events: result.events,
-      legalActions: legalResult.actions,
-      autoPassRecommended: legalResult.autoPassRecommended,
-    });
-
+    await this.broadcastStateUpdate(result.events);
     return result;
+  }
+
+  /**
+   * Fan out a state update to every connected guest. Each guest gets a
+   * separately-filtered snapshot via `wasm.getFilteredState(pid)`. Skips
+   * disconnected seats (their state is delivered via `reconnect_ack`).
+   */
+  private async broadcastStateUpdate(events: GameEvent[]): Promise<void> {
+    const legal = await this.wasm.getLegalActions();
+    for (const [pid, session] of this.guestSessions) {
+      if (this.disconnectedSeats.has(pid)) continue;
+      const filteredState = await this.wasm.getFilteredState(pid);
+      session.send({
+        type: "state_update",
+        state: filteredState,
+        events,
+        legalActions: legal.actions,
+        autoPassRecommended: legal.autoPassRecommended,
+      });
+    }
   }
 
   async getState(): Promise<GameState> {
@@ -162,77 +384,432 @@ export class P2PHostAdapter implements EngineAdapter {
   }
 
   dispose(): void {
-    if (this.messageUnsub) this.messageUnsub();
-    if (this.disconnectUnsub) this.disconnectUnsub();
-    this.session.close();
+    if (this.hostConnectionUnsub) this.hostConnectionUnsub();
+    for (const { timer } of this.disconnectedSeats.values()) {
+      if (timer !== null) clearTimeout(timer);
+    }
+    this.disconnectedSeats.clear();
+    for (const session of this.guestSessions.values()) {
+      session.close();
+    }
+    this.guestSessions.clear();
+    this.kickedTokens.clear();
+    this.playerTokens.clear();
+    this.guestDecks.clear();
+    try {
+      this.hostPeer.destroy();
+    } catch {
+      /* best-effort */
+    }
     this.wasm.dispose();
     this.listeners = [];
   }
 
-  private async handleGuestMessage(msg: P2PMessage): Promise<void> {
+  private async handleGuestMessage(
+    pid: PlayerId,
+    msg: P2PMessage,
+  ): Promise<void> {
     switch (msg.type) {
-      case "guest_deck": {
-        this.guestDeckResolve(msg.deckData);
-        break;
-      }
-
       case "action": {
+        // Verify sender identity to prevent guest 2 spoofing as guest 3.
+        if (msg.senderPlayerId !== pid) {
+          const session = this.guestSessions.get(pid);
+          if (session) {
+            session.send({
+              type: "action_rejected",
+              reason: `senderPlayerId mismatch (declared ${msg.senderPlayerId}, session owns ${pid})`,
+            });
+          }
+          console.warn(
+            `[P2PHost] rejected action from seat ${pid} with declared sender ${msg.senderPlayerId}`,
+          );
+          return;
+        }
+        // Short-circuit: an eliminated seat (post-concede) has no legal
+        // actions in the engine. Reject at the adapter so the wire log is
+        // clear and the WASM round-trip is skipped.
+        if (this.eliminatedSeats.has(pid)) {
+          const session = this.guestSessions.get(pid);
+          if (session) {
+            session.send({
+              type: "action_rejected",
+              reason: "Player has conceded and can no longer act",
+            });
+          }
+          return;
+        }
+        if (this.gameRunState !== "running") {
+          const session = this.guestSessions.get(pid);
+          if (session) {
+            session.send({
+              type: "action_rejected",
+              reason: `Game ${this.gameRunState}`,
+            });
+          }
+          return;
+        }
         try {
           const result = await this.wasm.submitAction(msg.action);
+          await this.broadcastStateUpdate(result.events);
+          // Emit local stateChanged so host UI updates for opponent actions.
           const state = await this.wasm.getState();
           const legalResult = await this.wasm.getLegalActions();
-
-          // Send filtered state back to guest with legal actions
-          const filteredState = await this.wasm.getFilteredState(1);
-          this.session.send({
-            type: "state_update",
-            state: filteredState,
+          this.emit({
+            type: "stateChanged",
+            state,
             events: result.events,
-            legalActions: legalResult.actions,
-            autoPassRecommended: legalResult.autoPassRecommended,
+            legalResult,
           });
-
-          // Emit state update locally so host UI updates for opponent actions
-          this.emit({ type: "stateChanged", state, events: result.events, legalResult });
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
-          this.session.send({ type: "action_rejected", reason });
+          const session = this.guestSessions.get(pid);
+          if (session) session.send({ type: "action_rejected", reason });
         }
         break;
       }
-
       case "concede": {
-        this.emit({ type: "gameOver", winner: 0, reason: "Opponent conceded" });
+        // CR 104.3a: Any player may concede at any time. Route through the
+        // engine action so the seat is properly eliminated (CR 800.4a).
+        await this.concedePlayer(pid, "Player conceded", "conceded");
+        // Notify remaining guests with the "conceded" wire variant (not
+        // "kicked") so their log entries read correctly.
+        for (const [otherPid, s] of this.guestSessions) {
+          if (otherPid === pid) continue;
+          s.send({
+            type: "player_conceded",
+            playerId: pid,
+            reason: "Player conceded",
+          });
+        }
         break;
       }
-
       default:
         break;
+    }
+  }
+
+  private handleGuestDisconnect(pid: PlayerId): void {
+    if (!this.guestSessions.has(pid)) return;
+    if (this.disconnectedSeats.has(pid)) return;
+
+    this.guestSessions.delete(pid);
+
+    if (!this.gameStarted) {
+      // Pre-game disconnect: free the seat back to the lobby. Drop the token
+      // (no reconnect path before game start). The seat number is reused via
+      // `nextSeat` rewind so the next joiner takes the same slot.
+      this.playerTokens.delete(pid);
+      this.guestDecks.delete(pid);
+      // Rewind nextSeat if this was the most recent join.
+      if (pid === this.nextSeat - 1) {
+        this.nextSeat = pid;
+      }
+      this.broadcastLobbyProgress();
+      return;
+    }
+
+    // Mid-game disconnect: enter grace window.
+    const timer = setTimeout(() => {
+      // Grace expired without reconnect AND without host decision — auto-concede.
+      if (this.gameRunState === "paused-disconnect") {
+        this.concedePlayer(pid, "Disconnect grace expired", "conceded")
+          .then(() => {
+            // Notify remaining guests that the seat was conceded past (not kicked).
+            for (const [otherPid, s] of this.guestSessions) {
+              if (otherPid === pid) continue;
+              s.send({
+                type: "player_conceded",
+                playerId: pid,
+                reason: "Disconnect grace expired",
+              });
+            }
+          })
+          .catch((err) => {
+            console.error("[P2PHost] auto-concede failed:", err);
+          });
+      }
+    }, this.gracePeriodMs);
+
+    this.disconnectedSeats.set(pid, {
+      disconnectedAt: Date.now(),
+      timer,
+    });
+    this.gameRunState = "paused-disconnect";
+
+    // Notify remaining guests.
+    for (const [otherPid, session] of this.guestSessions) {
+      if (otherPid === pid) continue;
+      session.send({ type: "player_disconnected", playerId: pid });
+      session.send({ type: "game_paused", reason: "Player disconnected" });
+    }
+
+    this.emit({
+      type: "opponentDisconnectedWithChoice",
+      playerId: pid,
+      gracePeriodMs: this.gracePeriodMs,
+    });
+    this.emit({ type: "gamePaused", reason: "Player disconnected" });
+  }
+
+  private handleReconnect(session: PeerSession, playerToken: string): void {
+    if (this.kickedTokens.has(playerToken)) {
+      session.send({ type: "reconnect_rejected", reason: "Player kicked" });
+      session.close("Kicked");
+      return;
+    }
+    let pid: PlayerId | null = null;
+    for (const [seat, token] of this.playerTokens) {
+      if (token === playerToken) {
+        pid = seat;
+        break;
+      }
+    }
+    if (pid === null) {
+      session.send({ type: "reconnect_rejected", reason: "Unknown token" });
+      session.close("Unknown token");
+      return;
+    }
+    if (!this.disconnectedSeats.has(pid)) {
+      session.send({
+        type: "reconnect_rejected",
+        reason: "No grace window active for this seat",
+      });
+      session.close("Not in grace");
+      return;
+    }
+
+    const grace = this.disconnectedSeats.get(pid)!;
+    if (grace.timer !== null) clearTimeout(grace.timer);
+    this.disconnectedSeats.delete(pid);
+    this.guestSessions.set(pid, session);
+
+    // Wire subsequent messages from this guest.
+    session.onMessage((msg) => this.handleGuestMessage(pid as PlayerId, msg));
+
+    // Send fresh state to the reconnecting guest.
+    void (async () => {
+      const filteredState = await this.wasm.getFilteredState(pid as PlayerId);
+      const legal = await this.wasm.getLegalActions();
+      session.send({
+        type: "reconnect_ack",
+        assignedPlayerId: pid as PlayerId,
+        state: filteredState,
+        legalActions: legal.actions,
+        autoPassRecommended: legal.autoPassRecommended,
+      });
+    })();
+
+    // Notify other guests.
+    for (const [otherPid, otherSession] of this.guestSessions) {
+      if (otherPid === pid) continue;
+      otherSession.send({ type: "player_reconnected", playerId: pid });
+    }
+    this.emit({ type: "playerReconnected", playerId: pid });
+
+    // Resume if no other seats are paused.
+    if (this.disconnectedSeats.size === 0 && this.gameRunState === "paused-disconnect") {
+      this.gameRunState = "running";
+      for (const [, s] of this.guestSessions) {
+        s.send({ type: "game_resumed" });
+      }
+      this.emit({ type: "gameResumed" });
+    }
+  }
+
+  /**
+   * Concede origin. Distinguishes the three paths that all end at
+   * `eliminate_player` so wire broadcasts and local adapter events carry the
+   * correct semantic label. CR 104.3a applies uniformly, but UIs need to
+   * differentiate "kicked by host" from "left voluntarily" from "host
+   * continued past disconnect".
+   */
+  private async concedePlayer(
+    pid: PlayerId,
+    reason: string,
+    origin: "kick" | "conceded",
+  ): Promise<void> {
+    // Cancel any active grace timer for this seat. `timer` may be null if the
+    // host already called `holdForReconnect`.
+    const grace = this.disconnectedSeats.get(pid);
+    if (grace) {
+      if (grace.timer !== null) clearTimeout(grace.timer);
+      this.disconnectedSeats.delete(pid);
+    }
+    // Remove the session for self-concede / grace-expiry paths. (The kick
+    // path removes its own session before calling concedePlayer so it can
+    // send the `kick` wire message first; double-deletion is a no-op here.)
+    const session = this.guestSessions.get(pid);
+    if (session) {
+      this.guestSessions.delete(pid);
+      try { session.close("Player conceded"); } catch { /* best-effort */ }
+    }
+    this.eliminatedSeats.add(pid);
+    try {
+      const concedeAction = {
+        type: "Concede",
+        data: { player_id: pid },
+      } as unknown as GameAction;
+      const result = await this.wasm.submitAction(concedeAction);
+      await this.broadcastStateUpdate(result.events);
+      const state = await this.wasm.getState();
+      const legalResult = await this.wasm.getLegalActions();
+      this.emit({
+        type: "stateChanged",
+        state,
+        events: result.events,
+        legalResult,
+      });
+      this.emit(
+        origin === "kick"
+          ? { type: "playerKicked", playerId: pid, reason }
+          : { type: "playerConceded", playerId: pid, reason },
+      );
+    } catch (err) {
+      console.error("[P2PHost] concedePlayer failed:", err);
+    }
+    // Resume game state if this concede unblocked the pause.
+    if (
+      this.disconnectedSeats.size === 0 &&
+      this.gameRunState === "paused-disconnect"
+    ) {
+      this.gameRunState = "running";
+      for (const [, s] of this.guestSessions) {
+        s.send({ type: "game_resumed" });
+      }
+      this.emit({ type: "gameResumed" });
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Public host-only controls (called by UI components).
+  // ────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Forcibly remove a player from the game. CR 104.3a: kicked players forfeit.
+   * Adds the seat's token to the denylist so they cannot reconnect.
+   */
+  async kickPlayer(pid: PlayerId, reason: string = "Kicked by host"): Promise<void> {
+    const token = this.playerTokens.get(pid);
+    if (token) this.kickedTokens.add(token);
+    // Remove session BEFORE concedePlayer so we can send the `kick` wire
+    // message on the way out; concedePlayer's own session-cleanup is a no-op
+    // for an already-removed seat.
+    const session = this.guestSessions.get(pid);
+    if (session) {
+      session.send({ type: "kick", reason });
+      try { session.close("Kicked"); } catch { /* best-effort */ }
+      this.guestSessions.delete(pid);
+    }
+    await this.concedePlayer(pid, reason, "kick");
+    // Broadcast kick to remaining guests (concedePlayer emits playerKicked
+    // locally; remaining peers need the wire message).
+    for (const [otherPid, s] of this.guestSessions) {
+      if (otherPid === pid) continue;
+      s.send({ type: "player_kicked", playerId: pid, reason });
+    }
+  }
+
+  /**
+   * Continue the game without the disconnected player (auto-concede).
+   * Cancels their grace timer and routes to `concedePlayer`.
+   */
+  async concedeDisconnected(pid: PlayerId): Promise<void> {
+    const reason = "Host continued without reconnecting player";
+    await this.concedePlayer(pid, reason, "conceded");
+    for (const [otherPid, s] of this.guestSessions) {
+      if (otherPid === pid) continue;
+      s.send({ type: "player_conceded", playerId: pid, reason });
+    }
+  }
+
+  /**
+   * Convert an active "paused-disconnect" into "paused-manual" — cancels the
+   * grace timer so the game waits indefinitely for the player to reconnect.
+   * The `disconnectedSeats` entry is preserved so the reconnect path still
+   * fires; only the auto-concede timer is cancelled.
+   */
+  holdForReconnect(pid: PlayerId): void {
+    const grace = this.disconnectedSeats.get(pid);
+    if (grace) {
+      if (grace.timer !== null) clearTimeout(grace.timer);
+      // Null out the timer field (typed `Timer | null`). The reconnect handler
+      // branches on null-or-not before calling `clearTimeout`.
+      this.disconnectedSeats.set(pid, {
+        disconnectedAt: grace.disconnectedAt,
+        timer: null,
+      });
+    }
+    this.gameRunState = "paused-manual";
+  }
+
+  /** Manually pause (host UI). */
+  requestPause(): void {
+    if (this.gameRunState === "running") {
+      this.gameRunState = "paused-manual";
+      for (const [, s] of this.guestSessions) {
+        s.send({ type: "game_paused", reason: "Paused by host" });
+      }
+      this.emit({ type: "gamePaused", reason: "Paused by host" });
+    }
+  }
+
+  /** Manually resume (host UI). Only resumes if no seats are still disconnected. */
+  requestResume(): void {
+    if (
+      this.gameRunState === "paused-manual" &&
+      this.disconnectedSeats.size === 0
+    ) {
+      this.gameRunState = "running";
+      for (const [, s] of this.guestSessions) {
+        s.send({ type: "game_resumed" });
+      }
+      this.emit({ type: "gameResumed" });
     }
   }
 }
 
 /**
- * Guest-side P2P adapter. Receives state from host and sends actions.
+ * Guest-side P2P adapter. Maintains the `Peer` reference for auto-reconnect,
+ * persists session token to `sessionStorage` (via `p2pSession` service), and
+ * applies host-broadcasted state updates locally.
  */
 export class P2PGuestAdapter implements EngineAdapter {
   private gameState: GameState | null = null;
-  private legalActions: LegalActionsResult = { actions: [], autoPassRecommended: false };
+  private legalActions: LegalActionsResult = {
+    actions: [],
+    autoPassRecommended: false,
+  };
   private listeners: P2PAdapterEventListener[] = [];
   private pendingResolve: ((result: SubmitResult) => void) | null = null;
   private pendingReject: ((error: Error) => void) | null = null;
-  private messageUnsub: (() => void) | null = null;
-  private disconnectUnsub: (() => void) | null = null;
+  private session: PeerSession | null = null;
+  private playerToken: string | null = null;
+  private assignedPlayerId: PlayerId | null = null;
+  /**
+   * Once true, the adapter is in a terminal state (kicked, reconnect rejected,
+   * or disposed). `handleHostDisconnect` bails out so the auto-reconnect loop
+   * does NOT fire — preventing a kicked guest from spinning ~30s of backoff
+   * attempts against a token they'll never be accepted with.
+   */
+  private terminated = false;
 
-  // Promise + resolver created eagerly so game_setup messages arriving
-  // before initializeGame() are captured instead of silently dropped.
+  // Promise resolved on game_setup OR reconnect_ack, whichever arrives first.
+  // Reconnecting guests take the `reconnect_ack` path, so `initializeGame()`
+  // must resolve there too or it will hang indefinitely.
   private gameSetupPromise: Promise<SubmitResult>;
   private gameSetupResolve!: (result: SubmitResult) => void;
+  private gameSetupSettled = false;
 
   constructor(
     private readonly deckData: unknown,
-    private readonly session: PeerSession,
+    private readonly hostPeer: Peer,
+    private readonly hostPeerId: string,
+    private readonly initialConn: DataConnection,
+    existingPlayerToken?: string,
   ) {
+    if (existingPlayerToken) {
+      this.playerToken = existingPlayerToken;
+    }
     this.gameSetupPromise = new Promise<SubmitResult>((resolve) => {
       this.gameSetupResolve = resolve;
     });
@@ -252,38 +829,51 @@ export class P2PGuestAdapter implements EngineAdapter {
   }
 
   async initialize(): Promise<void> {
-    // Listen for host messages
-    this.messageUnsub = this.session.onMessage((msg) => {
-      this.handleHostMessage(msg);
-    });
-
-    this.disconnectUnsub = this.session.onDisconnect((reason) => {
-      this.emit({ type: "opponentDisconnected", reason });
-    });
-
-    // Send deck data to host
-    this.session.send({ type: "guest_deck", deckData: this.deckData });
+    this.attachSession(this.initialConn);
+    if (this.playerToken) {
+      this.session!.send({ type: "reconnect", playerToken: this.playerToken });
+    } else {
+      this.session!.send({ type: "guest_deck", deckData: this.deckData });
+    }
   }
 
-  async initializeGame(
-    _deckData?: unknown,
-    _formatConfig?: unknown,
-    _playerCount?: number,
-    _matchConfig?: MatchConfig,
-    _firstPlayer?: number,
-  ): Promise<SubmitResult> {
-    this.emit({ type: "playerIdentity", playerId: 1 });
+  private attachSession(conn: DataConnection): void {
+    const session = createPeerSession(conn, {
+      onSessionEnd: () => {
+        this.handleHostDisconnect();
+      },
+    });
+    this.session = session;
+    session.onMessage((msg) => this.handleHostMessage(msg));
+  }
 
-    // Await the eagerly-created promise — resolves immediately if
-    // game_setup arrived during initialize(), otherwise waits.
+  async initializeGame(): Promise<SubmitResult> {
     return this.gameSetupPromise;
   }
 
   async submitAction(action: GameAction): Promise<SubmitResult> {
+    if (!this.session) {
+      throw new AdapterError(
+        "P2P_ERROR",
+        "Not connected to host",
+        true,
+      );
+    }
+    if (this.assignedPlayerId === null) {
+      throw new AdapterError(
+        "P2P_ERROR",
+        "Not yet assigned a player ID",
+        true,
+      );
+    }
     return new Promise<SubmitResult>((resolve, reject) => {
       this.pendingResolve = resolve;
       this.pendingReject = reject;
-      this.session.send({ type: "action", action });
+      this.session!.send({
+        type: "action",
+        senderPlayerId: this.assignedPlayerId!,
+        action,
+      });
     });
   }
 
@@ -307,9 +897,19 @@ export class P2PGuestAdapter implements EngineAdapter {
   }
 
   dispose(): void {
-    if (this.messageUnsub) this.messageUnsub();
-    if (this.disconnectUnsub) this.disconnectUnsub();
-    this.session.close();
+    // Mark terminal BEFORE closing the session so the session's
+    // `onSessionEnd` → `handleHostDisconnect` short-circuit fires and skips
+    // the auto-reconnect loop.
+    this.terminated = true;
+    if (this.session) {
+      this.session.close();
+      this.session = null;
+    }
+    try {
+      this.hostPeer.destroy();
+    } catch {
+      /* best-effort */
+    }
     this.gameState = null;
     this.legalActions = { actions: [], autoPassRecommended: false };
     this.pendingResolve = null;
@@ -320,37 +920,200 @@ export class P2PGuestAdapter implements EngineAdapter {
   private handleHostMessage(msg: P2PMessage): void {
     switch (msg.type) {
       case "game_setup": {
+        this.assignedPlayerId = msg.assignedPlayerId;
+        this.playerToken = msg.playerToken;
+        saveP2PSession(this.hostPeerId, {
+          playerToken: msg.playerToken,
+          playerId: msg.assignedPlayerId,
+        });
         this.gameState = msg.state;
-        this.legalActions = { actions: msg.legalActions, autoPassRecommended: msg.autoPassRecommended ?? false };
-        this.gameSetupResolve({ events: msg.events });
+        this.legalActions = {
+          actions: msg.legalActions,
+          autoPassRecommended: msg.autoPassRecommended ?? false,
+        };
+        this.emit({ type: "playerIdentity", playerId: msg.assignedPlayerId });
+        this.settleGameSetup({ events: msg.events });
         break;
       }
-
+      case "reconnect_ack": {
+        this.assignedPlayerId = msg.assignedPlayerId;
+        if (this.playerToken) {
+          saveP2PSession(this.hostPeerId, {
+            playerToken: this.playerToken,
+            playerId: msg.assignedPlayerId,
+          });
+        }
+        this.gameState = msg.state;
+        this.legalActions = {
+          actions: msg.legalActions,
+          autoPassRecommended: msg.autoPassRecommended,
+        };
+        this.emit({ type: "playerIdentity", playerId: msg.assignedPlayerId });
+        this.emit({
+          type: "stateChanged",
+          state: msg.state,
+          events: [],
+          legalResult: this.legalActions,
+        });
+        // Resolve `initializeGame()` for the reconnect path too. Reconnecting
+        // guests never receive `game_setup`; without this they would hang.
+        // Post-reconnect `reconnect_ack` messages (guest briefly disconnects
+        // a second time) are idempotent — the `gameSetupSettled` guard
+        // prevents double-resolution.
+        this.settleGameSetup({ events: [] });
+        break;
+      }
+      case "reconnect_rejected": {
+        this.terminated = true;
+        this.emit({ type: "reconnectFailed", reason: msg.reason });
+        this.emit({ type: "gameOver", winner: null, reason: msg.reason });
+        break;
+      }
+      case "kick": {
+        this.terminated = true;
+        this.emit({ type: "gameOver", winner: null, reason: msg.reason });
+        break;
+      }
       case "state_update": {
         this.gameState = msg.state;
-        this.legalActions = { actions: msg.legalActions, autoPassRecommended: msg.autoPassRecommended ?? false };
+        this.legalActions = {
+          actions: msg.legalActions,
+          autoPassRecommended: msg.autoPassRecommended ?? false,
+        };
         if (this.pendingResolve) {
           this.pendingResolve({ events: msg.events });
           this.pendingResolve = null;
           this.pendingReject = null;
         } else {
-          // Unsolicited update (opponent's action result)
-          this.emit({ type: "stateChanged", state: msg.state, events: msg.events, legalResult: { actions: msg.legalActions, autoPassRecommended: msg.autoPassRecommended ?? false } });
+          this.emit({
+            type: "stateChanged",
+            state: msg.state,
+            events: msg.events,
+            legalResult: this.legalActions,
+          });
         }
         break;
       }
-
       case "action_rejected": {
         if (this.pendingReject) {
-          this.pendingReject(new AdapterError("ACTION_REJECTED", msg.reason, true));
+          this.pendingReject(
+            new AdapterError("ACTION_REJECTED", msg.reason, true),
+          );
           this.pendingResolve = null;
           this.pendingReject = null;
         }
         break;
       }
-
+      case "player_disconnected": {
+        this.emit({
+          type: "opponentDisconnected",
+          reason: `Player ${msg.playerId} disconnected`,
+        });
+        break;
+      }
+      case "player_reconnected": {
+        this.emit({ type: "playerReconnected", playerId: msg.playerId });
+        break;
+      }
+      case "player_kicked": {
+        this.emit({
+          type: "playerKicked",
+          playerId: msg.playerId,
+          reason: msg.reason,
+        });
+        break;
+      }
+      case "player_conceded": {
+        this.emit({
+          type: "playerConceded",
+          playerId: msg.playerId,
+          reason: msg.reason,
+        });
+        break;
+      }
+      case "game_paused": {
+        this.emit({ type: "gamePaused", reason: msg.reason });
+        break;
+      }
+      case "game_resumed": {
+        this.emit({ type: "gameResumed" });
+        break;
+      }
+      case "lobby_progress": {
+        this.emit({
+          type: "lobbyProgress",
+          joined: msg.joined,
+          total: msg.total,
+        });
+        break;
+      }
       default:
         break;
+    }
+  }
+
+  /**
+   * Resolve `initializeGame()` exactly once. Called from both `game_setup`
+   * (fresh join) and `reconnect_ack` (rejoining mid-game) paths; later
+   * messages are ignored so the promise stays stable if the guest briefly
+   * disconnects again after `initializeGame()` returns.
+   */
+  private settleGameSetup(result: SubmitResult): void {
+    if (this.gameSetupSettled) return;
+    this.gameSetupSettled = true;
+    this.gameSetupResolve(result);
+  }
+
+  private handleHostDisconnect(): void {
+    this.session = null;
+    // Suppress auto-reconnect in terminal states (kicked, explicitly rejected,
+    // or adapter disposed). Without this, a kicked guest would spin the
+    // backoff schedule (~30s total) hammering the host with a blacklisted
+    // token.
+    if (this.terminated) return;
+    void this.attemptReconnect(0);
+  }
+
+  private async attemptReconnect(attemptIndex: number): Promise<void> {
+    if (this.terminated) return;
+    if (attemptIndex >= RECONNECT_BACKOFF_MS.length) {
+      this.emit({
+        type: "reconnectFailed",
+        reason: "Exceeded reconnect attempts",
+      });
+      this.emit({
+        type: "opponentDisconnected",
+        reason: "Lost connection to host",
+      });
+      return;
+    }
+    const delay = RECONNECT_BACKOFF_MS[attemptIndex];
+    this.emit({ type: "reconnecting", attempt: attemptIndex + 1 });
+    await new Promise((r) => setTimeout(r, delay));
+
+    try {
+      const conn = this.hostPeer.connect(this.hostPeerId);
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("connect timed out")), 10_000);
+        conn.on("open", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        conn.on("error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+      this.attachSession(conn);
+      if (this.playerToken) {
+        this.session!.send({ type: "reconnect", playerToken: this.playerToken });
+      }
+    } catch (err) {
+      console.warn(
+        `[P2PGuest] reconnect attempt ${attemptIndex + 1} failed:`,
+        err,
+      );
+      void this.attemptReconnect(attemptIndex + 1);
     }
   }
 }

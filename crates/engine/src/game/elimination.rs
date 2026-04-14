@@ -41,6 +41,20 @@ pub fn eliminate_player(state: &mut GameState, player: PlayerId, events: &mut Ve
 
     // Check if game is over
     check_game_over(state, events);
+
+    // CR 800.4a: If the active `WaitingFor` was waiting on any newly-eliminated
+    // player (the conceder, or — for team formats — a teammate eliminated alongside
+    // them), advance to `Priority` for the next living player so the game does not
+    // deadlock waiting on a player who has left. Skip when the game just ended
+    // (`GameOver` is terminal) or the waiting player is still alive.
+    if !matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
+        if let Some(waiting_pid) = state.waiting_for.acting_player() {
+            if !players::is_alive(state, waiting_pid) {
+                let next = players::next_player(state, waiting_pid);
+                state.waiting_for = WaitingFor::Priority { player: next };
+            }
+        }
+    }
 }
 
 /// Perform the actual elimination of a single player (CR 800.4).

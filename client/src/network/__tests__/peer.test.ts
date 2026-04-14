@@ -2,61 +2,22 @@ import { describe, it, expect, vi } from "vitest";
 
 import { createPeerSession } from "../peer";
 import { validateMessage } from "../protocol";
+import { FakeDataConnection } from "./fakeDataConnection";
 
-type DataHandler = (data: unknown) => void;
-type VoidHandler = () => void;
-type ErrorHandler = (err: Error) => void;
-
-/** Minimal fake matching PeerJS DataConnection API surface used by createPeerSession */
-class FakeDataConnection {
-  open = true;
-  sent: unknown[] = [];
-
-  private dataHandlers = new Set<DataHandler>();
-  private closeHandlers = new Set<VoidHandler>();
-  private errorHandlers = new Set<ErrorHandler>();
-
-  send(data: unknown) {
-    if (!this.open) throw new Error("Connection is closed");
-    this.sent.push(data);
-  }
-
-  on(event: string, handler: (...args: unknown[]) => void): this {
-    if (event === "data") this.dataHandlers.add(handler as DataHandler);
-    else if (event === "close") this.closeHandlers.add(handler as VoidHandler);
-    else if (event === "error") this.errorHandlers.add(handler as ErrorHandler);
-    return this;
-  }
-
-  off(event: string, handler: (...args: unknown[]) => void): this {
-    if (event === "data") this.dataHandlers.delete(handler as DataHandler);
-    else if (event === "close") this.closeHandlers.delete(handler as VoidHandler);
-    else if (event === "error") this.errorHandlers.delete(handler as ErrorHandler);
-    return this;
-  }
-
-  // Test helpers
-  simulateData(data: unknown) {
-    for (const h of this.dataHandlers) h(data);
-  }
-
-  simulateClose() {
-    this.open = false;
-    for (const h of this.closeHandlers) h();
-  }
-}
-
-function createTestSession() {
+function createTestSession(opts?: { onSessionEnd?: () => void }) {
   const conn = new FakeDataConnection();
-  const destroyPeer = vi.fn();
-  // Cast to satisfy DataConnection type -- we only use the subset FakeDataConnection implements
-  const session = createPeerSession(conn as never, destroyPeer);
-  return { conn, destroyPeer, session };
+  // Cast to satisfy DataConnection type — we only use the subset FakeDataConnection implements.
+  const session = createPeerSession(conn as never, opts);
+  return { conn, session };
 }
 
 describe("P2P Protocol - validateMessage", () => {
   it("accepts valid P2P message types", () => {
-    const msg = { type: "action", action: { type: "PassPriority" } };
+    const msg = {
+      type: "action",
+      senderPlayerId: 1,
+      action: { type: "PassPriority" },
+    };
     expect(validateMessage(msg)).toEqual(msg);
 
     const concede = { type: "concede" };
@@ -66,14 +27,36 @@ describe("P2P Protocol - validateMessage", () => {
     expect(validateMessage(ping)).toEqual(ping);
   });
 
+  it("accepts new 3-4p multiplayer message types", () => {
+    const types = [
+      { type: "reconnect", playerToken: "abc" },
+      { type: "reconnect_rejected", reason: "kicked" },
+      { type: "kick", reason: "host kicked" },
+      { type: "player_kicked", playerId: 2, reason: "kicked" },
+      { type: "player_conceded", playerId: 2, reason: "Conceded" },
+      { type: "player_disconnected", playerId: 1 },
+      { type: "player_reconnected", playerId: 1 },
+      { type: "game_paused", reason: "Player disconnected" },
+      { type: "game_resumed" },
+      { type: "lobby_progress", joined: 2, total: 3 },
+    ];
+    for (const msg of types) {
+      expect(validateMessage(msg)).toEqual(msg);
+    }
+  });
+
   it("rejects unknown message types", () => {
-    expect(() => validateMessage({ type: "unknown_garbage" })).toThrow("Invalid message type");
+    expect(() => validateMessage({ type: "unknown_garbage" })).toThrow(
+      "Invalid message type",
+    );
   });
 
   it("rejects missing type field", () => {
     expect(() => validateMessage({})).toThrow("Invalid message: missing type field");
     expect(() => validateMessage(null)).toThrow("Invalid message: missing type field");
-    expect(() => validateMessage("not an object")).toThrow("Invalid message: missing type field");
+    expect(() => validateMessage("not an object")).toThrow(
+      "Invalid message: missing type field",
+    );
   });
 });
 
@@ -91,7 +74,11 @@ describe("PeerSession", () => {
     const handler = vi.fn();
     session.onMessage(handler);
 
-    const actionMessage = { type: "action" as const, action: { type: "PassPriority" as const } };
+    const actionMessage = {
+      type: "action" as const,
+      senderPlayerId: 0,
+      action: { type: "PassPriority" as const },
+    };
     conn.simulateData(actionMessage);
 
     expect(handler).toHaveBeenCalledTimes(1);
@@ -102,7 +89,11 @@ describe("PeerSession", () => {
   it("buffers messages when no listeners are attached, then flushes on subscribe", () => {
     const { conn, session } = createTestSession();
 
-    const actionMessage = { type: "action" as const, action: { type: "PassPriority" as const } };
+    const actionMessage = {
+      type: "action" as const,
+      senderPlayerId: 0,
+      action: { type: "PassPriority" as const },
+    };
     conn.simulateData(actionMessage);
 
     const handler = vi.fn();
@@ -114,7 +105,8 @@ describe("PeerSession", () => {
   });
 
   it("invokes disconnect handlers immediately if subscribed after disconnect", () => {
-    const { destroyPeer, session } = createTestSession();
+    const onSessionEnd = vi.fn();
+    const { session } = createTestSession({ onSessionEnd });
 
     session.close("Peer closed");
 
@@ -123,6 +115,17 @@ describe("PeerSession", () => {
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler).toHaveBeenCalledWith("Peer closed");
-    expect(destroyPeer).toHaveBeenCalledTimes(1);
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("onSessionEnd fires exactly once per session, even on cascading errors", () => {
+    const onSessionEnd = vi.fn();
+    const { conn, session } = createTestSession({ onSessionEnd });
+
+    conn.simulateClose();
+    conn.simulateClose(); // duplicate
+    session.close("manual"); // additional close attempt
+
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });

@@ -218,6 +218,20 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
         });
     }
 
+    // CR 104.3a: A player may concede at any time. Concede bypasses the WaitingFor
+    // dispatch entirely — there is no priority/state check. Eliminating the player
+    // performs CR 800.4a object cleanup and advances `waiting_for` if the conceder
+    // owned it (see `eliminate_player`).
+    if let GameAction::Concede { player_id } = action {
+        let mut events = Vec::new();
+        super::elimination::eliminate_player(state, player_id, &mut events);
+        return Ok(ActionResult {
+            events,
+            waiting_for: state.waiting_for.clone(),
+            log_entries: vec![],
+        });
+    }
+
     // Any deliberate player action (not auto-pass-related or a simple pass) cancels their auto-pass
     if let Some(player) = turn_control::authorized_submitter(state) {
         match &action {
@@ -2547,6 +2561,171 @@ mod tests {
         // uses priority_player. So this is a protocol-level concern.
         let result = apply(&mut state, GameAction::PassPriority);
         assert!(result.is_ok());
+    }
+
+    // --- GameAction::Concede (CR 104.3a + CR 800.4a) ---
+
+    fn setup_three_player_at_main_phase() -> GameState {
+        use crate::types::format::FormatConfig;
+        let mut state = GameState::new(FormatConfig::free_for_all(), 3, 42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        state
+    }
+
+    #[test]
+    fn concede_eliminates_player() {
+        // CR 104.3a + CR 800.4a: 3-player game, P1 concedes — P1 leaves, game continues.
+        let mut state = setup_three_player_at_main_phase();
+
+        let result = apply(
+            &mut state,
+            GameAction::Concede {
+                player_id: PlayerId(1),
+            },
+        )
+        .unwrap();
+
+        assert!(state.players[1].is_eliminated);
+        assert!(state.eliminated_players.contains(&PlayerId(1)));
+        assert!(result.events.iter().any(|e| matches!(
+            e,
+            GameEvent::PlayerEliminated {
+                player_id: PlayerId(1)
+            }
+        )));
+        // Game should NOT be over — P0 and P2 still alive.
+        assert!(!matches!(result.waiting_for, WaitingFor::GameOver { .. }));
+    }
+
+    #[test]
+    fn concede_during_opponents_priority() {
+        // CR 104.3a: A player may concede at any time, regardless of priority.
+        // Set priority to P0, but P1 concedes anyway — must succeed.
+        let mut state = setup_three_player_at_main_phase();
+        // P0 holds priority.
+        assert_eq!(state.priority_player, PlayerId(0));
+
+        let result = apply(
+            &mut state,
+            GameAction::Concede {
+                player_id: PlayerId(1),
+            },
+        );
+
+        assert!(
+            result.is_ok(),
+            "concede must succeed regardless of priority"
+        );
+        assert!(state.players[1].is_eliminated);
+    }
+
+    #[test]
+    fn concede_owner_of_waiting_for_advances_state() {
+        // CR 800.4a + CR 104.3a: When the conceding player owned the active WaitingFor
+        // (here: DeclareAttackers, but the same advancement applies to TargetSelection,
+        // ScryChoice, ManaPayment, and every other WaitingFor variant that references
+        // a specific player), state must advance to Priority for the next living
+        // player so the game does not deadlock waiting on a player who has left.
+        let mut state = setup_three_player_at_main_phase();
+        state.waiting_for = WaitingFor::DeclareAttackers {
+            player: PlayerId(1),
+            valid_attacker_ids: vec![],
+            valid_attack_targets: vec![],
+        };
+
+        let result = apply(
+            &mut state,
+            GameAction::Concede {
+                player_id: PlayerId(1),
+            },
+        )
+        .unwrap();
+
+        assert!(state.players[1].is_eliminated);
+        // WaitingFor must have advanced — the next living player after P1 is P2.
+        assert!(
+            matches!(
+                result.waiting_for,
+                WaitingFor::Priority {
+                    player: PlayerId(2)
+                }
+            ),
+            "expected Priority for P2 after P1 (owner of WaitingFor) conceded; got {:?}",
+            result.waiting_for
+        );
+    }
+
+    #[test]
+    fn concede_non_owner_of_waiting_for_preserves_state() {
+        // CR 800.4a: When the conceding player does NOT own the active WaitingFor
+        // (e.g., another player has priority or is choosing), the WaitingFor state
+        // is preserved — only the conceder's permanents/stack-objects are removed.
+        let mut state = setup_three_player_at_main_phase();
+        // P0 holds priority; P1 concedes — P0 keeps priority.
+        assert_eq!(state.priority_player, PlayerId(0));
+
+        let result = apply(
+            &mut state,
+            GameAction::Concede {
+                player_id: PlayerId(1),
+            },
+        )
+        .unwrap();
+
+        assert!(state.players[1].is_eliminated);
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::Priority {
+                player: PlayerId(0)
+            }
+        ));
+    }
+
+    #[test]
+    fn concede_two_player_ends_game() {
+        // CR 104.2a: In a 2-player game, when one player concedes, the other wins.
+        let mut state = setup_game_at_main_phase();
+
+        let result = apply(
+            &mut state,
+            GameAction::Concede {
+                player_id: PlayerId(0),
+            },
+        )
+        .unwrap();
+
+        assert!(state.players[0].is_eliminated);
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::GameOver {
+                winner: Some(PlayerId(1))
+            }
+        ));
+    }
+
+    #[test]
+    fn concede_three_player_continues() {
+        // CR 800.4a: In a 3-player game, when one concedes, the remaining two continue.
+        let mut state = setup_three_player_at_main_phase();
+
+        let result = apply(
+            &mut state,
+            GameAction::Concede {
+                player_id: PlayerId(2),
+            },
+        )
+        .unwrap();
+
+        assert!(state.players[2].is_eliminated);
+        assert!(!state.players[0].is_eliminated);
+        assert!(!state.players[1].is_eliminated);
+        assert!(!matches!(result.waiting_for, WaitingFor::GameOver { .. }));
     }
 
     #[test]

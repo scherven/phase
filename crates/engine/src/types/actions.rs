@@ -214,6 +214,17 @@ pub enum GameAction {
     ChooseX {
         value: u32,
     },
+    /// CR 104.3a: A player may concede the game at any time. That player leaves the game.
+    /// CR 800.4a: When a player leaves a multiplayer game, all objects owned by that player
+    /// leave the game and all spells/abilities controlled by that player cease to exist.
+    ///
+    /// Concede is always legal regardless of priority or `WaitingFor` state — the action
+    /// handler bypasses the normal `(WaitingFor, GameAction)` match dispatch and delegates
+    /// directly to `eliminate_player`. It is intentionally NOT included in
+    /// `legal_actions()` enumeration; callers (UI, network layer) surface it directly.
+    Concede {
+        player_id: PlayerId,
+    },
 }
 
 /// CR 701.48a: Learn choice — rummage a specific card, or skip entirely.

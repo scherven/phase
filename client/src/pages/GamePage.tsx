@@ -36,6 +36,9 @@ import { CardChoiceModal } from "../components/modal/CardChoiceModal.tsx";
 import { ChoiceModal } from "../components/modal/ChoiceModal.tsx";
 import { ModeChoiceModal } from "../components/modal/ModeChoiceModal.tsx";
 import { ReplacementModal } from "../components/modal/ReplacementModal.tsx";
+import { BattleProtectorModal } from "../components/modal/BattleProtectorModal.tsx";
+import { TributeModal } from "../components/modal/TributeModal.tsx";
+import { CombatTaxModal } from "../components/modal/CombatTaxModal.tsx";
 import { StackDisplay } from "../components/stack/StackDisplay.tsx";
 import { TargetingOverlay } from "../components/targeting/TargetingOverlay.tsx";
 import { PlayerHud } from "../components/hud/PlayerHud.tsx";
@@ -52,6 +55,9 @@ import { GameMenu } from "../components/chrome/GameMenu.tsx";
 import { ConcedeDialog } from "../components/multiplayer/ConcedeDialog.tsx";
 import { ConnectionToast } from "../components/multiplayer/ConnectionToast.tsx";
 import { EmoteOverlay } from "../components/multiplayer/EmoteOverlay.tsx";
+import { LobbyProgress } from "../components/multiplayer/LobbyProgress.tsx";
+import { DisconnectChoiceDialog } from "../components/hud/DisconnectChoiceDialog.tsx";
+import { PausedBanner } from "../components/chrome/PausedBanner.tsx";
 import type { P2PAdapterEvent } from "../adapter/p2p-adapter.ts";
 import { WebSocketAdapter } from "../adapter/ws-adapter.ts";
 import type { WsAdapterEvent } from "../adapter/ws-adapter.ts";
@@ -121,6 +127,12 @@ export function GamePage() {
     | { status: "reconnecting"; attempt: number; maxAttempts: number }
     | { status: "failed" }
   >({ status: "idle" });
+
+  // P2P 3-4p multiplayer additions
+  const [disconnectChoice, setDisconnectChoice] = useState<
+    { playerId: number; gracePeriodMs: number } | null
+  >(null);
+  const [pauseReason, setPauseReason] = useState<string | null>(null);
 
   // Multiplayer UX state
   const [showConcedeDialog, setShowConcedeDialog] = useState(false);
@@ -257,6 +269,44 @@ export function GamePage() {
       case "opponentDisconnected":
         setOpponentDisconnected(true);
         break;
+      case "opponentDisconnectedWithChoice":
+        setDisconnectChoice({
+          playerId: event.playerId,
+          gracePeriodMs: event.gracePeriodMs,
+        });
+        setPauseReason(`Player ${event.playerId + 1} disconnected`);
+        break;
+      case "playerReconnected":
+        // Dismiss the disconnect modal if it was waiting on this player.
+        setDisconnectChoice((cur) => (cur?.playerId === event.playerId ? null : cur));
+        break;
+      case "gamePaused":
+        setPauseReason(event.reason);
+        break;
+      case "gameResumed":
+        setPauseReason(null);
+        setDisconnectChoice(null);
+        setOpponentDisconnected(false);
+        break;
+      case "playerKicked":
+        // If this was the player whose disconnect was prompting the dialog,
+        // dismiss it now that they're conceded.
+        setDisconnectChoice((cur) => (cur?.playerId === event.playerId ? null : cur));
+        break;
+      case "lobbyProgress": {
+        const { setLobbyProgress } = useGameStore.getState();
+        setLobbyProgress({ joined: event.joined, total: event.total });
+        // When all seats arrive, clear lobby UI — game_setup is about to fire.
+        if (event.joined >= event.total) {
+          setLobbyProgress(null);
+          setWaitingForOpponent(false);
+        }
+        break;
+      }
+      case "playerConceded":
+        // Treat conceded players the same as kicked for dialog dismissal.
+        setDisconnectChoice((cur) => (cur?.playerId === event.playerId ? null : cur));
+        break;
       case "error":
         setReconnectState({ status: "failed" });
         break;
@@ -324,6 +374,10 @@ export function GamePage() {
         receivedEmote={receivedEmote}
         timerRemaining={timerRemaining}
         gameStartedAt={gameStartedAt}
+        disconnectChoice={disconnectChoice}
+        onDismissDisconnectChoice={() => setDisconnectChoice(null)}
+        pauseReason={pauseReason}
+        isP2PHost={mode === "p2p-host"}
       />
     </GameProvider>
   );
@@ -351,6 +405,11 @@ interface GamePageContentProps {
   receivedEmote: string | null;
   timerRemaining: Record<number, number>;
   gameStartedAt: number | null;
+  // 3-4p P2P additions
+  disconnectChoice: { playerId: number; gracePeriodMs: number } | null;
+  onDismissDisconnectChoice: () => void;
+  pauseReason: string | null;
+  isP2PHost: boolean;
 }
 
 function GamePageContent({
@@ -372,11 +431,16 @@ function GamePageContent({
   receivedEmote,
   timerRemaining,
   gameStartedAt,
+  disconnectChoice,
+  onDismissDisconnectChoice,
+  pauseReason,
+  isP2PHost,
 }: GamePageContentProps) {
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
 
   const waitingFor = useGameStore((s) => s.waitingFor);
+  const lobbyProgress = useGameStore((s) => s.lobbyProgress);
   const dispatch = useGameDispatch();
   const inspectedObjectId = useUiStore((s) => s.inspectedObjectId);
   const objects = useGameStore((s) => s.gameState?.objects);
@@ -629,6 +693,20 @@ function GamePageContent({
             <div className="pointer-events-auto">
               <OpponentHud
                 opponentName={isOnlineMode ? opponentDisplayName : undefined}
+                onKickPlayer={
+                  isP2PHost
+                    ? (pid) => {
+                        // The host adapter is exposed via the game store.
+                        // We type-cast to the host-specific surface; if the
+                        // game isn't actually a P2P host (mode mismatch), the
+                        // optional method call is a no-op.
+                        const adapter = useGameStore.getState().adapter as
+                          | { kickPlayer?: (pid: number) => Promise<void> }
+                          | null;
+                        void adapter?.kickPlayer?.(pid);
+                      }
+                    : undefined
+                }
               />
             </div>
           </div>
@@ -777,8 +855,15 @@ function GamePageContent({
         </div>
       )}
 
-      {/* Opponent disconnected overlay */}
-      {opponentDisconnected && (
+      {/*
+        Opponent disconnected overlays.
+
+        Server (WS) disconnects still use the static yellow overlay since
+        server mode doesn't yet emit `opponentDisconnectedWithChoice`. P2P
+        disconnects use the new `DisconnectChoiceDialog` (host) and
+        `PausedBanner` (everyone) — see plan §6 + adapter §4.
+      */}
+      {opponentDisconnected && !pauseReason && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60" />
           <div className="relative z-10 w-full max-w-sm rounded-[24px] border border-yellow-400/30 bg-[#0b1020]/96 p-6 text-center shadow-[0_28px_80px_rgba(0,0,0,0.42)] backdrop-blur-md">
@@ -793,6 +878,40 @@ function GamePageContent({
             </p>
           </div>
         </div>
+      )}
+
+      {/* P2P pause banner — visible to everyone while paused. */}
+      <PausedBanner isVisible={pauseReason !== null} reason={pauseReason ?? ""} />
+
+      {/* P2P host-only disconnect decision modal. */}
+      {isP2PHost && disconnectChoice !== null && (
+        <DisconnectChoiceDialog
+          isOpen
+          playerLabel={`Opp ${disconnectChoice.playerId + 1}`}
+          gracePeriodMs={disconnectChoice.gracePeriodMs}
+          onPauseAndWait={() => {
+            const adapter = useGameStore.getState().adapter as
+              | { holdForReconnect?: (pid: number) => void }
+              | null;
+            adapter?.holdForReconnect?.(disconnectChoice.playerId);
+          }}
+          onContinueWithout={() => {
+            const adapter = useGameStore.getState().adapter as
+              | { concedeDisconnected?: (pid: number) => Promise<void> }
+              | null;
+            void adapter?.concedeDisconnected?.(disconnectChoice.playerId);
+          }}
+          onDismiss={onDismissDisconnectChoice}
+        />
+      )}
+
+      {/* Pre-game lobby progress (3-4p P2P only). */}
+      {lobbyProgress !== null && (
+        <LobbyProgress
+          joined={lobbyProgress.joined}
+          total={lobbyProgress.total}
+          roomCode={hostGameCode ?? undefined}
+        />
       )}
 
       {/* Card data missing modal */}
@@ -857,6 +976,9 @@ function GamePageContent({
         canActForWaitingState && <ChooseXValueUI />}
       {waitingFor?.type === "ReplacementChoice" &&
         canActForWaitingState && <ReplacementModal />}
+      <BattleProtectorModal />
+      <TributeModal />
+      <CombatTaxModal />
       <ModeChoiceModal />
       <AdventureCastModal />
       <ModalFaceModal />

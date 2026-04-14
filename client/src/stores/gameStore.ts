@@ -55,6 +55,13 @@ interface GameStoreState {
   spellCosts: Record<string, ManaCost>;
   stateHistory: GameState[];
   turnCheckpoints: GameState[];
+  /**
+   * Pre-game P2P lobby fill state, populated by the `lobbyProgress` adapter
+   * event and cleared when `game_setup` arrives (game starts). `null` when
+   * not in a pre-game P2P lobby (i.e. during AI/online games or after the
+   * game has started).
+   */
+  lobbyProgress: { joined: number; total: number } | null;
 }
 
 interface GameStoreActions {
@@ -76,6 +83,7 @@ interface GameStoreActions {
   setWaitingFor: (waitingFor: WaitingFor | null) => void;
   setLegalActions: (actions: GameAction[]) => void;
   setGameMode: (mode: GameMode) => void;
+  setLobbyProgress: (progress: { joined: number; total: number } | null) => void;
 }
 
 export type GameStore = GameStoreState & GameStoreActions;
@@ -95,6 +103,7 @@ const initialState: GameStoreState = {
   spellCosts: {},
   stateHistory: [],
   turnCheckpoints: [],
+  lobbyProgress: null,
 };
 
 export const useGameStore = create<GameStore>()(
@@ -234,6 +243,10 @@ export const useGameStore = create<GameStore>()(
 
     setGameMode: (mode) => {
       set({ gameMode: mode });
+    },
+
+    setLobbyProgress: (progress) => {
+      set({ lobbyProgress: progress });
     },
   })),
 );

@@ -139,7 +139,6 @@ export function GameSetupPage() {
   };
 
   const noDeckSelected = !activeDeckName;
-  const needsServer = playerCount > 2;
 
   // Sidebar deck preview
   const selectedCompat = activeDeckName ? compatibilities[activeDeckName] : undefined;
@@ -385,20 +384,12 @@ export function GameSetupPage() {
                   Play Online
                 </button>
 
-                {!needsServer && (
-                  <button
-                    onClick={handlePlayP2P}
-                    className={menuButtonClass({ tone: "cyan", size: "sm" })}
-                  >
-                    Play P2P
-                  </button>
-                )}
-
-                {needsServer && (
-                  <p className="text-center text-[10px] text-gray-500">
-                    P2P not available for 3+ players
-                  </p>
-                )}
+                <button
+                  onClick={handlePlayP2P}
+                  className={menuButtonClass({ tone: "cyan", size: "sm" })}
+                >
+                  Play P2P
+                </button>
               </div>
             </MenuPanel>
           </div>

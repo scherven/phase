@@ -13,7 +13,7 @@ import type { FeedDeck } from "../types/feed";
 import { createGameLoopController } from "../game/controllers/gameLoopController";
 import { dispatchAction, processRemoteUpdate } from "../game/dispatch";
 import { hostRoom, joinRoom } from "../network/connection";
-import { createPeerSession } from "../network/peer";
+import { loadP2PSession } from "../services/p2pSession";
 import type { ParsedDeck } from "../services/deckParser";
 import { consumeRecentAutoUpdateMarker } from "../pwa/updateMarker";
 import { ensureCardDatabase } from "../services/cardData";
@@ -227,7 +227,12 @@ export function GameProvider({
     let cancelled = false;
     let wsUnsubscribe: (() => void) | null = null;
     let p2pUnsubscribe: (() => void) | null = null;
-    let p2pHostDestroy: (() => void) | null = null;
+    // Per plan §4 "Peer ownership": the adapter's `dispose()` is the SOLE
+    // caller of `hostPeer.destroy()` / guest `peer.destroy()`. GameProvider
+    // holds only the adapter reference and calls `dispose()` on unmount;
+    // direct `peer.destroy()` calls would double-destroy and also skip the
+    // per-session cleanup that `dispose()` performs.
+    let p2pAdapter: P2PHostAdapter | P2PGuestAdapter | null = null;
     let controller: ReturnType<typeof createGameLoopController> | null = null;
 
     if (isP2P) {
@@ -242,21 +247,30 @@ export function GameProvider({
       const setupP2P = async () => {
         if (cancelled) return;
 
+        const effectivePlayerCount = playerCount ?? 2;
+
         try {
           if (mode === "p2p-host") {
-            const host = hostRoom();
-            p2pHostDestroy = host.destroy;
+            const host = await hostRoom();
+            // Before the adapter takes ownership of the Peer, `host.destroy`
+            // is the only way to tear it down; after construction, use
+            // `adapter.dispose()`.
+            if (cancelled) { host.destroy(); return; }
 
             onP2PEventRef.current?.({ type: "roomCreated", roomCode: host.roomCode });
             onP2PEventRef.current?.({ type: "waitingForGuest" });
 
-            const { conn, destroyPeer } = await host.waitForGuest();
-            if (cancelled) { destroyPeer(); return; }
-
-            onP2PEventRef.current?.({ type: "guestConnected" });
-
-            const session = createPeerSession(conn, destroyPeer);
-            const adapter = new P2PHostAdapter(deckList, session);
+            // The adapter owns the host Peer reference and subscribes to
+            // guest connections internally via `peer.on("connection", ...)`.
+            // No `createPeerSession` here — the adapter wraps each guest.
+            const adapter = new P2PHostAdapter(
+              deckList,
+              host.peer,
+              effectivePlayerCount,
+              formatConfig,
+              matchConfig,
+            );
+            p2pAdapter = adapter;
 
             p2pUnsubscribe = adapter.onEvent((event) => {
               if (event.type === "playerIdentity") {
@@ -268,7 +282,7 @@ export function GameProvider({
               onP2PEventRef.current?.(event);
             });
 
-            await initGame(gameId, adapter, undefined, undefined, undefined, matchConfig);
+            await initGame(gameId, adapter, undefined, formatConfig, effectivePlayerCount, matchConfig);
             if (cancelled) return;
             controller = createGameLoopController({ mode: "online" });
             controller.start();
@@ -277,11 +291,25 @@ export function GameProvider({
           } else {
             // p2p-join
             const code = joinCode!;
-            const { conn, destroyPeer } = await joinRoom(code);
-            if (cancelled) { destroyPeer(); return; }
+            const { conn, peer } = await joinRoom(code);
+            // Before the adapter takes ownership of the Peer, direct
+            // `peer.destroy()` is the only way to tear it down; after
+            // construction, use `adapter.dispose()`.
+            if (cancelled) { peer.destroy(); return; }
 
-            const session = createPeerSession(conn, destroyPeer);
-            const adapter = new P2PGuestAdapter(deckList, session);
+            // hostPeerId is reconstructed the same way joinRoom builds it:
+            // PEER_ID_PREFIX + code. Guest adapter needs it for auto-reconnect
+            // and for sessionStorage keying.
+            const hostPeerId = `phase-${code}`;
+            const existing = loadP2PSession(hostPeerId);
+            const adapter = new P2PGuestAdapter(
+              deckList,
+              peer,
+              hostPeerId,
+              conn,
+              existing?.playerToken,
+            );
+            p2pAdapter = adapter;
 
             p2pUnsubscribe = adapter.onEvent((event) => {
               if (event.type === "playerIdentity") {
@@ -313,7 +341,10 @@ export function GameProvider({
         cancelled = true;
         if (controller) controller.dispose();
         if (p2pUnsubscribe) p2pUnsubscribe();
-        if (p2pHostDestroy) p2pHostDestroy();
+        // `adapter.dispose()` is the SOLE tear-down path for the host/guest
+        // Peer (see plan §4 "Peer ownership"). It also closes per-guest
+        // sessions, clears timers, and disposes the WASM engine.
+        if (p2pAdapter) p2pAdapter.dispose();
         audioManager.setContext("menu");
         reset();
       };

@@ -133,6 +133,14 @@ fn collect_evidence_candidate_combos(
     combos
 }
 
+/// `GameAction::Concede` is intentionally NOT produced by any of the
+/// `candidate_actions*` enumerators. Per CR 104.3a a player may concede "at any
+/// time" regardless of priority or `WaitingFor` state, so `engine.rs::apply()`
+/// dispatches it before the normal `(WaitingFor, action)` match. Exposing it as
+/// a legal-action candidate would (a) let AI search prune toward suicide and
+/// (b) duplicate the always-available UI affordance the network/UI layer
+/// surfaces directly. Callers that need to submit a concede do so by
+/// constructing `GameAction::Concede { player_id }` directly.
 pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
     match &state.waiting_for {
         WaitingFor::ReplacementChoice {

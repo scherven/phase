@@ -11,7 +11,23 @@ export interface PeerSession {
   close(reason?: string): void;
 }
 
-export function createPeerSession(conn: DataConnection, destroyPeer: () => void): PeerSession {
+export interface PeerSessionOptions {
+  /**
+   * Optional callback invoked exactly once when this session ends, after
+   * `disconnectHandlers` have run. Use this to release per-session resources
+   * (e.g., remove the session from a map of active guests). DO NOT destroy the
+   * parent `Peer` here — that would cascade-kill all sibling sessions in a
+   * hub-and-spoke (multi-guest) host setup. Peer lifetime is owned by the
+   * adapter that created the `Peer`.
+   */
+  onSessionEnd?: () => void;
+}
+
+export function createPeerSession(
+  conn: DataConnection,
+  options: PeerSessionOptions = {},
+): PeerSession {
+  const { onSessionEnd } = options;
   const messageHandlers = new Set<(msg: P2PMessage) => void>();
   const disconnectHandlers = new Set<(reason: string) => void>();
   let closed = false;
@@ -79,8 +95,16 @@ export function createPeerSession(conn: DataConnection, destroyPeer: () => void)
     for (const handler of disconnectHandlers) {
       handler(reason);
     }
-    try { destroyPeer(); } catch (e) {
-      console.warn("Error destroying peer:", e);
+    // Best-effort: close the DataConnection so the underlying RTCDataChannel
+    // releases. Do NOT touch the parent `Peer` — that lifetime is owned by the
+    // creator of the `Peer` (host adapter / guest adapter).
+    try { conn.close(); } catch (e) {
+      console.warn("Error closing data connection:", e);
+    }
+    if (onSessionEnd) {
+      try { onSessionEnd(); } catch (e) {
+        console.warn("onSessionEnd handler threw:", e);
+      }
     }
   };
 
