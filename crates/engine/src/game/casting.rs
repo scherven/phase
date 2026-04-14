@@ -2053,6 +2053,26 @@ pub fn pay_ability_cost(
                 }
             }
         }
+        // CR 118.3 + CR 702.97a: "Exile this card from your graveyard" as a self-ref
+        // activation cost (Scavenge, Renew, and other graveyard-activated abilities).
+        // The source is identified by SelfRef; no player choice is needed, so this
+        // is an auto-payable cost (no WaitingFor round-trip). Non-self exile costs
+        // (targeted exile from any zone) are still handled by the catch-all below.
+        AbilityCost::Exile {
+            filter: Some(TargetFilter::SelfRef),
+            zone: Some(Zone::Graveyard),
+            count: 1,
+        } => {
+            let obj = state.objects.get(&source_id).ok_or_else(|| {
+                EngineError::InvalidAction("Source object not found for exile cost".to_string())
+            })?;
+            if obj.zone != Zone::Graveyard {
+                return Err(EngineError::ActionNotAllowed(
+                    "Cannot exile from graveyard: source is not in a graveyard".to_string(),
+                ));
+            }
+            super::zones::move_to_zone(state, source_id, Zone::Exile, events);
+        }
         // Waterbend cost was already paid via ManaPayment before reaching pay_ability_cost.
         AbilityCost::Waterbend { .. } => {}
         AbilityCost::Unimplemented { description } => {

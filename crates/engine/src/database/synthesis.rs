@@ -465,6 +465,67 @@ pub fn synthesize_cycling(face: &mut CardFace) {
     face.abilities.extend(cycling_abilities);
 }
 
+/// CR 702.97a: Synthesize Scavenge into an activated ability on the card.
+///
+/// Scavenge is an activated ability that functions only while the card with scavenge is
+/// in a graveyard. "Scavenge [cost]" means "[Cost], Exile this card from your graveyard:
+/// Put a number of +1/+1 counters equal to this card's power on target creature. Activate
+/// only as a sorcery."
+///
+/// Power snapshot timing (CR 208.3 + CR 400.7): At resolution the source has already
+/// been exiled as a cost; CR 702.97a specifies "the power of the card you exiled",
+/// which is read from the exile-zone object via `QuantityRef::SelfPower` (with LKI
+/// fallback if the object is somehow gone). Non-battlefield zones do not run layer
+/// computation, so the read value equals the card's printed power — the correct
+/// target for "this card's power" in the graveyard reminder text. No new quantity
+/// ref is needed; `SelfPower` is already the right abstraction.
+pub fn synthesize_scavenge(face: &mut CardFace) {
+    use crate::types::ability::{ActivationRestriction, QuantityRef};
+
+    let scavenge_abilities: Vec<AbilityDefinition> = face
+        .keywords
+        .iter()
+        .filter_map(|kw| {
+            let Keyword::Scavenge(cost) = kw else {
+                return None;
+            };
+            // CR 118.3: Composite cost — pay mana, then exile this card from graveyard.
+            let composite_cost = AbilityCost::Composite {
+                costs: vec![
+                    AbilityCost::Mana { cost: cost.clone() },
+                    // CR 702.97a: "Exile this card from your graveyard" — SelfRef + Graveyard
+                    // is auto-paid by pay_ability_cost (no player choice needed).
+                    AbilityCost::Exile {
+                        count: 1,
+                        zone: Some(Zone::Graveyard),
+                        filter: Some(TargetFilter::SelfRef),
+                    },
+                ],
+            };
+            // CR 702.97a: "Put a number of +1/+1 counters equal to this card's power on
+            // target creature." SelfPower is resolved via LKI at resolution time so the
+            // power read is the card's last known power before it was exiled.
+            let effect = Effect::PutCounter {
+                counter_type: "P1P1".to_string(),
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::SelfPower,
+                },
+                target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+            };
+            let mut def = AbilityDefinition::new(AbilityKind::Activated, effect)
+                .cost(composite_cost)
+                // CR 702.97a: "Activate only as a sorcery."
+                .sorcery_speed()
+                .activation_restrictions(vec![ActivationRestriction::AsSorcery]);
+            // CR 702.97a: "functions only while the card with scavenge is in a graveyard."
+            def.activation_zone = Some(Zone::Graveyard);
+            Some(def)
+        })
+        .collect();
+
+    face.abilities.extend(scavenge_abilities);
+}
+
 /// Convert a typecycling subtype string to a `TargetFilter` for library search.
 ///
 /// Single subtypes (e.g., "Plains", "Forest") → subtype filter.
@@ -569,6 +630,7 @@ pub fn synthesize_all(face: &mut CardFace) {
     synthesize_mobilize(face);
     synthesize_level_up(face);
     synthesize_cycling(face);
+    synthesize_scavenge(face);
     synthesize_casualty(face);
     synthesize_entwine(face);
 }
@@ -752,4 +814,258 @@ fn build_oracle_face_inner(
     face.brawl_commander = compute_brawl_commander(mtgjson, &face);
     synthesize_all(&mut face);
     face
+}
+
+#[cfg(test)]
+mod scavenge_synthesis_tests {
+    use super::*;
+    use crate::types::ability::{ActivationRestriction, QuantityRef};
+    use crate::types::mana::{ManaCost, ManaCostShard};
+
+    fn face_with_scavenge(cost: ManaCost) -> CardFace {
+        let mut face = CardFace::default();
+        face.keywords.push(Keyword::Scavenge(cost));
+        face
+    }
+
+    /// CR 702.97a: Scavenge synthesis produces exactly one activated ability whose
+    /// shape matches the reminder text — graveyard activation, sorcery speed,
+    /// composite cost of mana + self-exile, +1/+1 counters on target creature
+    /// scaled by SelfPower.
+    #[test]
+    fn synthesize_scavenge_builds_activated_ability_with_correct_shape() {
+        let cost = ManaCost::Cost {
+            shards: vec![ManaCostShard::Green],
+            generic: 3,
+        };
+        let mut face = face_with_scavenge(cost.clone());
+        synthesize_scavenge(&mut face);
+
+        assert_eq!(face.abilities.len(), 1, "exactly one scavenge ability");
+        let def = &face.abilities[0];
+        assert_eq!(def.kind, AbilityKind::Activated);
+        assert_eq!(def.activation_zone, Some(Zone::Graveyard));
+        assert!(def.sorcery_speed);
+        assert!(def
+            .activation_restrictions
+            .contains(&ActivationRestriction::AsSorcery));
+
+        // CR 118.3: Composite cost — mana + exile-self-from-graveyard.
+        match def.cost.as_ref().expect("scavenge must have a cost") {
+            AbilityCost::Composite { costs } => {
+                assert_eq!(costs.len(), 2);
+                assert!(matches!(&costs[0], AbilityCost::Mana { cost: c } if *c == cost));
+                assert!(matches!(
+                    &costs[1],
+                    AbilityCost::Exile {
+                        count: 1,
+                        zone: Some(Zone::Graveyard),
+                        filter: Some(TargetFilter::SelfRef),
+                    }
+                ));
+            }
+            other => panic!("expected Composite cost, got {:?}", other),
+        }
+
+        // CR 702.97a: Effect is +1/+1 counters equal to SelfPower on target creature.
+        match def.effect.as_ref() {
+            Effect::PutCounter {
+                counter_type,
+                count,
+                target,
+            } => {
+                assert_eq!(counter_type, "P1P1");
+                assert!(matches!(
+                    count,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::SelfPower
+                    }
+                ));
+                assert!(
+                    matches!(target, TargetFilter::Typed(tf) if tf.type_filters.contains(&TypeFilter::Creature))
+                );
+            }
+            other => panic!("expected PutCounter effect, got {:?}", other),
+        }
+    }
+
+    /// Scavenge {0} (Slitherhead) — cost-0 mana still produces a well-formed ability.
+    #[test]
+    fn synthesize_scavenge_handles_zero_cost() {
+        let cost = ManaCost::default();
+        let mut face = face_with_scavenge(cost);
+        synthesize_scavenge(&mut face);
+        assert_eq!(face.abilities.len(), 1);
+    }
+
+    /// Cards without Scavenge are unaffected.
+    #[test]
+    fn synthesize_scavenge_is_noop_without_keyword() {
+        let mut face = CardFace::default();
+        face.keywords.push(Keyword::Flying);
+        synthesize_scavenge(&mut face);
+        assert!(face.abilities.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod scavenge_runtime_tests {
+    use super::*;
+    use crate::game::casting::{can_activate_ability_now, handle_activate_ability};
+    use crate::game::zones::create_object;
+    use crate::types::counter::CounterType;
+    use crate::types::game_state::GameState;
+    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::mana::ManaCost;
+    use crate::types::player::PlayerId;
+
+    /// Helper: put a creature in the graveyard with Scavenge synthesized on it, and
+    /// stage a target creature on the battlefield. Returns (source_id, target_id).
+    fn setup_scavenge_scenario(
+        state: &mut GameState,
+        scavenge_cost: ManaCost,
+    ) -> (ObjectId, ObjectId) {
+        let source = create_object(
+            state,
+            CardId(1),
+            PlayerId(0),
+            "Scavenge Source".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.power = Some(4);
+            obj.toughness = Some(4);
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.keywords.push(Keyword::Scavenge(scavenge_cost.clone()));
+        }
+        // Synthesize to attach the activated ability.
+        let mut face = CardFace::default();
+        face.keywords.push(Keyword::Scavenge(scavenge_cost));
+        synthesize_scavenge(&mut face);
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .abilities
+            .extend(face.abilities);
+
+        let target = create_object(
+            state,
+            CardId(2),
+            PlayerId(0),
+            "Target Creature".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&target).unwrap();
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            obj.card_types.core_types.push(CoreType::Creature);
+        }
+
+        (source, target)
+    }
+
+    /// CR 702.97a: Scavenge can be activated while the source is in a graveyard.
+    /// CR 702.97a: Activation is gated by sorcery timing.
+    #[test]
+    fn scavenge_is_activatable_from_graveyard_at_sorcery_speed() {
+        let mut state = GameState::new_two_player(42);
+        // Active player's main phase, empty stack — sorcery-speed window.
+        state.active_player = PlayerId(0);
+        state.phase = Phase::PreCombatMain;
+
+        let zero_cost = ManaCost::default(); // Scavenge {0}
+        let (source, _target) = setup_scavenge_scenario(&mut state, zero_cost);
+
+        assert!(
+            can_activate_ability_now(&state, PlayerId(0), source, 0),
+            "Scavenge {{0}} should be activatable from graveyard during sorcery window"
+        );
+    }
+
+    /// CR 702.97a: Scavenge cannot be activated at instant speed.
+    #[test]
+    fn scavenge_rejects_instant_speed() {
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        // Outside the sorcery window (upkeep phase is not a main phase).
+        state.phase = Phase::Upkeep;
+
+        let (source, _target) = setup_scavenge_scenario(&mut state, ManaCost::default());
+
+        assert!(
+            !can_activate_ability_now(&state, PlayerId(0), source, 0),
+            "Scavenge must reject activation outside the sorcery-speed window"
+        );
+    }
+
+    /// CR 602.1: Scavenge can only be activated while the source is in the graveyard.
+    #[test]
+    fn scavenge_rejects_from_battlefield() {
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        state.phase = Phase::PreCombatMain;
+
+        let (source, _target) = setup_scavenge_scenario(&mut state, ManaCost::default());
+        // Move source out of graveyard onto the battlefield.
+        crate::game::zones::move_to_zone(&mut state, source, Zone::Battlefield, &mut Vec::new());
+
+        assert!(
+            !can_activate_ability_now(&state, PlayerId(0), source, 0),
+            "Scavenge must reject activation when source is not in a graveyard"
+        );
+    }
+
+    /// CR 702.97a + CR 208.3: End-to-end — activating Scavenge exiles the source from
+    /// graveyard as a cost, then on resolution places +1/+1 counters equal to SelfPower
+    /// (read via LKI) on target creature.
+    #[test]
+    fn scavenge_activation_exiles_source_and_places_counters_on_target() {
+        use crate::game::stack::resolve_top;
+
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        state.phase = Phase::PreCombatMain;
+        // Use Scavenge {0} (Slitherhead-shaped) to avoid mana-pool plumbing in the test.
+        let (source, target) = setup_scavenge_scenario(&mut state, ManaCost::default());
+
+        // Activate the ability.
+        let mut events = Vec::new();
+        let result = handle_activate_ability(&mut state, PlayerId(0), source, 0, &mut events);
+        assert!(result.is_ok(), "activation must succeed: {:?}", result);
+
+        // CR 702.97a: Exile cost — source moved graveyard → exile as cost payment.
+        assert_eq!(
+            state.objects[&source].zone,
+            Zone::Exile,
+            "Scavenge source must be exiled as a cost"
+        );
+        assert!(
+            !state.players[0].graveyard.contains(&source),
+            "source must be removed from graveyard"
+        );
+        assert!(
+            state.exile.contains(&source),
+            "source must be in exile zone"
+        );
+
+        // Ability is on the stack awaiting resolution.
+        assert!(!state.stack.is_empty(), "ability must be on the stack");
+
+        let mut resolve_events = Vec::new();
+        resolve_top(&mut state, &mut resolve_events);
+
+        // CR 702.97a + CR 208.3: target creature gains counters equal to source's LKI power (4).
+        let counter_count = state.objects[&target]
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(
+            counter_count, 4,
+            "target must gain +1/+1 counters equal to source's LKI power (4)"
+        );
+    }
 }
