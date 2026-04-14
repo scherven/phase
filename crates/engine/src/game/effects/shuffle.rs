@@ -22,14 +22,22 @@ pub fn resolve(
         })
         .unwrap_or(ability.controller);
 
-    let player = state
-        .players
-        .iter_mut()
-        .find(|p| p.id == target_player)
-        .ok_or(EffectError::PlayerNotFound)?;
+    // CR 701.24: "Can't shuffle" suppresses library shuffling. Per CR 701.24d,
+    // if a player would shuffle their library and can't, they don't shuffle.
+    // The effect itself still resolves (EffectResolved fires below).
+    let suppressed =
+        crate::game::static_abilities::player_has_static_other(state, target_player, "CantShuffle");
 
-    // CR 701.24a: Randomize cards so that no player knows their order.
-    player.library.shuffle(&mut state.rng);
+    if !suppressed {
+        let player = state
+            .players
+            .iter_mut()
+            .find(|p| p.id == target_player)
+            .ok_or(EffectError::PlayerNotFound)?;
+
+        // CR 701.24a: Randomize cards so that no player knows their order.
+        player.library.shuffle(&mut state.rng);
+    }
 
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::Shuffle,
@@ -112,6 +120,62 @@ mod tests {
         sorted_original.sort_by_key(|id| id.0);
         sorted_shuffled.sort_by_key(|id| id.0);
         assert_eq!(sorted_original, sorted_shuffled);
+    }
+
+    #[test]
+    fn cant_shuffle_preserves_library_order() {
+        // CR 701.24: A player under "Can't shuffle" doesn't shuffle their library.
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(42);
+        for i in 0..20 {
+            create_object(
+                &mut state,
+                CardId(i + 1),
+                PlayerId(0),
+                format!("Card {}", i),
+                Zone::Library,
+            );
+        }
+        let before = state.players[0].library.clone();
+
+        // Install CantShuffle static controlled by the affected player.
+        let source = create_object(
+            &mut state,
+            CardId(999),
+            PlayerId(0),
+            "Aven Mindcensor".to_string(),
+            Zone::Battlefield,
+        );
+        use crate::types::ability::{ControllerRef, TypedFilter};
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantShuffle".to_string())).affected(
+                    TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You)),
+                ),
+            );
+
+        let ability = make_shuffle_ability(vec![]);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(
+            state.players[0].library, before,
+            "library order must be preserved under CantShuffle"
+        );
+        // EffectResolved still fires.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::EffectResolved {
+                kind: EffectKind::Shuffle,
+                ..
+            }
+        )));
     }
 
     #[test]

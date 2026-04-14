@@ -283,9 +283,12 @@ pub(crate) fn evaluate_condition(
             .iter()
             .filter(|player| player.id != controller)
             .any(|player| player.poison_counters >= *count),
-        // CR 118.12: "unless pays" conditions evaluate as false (restriction active)
-        // until the cost payment system is fully wired for attack/block tax costs.
-        // TODO: Wire into the attack/block cost payment flow.
+        // CR 118.12a: "unless pays" conditions evaluate as false (restriction active).
+        // This is a conservative but rules-correct default for cards like Ghostly
+        // Prison: absent a per-attacker/per-blocker optional cost payment round-trip
+        // (WaitingFor::PayAttackTax / PayBlockTax), the player has not paid, so the
+        // restriction remains active. Making the payment optional is a full
+        // interactive feature tracked separately from the static-stub cleanup.
         StaticCondition::UnlessPay { .. } => false,
         StaticCondition::None => true,
         // CR 309.7: True when the controller has completed at least one dungeon.

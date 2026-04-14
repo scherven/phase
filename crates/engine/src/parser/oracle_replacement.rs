@@ -1721,12 +1721,15 @@ fn parse_event_substitution_replacement(
     norm_lower: &str,
     original_text: &str,
 ) -> Option<ReplacementDefinition> {
-    // "would begin an extra turn" / "would take an extra turn"
+    // CR 500.7 + CR 614.10: "would begin an extra turn" / "would take an extra turn"
+    // — Stranglehold ("that player skips that turn instead") and similar.
+    // `OnlyExtraTurn` gates the replacement to fire only for extra turns.
     if nom_primitives::scan_contains(norm_lower, "would begin an extra turn")
         || nom_primitives::scan_contains(norm_lower, "would take an extra turn")
     {
         return Some(
             ReplacementDefinition::new(ReplacementEvent::BeginTurn)
+                .condition(ReplacementCondition::OnlyExtraTurn)
                 .description(original_text.to_string()),
         );
     }

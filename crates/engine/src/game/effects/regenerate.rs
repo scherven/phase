@@ -55,6 +55,13 @@ pub fn resolve(
             continue;
         }
 
+        // CR 701.19: "Can't regenerate" suppresses regeneration-shield creation.
+        // The effect itself still resolves (EffectResolved fires below) so any
+        // costs paid remain paid, but no shield is installed for this target.
+        if crate::game::static_abilities::object_has_static_other(state, obj_id, "CantRegenerate") {
+            continue;
+        }
+
         // CR 701.19a: Create a regeneration shield as a replacement definition.
         let shield = ReplacementDefinition::new(ReplacementEvent::Destroy)
             .valid_card(TargetFilter::SelfRef)
@@ -199,6 +206,58 @@ mod tests {
             1,
             "Should create shield on source when targets empty"
         );
+    }
+
+    #[test]
+    fn cant_regenerate_suppresses_shield_creation() {
+        // CR 701.19: "Can't regenerate" suppresses the regeneration-shield
+        // replacement. The effect itself still resolves (EffectResolved fires).
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Skeleton".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&obj_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantRegenerate".to_string()))
+                    .affected(TargetFilter::SelfRef),
+            );
+
+        let ability = ResolvedAbility::new(
+            Effect::Regenerate {
+                target: TargetFilter::SelfRef,
+            },
+            vec![],
+            obj_id,
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let obj = state.objects.get(&obj_id).unwrap();
+        assert!(
+            obj.replacement_definitions.is_empty(),
+            "no regeneration shield should be installed"
+        );
+        // EffectResolved still fires so any cost paid remains paid.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::EffectResolved {
+                kind: EffectKind::Regenerate,
+                ..
+            }
+        )));
     }
 
     #[test]

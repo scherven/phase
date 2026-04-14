@@ -43,6 +43,14 @@ pub(crate) fn sacrifice_permanent(
         ));
     }
 
+    // CR 701.21: "Can't be sacrificed" prevents this action. The effect/cost
+    // invoking sacrifice resolves as if no permanent was sacrificed — no
+    // graveyard move, no leaves-the-battlefield triggers, no events emitted.
+    if crate::game::static_abilities::object_has_static_other(state, object_id, "CantBeSacrificed")
+    {
+        return Ok(SacrificeOutcome::Complete);
+    }
+
     let proposed = ProposedEvent::Sacrifice {
         object_id,
         player_id: player,
@@ -86,7 +94,9 @@ pub(crate) fn sacrifice_permanent(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
+    use crate::types::ability::{StaticDefinition, TargetFilter};
     use crate::types::identifiers::CardId;
+    use crate::types::statics::StaticMode;
 
     #[test]
     fn sacrifice_moves_to_graveyard() {
@@ -154,6 +164,41 @@ mod tests {
         assert!(state
             .players_who_sacrificed_artifact_this_turn
             .contains(&PlayerId(0)));
+    }
+
+    #[test]
+    fn cant_be_sacrificed_prevents_sacrifice() {
+        // CR 701.21: A permanent with a `CantBeSacrificed` static cannot be sacrificed.
+        let mut state = GameState::new_two_player(42);
+        let victim = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Sigarda".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&victim)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantBeSacrificed".to_string()))
+                    .affected(TargetFilter::SelfRef),
+            );
+
+        let mut events = Vec::new();
+        let result = sacrifice_permanent(&mut state, victim, PlayerId(0), &mut events);
+
+        assert!(matches!(result, Ok(SacrificeOutcome::Complete)));
+        // Permanent is still on the battlefield — sacrifice was a no-op.
+        assert!(state.battlefield.contains(&victim));
+        assert!(!state.players[0].graveyard.contains(&victim));
+        // No PermanentSacrificed event was emitted.
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            GameEvent::PermanentSacrificed { object_id, .. } if *object_id == victim
+        )));
     }
 
     #[test]

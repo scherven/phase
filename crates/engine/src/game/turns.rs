@@ -47,9 +47,29 @@ pub fn advance_phase(state: &mut GameState, events: &mut Vec<GameEvent>) {
         next_phase(state.phase)
     };
 
-    // If wrapping from Cleanup to Untap, start next turn
+    // If wrapping from Cleanup to Untap, start next turn. Turn-level skip
+    // replacements (CR 614.10) are handled inside `start_next_turn` — the
+    // per-phase pipeline below runs only for within-turn phase advances.
     if state.phase == Phase::Cleanup && next == Phase::Untap {
         start_next_turn(state, events);
+    } else {
+        // CR 614.1b + CR 614.10 + CR 500.11: Route phase/step starts through the
+        // replacement pipeline so condition-gated skip replacements can prevent
+        // the phase. Simple static-based skips (`StaticMode::SkipStep`) still
+        // short-circuit at dedicated call sites (e.g., `should_skip_step` for
+        // untap/draw); this path handles event-context-aware replacements.
+        let proposed = ProposedEvent::begin_phase(state.active_player, next);
+        if matches!(
+            replacement::replace_event(state, proposed, events),
+            ReplacementResult::Prevented
+        ) {
+            // CR 500.11: "To skip a step, phase, or turn is to proceed past it
+            // as though it didn't exist." Advance `state.phase` past the skipped
+            // phase so the recursive call computes the phase AFTER it, then
+            // recurse to enter that phase.
+            state.phase = next;
+            return advance_phase(state, events);
+        }
     }
 
     state.phase = next;
@@ -101,21 +121,51 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
 
     state.turn_number += 1;
 
-    // CR 500.7: Check for extra turns (LIFO — pop from end, most recent first)
-    if let Some(extra_turn_player) = state.extra_turns.pop() {
+    // CR 500.7: Determine the active player and whether this turn is an *extra*
+    // turn (LIFO-popped from `state.extra_turns`) or a natural turn (next seat
+    // in APNAP order). `is_extra_turn` flows into the replacement pipeline so
+    // condition-gated skip effects (e.g., Stranglehold) can observe it.
+    let is_extra_turn = if let Some(extra_turn_player) = state.extra_turns.pop() {
         state.active_player = extra_turn_player;
+        true
     } else {
-        // Advance to next living player in seat order (N-player aware)
         state.active_player = super::players::next_player(state, state.active_player);
-    }
+        false
+    };
 
-    // CR 614.10: If the would-be active player has turns to skip, decrement the
-    // counter and advance to the next turn without executing any steps or phases.
+    // CR 614.10: Simple turn-skip counter (effect-based, e.g., Meditate, Eater of
+    // Days). This is a fast path for "you skip your next turn" that doesn't need
+    // the replacement pipeline — there's no event-context predicate to evaluate.
     let idx = state.active_player.0 as usize;
     if idx < state.turns_to_skip.len() && state.turns_to_skip[idx] > 0 {
         state.turns_to_skip[idx] -= 1;
         // Recursively start the next turn (skipping this one entirely).
         return start_next_turn(state, events);
+    }
+
+    // CR 614.1b + CR 614.10: Route turn-start through the replacement pipeline so
+    // condition-gated skip replacements (Stranglehold's "skip extra turns") can
+    // prevent the turn. `ShieldKind::None` (default) means these permanent statics
+    // are never consumed — they fire whenever their predicate matches.
+    let proposed = ProposedEvent::begin_turn(state.active_player, is_extra_turn);
+    match replacement::replace_event(state, proposed, events) {
+        ReplacementResult::Prevented => {
+            // CR 614.10: Turn skipped entirely — restart for the next player.
+            return start_next_turn(state, events);
+        }
+        ReplacementResult::Execute(_) => {
+            // Normal path — turn proceeds.
+        }
+        ReplacementResult::NeedsChoice(_) => {
+            // CR 614.1b: Skip replacements are mandatory — no Optional BeginTurn
+            // replacement should ever reach here. If a parser bug routes one here,
+            // clear the pending choice and proceed rather than stalling turn flow.
+            state.pending_replacement = None;
+            debug_assert!(
+                false,
+                "BeginTurn replacement unexpectedly returned NeedsChoice"
+            );
+        }
     }
 
     // CR 500: Track per-player turn count for "your Nth turn of the game" conditions.
@@ -1887,5 +1937,169 @@ mod tests {
         assert_eq!(state.active_player, PlayerId(0));
         assert_eq!(state.turn_decision_controller, None);
         assert!(state.scheduled_turn_controls.is_empty());
+    }
+
+    // --- BeginTurn / BeginPhase replacement pipeline (CR 614.1b, CR 614.10) ---
+
+    fn install_begin_turn_skip_permanent(
+        state: &mut GameState,
+        obj_id: crate::types::identifiers::ObjectId,
+        controller: PlayerId,
+        condition: Option<crate::types::ability::ReplacementCondition>,
+    ) {
+        use crate::game::game_object::GameObject;
+        use crate::types::ability::ReplacementDefinition;
+        use crate::types::identifiers::CardId;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut obj = GameObject::new(
+            obj_id,
+            CardId(42),
+            controller,
+            "Stranglehold".to_string(),
+            Zone::Battlefield,
+        );
+        let mut def = ReplacementDefinition::new(ReplacementEvent::BeginTurn);
+        if let Some(cond) = condition {
+            def = def.condition(cond);
+        }
+        obj.replacement_definitions = vec![def];
+        state.objects.insert(obj_id, obj);
+        state.battlefield.push(obj_id);
+    }
+
+    #[test]
+    fn stranglehold_skips_extra_turn_not_normal_turn() {
+        // CR 500.7 + CR 614.10: Stranglehold-class permanent with
+        // `OnlyExtraTurn` must skip extra turns but leave natural turns alone.
+        use crate::types::ability::ReplacementCondition;
+        use crate::types::identifiers::ObjectId;
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.turn_number = 1;
+        let starting_p0_turns_taken = state.players[0].turns_taken;
+
+        install_begin_turn_skip_permanent(
+            &mut state,
+            ObjectId(100),
+            PlayerId(1),
+            Some(ReplacementCondition::OnlyExtraTurn),
+        );
+
+        // Push an extra turn for player 0. With no further extras, the next
+        // natural turn after the skip should go to player 1.
+        state.extra_turns.push(PlayerId(0));
+
+        let mut events = Vec::new();
+        start_next_turn(&mut state, &mut events);
+
+        // The extra turn was popped and skipped; recursion fell through to
+        // a natural turn for the next seat.
+        assert!(state.extra_turns.is_empty(), "extra turn must be consumed");
+        assert_eq!(
+            state.active_player,
+            PlayerId(1),
+            "after skipping P0's extra turn, P1 should take their natural turn"
+        );
+        // P0's turns_taken must NOT have incremented for the skipped turn
+        // (the skip happens before the increment in start_next_turn).
+        assert_eq!(
+            state.players[0].turns_taken, starting_p0_turns_taken,
+            "skipped turn must not count toward P0's turns_taken"
+        );
+        // A ReplacementApplied event must have been emitted for the skip.
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                GameEvent::ReplacementApplied { event_type, .. } if event_type == "BeginTurn"
+            )),
+            "ReplacementApplied BeginTurn event should be emitted on skip"
+        );
+    }
+
+    #[test]
+    fn stranglehold_does_not_skip_natural_turn() {
+        // CR 500.7: Natural turn (no extra_turns push) must NOT be skipped
+        // even when a Stranglehold-class replacement is on the battlefield.
+        use crate::types::ability::ReplacementCondition;
+        use crate::types::identifiers::ObjectId;
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.turn_number = 1;
+
+        install_begin_turn_skip_permanent(
+            &mut state,
+            ObjectId(100),
+            PlayerId(1),
+            Some(ReplacementCondition::OnlyExtraTurn),
+        );
+
+        let mut events = Vec::new();
+        start_next_turn(&mut state, &mut events);
+
+        // Natural advance to P1 — not skipped.
+        assert_eq!(state.active_player, PlayerId(1));
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                GameEvent::ReplacementApplied { event_type, .. } if event_type == "BeginTurn"
+            )),
+            "no skip should fire for a natural turn"
+        );
+    }
+
+    #[test]
+    fn phase_pipeline_prevented_skips_that_phase() {
+        // CR 614.1b + CR 500.11: An unconditional BeginPhase replacement causes
+        // advance_phase to recurse and land on the phase AFTER the skipped one.
+        // We tightly scope the skip to a single phase by mutating the
+        // replacement definition's matcher indirectly: we install the skip,
+        // advance past the first phase, then remove the skip so the test
+        // terminates deterministically.
+        use crate::game::game_object::GameObject;
+        use crate::types::ability::ReplacementDefinition;
+        use crate::types::identifiers::{CardId, ObjectId};
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.phase = Phase::Untap;
+
+        let mut obj = GameObject::new(
+            ObjectId(200),
+            CardId(99),
+            PlayerId(1),
+            "SkipPhase".to_string(),
+            Zone::Battlefield,
+        );
+        obj.replacement_definitions = vec![ReplacementDefinition::new(
+            crate::types::replacements::ReplacementEvent::BeginPhase,
+        )];
+        state.objects.insert(ObjectId(200), obj);
+        state.battlefield.push(ObjectId(200));
+
+        let mut events = Vec::new();
+
+        // This will skip every phase until Cleanup→Untap starts the next turn,
+        // which is the guaranteed termination point (no BeginPhase pipeline is
+        // run on the Cleanup→Untap crossover; it goes through start_next_turn).
+        advance_phase(&mut state, &mut events);
+
+        // At least one BeginPhase ReplacementApplied must have fired.
+        let begin_phase_applied_count = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    GameEvent::ReplacementApplied { event_type, .. } if event_type == "BeginPhase"
+                )
+            })
+            .count();
+        assert!(
+            begin_phase_applied_count >= 1,
+            "at least one BeginPhase skip must have fired, got {}",
+            begin_phase_applied_count
+        );
     }
 }

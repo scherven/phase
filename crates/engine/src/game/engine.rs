@@ -1669,6 +1669,12 @@ fn handle_play_land(
     // Base limit is max_lands_per_turn (normally 1), plus any additional drops
     // from static abilities like Exploration or Azusa.
     let player = turn_control::turn_resource_owner(state);
+    // CR 305.2: "Can't play lands" suppresses the play-land special action outright.
+    if super::static_abilities::player_has_static_other(state, player, "CantPlayLand") {
+        return Err(EngineError::ActionNotAllowed(
+            "Player is under a CantPlayLand static (CR 305.2)".to_string(),
+        ));
+    }
     let additional = super::static_abilities::additional_land_drops(state, player);
     let effective_limit = state.max_lands_per_turn.saturating_add(additional);
     if state.lands_played_this_turn >= effective_limit {
@@ -2638,6 +2644,55 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_play_land_rejects_under_cant_play_land() {
+        // CR 305.2: "Can't play lands" suppresses the play-land special action.
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup_game_at_main_phase();
+
+        let land_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Hand,
+        );
+        // Place a battlefield permanent that applies CantPlayLand to P0.
+        let source = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Static Source".to_string(),
+            Zone::Battlefield,
+        );
+        use crate::types::ability::{ControllerRef, TypedFilter};
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantPlayLand".to_string())).affected(
+                    TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You)),
+                ),
+            );
+
+        let result = apply(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: land_id,
+                card_id: CardId(1),
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "PlayLand must be rejected under CantPlayLand"
+        );
     }
 
     #[test]

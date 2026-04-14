@@ -1249,6 +1249,9 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
             < state.max_lands_per_turn.saturating_add(
                 crate::game::static_abilities::additional_land_drops(state, player),
             )
+        // CR 305.2: Don't offer PlayLand candidates while the player is under a
+        // CantPlayLand prohibition — mirrors the runtime guard in handle_play_land.
+        && !crate::game::static_abilities::player_has_static_other(state, player, "CantPlayLand")
     {
         for &obj_id in &p.hand {
             if let Some(obj) = state.objects.get(&obj_id) {

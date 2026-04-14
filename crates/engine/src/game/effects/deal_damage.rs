@@ -90,6 +90,28 @@ pub(crate) fn apply_damage_to_target(
         return Ok(DamageResult::Applied(0));
     }
 
+    // CR 120.2: Source-side "can't deal damage" prohibition. The source deals
+    // zero damage of any kind, regardless of target.
+    if crate::game::static_abilities::object_has_static_other(
+        state,
+        ctx.source_id,
+        "CantDealDamage",
+    ) {
+        return Ok(DamageResult::Applied(0));
+    }
+
+    // CR 120.1: Target-side "can't be dealt damage" prohibition (objects only;
+    // `CantBeDealtDamage` in the static registry is object-scoped).
+    if let TargetRef::Object(target_obj_id) = &target {
+        if crate::game::static_abilities::object_has_static_other(
+            state,
+            *target_obj_id,
+            "CantBeDealtDamage",
+        ) {
+            return Ok(DamageResult::Applied(0));
+        }
+    }
+
     // CR 702.16b + CR 702.16e: Protection prevents damage from sources with the matching quality.
     // Emits DamagePrevented so "when damage is prevented" triggers can fire.
     if let TargetRef::Object(target_obj_id) = &target {
@@ -996,5 +1018,144 @@ mod tests {
                 .unwrap_or(0),
             2
         );
+    }
+
+    #[test]
+    fn cant_deal_damage_suppresses_source_damage() {
+        // CR 120.2: A source with "Can't deal damage" deals zero damage.
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(42);
+        let source_id = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Creature];
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantDealDamage".to_string()))
+                    .affected(TargetFilter::SelfRef),
+            );
+        let target_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        let ability = make_ability_with_source(3, vec![TargetRef::Object(target_id)], source_id);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.objects[&target_id].damage_marked, 0);
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, GameEvent::DamageDealt { .. })));
+    }
+
+    #[test]
+    fn cant_be_dealt_damage_suppresses_target_damage() {
+        // CR 120.1: A target object with "Can't be dealt damage" receives zero damage.
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(42);
+        let target_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Ward of Lights".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&target_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantBeDealtDamage".to_string()))
+                    .affected(TargetFilter::SelfRef),
+            );
+        let ability = make_ability(3, vec![TargetRef::Object(target_id)]);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.objects[&target_id].damage_marked, 0);
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, GameEvent::DamageDealt { .. })));
+    }
+
+    #[test]
+    fn cant_deal_damage_and_cant_be_dealt_damage_compose() {
+        // Bidirectional — both prohibitions active simultaneously still results
+        // in zero damage (either guard suffices).
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(42);
+        let source_id = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "Inert Attacker".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Creature];
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantDealDamage".to_string()))
+                    .affected(TargetFilter::SelfRef),
+            );
+        let target_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Shielded Defender".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&target_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantBeDealtDamage".to_string()))
+                    .affected(TargetFilter::SelfRef),
+            );
+
+        let ability = make_ability_with_source(4, vec![TargetRef::Object(target_id)], source_id);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.objects[&target_id].damage_marked, 0);
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, GameEvent::DamageDealt { .. })));
     }
 }

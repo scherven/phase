@@ -6,6 +6,7 @@ use super::counter::CounterType;
 
 use super::ability::TargetRef;
 use super::identifiers::ObjectId;
+use super::phase::Phase;
 use super::player::PlayerId;
 use super::zones::Zone;
 
@@ -104,6 +105,27 @@ pub enum ProposedEvent {
         player_id: PlayerId,
         applied: HashSet<ReplacementId>,
     },
+    /// CR 500.1 + CR 614.1b + CR 614.10: A turn is about to begin. Carried
+    /// through the replacement pipeline so condition-gated skip effects
+    /// (e.g., Stranglehold's "skip extra turns") can prevent the turn.
+    ///
+    /// `is_extra_turn` is true when this turn was granted by an effect
+    /// (CR 500.7 — popped from `state.extra_turns`).
+    BeginTurn {
+        player_id: PlayerId,
+        is_extra_turn: bool,
+        applied: HashSet<ReplacementId>,
+    },
+    /// CR 500.1 + CR 614.1b: A phase/step is about to begin. Carried through
+    /// the replacement pipeline so condition-gated skip effects can prevent
+    /// the phase. Simple static-based skips (`StaticMode::SkipStep`) continue
+    /// to short-circuit earlier in `turns.rs`; this pipeline path handles
+    /// event-context-aware replacements.
+    BeginPhase {
+        player_id: PlayerId,
+        phase: Phase,
+        applied: HashSet<ReplacementId>,
+    },
 }
 
 impl ProposedEvent {
@@ -122,6 +144,24 @@ impl ProposedEvent {
         }
     }
 
+    /// CR 500.1 + CR 614.1b: Construct a `BeginTurn` proposed event.
+    pub fn begin_turn(player_id: PlayerId, is_extra_turn: bool) -> Self {
+        Self::BeginTurn {
+            player_id,
+            is_extra_turn,
+            applied: HashSet::new(),
+        }
+    }
+
+    /// CR 500.1 + CR 614.1b: Construct a `BeginPhase` proposed event.
+    pub fn begin_phase(player_id: PlayerId, phase: Phase) -> Self {
+        Self::BeginPhase {
+            player_id,
+            phase,
+            applied: HashSet::new(),
+        }
+    }
+
     pub fn applied_set(&self) -> &HashSet<ReplacementId> {
         match self {
             ProposedEvent::ZoneChange { applied, .. }
@@ -136,7 +176,9 @@ impl ProposedEvent {
             | ProposedEvent::Tap { applied, .. }
             | ProposedEvent::Untap { applied, .. }
             | ProposedEvent::Destroy { applied, .. }
-            | ProposedEvent::Sacrifice { applied, .. } => applied,
+            | ProposedEvent::Sacrifice { applied, .. }
+            | ProposedEvent::BeginTurn { applied, .. }
+            | ProposedEvent::BeginPhase { applied, .. } => applied,
         }
     }
 
@@ -154,7 +196,9 @@ impl ProposedEvent {
             | ProposedEvent::Tap { applied, .. }
             | ProposedEvent::Untap { applied, .. }
             | ProposedEvent::Destroy { applied, .. }
-            | ProposedEvent::Sacrifice { applied, .. } => applied,
+            | ProposedEvent::Sacrifice { applied, .. }
+            | ProposedEvent::BeginTurn { applied, .. }
+            | ProposedEvent::BeginPhase { applied, .. } => applied,
         }
     }
 
@@ -190,7 +234,9 @@ impl ProposedEvent {
             | ProposedEvent::LifeGain { player_id, .. }
             | ProposedEvent::LifeLoss { player_id, .. }
             | ProposedEvent::Discard { player_id, .. }
-            | ProposedEvent::Sacrifice { player_id, .. } => *player_id,
+            | ProposedEvent::Sacrifice { player_id, .. }
+            | ProposedEvent::BeginTurn { player_id, .. }
+            | ProposedEvent::BeginPhase { player_id, .. } => *player_id,
             ProposedEvent::CreateToken { owner, .. } => *owner,
         }
     }
@@ -213,7 +259,9 @@ impl ProposedEvent {
             ProposedEvent::Draw { .. }
             | ProposedEvent::LifeGain { .. }
             | ProposedEvent::LifeLoss { .. }
-            | ProposedEvent::CreateToken { .. } => None,
+            | ProposedEvent::CreateToken { .. }
+            | ProposedEvent::BeginTurn { .. }
+            | ProposedEvent::BeginPhase { .. } => None,
         }
     }
 }
@@ -223,8 +271,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proposed_event_has_13_variants() {
-        // Verify all 13 variants compile
+    fn proposed_event_has_15_variants() {
+        // Verify all 15 variants compile
         let events: Vec<ProposedEvent> = vec![
             ProposedEvent::zone_change(ObjectId(1), Zone::Battlefield, Zone::Graveyard, None),
             ProposedEvent::Damage {
@@ -291,8 +339,10 @@ mod tests {
                 player_id: PlayerId(0),
                 applied: HashSet::new(),
             },
+            ProposedEvent::begin_turn(PlayerId(0), false),
+            ProposedEvent::begin_phase(PlayerId(0), Phase::Untap),
         ];
-        assert_eq!(events.len(), 13);
+        assert_eq!(events.len(), 15);
     }
 
     #[test]

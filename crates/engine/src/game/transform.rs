@@ -28,6 +28,12 @@ pub fn transform_permanent(
         ));
     }
 
+    // CR 701.27: "Can't transform" prevents this action. The effect invoking
+    // the transform resolves as if it had happened successfully — silent no-op.
+    if crate::game::static_abilities::object_has_static_other(state, object_id, "CantTransform") {
+        return Ok(());
+    }
+
     let back_face = obj
         .back_face
         .clone()
@@ -218,6 +224,28 @@ mod tests {
         let result = transform_permanent(&mut state, id, &mut events);
         assert!(result.is_err());
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn cant_transform_suppresses_transform() {
+        // CR 701.27: A permanent with "Can't transform" silently no-ops.
+        use crate::types::ability::{StaticDefinition, TargetFilter};
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(42);
+        let id = setup_dfc(&mut state);
+        state.objects.get_mut(&id).unwrap().static_definitions.push(
+            StaticDefinition::new(StaticMode::Other("CantTransform".to_string()))
+                .affected(TargetFilter::SelfRef),
+        );
+        let mut events = Vec::new();
+
+        transform_permanent(&mut state, id, &mut events).unwrap();
+
+        let obj = &state.objects[&id];
+        assert!(!obj.transformed, "transform should have been blocked");
+        assert_eq!(obj.name, "Werewolf Front");
+        assert!(events.is_empty(), "no Transformed event should be emitted");
     }
 
     #[test]

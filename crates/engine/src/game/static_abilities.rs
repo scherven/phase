@@ -150,37 +150,56 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     // CR 114.3: EmblemStatic — fallback for unparseable emblem static text.
     registry.insert(StaticMode::EmblemStatic, handle_rule_mod);
 
-    // Stub modes -- recognized but no-op until needed
+    // Stub modes -- recognized but no-op until needed.
+    //
+    // Cost-modification statics are NOT in this list despite initial appearances:
+    // the engine handles cost modifications through first-class typed variants
+    // (`StaticMode::ReduceCost`, `RaiseCost`, `ReduceAbilityCost`,
+    // `DefilerCostReduction`). Historical stub names like "ReduceCostEach" /
+    // "SetCost" / "AlternateCost" were never emitted by the parser and have
+    // been removed to keep the stub list honest.
     let stubs = [
-        "CantBeSacrificed",
-        "CantBeEnchanted",
-        "CantTransform",
-        "CantBeEquipped",
-        "CantRegenerate",
-        "CantPlaneswalkerRedirect",
         "Devoid",
         "Forecast",
-        "ReduceCostEach",
-        "SetCost",
-        "AlternateCost",
-        "CantPlayLand",
-        "CantShuffle",
         "ETBReplacement",
-        "CantDealDamage",
-        "CantBeDealtDamage",
         "DamageReduction",
         "PreventDamage",
         "DealtDamageInsteadExile",
         "AttackRestriction",
         "MinBlockers",
         "MaxBlockers",
-        "CantBeAttached",
         "CantExistWithout",
         "LeavesPlay",
         "ChangesZoneAll",
     ];
     for mode in &stubs {
         registry.insert(StaticMode::Other((*mode).into()), handle_stub);
+    }
+
+    // CR 305.2, CR 306.7, CR 701.3, CR 701.19, CR 701.21, CR 701.24, CR 701.27,
+    // CR 702.5, CR 702.6, CR 120.1, CR 120.2: Prohibition-family statics are
+    // registered as rule-modifications; runtime enforcement lives in the relevant
+    // game modules (sacrifice, attach, transform, regenerate, casting, shuffle,
+    // deal_damage) via `object_has_static_other` / `player_has_static_other`.
+    let prohibitions = [
+        "CantBeSacrificed",
+        "CantBeEnchanted",
+        "CantBeEquipped",
+        "CantBeAttached",
+        "CantTransform",
+        "CantRegenerate",
+        "CantPlayLand",
+        "CantShuffle",
+        "CantDealDamage",
+        "CantBeDealtDamage",
+        // CR 306.7: Planeswalker redirection was removed from the rules.
+        // The static is still registered for coverage so cards with legacy
+        // "can't be redirected" Oracle text (if any survive) don't explode,
+        // but no runtime enforcement is wired because there's nothing to block.
+        "CantPlaneswalkerRedirect",
+    ];
+    for mode in &prohibitions {
+        registry.insert(StaticMode::Other((*mode).into()), handle_rule_mod);
     }
 
     registry
@@ -465,6 +484,74 @@ pub fn player_has_cant_win(state: &GameState, player_id: PlayerId) -> bool {
     check_static_ability(
         state,
         StaticMode::CantWinTheGame,
+        &StaticCheckContext {
+            player_id: Some(player_id),
+            ..Default::default()
+        },
+    )
+}
+
+/// Allocation-free equivalent of `check_static_ability` for
+/// `StaticMode::Other(String)` variants. Scans battlefield + command zone
+/// for a static whose mode is `Other(s)` with `s == name`, whose `affected`
+/// filter matches the given context, and whose `condition` (if any) is true.
+///
+/// Used for the prohibition-family statics (`CantBeSacrificed`, etc.) where
+/// constructing `StaticMode::Other(name.to_string())` on every call would
+/// allocate in potentially hot paths (damage resolution, sacrifice loops).
+fn check_static_other_by_name(state: &GameState, name: &str, context: &StaticCheckContext) -> bool {
+    // CR 114.4: Abilities of emblems function in the command zone.
+    let zones = state.battlefield.iter().chain(state.command_zone.iter());
+    for &id in zones {
+        let obj = match state.objects.get(&id) {
+            Some(o) => o,
+            None => continue,
+        };
+        if obj.zone == crate::types::zones::Zone::Command && !obj.is_emblem {
+            continue;
+        }
+        for def in &obj.static_definitions {
+            match &def.mode {
+                StaticMode::Other(s) if s == name => {}
+                _ => continue,
+            }
+            if let Some(ref affected) = def.affected {
+                if !static_filter_matches(state, context, affected, id) {
+                    continue;
+                }
+            }
+            if let Some(ref condition) = def.condition {
+                if !evaluate_condition(state, condition, obj.controller, id) {
+                    continue;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if a static ability named `name` applies to a specific object
+/// (target-scoped query). Used for object-targeted prohibitions like
+/// `CantBeSacrificed`, `CantBeEnchanted`, `CantTransform`, etc.
+pub fn object_has_static_other(state: &GameState, object_id: ObjectId, name: &str) -> bool {
+    check_static_other_by_name(
+        state,
+        name,
+        &StaticCheckContext {
+            target_id: Some(object_id),
+            ..Default::default()
+        },
+    )
+}
+
+/// Check if a static ability named `name` applies to a specific player
+/// (player-scoped query). Used for player-targeted prohibitions like
+/// `CantPlayLand`, `CantShuffle`.
+pub fn player_has_static_other(state: &GameState, player_id: PlayerId, name: &str) -> bool {
+    check_static_other_by_name(
+        state,
+        name,
         &StaticCheckContext {
             player_id: Some(player_id),
             ..Default::default()

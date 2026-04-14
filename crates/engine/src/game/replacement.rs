@@ -813,6 +813,44 @@ fn placeholder_applier(
     ApplyResult::Modified(event)
 }
 
+// --- BeginTurn / BeginPhase (CR 614.1b, CR 614.10) ---
+
+/// CR 614.1b + CR 614.10: Match a pending turn-start event shape. Per-def
+/// condition gating (`OnlyExtraTurn`) is evaluated by
+/// `evaluate_replacement_condition` with full event context.
+fn begin_turn_matcher(event: &ProposedEvent, _source: ObjectId, _state: &GameState) -> bool {
+    matches!(event, ProposedEvent::BeginTurn { .. })
+}
+
+/// CR 614.1b + CR 614.10: Skip the turn. Permanent statics (`ShieldKind::None`,
+/// the default) are never consumed — every matching turn-begin is skipped.
+fn begin_turn_applier(
+    _event: ProposedEvent,
+    _rid: ReplacementId,
+    _state: &mut GameState,
+    _events: &mut Vec<GameEvent>,
+) -> ApplyResult {
+    ApplyResult::Prevented
+}
+
+/// CR 614.1b: Match a pending phase-start event shape. No phase-specific
+/// conditions are currently wired; parser enrichment for "skip next combat"
+/// etc. is a future batch and will layer via `evaluate_replacement_condition`.
+fn begin_phase_matcher(event: &ProposedEvent, _source: ObjectId, _state: &GameState) -> bool {
+    matches!(event, ProposedEvent::BeginPhase { .. })
+}
+
+/// CR 614.1b + CR 614.10: Skip the phase. Like `begin_turn_applier`, permanent
+/// statics fire every time their predicate matches and are never consumed.
+fn begin_phase_applier(
+    _event: ProposedEvent,
+    _rid: ReplacementId,
+    _state: &mut GameState,
+    _events: &mut Vec<GameEvent>,
+) -> ApplyResult {
+    ApplyResult::Prevented
+}
+
 // --- Registry ---
 
 /// CR 614.1: Build the registry of applicable replacement effects.
@@ -957,10 +995,25 @@ pub fn build_replacement_registry() -> IndexMap<ReplacementEvent, ReplacementHan
     registry.insert(ReplacementEvent::TurnFaceUp, placeholder());
     registry.insert(ReplacementEvent::Explore, placeholder());
 
-    // 13 remaining Forge types (stubs -- recognized but no-op)
-    let stub_events: Vec<ReplacementEvent> = vec![
-        ReplacementEvent::BeginPhase,
+    // CR 614.1b + CR 614.10: BeginTurn skip replacements (Stranglehold, etc.)
+    registry.insert(
         ReplacementEvent::BeginTurn,
+        ReplacementHandlerEntry {
+            matcher: begin_turn_matcher,
+            applier: begin_turn_applier,
+        },
+    );
+    // CR 614.1b: BeginPhase skip replacements.
+    registry.insert(
+        ReplacementEvent::BeginPhase,
+        ReplacementHandlerEntry {
+            matcher: begin_phase_matcher,
+            applier: begin_phase_applier,
+        },
+    );
+
+    // 11 remaining Forge types (stubs -- recognized but no-op)
+    let stub_events: Vec<ReplacementEvent> = vec![
         ReplacementEvent::DeclareBlocker,
         ReplacementEvent::GameLoss,
         ReplacementEvent::GameWin,
@@ -1106,6 +1159,7 @@ fn evaluate_replacement_condition(
     source_id: ObjectId,
     state: &GameState,
     affected_object_id: Option<ObjectId>,
+    event: &ProposedEvent,
 ) -> bool {
     match condition {
         ReplacementCondition::UnlessControlsSubtype { subtypes } => {
@@ -1274,6 +1328,17 @@ fn evaluate_replacement_condition(
                 false
             }
         }
+        // CR 500.7 + CR 614.10: Replacement applies only for extra turns.
+        // Checks the event's `is_extra_turn` flag directly; returns `false` for
+        // any non-`BeginTurn` event so a misattached `OnlyExtraTurn` doesn't
+        // silently fire on unrelated replacements.
+        ReplacementCondition::OnlyExtraTurn => matches!(
+            event,
+            ProposedEvent::BeginTurn {
+                is_extra_turn: true,
+                ..
+            }
+        ),
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.
@@ -1365,6 +1430,7 @@ pub fn find_applicable_replacements(
                             obj.id,
                             state,
                             event.affected_object_id(),
+                            event,
                         ) {
                             continue;
                         }
@@ -1974,6 +2040,13 @@ mod tests {
 
     fn make_repl(event: ReplacementEvent) -> ReplacementDefinition {
         ReplacementDefinition::new(event)
+    }
+
+    /// Placeholder event for `evaluate_replacement_condition` callers that
+    /// aren't exercising event-contextual conditions (`OnlyExtraTurn`). A
+    /// natural-turn BeginTurn is inert against all state-based conditions.
+    fn dummy_begin_turn_event() -> ProposedEvent {
+        ProposedEvent::begin_turn(PlayerId(0), false)
     }
 
     fn test_state_with_object(
@@ -3329,7 +3402,14 @@ mod tests {
         let cond = ReplacementCondition::UnlessYourTurn;
         // Controller is active player → replacement suppressed (enters untapped)
         assert!(
-            !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
+            !evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &dummy_begin_turn_event()
+            ),
             "Should be suppressed (untapped) on controller's turn"
         );
     }
@@ -3340,7 +3420,14 @@ mod tests {
         let cond = ReplacementCondition::UnlessYourTurn;
         // Controller is NOT active player → replacement applies (enters tapped)
         assert!(
-            evaluate_replacement_condition(&cond, PlayerId(1), ObjectId(1), &state, None),
+            evaluate_replacement_condition(
+                &cond,
+                PlayerId(1),
+                ObjectId(1),
+                &state,
+                None,
+                &dummy_begin_turn_event()
+            ),
             "Should apply (tapped) on opponent's turn"
         );
     }
@@ -3360,7 +3447,14 @@ mod tests {
         };
         // turns_taken=2 ≤ 3 on controller's turn → suppressed (untapped)
         assert!(
-            !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
+            !evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &dummy_begin_turn_event()
+            ),
             "Should be suppressed (untapped) when turns_taken <= threshold"
         );
     }
@@ -3380,7 +3474,14 @@ mod tests {
         };
         // turns_taken=4 > 3 → replacement applies (tapped)
         assert!(
-            evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
+            evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &dummy_begin_turn_event()
+            ),
             "Should apply (tapped) when turns_taken > threshold"
         );
     }
@@ -3400,7 +3501,14 @@ mod tests {
         };
         // Not controller's turn → replacement applies (tapped) even though turns_taken ≤ 3
         assert!(
-            evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
+            evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &dummy_begin_turn_event()
+            ),
             "Should apply (tapped) when not controller's turn"
         );
     }
@@ -3420,7 +3528,14 @@ mod tests {
         };
         // No turn gate, turns_taken=2 ≤ 3 → suppressed regardless of active player
         assert!(
-            !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
+            !evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &dummy_begin_turn_event()
+            ),
             "Should be suppressed (untapped) with no turn requirement"
         );
     }
@@ -3438,7 +3553,14 @@ mod tests {
             active_player_req: None,
         };
         assert!(
-            evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
+            evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &dummy_begin_turn_event()
+            ),
             "Should apply while hand size is one or fewer"
         );
     }
@@ -3578,5 +3700,105 @@ mod tests {
             find_applicable_replacements(&state2, &proposed_creature, &registry).is_empty(),
             "OpponentOnly should not match damage to creatures"
         );
+    }
+
+    // --- BeginTurn / BeginPhase (CR 614.1b, CR 614.10) ---
+
+    #[test]
+    fn only_extra_turn_condition_fires_only_on_extra_turn() {
+        // CR 500.7 + CR 614.10: Stranglehold-class replacement with OnlyExtraTurn
+        // must pass the condition check on extra turns and fail on natural turns.
+        // Condition gating lives in `evaluate_replacement_condition` (the matcher
+        // only filters by event shape); this test exercises the condition directly.
+        let state = GameState::new_two_player(42);
+        let cond = ReplacementCondition::OnlyExtraTurn;
+
+        let extra_turn_event = ProposedEvent::begin_turn(PlayerId(0), true);
+        assert!(
+            evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &extra_turn_event
+            ),
+            "OnlyExtraTurn should apply when is_extra_turn=true"
+        );
+
+        let natural_turn_event = ProposedEvent::begin_turn(PlayerId(0), false);
+        assert!(
+            !evaluate_replacement_condition(
+                &cond,
+                PlayerId(0),
+                ObjectId(1),
+                &state,
+                None,
+                &natural_turn_event
+            ),
+            "OnlyExtraTurn should NOT apply when is_extra_turn=false"
+        );
+    }
+
+    #[test]
+    fn begin_turn_matcher_matches_event_shape_only() {
+        // Matcher checks event shape; per-def gating runs in the outer pipeline.
+        let state = GameState::new_two_player(42);
+        let begin_turn = ProposedEvent::begin_turn(PlayerId(0), true);
+        let draw = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 1,
+            applied: HashSet::new(),
+        };
+        assert!(begin_turn_matcher(&begin_turn, ObjectId(1), &state));
+        assert!(!begin_turn_matcher(&draw, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn begin_turn_applier_returns_prevented() {
+        // CR 614.10: "skip" means unconditionally skip — applier must return Prevented.
+        let repl =
+            make_repl(ReplacementEvent::BeginTurn).condition(ReplacementCondition::OnlyExtraTurn);
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        let rid = ReplacementId {
+            source: ObjectId(10),
+            index: 0,
+        };
+        let mut events = Vec::new();
+        let proposed = ProposedEvent::begin_turn(PlayerId(0), true);
+
+        let result = begin_turn_applier(proposed, rid, &mut state, &mut events);
+        assert!(matches!(result, ApplyResult::Prevented));
+    }
+
+    #[test]
+    fn begin_turn_replacement_does_not_consume_shield() {
+        // CR 614.10 + ShieldKind::None: permanent statics fire every time their
+        // predicate matches — the replacement definition is NOT marked consumed
+        // after the pipeline applies it.
+        let repl =
+            make_repl(ReplacementEvent::BeginTurn).condition(ReplacementCondition::OnlyExtraTurn);
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        let mut events = Vec::new();
+        let proposed = ProposedEvent::begin_turn(PlayerId(0), true);
+
+        let result = replace_event(&mut state, proposed, &mut events);
+        assert!(matches!(result, ReplacementResult::Prevented));
+
+        let obj = state.objects.get(&ObjectId(10)).unwrap();
+        assert!(
+            !obj.replacement_definitions[0].is_consumed,
+            "permanent static skip replacement must not be consumed after use"
+        );
+    }
+
+    #[test]
+    fn begin_phase_matcher_fires_for_bare_begin_phase_def() {
+        // CR 614.1b: Unconditional BeginPhase replacement should match the event.
+        let repl = make_repl(ReplacementEvent::BeginPhase);
+        let state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        let proposed = ProposedEvent::begin_phase(PlayerId(0), crate::types::phase::Phase::Upkeep);
+
+        assert!(begin_phase_matcher(&proposed, ObjectId(10), &state));
     }
 }

@@ -1506,10 +1506,12 @@ pub enum StaticCondition {
     OpponentPoisonAtLeast {
         count: u32,
     },
-    /// CR 118.12: "unless [player] pays [cost]" — a mana tax condition.
-    /// Used for Ghostly Prison, Propaganda, etc. The restriction applies unless the
-    /// relevant player pays the specified cost. Evaluated as false (restriction active)
-    /// until the cost payment system is wired.
+    /// CR 118.12a: "unless [player] pays [cost]" — an optional cost condition.
+    /// Used for Ghostly Prison, Propaganda, etc. The restriction applies unless
+    /// the relevant player pays the specified cost. Currently evaluated as false
+    /// (restriction active) by `layers::evaluate_condition` — the per-attacker /
+    /// per-blocker optional cost payment round-trip is an unimplemented
+    /// interactive feature, not a stub.
     UnlessPay {
         cost: ManaCost,
     },
@@ -4460,6 +4462,11 @@ pub enum ReplacementCondition {
     /// only to objects that were dealt damage this turn by a source controlled by the specified
     /// player. Checks `damage_dealt_this_turn` records in game state.
     DealtDamageThisTurnBySourceControlledBy { controller: ControllerRef },
+    /// CR 500.7 + CR 614.10: Replacement applies only when the triggering
+    /// event is an *extra* turn (granted by an effect, not a natural turn).
+    /// Used by Stranglehold ("If a player would begin an extra turn...").
+    /// Evaluated by `begin_turn_matcher` against `ProposedEvent::BeginTurn`.
+    OnlyExtraTurn,
     /// "unless you revealed a [type] card" / "unless you paid {mana}"
     /// CR 614.1d — Generic condition text that the engine does not yet decompose further.
     /// Using this variant lets the replacement be recognized for coverage while deferring

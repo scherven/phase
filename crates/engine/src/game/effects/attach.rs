@@ -35,6 +35,40 @@ pub fn resolve(
 /// Core attachment logic: attach `attachment_id` to `target_id`.
 /// Handles detaching from a previous target if already attached.
 pub fn attach_to(state: &mut GameState, attachment_id: ObjectId, target_id: ObjectId) {
+    // CR 701.3, CR 702.5, CR 702.6: Attachment prohibitions on the target.
+    // `CantBeAttached` blocks any attachment (Aura / Equipment / Fortification);
+    // `CantBeEnchanted` blocks Auras specifically; `CantBeEquipped` blocks Equipment.
+    // A blocked attachment is a silent no-op — no state mutation, no events.
+    if crate::game::static_abilities::object_has_static_other(state, target_id, "CantBeAttached") {
+        return;
+    }
+    let attacher_is_aura = state
+        .objects
+        .get(&attachment_id)
+        .is_some_and(|obj| obj.card_types.subtypes.iter().any(|s| s == "Aura"));
+    let attacher_is_equipment = state
+        .objects
+        .get(&attachment_id)
+        .is_some_and(|obj| obj.card_types.subtypes.iter().any(|s| s == "Equipment"));
+    if attacher_is_aura
+        && crate::game::static_abilities::object_has_static_other(
+            state,
+            target_id,
+            "CantBeEnchanted",
+        )
+    {
+        return;
+    }
+    if attacher_is_equipment
+        && crate::game::static_abilities::object_has_static_other(
+            state,
+            target_id,
+            "CantBeEquipped",
+        )
+    {
+        return;
+    }
+
     // CR 701.3a: Attaching moves attachment onto target.
     // If already attached to something, detach first
     if let Some(old_target_id) = state
@@ -66,13 +100,49 @@ pub fn attach_to(state: &mut GameState, attachment_id: ObjectId, target_id: Obje
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
+    use crate::types::ability::{StaticDefinition, TargetFilter};
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
     use crate::types::player::PlayerId;
+    use crate::types::statics::StaticMode;
     use crate::types::zones::Zone;
 
     fn setup() -> GameState {
         GameState::new_two_player(42)
+    }
+
+    /// Build a permanent with the given subtype on the battlefield.
+    fn spawn_with_subtype(state: &mut GameState, name: &str, subtype: &str) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(1),
+            PlayerId(0),
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.subtypes.push(subtype.to_string());
+        id
+    }
+
+    fn spawn_creature(state: &mut GameState, name: &str) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(2),
+            PlayerId(0),
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        id
+    }
+
+    fn apply_static(state: &mut GameState, id: ObjectId, mode_name: &str) {
+        state.objects.get_mut(&id).unwrap().static_definitions.push(
+            StaticDefinition::new(StaticMode::Other(mode_name.to_string()))
+                .affected(TargetFilter::SelfRef),
+        );
     }
 
     #[test]
@@ -199,5 +269,92 @@ mod tests {
             .unwrap()
             .attachments
             .contains(&equipment_id));
+    }
+
+    #[test]
+    fn cant_be_attached_blocks_any_attachment() {
+        // CR 701.3: "Can't be attached" blocks any attachment (Aura/Equipment).
+        let mut state = setup();
+        let aura = spawn_with_subtype(&mut state, "Aura", "Aura");
+        let victim = spawn_creature(&mut state, "Victim");
+        apply_static(&mut state, victim, "CantBeAttached");
+
+        attach_to(&mut state, aura, victim);
+
+        assert_eq!(state.objects.get(&aura).unwrap().attached_to, None);
+        assert!(state.objects.get(&victim).unwrap().attachments.is_empty());
+    }
+
+    #[test]
+    fn cant_be_enchanted_blocks_aura() {
+        // CR 702.5: "Can't be enchanted" blocks Auras specifically.
+        let mut state = setup();
+        let aura = spawn_with_subtype(&mut state, "Pacifism", "Aura");
+        let victim = spawn_creature(&mut state, "Kira");
+        apply_static(&mut state, victim, "CantBeEnchanted");
+
+        attach_to(&mut state, aura, victim);
+
+        assert_eq!(state.objects.get(&aura).unwrap().attached_to, None);
+    }
+
+    #[test]
+    fn cant_be_equipped_blocks_equipment() {
+        // CR 702.6: "Can't be equipped" blocks Equipment specifically.
+        let mut state = setup();
+        let equipment = spawn_with_subtype(&mut state, "Sword", "Equipment");
+        let victim = spawn_creature(&mut state, "Skittering Surveyor");
+        apply_static(&mut state, victim, "CantBeEquipped");
+
+        attach_to(&mut state, equipment, victim);
+
+        assert_eq!(state.objects.get(&equipment).unwrap().attached_to, None);
+    }
+
+    #[test]
+    fn attach_prohibitions_distinguish_aura_vs_equipment() {
+        // CantBeEnchanted allows Equipment; CantBeEquipped allows Auras;
+        // CantBeAttached blocks both.
+        let mut state = setup();
+        let aura = spawn_with_subtype(&mut state, "Aura", "Aura");
+        let equipment = spawn_with_subtype(&mut state, "Sword", "Equipment");
+
+        // Case A: CantBeEnchanted creature accepts Equipment.
+        let cant_be_enchanted = spawn_creature(&mut state, "Kira");
+        apply_static(&mut state, cant_be_enchanted, "CantBeEnchanted");
+        attach_to(&mut state, equipment, cant_be_enchanted);
+        assert_eq!(
+            state.objects.get(&equipment).unwrap().attached_to,
+            Some(cant_be_enchanted),
+            "Equipment should attach to a creature with CantBeEnchanted"
+        );
+        // Aura is rejected
+        attach_to(&mut state, aura, cant_be_enchanted);
+        assert_eq!(
+            state.objects.get(&aura).unwrap().attached_to,
+            None,
+            "Aura should be blocked by CantBeEnchanted"
+        );
+
+        // Case B: CantBeEquipped creature accepts Auras.
+        let cant_be_equipped = spawn_creature(&mut state, "Citanul Druid");
+        apply_static(&mut state, cant_be_equipped, "CantBeEquipped");
+        attach_to(&mut state, aura, cant_be_equipped);
+        assert_eq!(
+            state.objects.get(&aura).unwrap().attached_to,
+            Some(cant_be_equipped),
+            "Aura should attach to a creature with CantBeEquipped"
+        );
+
+        // Case C: CantBeAttached creature rejects both.
+        // Detach the aura and equipment first by removing the static from earlier cases.
+        let cant_be_attached = spawn_creature(&mut state, "Warded Keep");
+        apply_static(&mut state, cant_be_attached, "CantBeAttached");
+        let aura2 = spawn_with_subtype(&mut state, "Aura2", "Aura");
+        let equipment2 = spawn_with_subtype(&mut state, "Sword2", "Equipment");
+        attach_to(&mut state, aura2, cant_be_attached);
+        attach_to(&mut state, equipment2, cant_be_attached);
+        assert_eq!(state.objects.get(&aura2).unwrap().attached_to, None);
+        assert_eq!(state.objects.get(&equipment2).unwrap().attached_to, None);
     }
 }
