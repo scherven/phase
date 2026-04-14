@@ -145,6 +145,14 @@ fn try_parse_subject_continuous_clause(
     let verb_start = find_predicate_start(text)?;
     let subject = text[..verb_start].trim();
     let predicate = text[verb_start..].trim();
+    // CR 109.5: "you" as a player subject never participates in continuous-
+    // clause parsing — the predicate is always an imperative effect (draw,
+    // gain life, get an emblem with, phase out, …). Routing "you" through
+    // the continuous arm misclassifies imperatives like "you get an emblem
+    // with \"…\"" as `get +X/+X`-style P/T modifications.
+    if subject.eq_ignore_ascii_case("you") {
+        return None;
+    }
     let application = parse_subject_application(subject, ctx)?;
     build_continuous_clause(application, predicate)
 }
@@ -432,6 +440,18 @@ pub(super) fn parse_subject_application(
     if lower == "that player" || lower == "the player" {
         return Some(SubjectApplication {
             affected: TargetFilter::Player,
+            target: None,
+            multi_target: None,
+            inherits_parent: false,
+        });
+    }
+    // CR 109.5 "you" / "your" — the spell or ability's controller. Used as a
+    // bare player subject (e.g., "you phase out", "you draw a card"). The
+    // imperative resolvers map `TargetFilter::Controller` → the ability's
+    // controller player at resolution time.
+    if lower == "you" {
+        return Some(SubjectApplication {
+            affected: TargetFilter::Controller,
             target: None,
             multi_target: None,
             inherits_parent: false,

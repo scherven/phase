@@ -8879,6 +8879,26 @@ mod tests {
         );
     }
 
+    /// Player-phasing parser plumbing: "you phase out" lifts the bare-pronoun
+    /// "you" subject to `TargetFilter::Controller` so the resolver phases out
+    /// the ability's controller player. This is the parser-side foundation
+    /// for the Teferi's-Protection-style "you and permanents you control
+    /// phase out" Oracle wording.
+    #[test]
+    fn phase_out_you_subject() {
+        let e = parse_effect("You phase out");
+        assert!(
+            matches!(
+                e,
+                Effect::PhaseOut {
+                    target: TargetFilter::Controller
+                }
+            ),
+            "Expected PhaseOut with Controller target, got {:?}",
+            e
+        );
+    }
+
     #[test]
     fn phase_out_those_creatures() {
         // Out of Time-class: "those creatures phase out" after subject

@@ -1498,22 +1498,36 @@ pub fn get_valid_blocker_ids(state: &GameState) -> Vec<ObjectId> {
 }
 
 /// CR 506.2 / CR 506.3: Valid attack targets are opposing players and planeswalkers/battles.
+///
+/// Player-phasing exclusion: a phased-out player can't be attacked, and neither
+/// can their planeswalkers nor any battles they protect — they're all treated
+/// as though they don't exist for combat purposes (mirrors CR 702.26b for
+/// permanents, applied to players via card Oracle text).
 pub fn get_valid_attack_targets(state: &GameState) -> Vec<AttackTarget> {
     let active = state.active_player;
     let allies = players::teammates(state, active);
+    let phased_out = |pid: PlayerId| -> bool {
+        state
+            .players
+            .iter()
+            .find(|p| p.id == pid)
+            .is_some_and(|p| p.is_phased_out())
+    };
     let mut targets = Vec::new();
 
-    // All non-eliminated opponents (excluding teammates)
+    // All non-eliminated, phased-in opponents (excluding teammates)
     for player in &state.players {
         if player.id != active
             && !state.eliminated_players.contains(&player.id)
             && !allies.contains(&player.id)
+            && player.is_phased_in()
         {
             targets.push(AttackTarget::Player(player.id));
         }
     }
 
-    // All planeswalkers controlled by opponents (excluding teammates')
+    // All planeswalkers controlled by opponents (excluding teammates' and
+    // controllers that are phased out)
     for &id in &state.battlefield {
         if let Some(obj) = state.objects.get(&id) {
             if obj.controller != active
@@ -1523,6 +1537,7 @@ pub fn get_valid_attack_targets(state: &GameState) -> Vec<AttackTarget> {
                     .core_types
                     .contains(&crate::types::card_type::CoreType::Planeswalker)
                 && !state.eliminated_players.contains(&obj.controller)
+                && !phased_out(obj.controller)
             {
                 targets.push(AttackTarget::Planeswalker(id));
             }
@@ -1550,6 +1565,11 @@ pub fn get_valid_attack_targets(state: &GameState) -> Vec<AttackTarget> {
                 continue;
             }
             if state.eliminated_players.contains(&protector) {
+                continue;
+            }
+            // If the protector is phased out, the battle itself can't be
+            // attacked (the protector "doesn't exist" for combat routing).
+            if phased_out(protector) {
                 continue;
             }
             targets.push(AttackTarget::Battle(id));

@@ -132,6 +132,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::PermanentUntapped { .. }
         | GameEvent::PermanentPhasedOut { .. }
         | GameEvent::PermanentPhasedIn { .. }
+        | GameEvent::PlayerPhasedOut { .. }
+        | GameEvent::PlayerPhasedIn { .. }
         | GameEvent::DamageCleared { .. }
         | GameEvent::CounterAdded { .. }
         | GameEvent::CounterRemoved { .. }
@@ -466,6 +468,14 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
 
         GameEvent::PermanentPhasedIn { object_id } => {
             vec![card_seg(state, *object_id), text(" phased in")]
+        }
+
+        GameEvent::PlayerPhasedOut { player_id } => {
+            vec![player_seg(state, *player_id), text(" phased out")]
+        }
+
+        GameEvent::PlayerPhasedIn { player_id } => {
+            vec![player_seg(state, *player_id), text(" phased in")]
         }
 
         GameEvent::DamageCleared { object_id } => {

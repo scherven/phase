@@ -47,6 +47,10 @@ pub fn find_legal_targets(
         if tf.type_filters.is_empty() {
             let controller = &tf.controller;
             for player in &state.players {
+                // Player-phasing exclusion (mirrors CR 702.26b for permanents).
+                if player.is_phased_out() {
+                    continue;
+                }
                 let is_opponent = player.id != source_controller;
                 let include = match controller {
                     Some(ControllerRef::Opponent) => is_opponent,
@@ -482,7 +486,13 @@ fn filter_targets_stack_spells(filter: &TargetFilter) -> bool {
 }
 
 fn add_players(state: &GameState, targets: &mut Vec<TargetRef>) {
+    // Player-phasing exclusion: a phased-out player is treated as though they
+    // don't exist for targeting purposes (mirrors CR 702.26b for permanents,
+    // applied to players via card Oracle text like "you phase out").
     for player in &state.players {
+        if player.is_phased_out() {
+            continue;
+        }
         targets.push(TargetRef::Player(player.id));
     }
 }

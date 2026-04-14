@@ -9,6 +9,45 @@ use super::mana::ManaPool;
 
 use crate::game::deck_loading::DeckEntry;
 
+/// Status of a player in the game. Mirrors `PhaseStatus` for permanents — a
+/// phased-out player is treated as though they don't exist for targeting,
+/// damage, attacking, and SBA loss-from-life purposes, but they remain in the
+/// game state (never removed from `state.players`). Their phased-out turn
+/// proceeds with the player still as the active player; the status is cleared
+/// at the next time a `Duration::UntilYourNextTurn` effect that phased them
+/// out would expire (the active player's untap step).
+///
+/// CR 702.26 governs *permanent* phasing only; the player-phasing semantics
+/// are derived from card Oracle text on the small set of cards (e.g.,
+/// historical Teferi's Protection wording) that say "you phase out". The
+/// invariants below mirror the permanent-phasing invariants:
+///
+/// - Status is the sole encoding of phased-in vs phased-out — the player
+///   never leaves `state.players`.
+/// - While phased out, the player can't be targeted, attacked, dealt damage,
+///   or lose the game from 0-or-less life. These exclusions live at single
+///   choke points (`game/targeting.rs::add_players`,
+///   `game/combat.rs::get_valid_attack_targets`,
+///   `game/effects/deal_damage.rs::apply_damage_after_replacement`,
+///   `game/sba.rs::check_player_life`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(tag = "type")]
+pub enum PlayerStatus {
+    #[default]
+    Active,
+    PhasedOut,
+}
+
+impl PlayerStatus {
+    pub fn is_phased_in(&self) -> bool {
+        matches!(self, PlayerStatus::Active)
+    }
+
+    pub fn is_phased_out(&self) -> bool {
+        matches!(self, PlayerStatus::PhasedOut)
+    }
+}
+
 /// CR 122.1b: Named player counter types tracked by the engine.
 /// Poison counters route to the dedicated `poison_counters` field due to SBA rules (CR 704.5c).
 /// Energy counters are excluded — they use the dedicated `energy` field and `GainEnergy` effect.
@@ -110,6 +149,12 @@ pub struct Player {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub player_counters: HashMap<PlayerCounterKind, u32>,
 
+    /// Phasing status. Default `Active`. While `PhasedOut`, the player is
+    /// excluded from targeting/attack/damage/SBA-loss filter choke points.
+    /// See `PlayerStatus` for the full invariant list.
+    #[serde(default)]
+    pub status: PlayerStatus,
+
     /// CR 702.139: The player's declared companion (if any). Lives outside the game.
     /// Stored as card data (not a GameObject) until moved to hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,6 +193,7 @@ impl Default for Player {
             player_counters: HashMap::new(),
             companion: None,
             can_look_at_top_of_library: false,
+            status: PlayerStatus::Active,
         }
     }
 }
@@ -169,5 +215,16 @@ impl Player {
             PlayerCounterKind::Poison => self.poison_counters += count,
             _ => *self.player_counters.entry(kind.clone()).or_insert(0) += count,
         }
+    }
+
+    /// True when this player is phased in (the normal state).
+    pub fn is_phased_in(&self) -> bool {
+        self.status.is_phased_in()
+    }
+
+    /// True when this player is phased out (excluded from targeting/damage/
+    /// attack/SBA per the player-phasing exclusion choke points).
+    pub fn is_phased_out(&self) -> bool {
+        self.status.is_phased_out()
     }
 }

@@ -3,16 +3,25 @@
 //! `game::phasing`; this module is the thin effect-handler glue that
 //! dispatches resolved targets to those primitives and emits the
 //! `EffectResolved` bookkeeping event.
+//!
+//! Both resolvers handle player and object targets in a single pass:
+//! explicit `TargetRef::Player` targets and player-typed mass filters
+//! (`Controller`, `Player`, `Typed { type_filters: [], … }`) route through
+//! `phase_out_player`/`phase_in_player`; everything else routes through the
+//! permanent path (CR 702.26 proper). Player phasing has no formal CR rule
+//! and follows the small set of card Oracle text that says "you phase out".
 
 use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::game::game_object::PhaseOutCause;
-use crate::game::phasing::{phase_in_object, phase_out_object};
+use crate::game::phasing::{phase_in_object, phase_in_player, phase_out_object, phase_out_player};
 use crate::types::ability::{
-    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    ControllerRef, Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    TypedFilter,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
+use crate::types::player::PlayerId;
 
 /// CR 702.26a: Resolve `Effect::PhaseOut` by phasing out every targeted
 /// permanent (or every permanent matching the effect's mass filter, e.g.
@@ -30,8 +39,19 @@ pub fn resolve(
         _ => return Ok(()),
     };
 
-    let targets = collect_object_targets(state, ability, &target);
-    for oid in targets {
+    // Player-phasing branch. Mirrors `collect_object_targets` for the
+    // permanent path: explicit `TargetRef::Player` targets win, then a
+    // player-typed mass filter (`Controller`, `Typed { type_filters: [], … }`,
+    // `Player`) expands to the matching set of player ids. This dispatches
+    // before the object branch so a player target never silently becomes a
+    // no-op via `collect_object_targets`.
+    let player_targets = collect_player_targets(state, ability, &target);
+    for pid in &player_targets {
+        phase_out_player(state, *pid, events);
+    }
+
+    let object_targets = collect_object_targets(state, ability, &target);
+    for oid in object_targets {
         phase_out_object(state, oid, PhaseOutCause::Directly, events);
     }
 
@@ -54,6 +74,15 @@ pub fn resolve_phase_in(
         _ => return Ok(()),
     };
 
+    // Player-phasing branch — same idiom as `resolve` for symmetry. Phased-out
+    // players don't appear in the targeting choke point, so callers wanting
+    // to phase them back in must use an explicit `TargetRef::Player` target
+    // (or a player-typed mass filter such as `Controller`).
+    let player_targets = collect_player_targets(state, ability, &target);
+    for pid in &player_targets {
+        phase_in_player(state, *pid, events);
+    }
+
     // CR 702.26b: Filter choke point normally excludes phased-out objects, so
     // we can't rely on the standard target expansion for phase-in. Instead,
     // enumerate state.battlefield directly and match the filter manually,
@@ -68,6 +97,51 @@ pub fn resolve_phase_in(
         source_id: ability.source_id,
     });
     Ok(())
+}
+
+/// Resolve the target player set for a `PhaseOut`/`PhaseIn` effect.
+///
+/// Explicit `TargetRef::Player` targets win. Otherwise a player-typed mass
+/// filter (`Controller`, `Player`, or a `Typed` filter with no `type_filters`
+/// and an optional `controller` ref) expands to the matching player ids.
+/// Returns an empty vec if the filter doesn't refer to players (the object
+/// branch will handle it).
+fn collect_player_targets(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    target: &TargetFilter,
+) -> Vec<PlayerId> {
+    let from_targets: Vec<PlayerId> = ability
+        .targets
+        .iter()
+        .filter_map(|t| match t {
+            TargetRef::Player(pid) => Some(*pid),
+            TargetRef::Object(_) => None,
+        })
+        .collect();
+    if !from_targets.is_empty() {
+        return from_targets;
+    }
+
+    match target {
+        TargetFilter::Controller => vec![ability.controller],
+        TargetFilter::Player => state.players.iter().map(|p| p.id).collect(),
+        TargetFilter::Typed(TypedFilter {
+            type_filters,
+            controller,
+            ..
+        }) if type_filters.is_empty() => state
+            .players
+            .iter()
+            .filter(|p| match controller {
+                Some(ControllerRef::You) => p.id == ability.controller,
+                Some(ControllerRef::Opponent) => p.id != ability.controller,
+                None => true,
+            })
+            .map(|p| p.id)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve the target object set for a `PhaseOut` effect. Explicit

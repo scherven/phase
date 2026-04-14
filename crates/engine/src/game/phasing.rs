@@ -20,6 +20,7 @@ use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
+use crate::types::player::{PlayerId, PlayerStatus};
 
 /// CR 702.26b: Phase out a permanent directly, cascading indirect phase-out
 /// through Auras/Equipment/Fortifications attached to it (CR 702.26g).
@@ -231,6 +232,78 @@ pub fn execute_untap_step_phasing(state: &mut GameState, events: &mut Vec<GameEv
     }
     for id in phase_out_ids {
         phase_out_object(state, id, PhaseOutCause::Directly, events);
+    }
+}
+
+/// Phase a player out. Player phasing is not formally governed by CR 702.26
+/// (which is permanent-only); semantics derive from the small set of card
+/// Oracle text that says "you phase out". The status field on `Player`
+/// is the sole encoding — the player remains in `state.players`.
+///
+/// Returns the player ids that transitioned (empty if already phased out or
+/// the player is not in the game).
+///
+/// Per the player-phasing invariant list on `PlayerStatus`, callers do NOT
+/// need to scatter exclusion checks: the four filter choke points
+/// (`add_players` for targeting, `get_valid_attack_targets` for combat,
+/// `apply_damage_after_replacement` for damage, and `check_player_life` for
+/// SBA) handle every downstream consequence transparently.
+pub fn phase_out_player(
+    state: &mut GameState,
+    player_id: PlayerId,
+    events: &mut Vec<GameEvent>,
+) -> Vec<PlayerId> {
+    let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) else {
+        return Vec::new();
+    };
+    if player.is_phased_out() {
+        return Vec::new();
+    }
+    player.status = PlayerStatus::PhasedOut;
+    events.push(GameEvent::PlayerPhasedOut { player_id });
+    vec![player_id]
+}
+
+/// Phase a player back in. Idempotent for already-phased-in players.
+///
+/// Returns the player ids that transitioned (empty if already phased in or
+/// the player is not in the game).
+pub fn phase_in_player(
+    state: &mut GameState,
+    player_id: PlayerId,
+    events: &mut Vec<GameEvent>,
+) -> Vec<PlayerId> {
+    let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) else {
+        return Vec::new();
+    };
+    if player.is_phased_in() {
+        return Vec::new();
+    }
+    player.status = PlayerStatus::Active;
+    events.push(GameEvent::PlayerPhasedIn { player_id });
+    vec![player_id]
+}
+
+/// Phase any phased-out players back in at the start of their next turn.
+///
+/// Player-phasing semantics: a player phased out by an `UntilYourNextTurn`
+/// effect phases back in at the active player's untap step, simultaneously
+/// with their controlled permanents (which are handled by
+/// `execute_untap_step_phasing`). Unlike permanent phasing (CR 702.26a),
+/// player phasing has no formal CR rule — this mirrors the permanent
+/// behaviour so the duration semantics stay consistent.
+///
+/// Called from the untap step before any other turn-based actions, so that
+/// downstream priority/draw/SBA logic sees the player as phased in.
+pub fn execute_untap_step_player_phase_in(state: &mut GameState, events: &mut Vec<GameEvent>) {
+    let active = state.active_player;
+    if state
+        .players
+        .iter()
+        .find(|p| p.id == active)
+        .is_some_and(|p| p.is_phased_out())
+    {
+        phase_in_player(state, active, events);
     }
 }
 
@@ -503,6 +576,310 @@ mod tests {
         assert!(
             after.is_empty(),
             "Phased-out anthem must contribute no continuous effects (CR 702.26e)"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Player-phasing tests. Player phasing is not formally governed by
+    // CR 702.26 (which is permanent-only); these exercise the four filter
+    // choke points (targeting / attacking / damage / SBA-life-loss) plus
+    // the untap-step phase-in semantics that mirror the permanent path.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Phasing a player out flips the typed `PlayerStatus` and emits the
+    /// `PlayerPhasedOut` event; phasing in flips back and emits
+    /// `PlayerPhasedIn`. The player remains in `state.players` throughout —
+    /// the status is the sole encoding (mirrors the permanent invariant).
+    #[test]
+    fn player_phase_out_and_in_round_trip() {
+        let mut state = GameState::new_two_player(42);
+        let mut events = Vec::new();
+
+        let phased = phase_out_player(&mut state, PlayerId(0), &mut events);
+        assert_eq!(phased, vec![PlayerId(0)]);
+        assert!(state.players[0].is_phased_out());
+        assert_eq!(
+            state.players.len(),
+            2,
+            "Player must remain in state.players"
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::PlayerPhasedOut { player_id } if *player_id == PlayerId(0)
+        )));
+
+        events.clear();
+        let phased_in = phase_in_player(&mut state, PlayerId(0), &mut events);
+        assert_eq!(phased_in, vec![PlayerId(0)]);
+        assert!(state.players[0].is_phased_in());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::PlayerPhasedIn { player_id } if *player_id == PlayerId(0)
+        )));
+    }
+
+    /// Phasing an already-phased-out player out is a no-op (no event, empty
+    /// return). Same for phasing in an already-phased-in player.
+    #[test]
+    fn player_phase_out_idempotent() {
+        let mut state = GameState::new_two_player(42);
+        let mut events = Vec::new();
+
+        phase_out_player(&mut state, PlayerId(0), &mut events);
+        events.clear();
+
+        let phased = phase_out_player(&mut state, PlayerId(0), &mut events);
+        assert!(phased.is_empty());
+        assert!(events.is_empty());
+
+        phase_in_player(&mut state, PlayerId(0), &mut events);
+        events.clear();
+
+        let phased_in = phase_in_player(&mut state, PlayerId(0), &mut events);
+        assert!(phased_in.is_empty());
+        assert!(events.is_empty());
+    }
+
+    /// Targeting choke point: a phased-out player is excluded from the legal
+    /// target set for `TargetFilter::Player` and `TargetFilter::Any`.
+    #[test]
+    fn phased_out_player_is_not_targetable() {
+        use crate::game::targeting::find_legal_targets;
+        use crate::types::ability::{TargetFilter, TargetRef};
+
+        let mut state = GameState::new_two_player(42);
+        let mut events = Vec::new();
+
+        // Before phase-out: both players are valid targets.
+        let before = find_legal_targets(&state, &TargetFilter::Player, PlayerId(0), ObjectId(99));
+        assert!(before.contains(&TargetRef::Player(PlayerId(0))));
+        assert!(before.contains(&TargetRef::Player(PlayerId(1))));
+
+        phase_out_player(&mut state, PlayerId(1), &mut events);
+
+        // After phase-out: phased-out player is excluded.
+        let after = find_legal_targets(&state, &TargetFilter::Player, PlayerId(0), ObjectId(99));
+        assert!(after.contains(&TargetRef::Player(PlayerId(0))));
+        assert!(
+            !after.contains(&TargetRef::Player(PlayerId(1))),
+            "Phased-out player must be excluded from legal targets"
+        );
+
+        // Same exclusion applies via the `Any` filter (which dispatches through
+        // `add_players`).
+        let any_after = find_legal_targets(&state, &TargetFilter::Any, PlayerId(0), ObjectId(99));
+        assert!(!any_after.contains(&TargetRef::Player(PlayerId(1))));
+    }
+
+    /// Attacking choke point: a phased-out player can't be attacked, and
+    /// neither can their planeswalkers nor any battles they protect.
+    #[test]
+    fn phased_out_player_is_not_attackable() {
+        use crate::game::combat::{get_valid_attack_targets, AttackTarget};
+        use crate::types::card_type::CoreType;
+
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+
+        // Set up an opposing planeswalker controlled by player 1.
+        let pw = create_object(
+            &mut state,
+            CardId(99),
+            PlayerId(1),
+            "Opposing PW".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&pw).unwrap().card_types.core_types = vec![CoreType::Planeswalker];
+
+        let before = get_valid_attack_targets(&state);
+        assert!(before.contains(&AttackTarget::Player(PlayerId(1))));
+        assert!(before.contains(&AttackTarget::Planeswalker(pw)));
+
+        let mut events = Vec::new();
+        phase_out_player(&mut state, PlayerId(1), &mut events);
+
+        let after = get_valid_attack_targets(&state);
+        assert!(
+            !after.contains(&AttackTarget::Player(PlayerId(1))),
+            "Phased-out player must be excluded from attack targets"
+        );
+        assert!(
+            !after.contains(&AttackTarget::Planeswalker(pw)),
+            "Planeswalkers controlled by phased-out player must be excluded too"
+        );
+    }
+
+    /// Damage routing: damage routed to a phased-out player is a no-op —
+    /// no life loss, no DamageDealt event for that target.
+    #[test]
+    fn phased_out_player_takes_no_damage() {
+        use crate::game::effects::deal_damage::{apply_damage_to_target, DamageContext};
+        use crate::types::ability::TargetRef;
+
+        let mut state = GameState::new_two_player(42);
+        let source_id = create_object(
+            &mut state,
+            CardId(50),
+            PlayerId(0),
+            "Bolt Source".to_string(),
+            Zone::Battlefield,
+        );
+        let mut events = Vec::new();
+        phase_out_player(&mut state, PlayerId(1), &mut events);
+        events.clear();
+
+        let initial_life = state.players[1].life;
+        let ctx = DamageContext::from_source(&state, source_id).unwrap();
+        let _ = apply_damage_to_target(
+            &mut state,
+            &ctx,
+            TargetRef::Player(PlayerId(1)),
+            3,
+            false,
+            &mut events,
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.players[1].life, initial_life,
+            "Phased-out player must not take damage"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                GameEvent::DamageDealt {
+                    target: TargetRef::Player(pid),
+                    ..
+                } if *pid == PlayerId(1)
+            )),
+            "No DamageDealt event should be emitted for a phased-out player"
+        );
+    }
+
+    /// SBA: a phased-out player at 0-or-less life does NOT lose the game.
+    /// The check_player_life SBA filters them out.
+    #[test]
+    fn phased_out_player_does_not_lose_at_zero_life() {
+        use crate::game::sba::check_state_based_actions;
+
+        let mut state = GameState::new_two_player(42);
+        let mut events = Vec::new();
+        phase_out_player(&mut state, PlayerId(1), &mut events);
+        state.players[1].life = -5;
+        events.clear();
+
+        check_state_based_actions(&mut state, &mut events);
+
+        assert!(
+            !state.players[1].is_eliminated,
+            "Phased-out player must not be eliminated by 0-or-less life SBA"
+        );
+        assert!(
+            !events.iter().any(
+                |e| matches!(e, GameEvent::PlayerLost { player_id } if *player_id == PlayerId(1))
+            ),
+            "No PlayerLost event for phased-out player"
+        );
+    }
+
+    /// Phase-in timing: at the start of the phased-out player's next turn
+    /// (their untap step), they phase back in. The execute_untap pipeline
+    /// invokes `execute_untap_step_player_phase_in` ahead of permanent
+    /// phasing, so by the time SBAs run the player is back in the game.
+    #[test]
+    fn player_phases_in_at_start_of_their_next_turn() {
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        let mut events = Vec::new();
+
+        phase_out_player(&mut state, PlayerId(0), &mut events);
+        assert!(state.players[0].is_phased_out());
+        events.clear();
+
+        // Active player's untap step.
+        execute_untap_step_player_phase_in(&mut state, &mut events);
+
+        assert!(state.players[0].is_phased_in());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::PlayerPhasedIn { player_id } if *player_id == PlayerId(0)
+        )));
+    }
+
+    /// `Effect::PhaseOut` with `TargetFilter::Controller` (the parser's
+    /// lowering of "you phase out") phases out the ability's controller via
+    /// the resolver's player branch.
+    #[test]
+    fn effect_phase_out_with_controller_target_phases_player() {
+        use crate::game::effects::phase_out::resolve;
+        use crate::types::ability::{Effect, ResolvedAbility, TargetFilter};
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(7),
+            PlayerId(0),
+            "Synthetic Source".to_string(),
+            Zone::Battlefield,
+        );
+
+        let ability = ResolvedAbility::new(
+            Effect::PhaseOut {
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(state.players[0].is_phased_out());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::PlayerPhasedOut { player_id } if *player_id == PlayerId(0)
+        )));
+    }
+
+    /// Composite Teferi's-Protection-style scenario: the same `UntilYourNextTurn`
+    /// turn boundary that prunes transient continuous effects also drives the
+    /// player phase-in, and the active player's untap step phases their
+    /// controlled permanents back in alongside (CR 702.26a). Exercising both
+    /// halves end-to-end demonstrates the mechanism the user asked for, even
+    /// though no current corpus card prints "you phase out".
+    #[test]
+    fn teferis_protection_synthetic_composite() {
+        use crate::game::game_object::PhaseOutCause;
+
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        let creature = setup_creature(&mut state, "Bear", PlayerId(0));
+        let mut events = Vec::new();
+
+        // Synthetically phase out the controller player AND a permanent they
+        // control — this is the engine-side composite that "Until your next
+        // turn, you and permanents you control phase out" would resolve to
+        // (Effect::PhaseOut for a Controller player target chained with
+        // Effect::PhaseOut for a `Typed { Permanent, You }` mass filter).
+        phase_out_player(&mut state, PlayerId(0), &mut events);
+        phase_out_object(&mut state, creature, PhaseOutCause::Directly, &mut events);
+
+        assert!(state.players[0].is_phased_out());
+        assert!(state.objects[&creature].is_phased_out());
+
+        // At the active player's untap step, both phase back in.
+        events.clear();
+        execute_untap_step_player_phase_in(&mut state, &mut events);
+        execute_untap_step_phasing(&mut state, &mut events);
+
+        assert!(
+            state.players[0].is_phased_in(),
+            "Player must phase in at start of their next turn"
+        );
+        assert!(
+            state.objects[&creature].is_phased_in(),
+            "Permanent must phase in at start of controller's next untap step (CR 702.26a)"
         );
     }
 

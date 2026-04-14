@@ -242,6 +242,18 @@ pub(crate) fn apply_damage_after_replacement(
             }
         }
         TargetRef::Player(player_id) => {
+            // Player-phasing exclusion: a phased-out player can't be affected
+            // by damage (mirrors CR 702.26b for permanents). The damage is
+            // simply not applied — no life loss, no poison counters, no
+            // DamageDealt event for this routing pass.
+            if state
+                .players
+                .iter()
+                .find(|p| p.id == *player_id)
+                .is_some_and(|p| p.is_phased_out())
+            {
+                return DamageResult::Applied(0);
+            }
             if ctx.has_infect {
                 // CR 702.90: Infect deals damage to players as poison counters.
                 if let Some(player) = state.players.iter_mut().find(|p| p.id == *player_id) {

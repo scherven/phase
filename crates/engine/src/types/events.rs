@@ -122,6 +122,19 @@ pub enum GameEvent {
     PermanentPhasedIn {
         object_id: ObjectId,
     },
+    /// A player phased out. Player phasing is not formally governed by CR 702.26
+    /// (which is permanent-only); semantics mirror the permanent rule and are
+    /// driven by the small set of card Oracle text that says "you phase out".
+    /// While phased out, the player is excluded from targeting, attacking,
+    /// damage, and the 0-or-less life SBA.
+    PlayerPhasedOut {
+        player_id: PlayerId,
+    },
+    /// A player phased back in (typically at the start of their next turn or
+    /// when an `UntilYourNextTurn` duration ends).
+    PlayerPhasedIn {
+        player_id: PlayerId,
+    },
     LandPlayed {
         object_id: ObjectId,
         player_id: PlayerId,

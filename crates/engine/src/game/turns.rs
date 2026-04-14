@@ -257,6 +257,12 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
 /// they control. CR 702.26m: If the untap step is skipped, phasing is also
 /// skipped — callers must gate this whole function on `should_skip_step`.
 pub fn execute_untap(state: &mut GameState, events: &mut Vec<GameEvent>) {
+    // Phase any phased-out player back in at the start of their next turn.
+    // Player phasing is not formally governed by CR 702.26 (permanent-only);
+    // this mirrors the permanent behaviour so duration semantics line up
+    // with `Duration::UntilYourNextTurn` (also pruned at this step below).
+    super::phasing::execute_untap_step_player_phase_in(state, events);
+
     // CR 502.1 + CR 702.26a: Phasing happens first, before any permanents
     // untap. Simultaneous phase-in + phase-out for the active player.
     super::phasing::execute_untap_step_phasing(state, events);

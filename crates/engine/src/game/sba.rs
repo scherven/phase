@@ -210,10 +210,14 @@ fn static_affects_player(
 fn check_player_life(state: &mut GameState, events: &mut Vec<GameEvent>, any_performed: &mut bool) {
     // Collect all players who should be eliminated (check all, not just first)
     // CR 104.3b: Skip players protected by CantLoseTheGame.
+    //
+    // Player-phasing exclusion: a phased-out player can't lose the game from
+    // 0-or-less life — they're treated as though they don't exist for SBA
+    // purposes (mirrors CR 702.26b for permanents, applied to players).
     let to_eliminate: Vec<PlayerId> = state
         .players
         .iter()
-        .filter(|p| !p.is_eliminated && p.life <= 0)
+        .filter(|p| !p.is_eliminated && !p.is_phased_out() && p.life <= 0)
         .filter(|p| !player_has_cant_lose(state, p.id))
         .map(|p| p.id)
         .collect();
