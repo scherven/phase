@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { menuButtonClass } from "../menu/buttonStyles.ts";
+import { useHorizontalScroll } from "../../hooks/useHorizontalScroll.ts";
 
 export function ChoiceOverlay({
   title,
@@ -19,25 +20,6 @@ export function ChoiceOverlay({
   maxWidthClassName?: string;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
-
-  // Translate vertical mousewheel into horizontal scroll on card strips
-  useEffect(() => {
-    const container = contentRef.current;
-    if (!container) return;
-
-    const handleWheel = (e: WheelEvent) => {
-      const strip = (e.target as HTMLElement).closest<HTMLElement>(
-        ".card-choice-strip",
-      );
-      if (!strip) return;
-      if (strip.scrollWidth <= strip.clientWidth) return;
-      e.preventDefault();
-      strip.scrollLeft += e.deltaY || e.deltaX;
-    };
-
-    container.addEventListener("wheel", handleWheel, { passive: false });
-    return () => container.removeEventListener("wheel", handleWheel);
-  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col px-0 py-0 lg:items-center lg:justify-center lg:px-4 lg:py-6">
@@ -74,15 +56,19 @@ export function ChoiceOverlay({
   );
 }
 
-/** Scrollable card strip wrapper with edge arrow buttons and mousewheel support. */
+/** Scrollable card strip wrapper with edge arrow buttons, mousewheel, and drag support. */
 export function ScrollableCardStrip({
   children,
   className = "",
+  stripClassName = "card-choice-strip",
+  innerClassName = "mx-auto flex min-h-0 flex-1 items-center gap-2 px-1 pb-2 lg:gap-3",
 }: {
   children: React.ReactNode;
   className?: string;
+  stripClassName?: string;
+  innerClassName?: string;
 }) {
-  const stripRef = useRef<HTMLDivElement>(null);
+  const stripRef = useHorizontalScroll<HTMLDivElement>();
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
@@ -91,13 +77,12 @@ export function ScrollableCardStrip({
     if (!el) return;
     setCanScrollLeft(el.scrollLeft > 1);
     setCanScrollRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 1);
-  }, []);
+  }, [stripRef]);
 
   useEffect(() => {
     const el = stripRef.current;
     if (!el) return;
 
-    // Check after children render / images load
     updateScrollState();
     const observer = new ResizeObserver(updateScrollState);
     observer.observe(el);
@@ -107,19 +92,22 @@ export function ScrollableCardStrip({
       observer.disconnect();
       el.removeEventListener("scroll", updateScrollState);
     };
-  }, [updateScrollState]);
+  }, [updateScrollState, stripRef]);
 
-  const scroll = useCallback((direction: -1 | 1) => {
-    const el = stripRef.current;
-    if (!el) return;
-    el.scrollBy({ left: direction * el.clientWidth * 0.6, behavior: "smooth" });
-  }, []);
+  const scroll = useCallback(
+    (direction: -1 | 1) => {
+      const el = stripRef.current;
+      if (!el) return;
+      el.scrollBy({ left: direction * el.clientWidth * 0.6, behavior: "smooth" });
+    },
+    [stripRef],
+  );
 
   return (
-    <div className="relative">
+    <div className={`relative ${className}`}>
       <div
         ref={stripRef}
-        className={`card-choice-strip mx-auto flex min-h-0 flex-1 items-center gap-2 px-1 pb-2 lg:gap-3 ${className}`}
+        className={`${stripClassName} ${innerClassName}`}
       >
         {children}
       </div>

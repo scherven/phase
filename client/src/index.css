@@ -337,7 +337,21 @@ body {
 .card-choice-strip > * {
   flex-shrink: 0;
 }
-/* Thin scrollbar for horizontal card strips on desktop */
+/* Horizontal card strips — shared scroll behavior.
+   touch-action: pan-x tells mobile browsers these strips claim horizontal pan
+   gestures, which is required inside modals where an ancestor has
+   touch-action: manipulation (see .game-no-select above). Without this, iOS
+   Safari swallows touch drags and the strip feels unscrollable. */
+.zone-viewer-strip,
+.card-choice-strip {
+  overflow-x: auto;
+  overflow-y: hidden;
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+/* Thin scrollbar for zone viewer (graveyard/exile) */
 .zone-viewer-strip {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
@@ -355,7 +369,6 @@ body {
 
 /* Always-visible scrollbar for card choice strips — large grab target */
 .card-choice-strip {
-  overflow-x: scroll;
   scrollbar-color: rgba(255, 255, 255, 0.55) rgba(255, 255, 255, 0.12);
 }
 .card-choice-strip::-webkit-scrollbar {

@@ -491,16 +491,23 @@ function GamePageContent({
     ) return;
 
     const legalTargets = wf.data.selection.current_legal_targets;
-    // Find the first legal target whose engine-provided zone is Graveyard or Exile
+    // Collect distinct (zone, owner) groupings so we don't trap the user in one
+    // graveyard when the effect can target either player's graveyard (e.g. Soul-Guide Lantern).
+    const groups = new Set<string>();
+    let firstHit: { zone: "graveyard" | "exile"; playerId: number } | null = null;
     for (const t of legalTargets) {
       if (!("Object" in t)) continue;
       const obj = objects[t.Object];
       if (!obj) continue;
-      if (obj.zone === "Graveyard" || obj.zone === "Exile") {
-        const zone = obj.zone === "Graveyard" ? "graveyard" : "exile";
-        setViewingZone({ zone, playerId: obj.owner });
-        return;
-      }
+      if (obj.zone !== "Graveyard" && obj.zone !== "Exile") continue;
+      const zone: "graveyard" | "exile" = obj.zone === "Graveyard" ? "graveyard" : "exile";
+      groups.add(`${zone}:${obj.owner}`);
+      if (!firstHit) firstHit = { zone, playerId: obj.owner };
+    }
+    // Only auto-open when there's a single zone+owner to open. Otherwise the
+    // zone pile glow (GraveyardPile hasTargetableCards) prompts the user to pick.
+    if (groups.size === 1 && firstHit) {
+      setViewingZone(firstHit);
     }
   }, [canActForWaitingState, engineWaitingFor, objects]);
 

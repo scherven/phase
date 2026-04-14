@@ -3,6 +3,7 @@ import { useCallback, useMemo } from "react";
 import type { GameObject } from "../../adapter/types.ts";
 import { CardImage } from "../card/CardImage.tsx";
 import { ModalPanelShell } from "../ui/ModalPanelShell.tsx";
+import { ScrollableCardStrip } from "../modal/ChoiceOverlay.tsx";
 import { useLongPress } from "../../hooks/useLongPress.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
@@ -67,13 +68,16 @@ export function ZoneViewer({ zone, playerId, onClose }: ZoneViewerProps) {
       maxWidthClassName="max-w-5xl"
       bodyClassName="flex min-h-0 flex-col"
     >
-      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden px-2 pb-2 lg:px-6 lg:pb-6">
+      <div className="min-h-0 flex-1 px-2 pb-2 lg:px-6 lg:pb-6">
         {cards.length === 0 ? (
           <p className="py-8 text-center text-sm italic text-gray-600">
             No cards in {ZONE_TITLES[zone].toLowerCase()}
           </p>
         ) : (
-          <div className="zone-viewer-strip flex items-center gap-2 lg:gap-3">
+          <ScrollableCardStrip
+            stripClassName="zone-viewer-strip"
+            innerClassName="flex items-center gap-2 lg:gap-3"
+          >
             {cards.map((obj) => {
               const canCastAdventure = zone === "exile" && isMyZone && hasPriority
                 && hasAdventureCreaturePermission(obj);
@@ -89,7 +93,7 @@ export function ZoneViewer({ zone, playerId, onClose }: ZoneViewerProps) {
                 />
               );
             })}
-          </div>
+          </ScrollableCardStrip>
         )}
       </div>
     </ModalPanelShell>
