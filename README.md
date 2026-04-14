@@ -7,7 +7,13 @@
 </p>
 
 <p align="center">
-  <a href="https://phase-rs.dev">Play Online</a> · <a href="#quick-start">Quick Start</a> · <a href="#features">Features</a> · <a href="#architecture">Architecture</a> · <a href="#development">Development</a> · <a href="https://discord.gg/dUZwhYHUyk">Discord</a>
+  <a href="https://phase-rs.dev"><img alt="Play Online" src="https://img.shields.io/badge/▶_Play_Online-Alpha-6366f1?style=for-the-badge"></a>
+  <a href="https://preview.phase-rs.dev"><img alt="Play Preview" src="https://img.shields.io/badge/⚡_Play_Preview-Latest-f59e0b?style=for-the-badge"></a>
+  <a href="https://github.com/phase-rs/phase/releases/latest"><img alt="Download" src="https://img.shields.io/badge/⬇_Download-Desktop-10b981?style=for-the-badge"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> · <a href="#features">Features</a> · <a href="#architecture">Architecture</a> · <a href="#development">Development</a> · <a href="https://discord.gg/dUZwhYHUyk">Discord</a>
 </p>
 
 <!-- coverage-badges:start -->
