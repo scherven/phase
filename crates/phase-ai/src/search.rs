@@ -28,9 +28,14 @@ use crate::threat_profile::{
 /// patterns of same-source repeated activation are rare: tokens and
 /// mana-abilities bypass this filter (mana abilities never hit the
 /// non-mana `ActivateAbility` path; tokens have distinct `ObjectId`s per
-/// instance). Cap chosen generously; lower values risked blocking edge
-/// cases like Cycling-style once-per-turn-ish loops that don't mark
-/// `activation_limit`.
+/// instance).
+///
+/// **Known trade-off**: "remove a counter: deal 1 damage" style abilities
+/// (Walking Ballista, Triskelion, Hangarback Walker) are bounded by their
+/// own counter depletion but could legitimately exceed this cap in a lethal
+/// turn (e.g. 10 counters → 10 pings). None of the registered duel-suite
+/// decks contain such cards; if one is added, revisit this cap or replace
+/// it with structural "source-state-unchanged" detection.
 const MAX_ACTIVATIONS_PER_SOURCE_PER_TURN: u32 = 4;
 
 /// Choose the best action for the AI player given the current game state.
