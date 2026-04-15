@@ -8,8 +8,11 @@ import { useUiStore } from "../../stores/uiStore";
 
 const SCROLL_THRESHOLD = 40; // px from bottom to count as "at bottom"
 
+type ConsoleLevel = "log" | "warn" | "error" | "debug";
+const CONSOLE_LEVELS: readonly ConsoleLevel[] = ["error", "warn", "log", "debug"] as const;
+
 interface ConsoleEntry {
-  level: "log" | "warn" | "error" | "debug";
+  level: ConsoleLevel;
   message: string;
   timestamp: number;
 }
@@ -51,6 +54,11 @@ export function DebugPanel() {
   const [status, setStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [consoleSnapshot, setConsoleSnapshot] = useState<ConsoleEntry[]>([]);
+  const [enabledLevels, setEnabledLevels] = useState<Set<ConsoleLevel>>(
+    // `debug` starts off — it's the noisiest level and most viewers want it
+    // hidden until they explicitly reach for it.
+    () => new Set<ConsoleLevel>(["log", "warn", "error"]),
+  );
   const consoleContainerRef = useRef<HTMLDivElement>(null);
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
@@ -122,6 +130,33 @@ export function DebugPanel() {
     setShowJumpToBottom(false);
   }, []);
 
+  const visibleEntries = consoleSnapshot.filter((e) => enabledLevels.has(e.level));
+
+  const toggleLevel = useCallback((level: ConsoleLevel) => {
+    setEnabledLevels((prev) => {
+      const next = new Set(prev);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
+  }, []);
+
+  const handleCopyConsole = useCallback(() => {
+    if (visibleEntries.length === 0) {
+      setStatus({ type: "error", message: "No console entries to copy" });
+      return;
+    }
+    const text = visibleEntries
+      .map((e) => {
+        const ts = new Date(e.timestamp).toISOString().slice(11, 23);
+        return `${ts} [${e.level}] ${e.message}`;
+      })
+      .join("\n");
+    navigator.clipboard.writeText(text)
+      .then(() => setStatus({ type: "success", message: `Copied ${visibleEntries.length} entries` }))
+      .catch(() => setStatus({ type: "error", message: "Failed to copy console" }));
+  }, [visibleEntries]);
+
   const handleConsoleScroll = useCallback(() => {
     const el = consoleContainerRef.current;
     if (!el) return;
@@ -145,9 +180,11 @@ export function DebugPanel() {
     return () => clearInterval(interval);
   }, [open]);
 
-  // Smart scroll: auto-scroll only when at bottom, track new messages otherwise
+  // Smart scroll: auto-scroll only when at bottom, track new messages
+  // otherwise. Track against the filtered view length so toggling a level
+  // off doesn't spuriously count filtered-out arrivals as "new".
   useEffect(() => {
-    const newLen = consoleSnapshot.length;
+    const newLen = visibleEntries.length;
     const added = newLen - prevSnapshotLenRef.current;
     prevSnapshotLenRef.current = newLen;
 
@@ -158,7 +195,7 @@ export function DebugPanel() {
     } else {
       setNewMessageCount((prev) => prev + added);
     }
-  }, [consoleSnapshot]);
+  }, [visibleEntries]);
 
   if (!open) return null;
 
@@ -258,12 +295,48 @@ export function DebugPanel() {
             <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-gray-500">
               Console
             </h3>
-            <button
-              onClick={() => { consoleLogs.length = 0; setConsoleSnapshot([]); prevSnapshotLenRef.current = 0; setNewMessageCount(0); }}
-              className="text-[10px] text-gray-600 hover:text-gray-400"
-            >
-              Clear
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCopyConsole}
+                className="text-[10px] text-gray-600 hover:text-gray-400"
+              >
+                Copy
+              </button>
+              <button
+                onClick={() => { consoleLogs.length = 0; setConsoleSnapshot([]); prevSnapshotLenRef.current = 0; setNewMessageCount(0); }}
+                className="text-[10px] text-gray-600 hover:text-gray-400"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="mb-1 flex flex-wrap gap-1">
+            {CONSOLE_LEVELS.map((level) => {
+              const active = enabledLevels.has(level);
+              const count = consoleSnapshot.reduce((n, e) => (e.level === level ? n + 1 : n), 0);
+              const activeColor =
+                level === "error"
+                  ? "border-red-500/60 bg-red-500/20 text-red-300"
+                  : level === "warn"
+                    ? "border-yellow-500/60 bg-yellow-500/20 text-yellow-300"
+                    : level === "debug"
+                      ? "border-gray-500/60 bg-gray-500/20 text-gray-400"
+                      : "border-blue-500/60 bg-blue-500/20 text-blue-300";
+              return (
+                <button
+                  key={level}
+                  onClick={() => toggleLevel(level)}
+                  className={
+                    "rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors " +
+                    (active
+                      ? activeColor
+                      : "border-gray-700 bg-transparent text-gray-600 hover:border-gray-600 hover:text-gray-500")
+                  }
+                >
+                  {level} ({count})
+                </button>
+              );
+            })}
           </div>
           <div className="relative min-h-0 flex-1">
             <div
@@ -271,7 +344,7 @@ export function DebugPanel() {
               onScroll={handleConsoleScroll}
               className="h-full select-text overflow-y-auto rounded bg-black/40 p-1 font-mono text-[10px] leading-tight"
             >
-              {consoleSnapshot.map((entry, i) => (
+              {visibleEntries.map((entry, i) => (
                 <div
                   key={i}
                   className={
