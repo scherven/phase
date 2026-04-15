@@ -1892,6 +1892,10 @@ pub fn can_pay_cost_after_auto_tap(
     );
 
     let any_color = super::static_abilities::player_can_spend_as_any_color(&simulated, player);
+    // CR 107.4f + CR 118.3 + CR 119.8: Include the caster's Phyrexian life
+    // budget so a cost containing {C/P} shards is only reported payable when
+    // either mana or sufficient life (respecting CantLoseLife) is available.
+    let max_life = super::life_costs::max_phyrexian_life_payments(&simulated, player);
     simulated
         .players
         .iter()
@@ -1902,6 +1906,7 @@ pub fn can_pay_cost_after_auto_tap(
                 cost,
                 spell_meta.as_ref(),
                 any_color,
+                max_life,
             )
         })
 }
@@ -1948,11 +1953,15 @@ pub(super) fn pay_mana_cost(
             .find(|p| p.id == player)
             .expect("player exists");
         let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
+        // CR 107.4f + CR 118.3 + CR 119.8: Life budget for Phyrexian shards —
+        // respects CantLoseLife (budget 0 under lock) and current life total.
+        let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
         if !mana_payment::can_pay_for_spell(
             &player_data.mana_pool,
             cost,
             spell_meta.as_ref(),
             any_color,
+            max_life,
         ) {
             return Err(EngineError::ActionNotAllowed(
                 "Cannot pay mana cost".to_string(),
@@ -1967,7 +1976,7 @@ pub(super) fn pay_mana_cost(
         .iter_mut()
         .find(|p| p.id == player)
         .expect("player exists");
-    let (spent_units, _life_payments) = mana_payment::pay_cost_with_demand(
+    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand(
         &mut player_data.mana_pool,
         cost,
         Some(&hand_demand),
@@ -1975,6 +1984,25 @@ pub(super) fn pay_mana_cost(
         any_color,
     )
     .map_err(|_| EngineError::ActionNotAllowed("Mana payment failed".to_string()))?;
+
+    // CR 107.4f + CR 118.3b + CR 119.4 + CR 119.8: Each Phyrexian shard paid
+    // with life routes through the single-authority life-cost helper so the
+    // deduction IS a life-loss event (replacement pipeline + CantLoseLife
+    // short-circuit apply consistently). `can_pay_for_spell` above was gated
+    // on the player's Phyrexian life budget, so reaching an unpayable result
+    // here is an invariant violation — surface it as ActionNotAllowed.
+    for payment in &life_payments {
+        let amount = u32::try_from(payment.amount).unwrap_or(0);
+        match super::life_costs::pay_life_as_cost(state, player, amount, events) {
+            super::life_costs::PayLifeCostResult::Paid { .. } => {}
+            super::life_costs::PayLifeCostResult::InsufficientLife
+            | super::life_costs::PayLifeCostResult::LockedCantLoseLife => {
+                return Err(EngineError::ActionNotAllowed(
+                    "Cannot pay Phyrexian life cost".to_string(),
+                ));
+            }
+        }
+    }
 
     // CR 106.6: Apply mana spell grants to the spell being cast.
     apply_mana_spell_grants(state, source_id, &spent_units);
@@ -8057,6 +8085,202 @@ mod tests {
         assert!(
             !can_activate_ability_now(&state, PlayerId(0), greed, 0),
             "can_activate_ability_now must reject PayLife activation with insufficient life"
+        );
+    }
+
+    // === CR 107.4f: Phyrexian mana life-payment integration ===
+
+    /// Build a Gitaxian-Probe-style instant whose cost is a single Phyrexian
+    /// shard, plus an optional generic component.
+    fn create_phyrexian_instant_in_hand(
+        state: &mut GameState,
+        player: PlayerId,
+        shards: Vec<ManaCostShard>,
+        generic: u32,
+    ) -> ObjectId {
+        let obj_id = create_object(
+            state,
+            CardId(0x9117),
+            player,
+            "Phyrexian Probe".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Instant);
+        obj.abilities.push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        ));
+        obj.mana_cost = ManaCost::Cost { shards, generic };
+        obj_id
+    }
+
+    /// CR 107.4f + CR 118.3b + CR 119.4: Paying a Phyrexian shard with life
+    /// actually deducts 2 life from the caster.
+    #[test]
+    fn phyrexian_cast_with_life_deducts_life() {
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        // Empty mana pool → the {U/P} must auto-resolve to the 2-life fallback.
+        let life_before = state.players[0].life;
+
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
+
+        assert!(
+            result.is_ok(),
+            "cast must succeed paying 2 life for {{U/P}}"
+        );
+        assert_eq!(
+            state.players[0].life,
+            life_before - 2,
+            "CR 118.3b: paying 2 life must reduce the life total by 2"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GameEvent::LifeChanged { player_id, amount: -2 } if *player_id == PlayerId(0))),
+            "CR 119.4: pay-life must emit a LifeChanged event with amount -2"
+        );
+    }
+
+    /// CR 107.4f + CR 118.3: With insufficient life and no mana of the color,
+    /// the Phyrexian cast is denied.
+    #[test]
+    fn phyrexian_cast_denied_when_life_insufficient() {
+        let mut state = setup_game_at_main_phase();
+        state.players[0].life = 1; // < 2
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+
+        assert!(
+            !can_cast_object_now(&state, PlayerId(0), spell),
+            "can_cast_object_now must reject Phyrexian cast when life < 2 and mana unavailable"
+        );
+
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
+        assert!(
+            result.is_err(),
+            "handle_cast_spell must error when Phyrexian cost is unpayable"
+        );
+        assert_eq!(
+            state.players[0].life, 1,
+            "life must be unchanged on denied cast"
+        );
+    }
+
+    /// CR 107.4f + CR 119.8: Under CantLoseLife, the life fallback is illegal,
+    /// so a Phyrexian cast with no mana of the color is denied entirely.
+    #[test]
+    fn phyrexian_cast_denied_under_cant_lose_life() {
+        let mut state = setup_game_at_main_phase();
+        add_cant_lose_life_permanent(&mut state, PlayerId(0));
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+
+        assert!(
+            !can_cast_object_now(&state, PlayerId(0), spell),
+            "can_cast_object_now must reject Phyrexian cast under CantLoseLife when mana unavailable"
+        );
+
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
+        assert!(
+            result.is_err(),
+            "handle_cast_spell must error when Phyrexian cost can't be paid under CantLoseLife"
+        );
+    }
+
+    /// CR 107.4f: Baseline — paying the Phyrexian shard with the indicated color
+    /// mana leaves life unchanged (no regression on the mana path).
+    #[test]
+    fn phyrexian_cast_with_mana_leaves_life_unchanged() {
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+        let life_before = state.players[0].life;
+
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
+
+        assert!(result.is_ok(), "cast must succeed paying {{U}} for {{U/P}}");
+        assert_eq!(
+            state.players[0].life, life_before,
+            "paying mana (not life) must not change life total"
+        );
+    }
+
+    /// CR 107.4f + CR 118.3b: Multi-Phyrexian cost paid entirely with life —
+    /// each shard deducts 2, total life loss = 2 × shard_count.
+    #[test]
+    fn phyrexian_multi_shard_all_life_deducts_per_shard() {
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianWhite, ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        let life_before = state.players[0].life;
+
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
+
+        assert!(
+            result.is_ok(),
+            "cast must succeed paying 4 life for {{W/P}}{{U/P}}"
+        );
+        assert_eq!(
+            state.players[0].life,
+            life_before - 4,
+            "two Phyrexian shards paid with life must deduct 2+2 = 4 life"
+        );
+    }
+
+    /// CR 107.4f + CR 118.3b: Mixed Phyrexian payment — one shard paid with mana,
+    /// the other with life. Mana is preferred when available (auto-resolution),
+    /// so providing {W} satisfies the {W/P} and the {U/P} falls back to 2 life.
+    #[test]
+    fn phyrexian_mixed_one_mana_one_life() {
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianWhite, ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::White, 1);
+        let life_before = state.players[0].life;
+
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
+
+        assert!(result.is_ok(), "cast must succeed paying {{W}} + 2 life");
+        assert_eq!(
+            state.players[0].life,
+            life_before - 2,
+            "only the mana-unavailable shard falls back to 2 life"
         );
     }
 }
