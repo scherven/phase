@@ -1,4 +1,6 @@
-use crate::types::ability::{AbilityCost, AbilityDefinition, Effect, TargetFilter};
+use crate::types::ability::{
+    AbilityCost, AbilityDefinition, Effect, ResolvedAbility, TargetFilter,
+};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, ManaAbilityResume, PendingManaAbility, WaitingFor};
 use crate::types::identifiers::ObjectId;
@@ -28,6 +30,48 @@ pub fn is_mana_ability(ability_def: &AbilityDefinition) -> bool {
     // CR 605.1a: A targeted mana-producing ability is not a mana ability.
     // multi_target is the explicit targeting mechanism on AbilityDefinition.
     ability_def.multi_target.is_none()
+}
+
+/// CR 605.1b: A triggered ability is a mana ability iff all three hold:
+///   (a) it doesn't require a target (CR 115.6),
+///   (b) it triggers from the activation/resolution of an activated mana ability
+///       OR from mana being added to a player's mana pool,
+///   (c) it could add mana to a player's mana pool when it resolves.
+///
+/// Triggered mana abilities don't use the stack (CR 605.3b applies analogously);
+/// they resolve immediately at the moment the trigger event occurs. This is the
+/// single authority for classifying triggered mana abilities — all trigger-enqueue
+/// call sites must route through this classifier.
+///
+/// `trigger_event` is the event that caused the trigger to fire (CR 603.7c). For
+/// criterion (b) we require it to be a `ManaAdded` event, which is emitted both
+/// when an activated mana ability resolves and when any effect adds mana to a pool.
+pub fn is_triggered_mana_ability(
+    ability: &ResolvedAbility,
+    trigger_event: Option<&GameEvent>,
+) -> bool {
+    // (c) The resolved effect must add mana to a pool.
+    if !matches!(ability.effect, Effect::Mana { .. }) {
+        return false;
+    }
+    // (a) No target — mirrors the activated-mana-ability guard in `is_mana_ability`.
+    if !ability.targets.is_empty() || ability.multi_target.is_some() {
+        return false;
+    }
+    // (b) Triggered by mana being added to a pool.
+    matches!(trigger_event, Some(GameEvent::ManaAdded { .. }))
+}
+
+/// CR 605.3b: Resolve a triggered mana ability inline (stack-skipped).
+/// The ability's effect chain is executed immediately; mana additions land in the
+/// controller's pool before any player could respond.
+pub fn resolve_triggered_mana_ability_inline(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) {
+    // Use the standard resolution entry so sub_ability chains resolve uniformly.
+    let _ = super::effects::resolve_ability_chain(state, ability, events, 0);
 }
 
 /// CR 605.2: Mana abilities don't use the stack — they can't be targeted, countered, or responded to.

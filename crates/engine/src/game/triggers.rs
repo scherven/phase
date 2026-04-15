@@ -833,6 +833,21 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
         };
 
         if target_slots.is_empty() {
+            // CR 605.1b: Triggered mana abilities don't use the stack — they resolve
+            // immediately at the moment the trigger event occurs. Classify via the
+            // single-authority `is_triggered_mana_ability` (ResolvedAbility form),
+            // which enforces all three CR 605.1b criteria.
+            if super::mana_abilities::is_triggered_mana_ability(
+                &trigger.ability,
+                trigger.trigger_event.as_ref(),
+            ) {
+                super::mana_abilities::resolve_triggered_mana_ability_inline(
+                    state,
+                    &trigger.ability,
+                    &mut events_out,
+                );
+                continue;
+            }
             push_pending_trigger_to_stack(state, trigger, &mut events_out);
             continue;
         }
@@ -4258,6 +4273,105 @@ pub mod tests {
         assert!(
             !event_is_suppressed_by_static_triggers(&state, &event),
             "PhaseChanged must not be suppressed by SuppressTriggers"
+        );
+    }
+
+    #[test]
+    fn fertile_ground_triggered_mana_ability_skips_stack_and_adds_mana() {
+        // CR 605.1b: "Whenever enchanted land is tapped for mana, its controller
+        // adds an additional {G}" — a triggered mana ability that must resolve
+        // inline (stack-skipped) so the added mana is available immediately.
+        use crate::types::ability::{ManaProduction, QuantityExpr};
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        // Enchanted Forest under P0's control.
+        let forest = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&forest)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+
+        // Fertile Ground attached to the Forest.
+        let aura = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Fertile Ground".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&aura).unwrap();
+            obj.card_types.core_types.push(CoreType::Enchantment);
+            obj.attached_to = Some(forest);
+            obj.entered_battlefield_turn = Some(1);
+            obj.trigger_definitions.push(
+                TriggerDefinition::new(TriggerMode::TapsForMana)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Database,
+                        Effect::Mana {
+                            produced: ManaProduction::AnyOneColor {
+                                count: QuantityExpr::Fixed { value: 1 },
+                                color_options: vec![
+                                    ManaColor::White,
+                                    ManaColor::Blue,
+                                    ManaColor::Black,
+                                    ManaColor::Red,
+                                    ManaColor::Green,
+                                ],
+                            },
+                            restrictions: vec![],
+                            grants: vec![],
+                            expiry: None,
+                        },
+                    ))
+                    .valid_card(TargetFilter::AttachedTo),
+            );
+        }
+
+        // Simulate tapping the Forest for mana: ManaAdded with tapped_for_mana=true.
+        let events = vec![GameEvent::ManaAdded {
+            player_id: PlayerId(0),
+            mana_type: crate::types::mana::ManaType::Green,
+            source_id: forest,
+            tapped_for_mana: true,
+        }];
+
+        process_triggers(&mut state, &events);
+
+        // CR 605.3b: Triggered mana ability resolves without using the stack.
+        assert_eq!(
+            state.stack.len(),
+            0,
+            "Fertile Ground's mana trigger must not be placed on the stack"
+        );
+        assert!(
+            state.pending_trigger.is_none(),
+            "Fertile Ground's mana trigger must not be pending-target"
+        );
+
+        // The mana pool now contains one unit. AnyOneColor without color_override
+        // resolves to the first color_option by default — the important property
+        // for CR 605.1b is that mana was added immediately.
+        let pool_size: usize = state
+            .players
+            .iter()
+            .find(|p| p.id == PlayerId(0))
+            .map(|p| p.mana_pool.total())
+            .unwrap_or(0);
+        assert_eq!(
+            pool_size, 1,
+            "Fertile Ground must add one mana to the pool inline"
         );
     }
 }
