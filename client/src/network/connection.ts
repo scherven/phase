@@ -103,7 +103,7 @@ export function parseRoomCode(input: string): string | null {
  * Returns a Promise so the caller can await the host being registered on the
  * signaling server before exposing the room code to guests.
  */
-export async function hostRoom(signal?: AbortSignal): Promise<HostResult> {
+export async function hostRoom(): Promise<HostResult> {
   const roomCode = generateRoomCode();
   const peerId = PEER_ID_PREFIX + roomCode;
   const peer = new Peer(peerId, { config: PEER_CONFIG });
@@ -111,35 +111,17 @@ export async function hostRoom(signal?: AbortSignal): Promise<HostResult> {
   let destroyed = false;
   const guestHandlers = new Set<(conn: DataConnection) => void>();
 
-  // Wait for the host to be registered on the signaling server. If
-  // `signal` aborts during this window (e.g. React StrictMode double-
-  // mount tearing down the first mount), destroy the Peer immediately
-  // so it can't race to register with the PeerJS signaling server and
-  // leave an orphan behind.
+  // Wait for the host to be registered on the signaling server.
   await new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      try { peer.destroy(); } catch { /* best-effort */ }
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    const onAbort = () => {
-      peer.off("open", onOpen);
-      peer.off("error", onError);
-      try { peer.destroy(); } catch { /* best-effort */ }
-      reject(new DOMException("Aborted", "AbortError"));
-    };
     const onOpen = () => {
-      signal?.removeEventListener("abort", onAbort);
       console.log("[P2P Host] registered on signaling server, code:", roomCode);
       peer.off("error", onError);
       resolve();
     };
     const onError = (err: Error) => {
-      signal?.removeEventListener("abort", onAbort);
       peer.off("open", onOpen);
       reject(new Error(`Failed to create room: ${err.message}`));
     };
-    signal?.addEventListener("abort", onAbort, { once: true });
     peer.once("open", onOpen);
     peer.once("error", onError);
   });
@@ -211,12 +193,8 @@ export async function hostRoom(signal?: AbortSignal): Promise<HostResult> {
  * `DataConnection` drops and attempt auto-reconnect via
  * `peer.connect(hostPeerId)`.
  */
-export function joinRoom(code: string, signal?: AbortSignal): Promise<JoinResult> {
+export function joinRoom(code: string): Promise<JoinResult> {
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
     const peer = new Peer({ config: PEER_CONFIG });
     const peerId = PEER_ID_PREFIX + code;
     // Once the initial DataConnection opens, transient peer errors (e.g.,
@@ -226,38 +204,17 @@ export function joinRoom(code: string, signal?: AbortSignal): Promise<JoinResult
     // errors tear down the Peer; everything else is logged and ignored.
     let opened = false;
 
-    // If `signal` aborts before the guest's DataConnection opens, destroy
-    // the Peer immediately. Without this, React StrictMode's throw-away
-    // first mount races to register with the PeerJS signaling server
-    // and dial the host — the host accepts the connection, assigns a
-    // seat, and then the real second-mount guest arrives and is
-    // rejected as "Lobby full". The `opened` check means we only guard
-    // the pre-open window; post-open tear-down is the caller's (adapter)
-    // responsibility.
-    const onAbort = () => {
-      if (opened) return;
-      try { peer.destroy(); } catch { /* best-effort */ }
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-
     peer.on("open", () => {
-      if (signal?.aborted) {
-        try { peer.destroy(); } catch { /* best-effort */ }
-        return;
-      }
       console.log("[P2P Guest] registered on signaling server, connecting to:", peerId);
       const conn = peer.connect(peerId);
 
       const timeout = setTimeout(() => {
-        signal?.removeEventListener("abort", onAbort);
         reject(new Error("Connection timed out. Check the room code and try again."));
         peer.destroy();
       }, 30_000);
 
       conn.on("open", () => {
         clearTimeout(timeout);
-        signal?.removeEventListener("abort", onAbort);
         opened = true;
         resolve({
           conn,
@@ -281,7 +238,6 @@ export function joinRoom(code: string, signal?: AbortSignal): Promise<JoinResult
           return;
         }
         clearTimeout(timeout);
-        signal?.removeEventListener("abort", onAbort);
         reject(new Error(`Connection error: ${err.message}`));
         peer.destroy();
       });
