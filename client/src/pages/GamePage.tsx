@@ -894,9 +894,36 @@ function GamePageContent({
             <p className="mb-4 text-sm text-gray-400">
               Share this code with your opponent:
             </p>
-            <p className="mb-4 font-mono text-4xl font-bold tracking-widest text-emerald-400">
-              {hostGameCode}
-            </p>
+            <div className="mb-4 flex items-center justify-center gap-3">
+              {/* `select-all` + `cursor-text` + explicit `user-select: text`
+                  so the entire code highlights on a single click even if a
+                  parent has set `user-select: none` for the game surface. */}
+              <span
+                className="select-all font-mono text-4xl font-bold tracking-widest text-emerald-400"
+                style={{ userSelect: "text" }}
+              >
+                {hostGameCode}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(hostGameCode);
+                }}
+                title="Copy code"
+                aria-label="Copy code to clipboard"
+                className="rounded-lg border border-white/10 bg-white/5 p-2 text-slate-300 transition-colors hover:border-white/18 hover:bg-white/10 hover:text-white"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className="h-4 w-4"
+                  aria-hidden="true"
+                >
+                  <path d="M7 3a2 2 0 0 0-2 2v1H4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H7Zm0 2h8v8h-1V8a2 2 0 0 0-2-2H7V5Zm-3 3h8v8H4V8Z" />
+                </svg>
+              </button>
+            </div>
             <p className="text-xs text-gray-500">
               The game will start when your opponent joins.
             </p>

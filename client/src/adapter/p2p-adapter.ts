@@ -223,15 +223,17 @@ export class P2PHostAdapter implements EngineAdapter {
   }
 
   async initialize(): Promise<void> {
-    await this.wasm.initialize();
-    // Flip the engine's multiplayer flag ON so any subsequent
-    // `restoreState` call on this WASM instance fails in the engine itself
-    // — defense in depth alongside this adapter's own `restoreState` throw.
-    await this.wasm.setMultiplayerMode(true);
-    // Subscribe to incoming guest connections via the Peer directly. We don't
-    // route through `connection.ts` `onGuestConnected` here because the
-    // adapter owns the Peer reference and per-conn wiring needs the assigned
-    // PlayerId in scope.
+    // Attach the guest-connection listener FIRST, synchronously, before
+    // any async work. The broker has already advertised this host's
+    // peer id by the time the adapter is constructed, so a guest can
+    // dial as soon as they see the lobby row — if we wait for
+    // `wasm.initialize()` to finish (hundreds of ms on a cold load),
+    // PeerJS fires the `connection` event into the void and the dial
+    // silently drops. `handleNewConnection` only stores the session
+    // and reads the first message to bucket it; it never touches wasm.
+    // `handleNewGuest` just stashes the deck blob, so deck collection
+    // happens in parallel with wasm boot — `initializeGame` below
+    // awaits both.
     const handleConnection = (conn: DataConnection) => {
       conn.on("open", () => {
         this.handleNewConnection(conn);
@@ -241,6 +243,12 @@ export class P2PHostAdapter implements EngineAdapter {
     this.hostConnectionUnsub = () => {
       this.hostPeer.off("connection", handleConnection);
     };
+
+    await this.wasm.initialize();
+    // Flip the engine's multiplayer flag ON so any subsequent
+    // `restoreState` call on this WASM instance fails in the engine itself
+    // — defense in depth alongside this adapter's own `restoreState` throw.
+    await this.wasm.setMultiplayerMode(true);
   }
 
   private handleNewConnection(conn: DataConnection): void {
