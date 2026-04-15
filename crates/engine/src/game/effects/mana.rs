@@ -1,5 +1,7 @@
 use crate::game::mana_sources;
 use crate::game::quantity::{resolve_quantity, resolve_quantity_with_targets};
+#[cfg(test)]
+use crate::types::ability::ManaContribution;
 use crate::types::ability::{
     Effect, EffectError, EffectKind, ManaProduction, ManaSpendRestriction, ResolvedAbility,
 };
@@ -30,7 +32,7 @@ pub fn resolve(
     // `Variable { name: "X" }` branch of `resolve_ref`. Non-X mana production
     // (Fixed, ObjectCount, etc.) is unaffected.
     let mana_types = match produced {
-        ManaProduction::ChosenColor { count } => {
+        ManaProduction::ChosenColor { count, .. } => {
             let amount = resolve_quantity_with_targets(&*state, count, ability).max(0) as usize;
             state
                 .objects
@@ -180,6 +182,7 @@ fn resolve_mana_types_impl(
         ManaProduction::AnyOneColor {
             count,
             color_options,
+            ..
         } => {
             let amount = resolve_count(count, state, ability, controller, source_id);
             let Some(mana_type) = color_options.first().map(mana_color_to_type) else {
@@ -424,6 +427,7 @@ mod tests {
             &make_mana_ability(ManaProduction::AnyOneColor {
                 count: QuantityExpr::Fixed { value: 2 },
                 color_options: vec![ManaColor::Blue, ManaColor::Red],
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -475,6 +479,7 @@ mod tests {
         let mut events = Vec::new();
         let ability = make_mana_ability(ManaProduction::ChosenColor {
             count: QuantityExpr::Fixed { value: 1 },
+            contribution: ManaContribution::Base,
         });
         // Override source_id to match our object
         let ability = ResolvedAbility {
@@ -497,6 +502,7 @@ mod tests {
             &mut state,
             &make_mana_ability(ManaProduction::ChosenColor {
                 count: QuantityExpr::Fixed { value: 1 },
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -637,6 +643,7 @@ mod tests {
                 produced: ManaProduction::AnyOneColor {
                     count: QuantityExpr::Fixed { value: 1 },
                     color_options: vec![ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![ManaSpendRestriction::SpellType("Creature".to_string())],
                 grants: vec![],
@@ -682,6 +689,7 @@ mod tests {
                 produced: ManaProduction::AnyOneColor {
                     count: QuantityExpr::Fixed { value: 1 },
                     color_options: vec![ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![ManaSpendRestriction::ChosenCreatureType],
                 grants: vec![],
@@ -740,6 +748,7 @@ mod tests {
                 produced: ManaProduction::AnyOneColor {
                     count: QuantityExpr::Fixed { value: 1 },
                     color_options: vec![ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![ManaSpellGrant::CantBeCountered],

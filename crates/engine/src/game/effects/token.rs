@@ -7,8 +7,8 @@ use crate::game::zones;
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction, ControllerRef,
     DelayedTriggerCondition, Duration, Effect, EffectError, EffectKind, GainLifePlayer,
-    ManaProduction, PtValue, QuantityExpr, QuantityRef, ResolvedAbility, TargetFilter, TargetRef,
-    TypedFilter,
+    ManaContribution, ManaProduction, PtValue, QuantityExpr, QuantityRef, ResolvedAbility,
+    TargetFilter, TargetRef, TypedFilter,
 };
 use crate::types::card_type::{CardType, CoreType, Supertype};
 use crate::types::events::GameEvent;
@@ -775,6 +775,7 @@ fn treasure_ability() -> AbilityDefinition {
                     ManaColor::Red,
                     ManaColor::Green,
                 ],
+                contribution: ManaContribution::Base,
             },
             restrictions: vec![],
             grants: vec![],

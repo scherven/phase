@@ -6,7 +6,7 @@ use nom::Parser;
 use crate::parser::oracle_nom::error::OracleResult;
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::types::ability::{
-    Effect, ManaProduction, ManaSpendRestriction, QuantityExpr, QuantityRef,
+    Effect, ManaContribution, ManaProduction, ManaSpendRestriction, QuantityExpr, QuantityRef,
 };
 use crate::types::keywords::KeywordKind;
 use crate::types::mana::{ManaColor, ManaSpellGrant};
@@ -35,15 +35,19 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
     let clause_tp = TextPair::new(clause, &clause_lower);
     let (without_where_x, where_x_expression) = super::strip_trailing_where_x(clause_tp);
     let clause = without_where_x.original.trim().trim_end_matches(['.', '"']);
-    // Strip "an additional " modifier — e.g. "add an additional {G}" -> "{G}"
+    // CR 605.1a + CR 107.4a: Track whether the "an additional " prefix was present
+    // so that `ChosenColor`/`AnyOneColor` variants record their contribution role
+    // rather than silently dropping the additive qualifier (e.g. Utopia Sprawl,
+    // Fertile Ground). Typed enum — never a bool.
     let clause_lower_trimmed = clause.to_lowercase();
-    let clause = nom_on_lower(clause, &clause_lower_trimmed, |i| {
+    let (clause, contribution) = match nom_on_lower(clause, &clause_lower_trimmed, |i| {
         value((), tag("an additional ")).parse(i)
-    })
-    .map(|(_, rest)| rest)
-    .unwrap_or(clause);
+    }) {
+        Some((_, rest)) => (rest, ManaContribution::Additional),
+        None => (clause, ManaContribution::Base),
+    };
 
-    if let Some(produced) = parse_mana_production_clause(clause) {
+    if let Some(produced) = parse_mana_production_clause(clause, contribution) {
         return Some(Effect::Mana {
             produced,
             restrictions: vec![],
@@ -54,7 +58,7 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
 
     // CR 106.1 / CR 106.3: "an amount of {color} equal to [quantity]"
     // e.g. "an amount of {G} equal to ~'s power"
-    if let Some(effect) = try_parse_amount_equal_to(clause) {
+    if let Some(effect) = try_parse_amount_equal_to(clause, contribution) {
         return Some(effect);
     }
 
@@ -82,6 +86,7 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
                 ManaProduction::AnyOneColor {
                     count,
                     color_options: all_mana_colors(),
+                    contribution,
                 }
             };
             return Some(Effect::Mana {
@@ -114,7 +119,10 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             .parse(i)
         }) {
             return Some(Effect::Mana {
-                produced: ManaProduction::ChosenColor { count },
+                produced: ManaProduction::ChosenColor {
+                    count,
+                    contribution,
+                },
                 restrictions: vec![],
                 grants: vec![],
                 expiry: None,
@@ -131,6 +139,7 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
                         produced: ManaProduction::AnyOneColor {
                             count,
                             color_options: colors,
+                            contribution,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -166,7 +175,7 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
         apply_where_x_count_expression(fallback_count, where_x_expression.as_deref());
 
     // Scan for mana production type at word boundaries using nom combinators.
-    let produced = scan_mana_production_type(&clause_lower, fallback_count.clone())?;
+    let produced = scan_mana_production_type(&clause_lower, fallback_count.clone(), contribution)?;
     Some(Effect::Mana {
         produced,
         restrictions: vec![],
@@ -212,12 +221,16 @@ pub(super) fn try_parse_activate_only_condition(text: &str) -> Option<Effect> {
     })
 }
 
-pub(super) fn parse_mana_production_clause(text: &str) -> Option<ManaProduction> {
+pub(super) fn parse_mana_production_clause(
+    text: &str,
+    contribution: ManaContribution,
+) -> Option<ManaProduction> {
     if let Some(color_options) = parse_mana_color_set(text) {
         if color_options.len() > 1 {
             return Some(ManaProduction::AnyOneColor {
                 count: QuantityExpr::Fixed { value: 1 },
                 color_options,
+                contribution,
             });
         }
     }
@@ -236,6 +249,7 @@ pub(super) fn parse_mana_production_clause(text: &str) -> Option<ManaProduction>
             return Some(ManaProduction::AnyOneColor {
                 count: QuantityExpr::Ref { qty },
                 color_options: colors,
+                contribution,
             });
         }
         // Unknown trailing text -- don't silently discard it
@@ -463,7 +477,11 @@ pub(super) fn parse_mana_color_symbol_set(symbol: &str) -> Option<Vec<ManaColor>
 }
 
 /// Scan for mana production type at word boundaries using nom combinators.
-fn scan_mana_production_type(text: &str, count: QuantityExpr) -> Option<ManaProduction> {
+fn scan_mana_production_type(
+    text: &str,
+    count: QuantityExpr,
+    contribution: ManaContribution,
+) -> Option<ManaProduction> {
     use nom_language::error::VerboseError;
     crate::parser::oracle_nom::primitives::scan_at_word_boundaries(text, |input| {
         alt((
@@ -484,6 +502,7 @@ fn scan_mana_production_type(text: &str, count: QuantityExpr) -> Option<ManaProd
                 ManaProduction::AnyOneColor {
                     count: count.clone(),
                     color_options: all_mana_colors(),
+                    contribution,
                 },
                 alt((tag("mana of any one color"), tag("mana of any color"))),
             ),
@@ -497,6 +516,7 @@ fn scan_mana_production_type(text: &str, count: QuantityExpr) -> Option<ManaProd
             value(
                 ManaProduction::ChosenColor {
                     count: count.clone(),
+                    contribution,
                 },
                 alt((tag("mana of the chosen color"), tag("mana of that color"))),
             ),
@@ -700,7 +720,7 @@ fn extract_spell_grants(text: &str) -> (&str, Vec<ManaSpellGrant>) {
 
 /// CR 106.1 / CR 106.3: Parse "an amount of {color} equal to [quantity]"
 /// e.g. "an amount of {G} equal to ~'s power" -> AnyOneColor { count: SelfPower, [Green] }
-fn try_parse_amount_equal_to(clause: &str) -> Option<Effect> {
+fn try_parse_amount_equal_to(clause: &str, contribution: ManaContribution) -> Option<Effect> {
     let clause_lower = clause.to_lowercase();
     let (_, rest) = nom_on_lower(clause, &clause_lower, |i| {
         value((), tag("an amount of ")).parse(i)
@@ -727,6 +747,7 @@ fn try_parse_amount_equal_to(clause: &str) -> Option<Effect> {
         produced: ManaProduction::AnyOneColor {
             count,
             color_options,
+            contribution,
         },
         restrictions: vec![],
         grants: vec![],

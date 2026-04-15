@@ -491,6 +491,30 @@ impl<'de> serde::Deserialize<'de> for PtValue {
     }
 }
 
+/// CR 605.1a + CR 107.4a: Whether a mana-production effect is the *base* mana
+/// addition (e.g. a basic Forest tapping for `{G}`) or an *additional* mana
+/// addition that piggy-backs on another mana event (e.g. Fertile Ground's
+/// "adds an additional one mana"). Typed enum — never a bool — so the parser
+/// and resolver can dispatch on the contribution role without conflating it
+/// with other dimensions of mana production.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ManaContribution {
+    /// The mana addition stands on its own (most mana abilities).
+    #[default]
+    Base,
+    /// The mana addition is additive — it augments another mana event
+    /// (Utopia Sprawl, Fertile Ground, Wild Growth, Carpet of Flowers).
+    Additional,
+}
+
+fn default_mana_contribution() -> ManaContribution {
+    ManaContribution::Base
+}
+
+fn is_default_mana_contribution(c: &ManaContribution) -> bool {
+    matches!(c, ManaContribution::Base)
+}
+
 /// Mana production descriptor for `Effect::Mana`.
 ///
 /// Custom Deserialize: accepts both the tagged format `{"type":"Fixed","colors":["White"]}` (new)
@@ -514,6 +538,12 @@ pub enum ManaProduction {
         count: QuantityExpr,
         #[serde(default = "default_all_mana_colors")]
         color_options: Vec<ManaColor>,
+        /// CR 605.1a: Whether this is base or additional (e.g. Fertile Ground) mana.
+        #[serde(
+            default = "default_mana_contribution",
+            skip_serializing_if = "is_default_mana_contribution"
+        )]
+        contribution: ManaContribution,
     },
     /// Produce N mana where each unit can be chosen independently from the provided set.
     AnyCombination {
@@ -526,6 +556,12 @@ pub enum ManaProduction {
     ChosenColor {
         #[serde(default = "default_quantity_one")]
         count: QuantityExpr,
+        /// CR 605.1a: Whether this is base or additional (e.g. Utopia Sprawl) mana.
+        #[serde(
+            default = "default_mana_contribution",
+            skip_serializing_if = "is_default_mana_contribution"
+        )]
+        contribution: ManaContribution,
     },
     /// CR 106.7: Produce mana of any color that a land an opponent controls could produce.
     /// Colors are computed dynamically at resolution time by inspecting opponent lands.
@@ -566,6 +602,8 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         count: QuantityExpr,
                         #[serde(default = "default_all_mana_colors")]
                         color_options: Vec<ManaColor>,
+                        #[serde(default = "default_mana_contribution")]
+                        contribution: ManaContribution,
                     },
                     AnyCombination {
                         #[serde(default = "default_quantity_one")]
@@ -576,6 +614,8 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     ChosenColor {
                         #[serde(default = "default_quantity_one")]
                         count: QuantityExpr,
+                        #[serde(default = "default_mana_contribution")]
+                        contribution: ManaContribution,
                     },
                     OpponentLandColors {
                         #[serde(default = "default_quantity_one")]
@@ -592,9 +632,11 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     ManaProductionHelper::AnyOneColor {
                         count,
                         color_options,
+                        contribution,
                     } => ManaProduction::AnyOneColor {
                         count,
                         color_options,
+                        contribution,
                     },
                     ManaProductionHelper::AnyCombination {
                         count,
@@ -603,9 +645,13 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         count,
                         color_options,
                     },
-                    ManaProductionHelper::ChosenColor { count } => {
-                        ManaProduction::ChosenColor { count }
-                    }
+                    ManaProductionHelper::ChosenColor {
+                        count,
+                        contribution,
+                    } => ManaProduction::ChosenColor {
+                        count,
+                        contribution,
+                    },
                     ManaProductionHelper::OpponentLandColors { count } => {
                         ManaProduction::OpponentLandColors { count }
                     }

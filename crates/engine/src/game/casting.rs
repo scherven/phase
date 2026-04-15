@@ -3330,6 +3330,7 @@ mod tests {
                     produced: crate::types::ability::ManaProduction::AnyOneColor {
                         count: QuantityExpr::Fixed { value: 1 },
                         color_options: vec![ManaColor::White, ManaColor::Blue],
+                        contribution: crate::types::ability::ManaContribution::Base,
                     },
                     restrictions: vec![],
                     grants: vec![],
@@ -6796,6 +6797,7 @@ mod tests {
                                 },
                             },
                             color_options: vec![ManaColor::Green],
+                            contribution: crate::types::ability::ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],

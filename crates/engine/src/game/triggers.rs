@@ -4281,7 +4281,7 @@ pub mod tests {
         // CR 605.1b: "Whenever enchanted land is tapped for mana, its controller
         // adds an additional {G}" — a triggered mana ability that must resolve
         // inline (stack-skipped) so the added mana is available immediately.
-        use crate::types::ability::{ManaProduction, QuantityExpr};
+        use crate::types::ability::{ManaContribution, ManaProduction, QuantityExpr};
 
         let mut state = setup();
         state.active_player = PlayerId(0);
@@ -4329,6 +4329,7 @@ pub mod tests {
                                     ManaColor::Red,
                                     ManaColor::Green,
                                 ],
+                                contribution: ManaContribution::Additional,
                             },
                             restrictions: vec![],
                             grants: vec![],
@@ -4372,6 +4373,96 @@ pub mod tests {
         assert_eq!(
             pool_size, 1,
             "Fertile Ground must add one mana to the pool inline"
+        );
+    }
+
+    #[test]
+    fn utopia_sprawl_triggered_mana_ability_resolves_chosen_color_inline() {
+        // CR 603.6d + CR 605.1b: Utopia Sprawl's "As this Aura enters, choose a color"
+        // replacement stores a ChosenAttribute::Color on the aura; tapping the
+        // enchanted Forest then fires a triggered mana ability that resolves
+        // inline, adding one mana of the chosen color to the controller's pool.
+        use crate::types::ability::{
+            ChosenAttribute, ManaContribution, ManaProduction, QuantityExpr,
+        };
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        let forest = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&forest)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+
+        let sprawl = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Utopia Sprawl".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&sprawl).unwrap();
+            obj.card_types.core_types.push(CoreType::Enchantment);
+            obj.attached_to = Some(forest);
+            obj.entered_battlefield_turn = Some(1);
+            // CR 603.6d: The chosen color landed on the aura during ETB (Red in this test).
+            obj.chosen_attributes
+                .push(ChosenAttribute::Color(ManaColor::Red));
+            obj.trigger_definitions.push(
+                TriggerDefinition::new(TriggerMode::TapsForMana)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Database,
+                        Effect::Mana {
+                            produced: ManaProduction::ChosenColor {
+                                count: QuantityExpr::Fixed { value: 1 },
+                                contribution: ManaContribution::Additional,
+                            },
+                            restrictions: vec![],
+                            grants: vec![],
+                            expiry: None,
+                        },
+                    ))
+                    .valid_card(TargetFilter::AttachedTo),
+            );
+        }
+
+        // Tap the Forest for mana — emits ManaAdded{Green, tapped_for_mana=true}.
+        let events = vec![GameEvent::ManaAdded {
+            player_id: PlayerId(0),
+            mana_type: crate::types::mana::ManaType::Green,
+            source_id: forest,
+            tapped_for_mana: true,
+        }];
+
+        process_triggers(&mut state, &events);
+
+        // CR 605.3b: Stack is empty — the triggered mana ability resolved inline.
+        assert_eq!(
+            state.stack.len(),
+            0,
+            "Utopia Sprawl's mana trigger must not be placed on the stack"
+        );
+        assert!(state.pending_trigger.is_none());
+
+        // The pool now has the chosen-color Red mana added by the trigger.
+        let player = state.players.iter().find(|p| p.id == PlayerId(0)).unwrap();
+        assert_eq!(
+            player
+                .mana_pool
+                .count_color(crate::types::mana::ManaType::Red),
+            1,
+            "Utopia Sprawl must add one Red mana (the chosen color) to the pool"
         );
     }
 }

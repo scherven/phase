@@ -395,7 +395,7 @@ pub fn mana_type_to_color(mana_type: ManaType) -> Option<ManaColor> {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{AbilityDefinition, AbilityKind, QuantityExpr};
+    use crate::types::ability::{AbilityDefinition, AbilityKind, ManaContribution, QuantityExpr};
     use crate::types::identifiers::CardId;
 
     fn verge_ability(color: ManaColor) -> AbilityDefinition {
@@ -639,7 +639,7 @@ mod tests {
         obj.card_types.core_types.push(CoreType::Artifact);
         obj.card_types.subtypes.push("Treasure".to_string());
 
-        use crate::types::ability::{ManaProduction, QuantityExpr, TargetFilter};
+        use crate::types::ability::{ManaContribution, ManaProduction, QuantityExpr, TargetFilter};
         let ability = AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::Mana {
@@ -652,6 +652,7 @@ mod tests {
                         ManaColor::Red,
                         ManaColor::Green,
                     ],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],
@@ -703,6 +704,7 @@ mod tests {
                     produced: ManaProduction::AnyOneColor {
                         count: QuantityExpr::Fixed { value: 1 },
                         color_options: vec![ManaColor::White, ManaColor::Blue],
+                        contribution: ManaContribution::Base,
                     },
                     restrictions: vec![],
                     grants: vec![],

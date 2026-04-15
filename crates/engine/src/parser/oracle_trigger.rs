@@ -1420,14 +1420,24 @@ fn parse_single_subject(text: &str) -> (TargetFilter, &str) {
         }
     }
 
-    // "equipped creature" / "enchanted creature/land/permanent" — AttachedTo
-    // Use nom alt() for the set of fixed attached-to prefixes (input already lowercase)
+    // "equipped creature" / "enchanted creature/land/permanent" / "enchanted <basic-type>"
+    // → AttachedTo. The Enchant keyword already constrains the attach target's type,
+    // so `AttachedTo` alone is sufficient here (CR 702.5a). Utopia Sprawl's
+    // "enchanted Forest" trigger lowercases to "enchanted forest" before this runs.
+    // Use nom alt() for the set of fixed attached-to prefixes (input already lowercase).
     fn parse_attached_to_prefix(input: &str) -> OracleResult<'_, ()> {
         alt((
             value((), tag("equipped creature ")),
             value((), tag("enchanted creature ")),
             value((), tag("enchanted land ")),
             value((), tag("enchanted permanent ")),
+            // CR 205.3i: basic land types — used by Auras that enchant a specific basic
+            // (Utopia Sprawl's "enchanted Forest", Thriving Isle-style "enchanted Island", etc.).
+            value((), tag("enchanted plains ")),
+            value((), tag("enchanted island ")),
+            value((), tag("enchanted swamp ")),
+            value((), tag("enchanted mountain ")),
+            value((), tag("enchanted forest ")),
         ))
         .parse(input)
     }
@@ -1441,6 +1451,12 @@ fn parse_single_subject(text: &str) -> (TargetFilter, &str) {
             value((), tag("enchanted creature")),
             value((), tag("enchanted land")),
             value((), tag("enchanted permanent")),
+            // CR 205.3i: basic land types (exact-match end-of-input variants).
+            value((), tag("enchanted plains")),
+            value((), tag("enchanted island")),
+            value((), tag("enchanted swamp")),
+            value((), tag("enchanted mountain")),
+            value((), tag("enchanted forest")),
         ))
         .parse(input)
     }
@@ -4973,6 +4989,19 @@ mod tests {
         let def = parse_trigger_line(
             "Whenever enchanted land is tapped for mana, its controller adds an additional {G}.",
             "Wild Growth",
+        );
+        assert_eq!(def.mode, TriggerMode::TapsForMana);
+        assert_eq!(def.valid_card, Some(TargetFilter::AttachedTo));
+    }
+
+    #[test]
+    fn trigger_enchanted_forest_is_tapped_for_mana_utopia_sprawl() {
+        // CR 205.3i + CR 605.1b: "Whenever enchanted Forest is tapped for mana …"
+        // The basic land type token ("Forest") must resolve to `AttachedTo`; the
+        // Enchant keyword already constrains the aura's attach target to Forests.
+        let def = parse_trigger_line(
+            "Whenever enchanted Forest is tapped for mana, its controller adds an additional one mana of the chosen color.",
+            "Utopia Sprawl",
         );
         assert_eq!(def.mode, TriggerMode::TapsForMana);
         assert_eq!(def.valid_card, Some(TargetFilter::AttachedTo));

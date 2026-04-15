@@ -6623,7 +6623,7 @@ mod tests {
     use super::*;
     use crate::types::ability::{
         Comparator, ContinuousModification, ControllerRef, DoublePTMode, Duration, FilterProp,
-        GainLifePlayer, ManaProduction, NinjutsuVariant, PaymentCost, TypeFilter,
+        GainLifePlayer, ManaContribution, ManaProduction, NinjutsuVariant, PaymentCost, TypeFilter,
     };
     use crate::types::keywords::Keyword;
     use crate::types::mana::ManaColor;
@@ -8431,8 +8431,60 @@ mod tests {
         let e = parse_effect("Add one mana of any color");
         assert!(matches!(
             e,
-            Effect::Mana { produced: ManaProduction::AnyOneColor { count: QuantityExpr::Fixed { value: 1 }, ref color_options }, .. }
+            Effect::Mana { produced: ManaProduction::AnyOneColor { count: QuantityExpr::Fixed { value: 1 }, ref color_options, contribution: ManaContribution::Base, .. }, .. }
             if color_options == &vec![ManaColor::White, ManaColor::Blue, ManaColor::Black, ManaColor::Red, ManaColor::Green]
+        ));
+    }
+
+    #[test]
+    fn effect_add_additional_mana_of_chosen_color_utopia_sprawl() {
+        // CR 605.1a + CR 107.4a: Utopia Sprawl's "adds an additional one mana of
+        // the chosen color" must parse as `ChosenColor { contribution: Additional }`
+        // so the additive role is preserved on the typed effect.
+        let e = parse_effect("adds an additional one mana of the chosen color");
+        assert!(matches!(
+            e,
+            Effect::Mana {
+                produced: ManaProduction::ChosenColor {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    contribution: ManaContribution::Additional,
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn effect_add_mana_of_chosen_color_base() {
+        // Baseline: without the "additional" prefix the contribution is Base.
+        let e = parse_effect("add one mana of the chosen color");
+        assert!(matches!(
+            e,
+            Effect::Mana {
+                produced: ManaProduction::ChosenColor {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    contribution: ManaContribution::Base,
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn effect_add_additional_mana_any_color_fertile_ground() {
+        // CR 605.1a: Fertile Ground's "adds an additional one mana of any color"
+        // carries the additive role on `AnyOneColor`.
+        let e = parse_effect("adds an additional one mana of any color");
+        assert!(matches!(
+            e,
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    contribution: ManaContribution::Additional,
+                    ..
+                },
+                ..
+            }
         ));
     }
 

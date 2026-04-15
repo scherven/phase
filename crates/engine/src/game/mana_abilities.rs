@@ -545,8 +545,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityCost, AbilityKind, Effect, ManaProduction, MultiTargetSpec, QuantityExpr,
-        TargetFilter,
+        AbilityCost, AbilityKind, Effect, ManaContribution, ManaProduction, MultiTargetSpec,
+        QuantityExpr, TargetFilter,
     };
     use crate::types::identifiers::CardId;
     use crate::types::mana::{ManaColor, ManaType};
@@ -781,6 +781,7 @@ mod tests {
                 produced: ManaProduction::AnyOneColor {
                     count: QuantityExpr::Fixed { value: 1 },
                     color_options: vec![ManaColor::White, ManaColor::Blue],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],
@@ -834,6 +835,7 @@ mod tests {
         let def = make_mana_ability(ManaProduction::AnyOneColor {
             count: QuantityExpr::Fixed { value: 1 },
             color_options: vec![ManaColor::White, ManaColor::Blue, ManaColor::Black],
+            contribution: ManaContribution::Base,
         });
         let mut events = Vec::new();
         // Override to produce Black specifically

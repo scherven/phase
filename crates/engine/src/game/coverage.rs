@@ -621,6 +621,7 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
         ManaProduction::AnyOneColor {
             count,
             color_options,
+            ..
         } => {
             let opts: String = color_options
                 .iter()
@@ -638,7 +639,7 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
                 .collect();
             format!("{} any combo of {opts}", fmt_quantity(count))
         }
-        ManaProduction::ChosenColor { count } => {
+        ManaProduction::ChosenColor { count, .. } => {
             format!("{} of chosen color", fmt_quantity(count))
         }
         ManaProduction::OpponentLandColors { count } => {

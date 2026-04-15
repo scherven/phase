@@ -4443,6 +4443,7 @@ mod tests {
                                 crate::types::mana::ManaColor::Red,
                                 crate::types::mana::ManaColor::Green,
                             ],
+                            contribution: crate::types::ability::ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
