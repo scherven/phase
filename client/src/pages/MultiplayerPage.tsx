@@ -261,13 +261,21 @@ export function MultiplayerPage() {
     navigate("/");
   };
 
-  // Derive selected format for deck filtering
+  // Derive the format the deck picker filters by.
+  //
+  // The happy paths (host-submit-without-deck, join-from-lobby-row) carry
+  // the format on `pendingAction`. When the user clicks "Change Deck" out
+  // of host-setup, `pendingAction` is null — but HostSetup mirrors its
+  // in-flight format into the store on every change, so falling back to
+  // `storeFormatConfig` gives the deck picker the right filter without
+  // any cross-component plumbing.
+  const storeFormatConfig = useMultiplayerStore((s) => s.formatConfig);
   const selectedFormat: GameFormat | undefined =
     pendingAction?.type === "host"
       ? pendingAction.settings.formatConfig.format
       : pendingAction?.type === "join"
         ? pendingAction.format
-        : undefined;
+        : storeFormatConfig?.format;
 
   const title =
     view === "lobby"

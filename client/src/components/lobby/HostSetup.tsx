@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { FormatConfig, GameFormat, MatchType } from "../../adapter/types";
 import { FORMAT_DEFAULTS, useMultiplayerStore } from "../../stores/multiplayerStore";
@@ -50,16 +50,34 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
   const displayName = useMultiplayerStore((s) => s.displayName);
   const setFormatConfig = useMultiplayerStore((s) => s.setFormatConfig);
 
+  // Seed the format picker from whatever the user last selected (persisted
+  // in the store). This means navigating away and back to host-setup keeps
+  // the chosen format, and downstream views (the deck picker reached via
+  // "Change Deck") can read the format from the store to filter decks.
+  const storeFormatConfig = useMultiplayerStore((s) => s.formatConfig);
+  const initialFormatConfig = storeFormatConfig ?? FORMAT_DEFAULTS.Standard;
+
   const [roomName, setRoomName] = useState("");
   const [isPublic, setIsPublic] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [password, setPassword] = useState("");
   const [timerSeconds, setTimerSeconds] = useState<number | null>(null);
-  const [selectedFormat, setSelectedFormat] = useState<GameFormat>("Standard");
-  const [formatConfig, setLocalFormatConfig] = useState<FormatConfig>(FORMAT_DEFAULTS.Standard);
-  const [playerCount, setPlayerCount] = useState(FORMAT_DEFAULTS.Standard.min_players);
+  const [selectedFormat, setSelectedFormat] = useState<GameFormat>(
+    initialFormatConfig.format,
+  );
+  const [formatConfig, setLocalFormatConfig] =
+    useState<FormatConfig>(initialFormatConfig);
+  const [playerCount, setPlayerCount] = useState(initialFormatConfig.min_players);
   const [matchType, setMatchType] = useState<MatchType>("Bo1");
   const [aiSeats, setAiSeats] = useState<AiSeatConfig[]>([]);
+
+  // Mirror the in-flight format to the store on every change so sibling
+  // views (the deck picker shown when the user clicks "Change Deck" out
+  // of this form) can filter by the format the user is actively
+  // configuring — not just the one they submitted last time.
+  useEffect(() => {
+    setFormatConfig({ ...formatConfig, max_players: playerCount });
+  }, [formatConfig, playerCount, setFormatConfig]);
 
   const isP2P = connectionMode === "p2p";
   const maxPlayers = isP2P
