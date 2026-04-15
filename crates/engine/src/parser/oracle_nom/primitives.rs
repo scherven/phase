@@ -614,6 +614,47 @@ where
     None
 }
 
+/// Scan `text` at word boundaries and, on the first successful match, return
+/// `(before, value, rest)` — the prefix preceding the match, the combinator's
+/// output, and the post-match remainder (a slice of `text`).
+///
+/// Unlike [`scan_split_at_phrase`], this variant preserves the combinator's
+/// output *and* its `IResult` remainder, eliminating the common double-parse
+/// pattern where callers locate a phrase with `scan_split_at_phrase` and then
+/// re-invoke the same combinator on the returned slice to extract values.
+///
+/// The matched span's length is `text.len() - before.len() - rest.len()`, which
+/// is useful for clause-stripping arithmetic.
+///
+/// # Example
+/// ```ignore
+/// use nom::bytes::complete::tag;
+/// use nom::sequence::preceded;
+/// use nom::Parser;
+/// let (before, value, rest) = scan_preceded("then it dies soon", |i| {
+///     preceded(tag::<_, _, nom_language::error::VerboseError<&str>>("it "), tag("dies")).parse(i)
+/// }).unwrap();
+/// assert_eq!(before, "then ");
+/// assert_eq!(value, "dies");
+/// assert_eq!(rest, " soon");
+/// ```
+pub fn scan_preceded<'a, O, F>(text: &'a str, mut combinator: F) -> Option<(&'a str, O, &'a str)>
+where
+    F: FnMut(&'a str) -> nom::IResult<&'a str, O, nom_language::error::VerboseError<&'a str>>,
+{
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((rest, val)) = combinator(remaining) {
+            let offset = text.len() - remaining.len();
+            return Some((&text[..offset], val, rest));
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    None
+}
+
 /// Split `input` on the first occurrence of `separator`, returning `(before, after)`.
 ///
 /// Equivalent to `str::split_once(separator)` but as a nom combinator — uses
@@ -668,6 +709,43 @@ mod tests {
     fn test_scan_split_at_phrase_word_boundary_safe() {
         // "studies" must NOT match "dies" mid-word
         let result = scan_split_at_phrase("studies hard", |i| {
+            tag::<_, _, nom_language::error::VerboseError<&str>>("dies").parse(i)
+        });
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_scan_preceded_threads_value_and_remainder() {
+        use nom::combinator::value;
+        let (before, val, rest) = scan_preceded("the creature dies to removal", |i| {
+            value(
+                "dies",
+                tag::<_, _, nom_language::error::VerboseError<&str>>("dies"),
+            )
+            .parse(i)
+        })
+        .unwrap();
+        assert_eq!(before, "the creature ");
+        assert_eq!(val, "dies");
+        assert_eq!(rest, " to removal");
+        // Matched span length reconstructs via subtraction — the idiom that
+        // motivated this helper.
+        let text = "the creature dies to removal";
+        assert_eq!(text.len() - before.len() - rest.len(), "dies".len());
+    }
+
+    #[test]
+    fn test_scan_preceded_word_boundary_safe() {
+        // "studies" must NOT match "dies" mid-word even with value capture.
+        let result = scan_preceded("studies hard", |i| {
+            tag::<_, _, nom_language::error::VerboseError<&str>>("dies").parse(i)
+        });
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_scan_preceded_not_found() {
+        let result = scan_preceded("the creature enters", |i| {
             tag::<_, _, nom_language::error::VerboseError<&str>>("dies").parse(i)
         });
         assert!(result.is_none());

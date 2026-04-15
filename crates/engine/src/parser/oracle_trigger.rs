@@ -3,6 +3,8 @@ use std::str::FromStr;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::value;
+use nom::multi::many1;
+use nom::sequence::{delimited, pair, preceded};
 use nom::Parser;
 use nom_language::error::VerboseError;
 
@@ -25,6 +27,7 @@ use crate::types::ability::{
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::PlayerActionKind;
+use crate::types::mana::ManaColor;
 use crate::types::phase::Phase;
 use crate::types::triggers::{AttackTargetFilter, TriggerMode};
 use crate::types::zones::Zone;
@@ -630,6 +633,12 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         return result;
     }
 
+    // CR 400.7d: Symbolic-form spent-mana — "if {C}{C}... was spent to cast it"
+    // (Incarnation / hybrid-ETB cycle: Wistfulness, Vibrance, Deceit, Catharsis, Emptiness, ...).
+    if let Some(result) = try_extract_symbolic_mana_spent_condition(&tp, &lower, text) {
+        return result;
+    }
+
     // CR 702.49 + CR 603.4: "if [possessive] sneak/ninjutsu cost was paid [this turn]"
     // Guard: "instead" means conditional override, not intervening-if.
     if let Some(result) = try_extract_ninjutsu_condition(&tp, &lower, text) {
@@ -849,11 +858,12 @@ fn try_extract_adamant_condition(
     lower: &str,
     text: &str,
 ) -> Option<(String, Option<TriggerCondition>)> {
-    use crate::types::mana::ManaColor;
     let prefix = "if at least ";
     let pos = tp.find(prefix)?;
     let after = &lower[pos + prefix.len()..];
-    // Parse: "N [color] mana was spent to cast [this spell/it]"
+    // Parse: "N [color] mana was spent to cast [this spell/it/them/~]".
+    // Delegates the object-reference alt to `parse_spent_to_cast_tail`, which is
+    // shared with the symbolic-form extractor.
     let (rest, _) = nom_primitives::parse_number(after).ok()?;
     let rest = rest.trim_start();
     let (rest, color) = alt((
@@ -865,12 +875,9 @@ fn try_extract_adamant_condition(
     ))
     .parse(rest)
     .ok()?;
-    let (rest, _) = alt((
-        tag::<_, _, VerboseError<&str>>(" mana was spent to cast this spell"),
-        tag(" mana was spent to cast it"),
-    ))
-    .parse(rest)
-    .ok()?;
+    let (rest, _) = preceded(tag(" mana"), parse_spent_to_cast_tail)
+        .parse(rest)
+        .ok()?;
     // Re-parse N from the original to get the number
     let (_, n) = nom_primitives::parse_number(&lower[pos + prefix.len()..]).ok()?;
     let clause_len = prefix.len() + (after.len() - rest.len());
@@ -878,6 +885,84 @@ fn try_extract_adamant_condition(
         strip_condition_clause(text, pos, clause_len),
         Some(TriggerCondition::ManaColorSpent { color, minimum: n }),
     ))
+}
+
+/// CR 400.7d: Extract symbolic-form mana-spent conditions — the Incarnation /
+/// hybrid-ETB phrasing `"if {C}{C}... was spent to cast it"` where the required
+/// mana is expressed as a run of identical colored mana symbols rather than as
+/// words. Semantically identical to Adamant (`ManaColorSpent`), only the surface
+/// syntax differs. Per CR 400.7d, a permanent's ability can reference "what mana
+/// was spent to pay [its casting] costs."
+///
+/// Accepts runs of one or more identical pure-color symbols (`{W}`, `{U}`,
+/// `{B}`, `{R}`, `{G}`). Hybrid, phyrexian, colorless, snow, generic (`{2}`),
+/// and `{X}` symbols are rejected — they correspond to different rules-level
+/// conditions and must not be conflated here.
+fn try_extract_symbolic_mana_spent_condition(
+    _tp: &TextPair<'_>,
+    _lower: &str,
+    text: &str,
+) -> Option<(String, Option<TriggerCondition>)> {
+    // Scan for the clause at any word boundary using a composed combinator:
+    //   "if " → many1(pure_color_symbol) → " was spent to cast <ref>".
+    // `scan_preceded` threads (before, value, rest) in one pass — no re-parse.
+    let (before, (colors, _), tail_rest) = nom_primitives::scan_preceded(text, |i| {
+        preceded(
+            tag("if "),
+            pair(many1(parse_pure_color_symbol_ci), parse_spent_to_cast_tail),
+        )
+        .parse(i)
+    })?;
+
+    let first_color = colors.first().copied()?;
+    if !colors.iter().all(|c| *c == first_color) {
+        return None;
+    }
+    let count = u32::try_from(colors.len()).ok()?;
+
+    let clause_start = before.len();
+    let clause_len = text.len() - before.len() - tail_rest.len();
+
+    Some((
+        strip_condition_clause(text, clause_start, clause_len),
+        Some(TriggerCondition::ManaColorSpent {
+            color: first_color,
+            minimum: count,
+        }),
+    ))
+}
+
+/// Case-insensitive parser for a single pure-color mana symbol (`{W}`/`{w}`,
+/// `{U}`/`{u}`, etc.). Rejects hybrid, phyrexian, colorless, snow, `{X}`, and
+/// generic `{N}` symbols — those don't correspond to a `ManaColorSpent`
+/// condition and must fall through to alternative handlers.
+fn parse_pure_color_symbol_ci(i: &str) -> OracleResult<'_, ManaColor> {
+    delimited(
+        tag("{"),
+        alt((
+            value(ManaColor::White, alt((tag("W"), tag("w")))),
+            value(ManaColor::Blue, alt((tag("U"), tag("u")))),
+            value(ManaColor::Black, alt((tag("B"), tag("b")))),
+            value(ManaColor::Red, alt((tag("R"), tag("r")))),
+            value(ManaColor::Green, alt((tag("G"), tag("g")))),
+        )),
+        tag("}"),
+    )
+    .parse(i)
+}
+
+/// Match the fixed tail that follows a mana-symbol run in spent-mana conditions:
+/// `" was spent to cast "` + one of `this spell` / `it` / `them` / `~`.
+/// Shared by both the word-form (Adamant) and symbol-form extractors.
+fn parse_spent_to_cast_tail(i: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        preceded(
+            tag(" was spent to cast "),
+            alt((tag("this spell"), tag("it"), tag("them"), tag("~"))),
+        ),
+    )
+    .parse(i)
 }
 
 /// Strip a condition clause from text, joining the before and after portions.
@@ -7057,6 +7142,112 @@ mod tests {
                 minimum: 3,
             }
         );
+    }
+
+    // CR 400.7d + CR 601.2h: Incarnation / hybrid-ETB cycle — symbolic-form
+    // spent-mana condition "if {C}{C} was spent to cast it".
+    #[test]
+    fn extract_symbolic_mana_spent_two_green() {
+        let (cleaned, cond) = extract_if_condition(
+            "if {G}{G} was spent to cast it, exile target artifact or enchantment an opponent controls",
+        );
+        assert_eq!(
+            cleaned,
+            "exile target artifact or enchantment an opponent controls"
+        );
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::ManaColorSpent {
+                color: crate::types::mana::ManaColor::Green,
+                minimum: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn extract_symbolic_mana_spent_two_blue_with_trailing_effect() {
+        let (cleaned, cond) = extract_if_condition(
+            "if {U}{U} was spent to cast it, draw two cards, then discard a card",
+        );
+        assert_eq!(cleaned, "draw two cards, then discard a card");
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::ManaColorSpent {
+                color: crate::types::mana::ManaColor::Blue,
+                minimum: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn extract_symbolic_mana_spent_single_red_this_spell() {
+        let (cleaned, cond) =
+            extract_if_condition("draw a card if {R} was spent to cast this spell");
+        assert_eq!(cleaned, "draw a card");
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::ManaColorSpent {
+                color: crate::types::mana::ManaColor::Red,
+                minimum: 1,
+            }
+        );
+    }
+
+    // The extractor uses `scan_split_at_phrase`, so the clause doesn't have to
+    // be at the start of the text. Covers the same positional flexibility the
+    // word-form Adamant extractor already relies on.
+    #[test]
+    fn extract_symbolic_mana_spent_mid_sentence() {
+        let (cleaned, cond) = extract_if_condition(
+            "it deals 4 damage instead if {R}{R}{R} was spent to cast this spell",
+        );
+        assert_eq!(cleaned, "it deals 4 damage instead");
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::ManaColorSpent {
+                color: crate::types::mana::ManaColor::Red,
+                minimum: 3,
+            }
+        );
+    }
+
+    // Production path pre-lowercases effect text; verify the extractor matches
+    // lowercase `{g}{g}` equivalently to uppercase. This is the case actually
+    // exercised by Wistfulness/Vibrance/Deceit at card-data-export time.
+    #[test]
+    fn extract_symbolic_mana_spent_lowercase_input() {
+        let (cleaned, cond) = extract_if_condition(
+            "if {g}{g} was spent to cast it, exile target artifact or enchantment an opponent controls",
+        );
+        assert_eq!(
+            cleaned,
+            "exile target artifact or enchantment an opponent controls"
+        );
+        assert_eq!(
+            cond.unwrap(),
+            TriggerCondition::ManaColorSpent {
+                color: crate::types::mana::ManaColor::Green,
+                minimum: 2,
+            }
+        );
+    }
+
+    // Mixed-color runs must be rejected — `{G}{U}` is not a color-count condition,
+    // it's a different semantic (both colors must have been spent). No existing
+    // card uses this shape; we fall through rather than misclassify.
+    #[test]
+    fn extract_symbolic_mana_spent_rejects_mixed_colors() {
+        let (_cleaned, cond) = extract_if_condition("do something if {G}{U} was spent to cast it");
+        assert!(cond.is_none(), "mixed-color run should not match");
+    }
+
+    // Hybrid pips should not match — CR 601.2h tracks the color actually paid,
+    // not the hybrid pip symbol itself.
+    #[test]
+    fn extract_symbolic_mana_spent_rejects_hybrid() {
+        let (_cleaned, cond) =
+            extract_if_condition("do something if {G/U}{G/U} was spent to cast it");
+        assert!(cond.is_none(), "hybrid pips should not match");
     }
 
     #[test]
