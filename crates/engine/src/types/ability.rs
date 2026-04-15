@@ -576,6 +576,27 @@ pub enum ManaProduction {
         #[serde(default = "default_quantity_one")]
         count: QuantityExpr,
     },
+    /// CR 605.1a + CR 406.1: Produce one mana of any of the colors among the cards
+    /// linked to `source` via `state.exile_links` (e.g. Pit of Offerings —
+    /// "Add one mana of any of the exiled cards' colors"). Colors are computed
+    /// dynamically at resolution time; if no linked card is colored the ability
+    /// produces no mana (CR 106.5).
+    ChoiceAmongExiledColors {
+        #[serde(default)]
+        source: LinkedExileScope,
+    },
+}
+
+/// CR 607.2a + CR 406.6 + CR 610.3: Which exile-link relation a mana ability reads
+/// when computing legal colors. Typed enum — never a bool — so future extensions
+/// (e.g. links to a different host than `~` itself) slot in cleanly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum LinkedExileScope {
+    /// Read `state.exile_links` keyed to this ability's source object
+    /// (the activating permanent).
+    #[default]
+    ThisObject,
 }
 
 impl<'de> serde::Deserialize<'de> for ManaProduction {
@@ -633,6 +654,10 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         #[serde(default = "default_quantity_one")]
                         count: QuantityExpr,
                     },
+                    ChoiceAmongExiledColors {
+                        #[serde(default)]
+                        source: LinkedExileScope,
+                    },
                 }
                 let helper: ManaProductionHelper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -672,6 +697,9 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     },
                     ManaProductionHelper::OpponentLandColors { count } => {
                         ManaProduction::OpponentLandColors { count }
+                    }
+                    ManaProductionHelper::ChoiceAmongExiledColors { source } => {
+                        ManaProduction::ChoiceAmongExiledColors { source }
                     }
                 })
             }

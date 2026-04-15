@@ -285,6 +285,11 @@ fn mana_options_from_production(
             .unwrap_or_default(),
         // CR 106.7: Compute colors dynamically from opponent-controlled lands.
         ManaProduction::OpponentLandColors { .. } => opponent_land_color_options(state, controller),
+        // CR 605.1a + CR 406.1 + CR 610.3: Compute colors dynamically from cards
+        // exiled-with this source via `state.exile_links` (Pit of Offerings).
+        ManaProduction::ChoiceAmongExiledColors { source } => {
+            super::effects::mana::exiled_color_options(state, *source, object_id)
+        }
     }
 }
 

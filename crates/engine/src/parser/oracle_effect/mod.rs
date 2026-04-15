@@ -6623,7 +6623,8 @@ mod tests {
     use super::*;
     use crate::types::ability::{
         Comparator, ContinuousModification, ControllerRef, DoublePTMode, Duration, FilterProp,
-        GainLifePlayer, ManaContribution, ManaProduction, NinjutsuVariant, PaymentCost, TypeFilter,
+        GainLifePlayer, LinkedExileScope, ManaContribution, ManaProduction, NinjutsuVariant,
+        PaymentCost, TypeFilter,
     };
     use crate::types::keywords::Keyword;
     use crate::types::mana::ManaColor;
@@ -8492,6 +8493,42 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn effect_add_one_mana_of_any_exiled_card_color_pit_of_offerings() {
+        // CR 605.1a + CR 406.1 + CR 610.3: Pit of Offerings — "Add one mana of any
+        // of the exiled cards' colors" parses to ChoiceAmongExiledColors scoped
+        // to the activating object.
+        let e = parse_effect("Add one mana of any of the exiled cards' colors");
+        assert_eq!(
+            e,
+            Effect::Mana {
+                produced: ManaProduction::ChoiceAmongExiledColors {
+                    source: LinkedExileScope::ThisObject,
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+            }
+        );
+    }
+
+    #[test]
+    fn effect_add_one_mana_of_any_color_among_exiled_cards() {
+        // Synonym phrasing also routes to ChoiceAmongExiledColors.
+        let e = parse_effect("Add one mana of any color among the exiled cards");
+        assert_eq!(
+            e,
+            Effect::Mana {
+                produced: ManaProduction::ChoiceAmongExiledColors {
+                    source: LinkedExileScope::ThisObject,
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+            }
+        );
     }
 
     #[test]

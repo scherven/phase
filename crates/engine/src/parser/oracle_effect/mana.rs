@@ -6,7 +6,8 @@ use nom::Parser;
 use crate::parser::oracle_nom::error::OracleResult;
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::types::ability::{
-    Effect, ManaContribution, ManaProduction, ManaSpendRestriction, QuantityExpr, QuantityRef,
+    Effect, LinkedExileScope, ManaContribution, ManaProduction, ManaSpendRestriction, QuantityExpr,
+    QuantityRef,
 };
 use crate::types::keywords::KeywordKind;
 use crate::types::mana::{ManaColor, ManaSpellGrant};
@@ -82,6 +83,16 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             .is_some()
             {
                 ManaProduction::OpponentLandColors { count }
+            } else if nom_on_lower(after_color.trim(), &after_lower, |i| {
+                // CR 605.1a + CR 406.1 + CR 610.3: "mana of any color among the
+                // exiled cards" — read colors dynamically from `state.exile_links`.
+                value((), tag("among the exiled cards")).parse(i)
+            })
+            .is_some()
+            {
+                ManaProduction::ChoiceAmongExiledColors {
+                    source: LinkedExileScope::ThisObject,
+                }
             } else {
                 ManaProduction::AnyOneColor {
                     count,
@@ -499,6 +510,22 @@ fn scan_mana_production_type(
                         "mana of any one color that a land an opponent controls could produce",
                     ),
                     tag("mana of any color that a land an opponent controls could produce"),
+                )),
+            ),
+            // CR 605.1a + CR 406.1 + CR 610.3: "one mana of any of the exiled
+            // cards' colors" / "mana of any color among the exiled cards"
+            // (Pit of Offerings). Must precede the shorter "mana of any (one)
+            // color" arm below so the longer phrase wins. The leading "one " is
+            // stripped by `parse_mana_count_prefix` upstream, so the scanner
+            // only needs to recognize the post-count tail.
+            value(
+                ManaProduction::ChoiceAmongExiledColors {
+                    source: LinkedExileScope::ThisObject,
+                },
+                alt((
+                    tag::<_, _, VerboseError<&str>>("mana of any of the exiled cards' colors"),
+                    tag("mana of any of the exiled cards’ colors"),
+                    tag("mana of any color among the exiled cards"),
                 )),
             ),
             value(

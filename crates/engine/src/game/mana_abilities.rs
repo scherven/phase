@@ -545,9 +545,10 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityCost, AbilityKind, Effect, ManaContribution, ManaProduction, MultiTargetSpec,
-        QuantityExpr, TargetFilter,
+        AbilityCost, AbilityKind, Effect, LinkedExileScope, ManaContribution, ManaProduction,
+        MultiTargetSpec, QuantityExpr, TargetFilter,
     };
+    use crate::types::game_state::{ExileLink, ExileLinkKind};
     use crate::types::identifiers::CardId;
     use crate::types::mana::{ManaColor, ManaType};
     use crate::types::zones::Zone;
@@ -825,6 +826,420 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, GameEvent::ManaAdded { .. })));
+    }
+
+    /// Helper: build a Pit-of-Offerings-style permanent with a `{T}: Add one mana
+    /// of any of the exiled cards' colors` mana ability and exile a card linked
+    /// to it via `state.exile_links` (the same relation populated by the
+    /// `ChangeZone` resolver during the ETB trigger).
+    fn pit_of_offerings_with_exiled_card(
+        state: &mut GameState,
+        owner: PlayerId,
+        exiled_card_name: &str,
+        exiled_colors: Vec<ManaColor>,
+    ) -> (ObjectId, ObjectId) {
+        let pit = create_object(
+            state,
+            CardId(1000),
+            owner,
+            "Pit of Offerings".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&pit).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Land);
+            obj.has_mana_ability = true;
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Mana {
+                        produced: ManaProduction::ChoiceAmongExiledColors {
+                            source: LinkedExileScope::ThisObject,
+                        },
+                        restrictions: vec![],
+                        grants: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(AbilityCost::Tap),
+            );
+        }
+        let exiled = create_object(
+            state,
+            CardId(2000),
+            owner,
+            exiled_card_name.to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&exiled).unwrap().color = exiled_colors;
+        state.exile_links.push(ExileLink {
+            exiled_id: exiled,
+            source_id: pit,
+            kind: ExileLinkKind::TrackedBySource,
+        });
+        (pit, exiled)
+    }
+
+    #[test]
+    fn pit_of_offerings_with_no_exiled_colored_cards_produces_no_mana() {
+        // CR 605.1a + CR 106.5: With zero linked colored exiles the ability has
+        // no defined mana type — produces no mana even though the tap cost is
+        // paid (the ability is still legal to activate per CR 605.3a).
+        let mut state = GameState::new_two_player(42);
+        let pit = create_object(
+            &mut state,
+            CardId(1000),
+            PlayerId(0),
+            "Pit of Offerings".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&pit).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Land);
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Mana {
+                        produced: ManaProduction::ChoiceAmongExiledColors {
+                            source: LinkedExileScope::ThisObject,
+                        },
+                        restrictions: vec![],
+                        grants: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(AbilityCost::Tap),
+            );
+        }
+
+        let def = state.objects.get(&pit).unwrap().abilities[0].clone();
+        let mut events = Vec::new();
+        resolve_mana_ability(&mut state, pit, PlayerId(0), &def, &mut events, None).unwrap();
+
+        assert!(state.objects.get(&pit).unwrap().tapped);
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+        // can_activate_mana_ability_now confirms it's still legal — paying the
+        // tap is a valid resolution even when no mana is produced.
+    }
+
+    #[test]
+    fn pit_of_offerings_colorless_exiled_card_produces_no_mana() {
+        // CR 106.5: A Mountain card itself has no `colors` (red is implied via
+        // its mana ability, not by intrinsic color). For Pit of Offerings the
+        // relevant property is the exiled card's printed colors; a card with
+        // no printed colors contributes nothing.
+        let mut state = GameState::new_two_player(42);
+        let (pit, _exiled) =
+            pit_of_offerings_with_exiled_card(&mut state, PlayerId(0), "Mountain", vec![]);
+
+        let def = state.objects.get(&pit).unwrap().abilities[0].clone();
+        let mut events = Vec::new();
+        resolve_mana_ability(&mut state, pit, PlayerId(0), &def, &mut events, None).unwrap();
+
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+    }
+
+    #[test]
+    fn pit_of_offerings_with_one_colored_exile_produces_that_color() {
+        // Single colored exile (Island = Blue): the only legal mana type is {U}.
+        let mut state = GameState::new_two_player(42);
+        let (pit, _) = pit_of_offerings_with_exiled_card(
+            &mut state,
+            PlayerId(0),
+            "Savannah Lions",
+            vec![ManaColor::White],
+        );
+
+        let def = state.objects.get(&pit).unwrap().abilities[0].clone();
+        let mut events = Vec::new();
+        resolve_mana_ability(&mut state, pit, PlayerId(0), &def, &mut events, None).unwrap();
+
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::White), 1);
+        assert_eq!(state.players[0].mana_pool.total(), 1);
+    }
+
+    #[test]
+    fn pit_of_offerings_color_options_excludes_colorless_exiles() {
+        // CR 605.1a + CR 106.5: With a colorless `Mountain` and a blue `Island`
+        // exiled, only `{U}` is a legal mana option.
+        let mut state = GameState::new_two_player(42);
+        let pit = create_object(
+            &mut state,
+            CardId(1000),
+            PlayerId(0),
+            "Pit of Offerings".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&pit)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        state.objects.get_mut(&pit).unwrap().abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: ManaProduction::ChoiceAmongExiledColors {
+                        source: LinkedExileScope::ThisObject,
+                    },
+                    restrictions: vec![],
+                    grants: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+
+        let mountain = create_object(
+            &mut state,
+            CardId(2001),
+            PlayerId(0),
+            "Mountain".to_string(),
+            Zone::Exile,
+        );
+        // Mountain's intrinsic `color` is empty (its red identity comes from its
+        // mana ability, not its colors field).
+        state.objects.get_mut(&mountain).unwrap().color = vec![];
+        let island = create_object(
+            &mut state,
+            CardId(2002),
+            PlayerId(0),
+            "Island".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&island).unwrap().color = vec![];
+        let counterspell = create_object(
+            &mut state,
+            CardId(2003),
+            PlayerId(0),
+            "Counterspell".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&counterspell).unwrap().color = vec![ManaColor::Blue];
+
+        for exiled in [mountain, island, counterspell] {
+            state.exile_links.push(ExileLink {
+                exiled_id: exiled,
+                source_id: pit,
+                kind: ExileLinkKind::TrackedBySource,
+            });
+        }
+
+        // Direct query of the option set: only blue should be legal.
+        let options = crate::game::effects::mana::exiled_color_options(
+            &state,
+            LinkedExileScope::ThisObject,
+            pit,
+        );
+        assert_eq!(options, vec![ManaType::Blue]);
+    }
+
+    #[test]
+    fn pit_of_offerings_color_override_picks_chosen_color() {
+        // Two colored exiles → two legal mana types. With a `color_override`,
+        // the ability produces exactly that color (mirrors AnyOneColor).
+        let mut state = GameState::new_two_player(42);
+        let pit = create_object(
+            &mut state,
+            CardId(1000),
+            PlayerId(0),
+            "Pit of Offerings".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&pit)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        state.objects.get_mut(&pit).unwrap().abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: ManaProduction::ChoiceAmongExiledColors {
+                        source: LinkedExileScope::ThisObject,
+                    },
+                    restrictions: vec![],
+                    grants: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+
+        let white_card = create_object(
+            &mut state,
+            CardId(2001),
+            PlayerId(0),
+            "White Card".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&white_card).unwrap().color = vec![ManaColor::White];
+        let blue_card = create_object(
+            &mut state,
+            CardId(2002),
+            PlayerId(0),
+            "Blue Card".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&blue_card).unwrap().color = vec![ManaColor::Blue];
+
+        for exiled in [white_card, blue_card] {
+            state.exile_links.push(ExileLink {
+                exiled_id: exiled,
+                source_id: pit,
+                kind: ExileLinkKind::TrackedBySource,
+            });
+        }
+
+        let def = state.objects.get(&pit).unwrap().abilities[0].clone();
+        let mut events = Vec::new();
+        resolve_mana_ability(
+            &mut state,
+            pit,
+            PlayerId(0),
+            &def,
+            &mut events,
+            Some(ManaType::Blue),
+        )
+        .unwrap();
+
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 1);
+        assert_eq!(state.players[0].mana_pool.total(), 1);
+    }
+
+    #[test]
+    fn pit_of_offerings_etb_exile_populates_links_then_mana_ability_consumes_them() {
+        // End-to-end: drive the ETB-style exile through the actual `change_zone`
+        // resolver so `state.exile_links` is auto-populated by the engine
+        // (mirrors how Pit of Offerings' "When this land enters, exile up to
+        // three target cards from graveyards" trigger resolves), then activate
+        // the colored mana ability and confirm it produces a color drawn from
+        // the just-exiled cards.
+        use crate::types::ability::{Effect as Ef, ResolvedAbility, TargetFilter, TargetRef};
+
+        let mut state = GameState::new_two_player(42);
+        let pit = create_object(
+            &mut state,
+            CardId(1000),
+            PlayerId(0),
+            "Pit of Offerings".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&pit)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        state.objects.get_mut(&pit).unwrap().abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Ef::Mana {
+                    produced: ManaProduction::ChoiceAmongExiledColors {
+                        source: LinkedExileScope::ThisObject,
+                    },
+                    restrictions: vec![],
+                    grants: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+
+        // Place a single colored creature card in the graveyard for Pit's ETB
+        // trigger to exile via `ChangeZone`.
+        let lions = create_object(
+            &mut state,
+            CardId(2001),
+            PlayerId(0),
+            "Savannah Lions".to_string(),
+            Zone::Graveyard,
+        );
+        state.objects.get_mut(&lions).unwrap().color = vec![ManaColor::White];
+
+        // Resolve Pit's ETB exile through the real `change_zone` resolver. This
+        // is the same path the trigger system uses; a successful Exile move
+        // should automatically push an `ExileLink::TrackedBySource` into
+        // `state.exile_links` (see `change_zone::execute_zone_move`).
+        let etb = ResolvedAbility::new(
+            Ef::ChangeZone {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Exile,
+                target: TargetFilter::Any,
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+            },
+            vec![TargetRef::Object(lions)],
+            pit,
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        crate::game::effects::change_zone::resolve(&mut state, &etb, &mut events).unwrap();
+
+        // Sanity: the ETB resolver populated the link.
+        assert!(
+            state
+                .exile_links
+                .iter()
+                .any(|link| link.source_id == pit && link.exiled_id == lions),
+            "ETB-style exile must populate state.exile_links via the standard \
+             change_zone resolver (CR 610.3)"
+        );
+
+        // Now activate the colored mana ability. With one white-colored exiled
+        // card, the only legal mana type is `{W}`.
+        let mana_def = state.objects.get(&pit).unwrap().abilities[0].clone();
+        let mut mana_events = Vec::new();
+        resolve_mana_ability(
+            &mut state,
+            pit,
+            PlayerId(0),
+            &mana_def,
+            &mut mana_events,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::White), 1);
+    }
+
+    #[test]
+    fn pit_of_offerings_blink_clears_exile_links() {
+        // CR 400.7 + CR 610.3: When Pit of Offerings leaves the battlefield,
+        // its `TrackedBySource` exile links are dropped. A blink (LTB then
+        // re-ETB) creates a new object that inherits no linkage.
+        let mut state = GameState::new_two_player(42);
+        let (pit, _exiled) = pit_of_offerings_with_exiled_card(
+            &mut state,
+            PlayerId(0),
+            "Llanowar Elves",
+            vec![ManaColor::Green],
+        );
+
+        assert_eq!(state.exile_links.len(), 1, "precondition: link was created");
+
+        let mut events = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, pit, Zone::Exile, &mut events);
+
+        // The TrackedBySource link keyed to the (departed) Pit object must be gone.
+        assert!(
+            state.exile_links.iter().all(|link| link.source_id != pit),
+            "TrackedBySource exile links must be pruned when the source leaves \
+             the battlefield (CR 400.7)"
+        );
     }
 
     #[test]

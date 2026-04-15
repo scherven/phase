@@ -3,7 +3,8 @@ use crate::game::quantity::{resolve_quantity, resolve_quantity_with_targets};
 #[cfg(test)]
 use crate::types::ability::ManaContribution;
 use crate::types::ability::{
-    Effect, EffectError, EffectKind, ManaProduction, ManaSpendRestriction, ResolvedAbility,
+    Effect, EffectError, EffectKind, LinkedExileScope, ManaProduction, ManaSpendRestriction,
+    ResolvedAbility,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -214,7 +215,58 @@ fn resolve_mana_types_impl(
             };
             vec![first; amount]
         }
+        // CR 605.1a + CR 406.1 + CR 610.3: One mana of any of the colors among the
+        // cards exiled-with this source (Pit of Offerings). Reads `state.exile_links`
+        // for the relation; the per-color choice is selected by the caller via
+        // `color_override` (auto-tap during cost payment, or AI/UI on direct activation),
+        // exactly like `AnyOneColor`. Without an override the first listed color is
+        // produced. CR 106.5: undefined mana type → produce no mana.
+        ManaProduction::ChoiceAmongExiledColors { source } => {
+            let color_options = exiled_color_options(state, *source, source_id);
+            let Some(first) = color_options.first().copied() else {
+                return Vec::new();
+            };
+            vec![first]
+        }
     }
+}
+
+/// CR 605.1a + CR 406.1 + CR 610.3: Resolve the legal `ManaType` set for a
+/// `ChoiceAmongExiledColors` mana ability. Reads `state.exile_links` keyed to the
+/// scope, collects the printed colors of every still-exiled linked object, and
+/// drops colorless cards (CR 106.5). Shared by the resolver here and by
+/// `mana_sources::mana_options_from_production` so cost-payment and direct
+/// activation see the same legal set.
+pub(crate) fn exiled_color_options(
+    state: &GameState,
+    scope: LinkedExileScope,
+    source_id: crate::types::identifiers::ObjectId,
+) -> Vec<ManaType> {
+    let mut options: Vec<ManaType> = Vec::new();
+    for link in &state.exile_links {
+        let host_id = match scope {
+            LinkedExileScope::ThisObject => source_id,
+        };
+        if link.source_id != host_id {
+            continue;
+        }
+        let Some(exiled) = state.objects.get(&link.exiled_id) else {
+            continue;
+        };
+        // CR 400.7: Only consider linked cards still in exile (links are pruned
+        // from `state.exile_links` when the exiled card leaves exile, but guard
+        // defensively in case ordering interleaves).
+        if exiled.zone != crate::types::zones::Zone::Exile {
+            continue;
+        }
+        for color in &exiled.color {
+            let mana_type = mana_color_to_type(color);
+            if !options.contains(&mana_type) {
+                options.push(mana_type);
+            }
+        }
+    }
+    options
 }
 
 /// Convert a ManaColor to the runtime ManaType.

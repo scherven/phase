@@ -85,6 +85,20 @@ fn apply_zone_exit_cleanup(state: &mut GameState, object_id: ObjectId, from: Zon
         for tapped in state.lands_tapped_for_mana.values_mut() {
             tapped.retain(|&id| id != object_id);
         }
+        // CR 400.7 + CR 610.3: Drop `TrackedBySource` exile links keyed to a
+        // source that has now left the battlefield. Object identity resets, so
+        // a re-entering (e.g. blinked) permanent must not inherit the previous
+        // object's "exiled with" linkage (Pit of Offerings, Bojuka Bog, etc.).
+        // `UntilSourceLeaves` links are intentionally preserved here because
+        // `check_exile_returns` runs later in the priority loop and consumes
+        // them to return the exiled cards (CR 610.3a).
+        state.exile_links.retain(|link| {
+            link.source_id != object_id
+                || matches!(
+                    link.kind,
+                    crate::types::game_state::ExileLinkKind::UntilSourceLeaves { .. }
+                )
+        });
     }
 }
 

@@ -645,6 +645,7 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
         ManaProduction::OpponentLandColors { count } => {
             format!("{} of opponent land colors", fmt_quantity(count))
         }
+        ManaProduction::ChoiceAmongExiledColors { .. } => "1 of exiled cards' colors".into(),
     }
 }
 
