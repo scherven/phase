@@ -496,6 +496,7 @@ export type WaitingFor =
   | { type: "BattleProtectorChoice"; data: { player: PlayerId; battle_id: ObjectId; candidates: PlayerId[] } }
   | { type: "TributeChoice"; data: { player: PlayerId; source_id: ObjectId; count: number } }
   | { type: "CombatTaxPayment"; data: { player: PlayerId; context: CombatTaxContext; total_cost: ManaCost; per_creature: [ObjectId, ManaCost][]; pending: CombatTaxPending } }
+  | { type: "PhyrexianPayment"; data: { player: PlayerId; spell_object: ObjectId; shards: PhyrexianShard[] } }
   | { type: "AssignCombatDamage"; data: { player: PlayerId; attacker_id: ObjectId; total_damage: number; blockers: { blocker_id: ObjectId; lethal_minimum: number }[]; trample: TrampleKind | null; defending_player: PlayerId; attack_target: AttackTarget; pw_loyalty?: number; pw_controller?: PlayerId } }
   | { type: "DistributeAmong"; data: { player: PlayerId; total: number; targets: TargetRef[]; unit: DistributionUnit } }
   | { type: "ChooseFromZoneChoice"; data: { player: PlayerId; cards: ObjectId[]; count: number; up_to?: boolean; constraint?: ChooseFromZoneConstraint | null; source_id: ObjectId } }
@@ -636,7 +637,24 @@ export type GameAction =
   | { type: "ChooseDungeon"; data: { dungeon: DungeonId } }
   | { type: "ChooseDungeonRoom"; data: { room_index: number } }
   | { type: "SelectCategoryPermanents"; data: { choices: (ObjectId | null)[] } }
-  | { type: "ChooseX"; data: { value: number } };
+  | { type: "ChooseX"; data: { value: number } }
+  | { type: "SubmitPhyrexianChoices"; data: { choices: ShardChoice[] } };
+
+// CR 107.4f + CR 601.2f: Per-shard Phyrexian payment choice.
+export type ShardChoice =
+  | { type: "PayMana" }
+  | { type: "PayLife" };
+
+export type ShardOptions =
+  | { type: "ManaOrLife" }
+  | { type: "ManaOnly" }
+  | { type: "LifeOnly" };
+
+export interface PhyrexianShard {
+  shard_index: number;
+  color: ManaColor;
+  options: ShardOptions;
+}
 
 // ── Game Events (discriminated union, tag="type", content="data") ────────
 

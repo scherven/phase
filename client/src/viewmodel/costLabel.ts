@@ -16,6 +16,20 @@ export const SHARD_ABBREVIATION: Record<string, string> = {
   WhiteBlue: "W/U", WhiteBlack: "W/B", BlueBlack: "U/B", BlueRed: "U/R",
   BlackRed: "B/R", BlackGreen: "B/G", RedWhite: "R/W", RedGreen: "R/G",
   GreenWhite: "G/W", GreenBlue: "G/U",
+  // CR 107.4e: Monocolored hybrid {2/C}.
+  TwoWhite: "2/W", TwoBlue: "2/U", TwoBlack: "2/B", TwoRed: "2/R", TwoGreen: "2/G",
+  // CR 107.4e: Colorless hybrid {C/color}.
+  ColorlessWhite: "C/W", ColorlessBlue: "C/U", ColorlessBlack: "C/B",
+  ColorlessRed: "C/R", ColorlessGreen: "C/G",
+  // CR 107.4f: Phyrexian mana.
+  PhyrexianWhite: "W/P", PhyrexianBlue: "U/P", PhyrexianBlack: "B/P",
+  PhyrexianRed: "R/P", PhyrexianGreen: "G/P",
+  // CR 107.4f: Hybrid Phyrexian (10 variants).
+  PhyrexianWhiteBlue: "W/U/P", PhyrexianWhiteBlack: "W/B/P",
+  PhyrexianBlueBlack: "U/B/P", PhyrexianBlueRed: "U/R/P",
+  PhyrexianBlackRed: "B/R/P", PhyrexianBlackGreen: "B/G/P",
+  PhyrexianRedWhite: "R/W/P", PhyrexianRedGreen: "R/G/P",
+  PhyrexianGreenWhite: "G/W/P", PhyrexianGreenBlue: "G/U/P",
 };
 
 /** Convert a ManaCost to display-ready shard abbreviations (e.g., ["2", "U", "U"]). */

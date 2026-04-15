@@ -1,10 +1,14 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { ManaType } from "../../adapter/types.ts";
+import type {
+  ManaType,
+  PhyrexianShard,
+  ShardChoice,
+} from "../../adapter/types.ts";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
-import { manaCostToShards } from "../../viewmodel/costLabel.ts";
+import { manaCostToShards, SHARD_ABBREVIATION } from "../../viewmodel/costLabel.ts";
 import { gameButtonClass } from "../ui/buttonStyles.ts";
 import { ManaBadge } from "./ManaBadge.tsx";
 import { ManaSymbol } from "./ManaSymbol.tsx";
@@ -26,27 +30,57 @@ export function ManaPaymentUI() {
   const canAct = useCanActForWaitingState();
 
   const isManaPayment = waitingFor?.type === "ManaPayment";
-  const playerId = isManaPayment ? waitingFor.data.player : null;
+  const isPhyrexianPayment = waitingFor?.type === "PhyrexianPayment";
+  const isAnyPayment = isManaPayment || isPhyrexianPayment;
+  const playerId = isManaPayment
+    ? waitingFor.data.player
+    : isPhyrexianPayment
+      ? waitingFor.data.player
+      : null;
   const player = playerId != null ? gameState?.players[playerId] : null;
 
-  // Infer the cost being paid from the top stack entry
+  // CR 107.4f + CR 601.2f: Engine-provided per-shard options for Phyrexian payment.
+  // The UI maps shard_index → PhyrexianShard so it can disable toggles for trivial
+  // shards (ManaOnly / LifeOnly) and only accept toggles on ManaOrLife shards.
+  const phyrexianShards: PhyrexianShard[] = useMemo(
+    () => (isPhyrexianPayment ? waitingFor.data.shards : []),
+    [isPhyrexianPayment, waitingFor],
+  );
+  const spellObjectId = isPhyrexianPayment ? waitingFor.data.spell_object : null;
+
+  // Infer the cost being paid from the top stack entry (ManaPayment) or the
+  // engine-provided spell_object (PhyrexianPayment).
   const costShards = useMemo(() => {
-    if (!gameState || !isManaPayment) return null;
-    const stack = gameState.stack;
-    if (stack.length === 0) return null;
-    const topEntry = stack[stack.length - 1];
-    const sourceObj = gameState.objects[topEntry.source_id];
-    if (!sourceObj || sourceObj.mana_cost.type !== "Cost") return null;
-    return manaCostToShards(sourceObj.mana_cost);
-  }, [gameState, isManaPayment]);
+    if (!gameState) return null;
+    if (isPhyrexianPayment && spellObjectId != null) {
+      const sourceObj = gameState.objects[spellObjectId];
+      if (!sourceObj || sourceObj.mana_cost.type !== "Cost") return null;
+      return manaCostToShards(sourceObj.mana_cost);
+    }
+    if (isManaPayment) {
+      const stack = gameState.stack;
+      if (stack.length === 0) return null;
+      const topEntry = stack[stack.length - 1];
+      const sourceObj = gameState.objects[topEntry.source_id];
+      if (!sourceObj || sourceObj.mana_cost.type !== "Cost") return null;
+      return manaCostToShards(sourceObj.mana_cost);
+    }
+    return null;
+  }, [gameState, isManaPayment, isPhyrexianPayment, spellObjectId]);
 
   const cardName = useMemo(() => {
-    if (!gameState || !isManaPayment) return null;
-    const stack = gameState.stack;
-    if (stack.length === 0) return null;
-    const topEntry = stack[stack.length - 1];
-    return gameState.objects[topEntry.source_id]?.name ?? null;
-  }, [gameState, isManaPayment]);
+    if (!gameState) return null;
+    if (isPhyrexianPayment && spellObjectId != null) {
+      return gameState.objects[spellObjectId]?.name ?? null;
+    }
+    if (isManaPayment) {
+      const stack = gameState.stack;
+      if (stack.length === 0) return null;
+      const topEntry = stack[stack.length - 1];
+      return gameState.objects[topEntry.source_id]?.name ?? null;
+    }
+    return null;
+  }, [gameState, isManaPayment, isPhyrexianPayment, spellObjectId]);
 
   const isAmbiguous = costShards != null && hasAmbiguousCost(costShards);
 
@@ -58,10 +92,26 @@ export function ManaPaymentUI() {
     () => new Map(),
   );
 
+  // CR 107.4f + CR 601.2f: Initialize Phyrexian toggles from engine-provided
+  // `ShardOptions`. Trivial shards (ManaOnly/LifeOnly) are pre-filled and locked.
   useEffect(() => {
-    setPhyrexianChoices(new Map());
-    setHybridChoices(new Map());
-  }, [costShards]);
+    if (isPhyrexianPayment) {
+      const next = new Map<number, "mana" | "life">();
+      for (const shard of phyrexianShards) {
+        if (shard.options.type === "LifeOnly") {
+          next.set(shard.shard_index, "life");
+        } else {
+          next.set(shard.shard_index, "mana");
+        }
+      }
+      setPhyrexianChoices(next);
+      setHybridChoices(new Map());
+    } else {
+      setPhyrexianChoices(new Map());
+      setHybridChoices(new Map());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [costShards, isPhyrexianPayment]);
 
   // Summarize mana pool by color
   const manaPoolSummary = useMemo(() => {
@@ -75,13 +125,30 @@ export function ManaPaymentUI() {
     return MANA_ORDER.filter((c) => counts[c] > 0).map((c) => ({ color: c, amount: counts[c] }));
   }, [player]);
 
-  const togglePhyrexian = useCallback((idx: number) => {
-    setPhyrexianChoices((prev) => {
-      const next = new Map(prev);
-      next.set(idx, next.get(idx) === "life" ? "mana" : "life");
-      return next;
-    });
-  }, []);
+  // CR 107.4f + CR 601.2f: Only shards with `ManaOrLife` can be toggled; ManaOnly
+  // / LifeOnly shards are locked to their single legal payment.
+  const shardByIndex = useMemo(() => {
+    const map = new Map<number, PhyrexianShard>();
+    for (const shard of phyrexianShards) {
+      map.set(shard.shard_index, shard);
+    }
+    return map;
+  }, [phyrexianShards]);
+
+  const togglePhyrexian = useCallback(
+    (idx: number) => {
+      if (isPhyrexianPayment) {
+        const shard = shardByIndex.get(idx);
+        if (shard && shard.options.type !== "ManaOrLife") return;
+      }
+      setPhyrexianChoices((prev) => {
+        const next = new Map(prev);
+        next.set(idx, next.get(idx) === "life" ? "mana" : "life");
+        return next;
+      });
+    },
+    [isPhyrexianPayment, shardByIndex],
+  );
 
   const toggleHybrid = useCallback(
     (idx: number, shard: string) => {
@@ -96,8 +163,17 @@ export function ManaPaymentUI() {
   );
 
   const handlePay = useCallback(() => {
+    if (isPhyrexianPayment) {
+      // CR 107.4f + CR 601.2f: Submit the per-shard choices in shard order.
+      const choices: ShardChoice[] = phyrexianShards.map((shard) => {
+        const picked = phyrexianChoices.get(shard.shard_index) ?? "mana";
+        return picked === "life" ? { type: "PayLife" } : { type: "PayMana" };
+      });
+      dispatch({ type: "SubmitPhyrexianChoices", data: { choices } });
+      return;
+    }
     dispatch({ type: "PassPriority" });
-  }, [dispatch]);
+  }, [dispatch, isPhyrexianPayment, phyrexianChoices, phyrexianShards]);
 
   const handleCancel = useCallback(() => {
     dispatch({ type: "CancelCast" });
@@ -112,10 +188,11 @@ export function ManaPaymentUI() {
     return cost;
   }, [phyrexianChoices]);
 
-  // Don't render if not a mana payment the local player can act on.
-  // CR 601.2g: mana payment is a decision for the caster alone; opponents
-  // see the mid-cast state via the stack display, not an interactive panel.
-  if (!isManaPayment || !player || !canAct) return null;
+  // Don't render if not a mana/Phyrexian payment the local player can act on.
+  // CR 601.2g + CR 107.4f: mana payment and Phyrexian per-shard choice are
+  // decisions for the caster alone; opponents see the mid-cast state via the
+  // stack display, not an interactive panel.
+  if (!isAnyPayment || !player || !canAct) return null;
 
   return (
     <AnimatePresence>
@@ -145,17 +222,27 @@ export function ManaPaymentUI() {
                 ))}
               </div>
 
-              {/* Phyrexian toggles */}
-              {isAmbiguous && costShards.some((s) => s.endsWith("/P")) && (
+              {/* Phyrexian toggles — during PhyrexianPayment we iterate the
+                  engine-provided `shards` list (keyed by `shard_index` into
+                  cost.shards); during legacy ManaPayment we scan costShards
+                  for "/P" and index by the display array. */}
+              {isPhyrexianPayment && phyrexianShards.length > 0 && (
                 <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
-                  {costShards.map((shard, idx) => {
-                    if (!shard.endsWith("/P")) return null;
-                    const payLife = phyrexianChoices.get(idx) === "life";
+                  {phyrexianShards.map((shard) => {
+                    const payLife =
+                      phyrexianChoices.get(shard.shard_index) === "life";
+                    const locked = shard.options.type !== "ManaOrLife";
+                    const manaAbbrev =
+                      SHARD_ABBREVIATION[`Phyrexian${shard.color}`] ??
+                      `${shard.color[0]}/P`;
                     return (
                       <button
-                        key={idx}
-                        onClick={() => togglePhyrexian(idx)}
+                        key={shard.shard_index}
+                        onClick={() => togglePhyrexian(shard.shard_index)}
+                        disabled={locked}
                         className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs ring-1 transition ${
+                          locked ? "cursor-not-allowed opacity-60" : ""
+                        } ${
                           payLife
                             ? "bg-red-900/60 text-red-300 ring-red-500/40"
                             : "bg-gray-800 text-gray-300 ring-gray-600"
@@ -167,7 +254,7 @@ export function ManaPaymentUI() {
                             <span>2 life</span>
                           </>
                         ) : (
-                          <ManaSymbol shard={shard} size="sm" />
+                          <ManaSymbol shard={manaAbbrev} size="sm" />
                         )}
                       </button>
                     );
@@ -179,6 +266,41 @@ export function ManaPaymentUI() {
                   )}
                 </div>
               )}
+              {!isPhyrexianPayment &&
+                isAmbiguous &&
+                costShards.some((s) => s.endsWith("/P")) && (
+                  <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
+                    {costShards.map((shard, idx) => {
+                      if (!shard.endsWith("/P")) return null;
+                      const payLife = phyrexianChoices.get(idx) === "life";
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => togglePhyrexian(idx)}
+                          className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs ring-1 transition ${
+                            payLife
+                              ? "bg-red-900/60 text-red-300 ring-red-500/40"
+                              : "bg-gray-800 text-gray-300 ring-gray-600"
+                          }`}
+                        >
+                          {payLife ? (
+                            <>
+                              <span aria-label="heart">&#x2764;</span>
+                              <span>2 life</span>
+                            </>
+                          ) : (
+                            <ManaSymbol shard={shard} size="sm" />
+                          )}
+                        </button>
+                      );
+                    })}
+                    {lifeCost > 0 && (
+                      <span className="text-xs text-red-400">
+                        ({lifeCost} life)
+                      </span>
+                    )}
+                  </div>
+                )}
 
               {/* Hybrid toggles */}
               {isAmbiguous && costShards.some(
