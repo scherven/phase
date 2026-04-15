@@ -8071,6 +8071,184 @@ mod phase_trigger_regression_tests {
             "reflexive trigger must exile the copied graveyard card"
         );
     }
+
+    /// CR 603.12: Focused regression — a reflexive `When you do, …` sub_ability
+    /// attached to a `BecomeCopy` replacement fires exactly once after the copy
+    /// resolution, and its `TargetFilter::ParentTarget` resolves to the card the
+    /// player chose to copy. Scoped to the reflexive path only — no name/P-T
+    /// modifications, no supertypes, no copied abilities — so a failure
+    /// diagnoses the CR 603.12 path rather than the surrounding clone-suffix
+    /// parsing or layer application.
+    #[test]
+    fn reflexive_when_you_do_fires_after_become_copy_replacement() {
+        let mut state = GameState::new_two_player(42);
+
+        // Plain creature sitting in the opponent's graveyard — the reflexive
+        // exile target. No modifiers: we're testing trigger timing and parent
+        // target forwarding, not copy mechanics.
+        let source_card = zones::create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&source_card).unwrap();
+            obj.base_card_types = crate::types::card_type::CardType {
+                supertypes: vec![],
+                core_types: vec![CoreType::Creature],
+                subtypes: vec![],
+            };
+        }
+
+        // Cloner: a minimal permanent with BecomeCopy + reflexive "when you
+        // do, exile that card" sub_ability. `TargetFilter::ParentTarget`
+        // forwards the chosen copy source to the exile step.
+        let cloner = zones::create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Test Cloner".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&cloner).unwrap();
+            obj.base_card_types = crate::types::card_type::CardType {
+                supertypes: vec![],
+                core_types: vec![CoreType::Creature],
+                subtypes: vec![],
+            };
+            let reflexive = crate::types::ability::AbilityDefinition {
+                condition: Some(crate::types::ability::AbilityCondition::WhenYouDo),
+                ..crate::types::ability::AbilityDefinition::new(
+                    crate::types::ability::AbilityKind::Spell,
+                    Effect::ChangeZone {
+                        origin: None,
+                        destination: Zone::Exile,
+                        target: TargetFilter::ParentTarget,
+                        owner_library: false,
+                        enter_transformed: false,
+                        under_your_control: false,
+                        enter_tapped: false,
+                        enters_attacking: false,
+                        up_to: false,
+                    },
+                )
+            };
+            let become_copy = crate::types::ability::AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                Effect::BecomeCopy {
+                    target: TargetFilter::Typed(
+                        crate::types::ability::TypedFilter::new(
+                            crate::types::ability::TypeFilter::Creature,
+                        )
+                        .properties(vec![
+                            crate::types::ability::FilterProp::InZone {
+                                zone: Zone::Graveyard,
+                            },
+                        ]),
+                    ),
+                    duration: None,
+                    mana_value_limit: None,
+                    additional_modifications: vec![],
+                },
+            )
+            .sub_ability(reflexive);
+            obj.replacement_definitions.push(
+                crate::types::ability::ReplacementDefinition::new(
+                    crate::types::replacements::ReplacementEvent::Moved,
+                )
+                .execute(become_copy),
+            );
+        }
+
+        // Enter directly into the post-copy-choice waiting state — the
+        // preceding "enter as a copy of" pause is covered by other tests;
+        // here we isolate the reflexive resolution.
+        state.waiting_for = WaitingFor::CopyTargetChoice {
+            player: PlayerId(0),
+            source_id: cloner,
+            valid_targets: vec![source_card],
+            max_mana_value: None,
+        };
+
+        // Accumulate events across the full resolution so we can count
+        // exile transitions — CR 603.12a requires the reflexive to fire
+        // exactly once per trigger event, and exiling an already-exiled
+        // card is a no-op zone move that would silently mask double-firing
+        // if we only asserted on end-state.
+        let mut all_events: Vec<GameEvent> = Vec::new();
+
+        let result = apply(
+            &mut state,
+            GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(source_card)),
+            },
+        )
+        .expect("copy target choice should resolve");
+        all_events.extend(result.events);
+
+        // Drain priority passes until the reflexive trigger has resolved.
+        // CR 603.12: the reflexive is created during the replacement's
+        // resolution and fires based on the "choose and copy" event that
+        // already occurred. Cap drained iterations — if we hit the cap the
+        // loop never reached Priority + empty stack and the test must fail
+        // loudly rather than silently proceeding.
+        let cap = 16;
+        let mut drained = false;
+        for _ in 0..cap {
+            if matches!(state.waiting_for, WaitingFor::Priority { .. }) && state.stack.is_empty() {
+                drained = true;
+                break;
+            }
+            match apply(&mut state, GameAction::PassPriority) {
+                Ok(r) => all_events.extend(r.events),
+                Err(_) => {
+                    drained = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            drained,
+            "drain loop exceeded {cap} iterations without reaching \
+             Priority + empty stack — reflexive trigger path is stuck"
+        );
+
+        // ParentTarget was forwarded: the graveyard card is now exiled.
+        let exiled = state
+            .objects
+            .get(&source_card)
+            .expect("source card object preserved after exile");
+        assert_eq!(
+            exiled.zone,
+            Zone::Exile,
+            "reflexive `When you do, exile that card` must exile the copy source \
+             (TargetFilter::ParentTarget forwarded from BecomeCopy resolution)"
+        );
+
+        // CR 603.12a: the reflexive triggers exactly once for the one
+        // BecomeCopy event. Count ZoneChanged events moving the source
+        // card into exile. A silent double-fire (same source, same dest)
+        // would push 2 events here even though the final state is
+        // identical, catching regressions that end-state assertions miss.
+        let exile_moves = all_events
+            .iter()
+            .filter(|ev| {
+                matches!(ev, GameEvent::ZoneChanged {
+                    object_id,
+                    to: Zone::Exile,
+                    ..
+                } if *object_id == source_card)
+            })
+            .count();
+        assert_eq!(
+            exile_moves, 1,
+            "reflexive must fire exactly once per CR 603.12a; got {exile_moves} exile \
+             transitions of the copy source (expected 1)"
+        );
+    }
 }
 
 #[cfg(test)]

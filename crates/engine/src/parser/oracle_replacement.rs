@@ -515,18 +515,20 @@ fn attach_zone_to_filter(filter: TargetFilter, zone: Zone) -> TargetFilter {
 /// chain parser produces an unimplemented effect (so the caller can fall back
 /// to the plain BecomeCopy replacement without a reflexive trigger).
 fn parse_when_you_do_reflexive(post_period: &str) -> Option<AbilityDefinition> {
+    // Strip the sentence terminator / separator space preceding the reflexive
+    // clause. These are structural punctuation, not parsing dispatch.
     let trimmed = post_period.trim_start_matches(['.', ' ']);
     if trimmed.is_empty() {
         return None;
     }
-    // Guard: only accept text whose lowered form actually begins with "when you do".
+    // Compose the prefix guard as a nom leaf via `nom_on_lower` — matches the
+    // rest of this file's cost/prefix stripping pattern and leaves an `alt()`
+    // seam for future reflexive-clause variants ("when that happens", etc.)
+    // without reshaping the guard.
     let lower = trimmed.to_lowercase();
-    let starts_with_when_you_do = tag::<_, _, VerboseError<&str>>("when you do")
-        .parse(lower.as_str())
-        .is_ok();
-    if !starts_with_when_you_do {
-        return None;
-    }
+    nom_on_lower(trimmed, &lower, |i| {
+        value((), tag::<_, _, VerboseError<&str>>("when you do")).parse(i)
+    })?;
     let def = super::oracle_effect::parse_effect_chain(trimmed, AbilityKind::Spell);
     // Reject unimplemented fallbacks — the chain parser returns
     // `Effect::Unimplemented` when no pattern matches, which would attach a

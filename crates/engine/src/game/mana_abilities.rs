@@ -43,23 +43,101 @@ pub fn is_mana_ability(ability_def: &AbilityDefinition) -> bool {
 /// single authority for classifying triggered mana abilities — all trigger-enqueue
 /// call sites must route through this classifier.
 ///
-/// `trigger_event` is the event that caused the trigger to fire (CR 603.7c). For
-/// criterion (b) we require it to be a `ManaAdded` event, which is emitted both
-/// when an activated mana ability resolves and when any effect adds mana to a pool.
+/// `trigger_event` is the event that caused the trigger to fire (CR 603.7c).
+///
+/// Criterion (c) requires that **every** reachable link in the resolution graph
+/// (the `sub_ability` chain and the `else_ability` branch at each link, per
+/// CR 608.2c) is `Effect::Mana`. Inline resolution runs the full chain without
+/// giving any player priority — so a mixed chain like "add {G}, then draw a
+/// card" must use the stack, not route inline. "Any link adds mana" is too
+/// permissive: it would skip priority on the draw.
+///
+/// Criterion (b) accepts only `ManaAdded` today. CR 605.1b also admits
+/// "triggered from the activation/resolution of an activated mana ability" —
+/// but mana abilities bypass the stack and do not currently emit a
+/// distinguishable `AbilityActivated` event (see `resolve_mana_ability` — only
+/// `ManaAdded` events are produced). A pool-add-less mana ability (hypothetical
+/// conditional producer that yields zero mana) would not reach this classifier
+/// via `ManaAdded`; widening (b) to `AbilityActivated` requires first emitting
+/// an event specifically tied to mana-ability activation so the axis can be
+/// distinguished from ordinary activated abilities. No real card exercises the
+/// gap today.
 pub fn is_triggered_mana_ability(
     ability: &ResolvedAbility,
     trigger_event: Option<&GameEvent>,
 ) -> bool {
-    // (c) The resolved effect must add mana to a pool.
-    if !matches!(ability.effect, Effect::Mana { .. }) {
+    // (c) Every reachable link must produce mana. A mixed chain (Mana + Draw,
+    // Mana + Damage, …) cannot route inline because non-mana effects in the
+    // chain require stack resolution to give players priority.
+    if !chain_is_all_mana(ability) {
         return false;
     }
-    // (a) No target — mirrors the activated-mana-ability guard in `is_mana_ability`.
-    if !ability.targets.is_empty() || ability.multi_target.is_some() {
+    // (a) No target anywhere in the reachable resolution graph — mirrors the
+    // activated-mana-ability guard in `is_mana_ability`. A downstream link
+    // with targets (CR 115.6) disqualifies inline resolution, since the full
+    // chain must resolve without interrupting for target selection.
+    if chain_has_any_targets(ability) {
         return false;
     }
-    // (b) Triggered by mana being added to a pool.
+    // (b) Triggered by mana being added to a pool. See the doc comment above for
+    // the deliberately-not-yet-widened `AbilityActivated` axis.
     matches!(trigger_event, Some(GameEvent::ManaAdded { .. }))
+}
+
+/// True iff every reachable link (via `sub_ability` and `else_ability` per
+/// CR 608.2c) has `Effect::Mana`. The "every link is mana" rule is the
+/// conservative reading of CR 605.1b(c) — inline resolution skips priority,
+/// so any non-mana effect reachable during resolution forces stack use.
+fn chain_is_all_mana(ability: &ResolvedAbility) -> bool {
+    visit_links_all(ability, &|link| matches!(link.effect, Effect::Mana { .. }))
+}
+
+/// True iff **any** reachable link (via `sub_ability` and `else_ability`)
+/// carries targets or a `multi_target` spec (CR 115.6 + CR 608.2c).
+fn chain_has_any_targets(ability: &ResolvedAbility) -> bool {
+    visit_links_any(ability, &|link| {
+        !link.targets.is_empty() || link.multi_target.is_some()
+    })
+}
+
+/// Visit every reachable link of `ability` — head + `sub_ability` chain +
+/// `else_ability` branches at each link — and return `true` iff `pred` holds
+/// for all of them. Mirrors `chain_is_all_mana` / `chain_has_any_targets`'s
+/// single traversal shape so the two walkers stay structurally identical.
+fn visit_links_all(ability: &ResolvedAbility, pred: &dyn Fn(&ResolvedAbility) -> bool) -> bool {
+    if !pred(ability) {
+        return false;
+    }
+    if let Some(sub) = ability.sub_ability.as_deref() {
+        if !visit_links_all(sub, pred) {
+            return false;
+        }
+    }
+    if let Some(else_branch) = ability.else_ability.as_deref() {
+        if !visit_links_all(else_branch, pred) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Dual of [`visit_links_all`]: returns `true` iff `pred` holds for any
+/// reachable link.
+fn visit_links_any(ability: &ResolvedAbility, pred: &dyn Fn(&ResolvedAbility) -> bool) -> bool {
+    if pred(ability) {
+        return true;
+    }
+    if let Some(sub) = ability.sub_ability.as_deref() {
+        if visit_links_any(sub, pred) {
+            return true;
+        }
+    }
+    if let Some(else_branch) = ability.else_ability.as_deref() {
+        if visit_links_any(else_branch, pred) {
+            return true;
+        }
+    }
+    false
 }
 
 /// CR 605.3b: Resolve a triggered mana ability inline (stack-skipped).
@@ -1272,5 +1350,146 @@ mod tests {
 
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 1);
         assert_eq!(state.players[0].mana_pool.total(), 1);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // is_triggered_mana_ability — CR 605.1b classifier edge cases.
+    // ─────────────────────────────────────────────────────────────
+
+    fn mana_producing_resolved() -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::Mana {
+                produced: ManaProduction::Fixed {
+                    colors: vec![ManaColor::Green],
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        )
+    }
+
+    fn draw_resolved() -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        )
+    }
+
+    fn mana_added_event() -> GameEvent {
+        GameEvent::ManaAdded {
+            player_id: PlayerId(0),
+            mana_type: ManaType::Green,
+            source_id: ObjectId(1),
+            tapped_for_mana: true,
+        }
+    }
+
+    #[test]
+    fn classifier_accepts_head_effect_mana_on_mana_added() {
+        let ability = mana_producing_resolved();
+        assert!(is_triggered_mana_ability(
+            &ability,
+            Some(&mana_added_event())
+        ));
+    }
+
+    #[test]
+    fn classifier_rejects_non_mana_added_event() {
+        // CR 605.1b criterion (b): mana abilities don't emit a mana-ability-
+        // specific activation event today, so only `ManaAdded` qualifies.
+        // An unrelated event (e.g. `AbilityActivated`) must not route through
+        // the inline resolver.
+        let ability = mana_producing_resolved();
+        let ev = GameEvent::AbilityActivated {
+            source_id: ObjectId(1),
+        };
+        assert!(!is_triggered_mana_ability(&ability, Some(&ev)));
+    }
+
+    #[test]
+    fn classifier_accepts_all_mana_chain() {
+        // CR 605.1b criterion (c): every reachable link must be mana. A chain
+        // with head + sub both producing mana (e.g., "add G, then add G") is
+        // inline-safe.
+        let mut head = mana_producing_resolved();
+        head.sub_ability = Some(Box::new(mana_producing_resolved()));
+        assert!(is_triggered_mana_ability(&head, Some(&mana_added_event())));
+    }
+
+    #[test]
+    fn classifier_rejects_mixed_mana_plus_non_mana_chain() {
+        // CR 605.1b criterion (c): "every link is mana" — a chain with mana
+        // at the head but a non-mana sub (e.g., draw a card) MUST use the
+        // stack. Routing such a chain inline would silently perform the
+        // non-mana effect without giving players priority.
+        let mut head = mana_producing_resolved();
+        head.sub_ability = Some(Box::new(draw_resolved()));
+        assert!(!is_triggered_mana_ability(&head, Some(&mana_added_event())));
+    }
+
+    #[test]
+    fn classifier_rejects_chain_without_any_mana_effect() {
+        let mut head = draw_resolved();
+        head.sub_ability = Some(Box::new(draw_resolved()));
+        assert!(!is_triggered_mana_ability(&head, Some(&mana_added_event())));
+    }
+
+    #[test]
+    fn classifier_rejects_sub_ability_with_multi_target() {
+        // CR 605.1b criterion (a) + CR 115.6: any link declaring targets
+        // anywhere in the chain disqualifies inline resolution.
+        let mut sub = mana_producing_resolved();
+        sub.multi_target = Some(MultiTargetSpec {
+            min: 1,
+            max: Some(1),
+        });
+        let mut head = mana_producing_resolved();
+        head.sub_ability = Some(Box::new(sub));
+        assert!(!is_triggered_mana_ability(&head, Some(&mana_added_event())));
+    }
+
+    #[test]
+    fn classifier_rejects_sub_ability_with_resolved_targets() {
+        // Symmetric to multi_target: a non-empty `targets` vec (as produced
+        // by auto_select_targets_for_ability at trigger time) on any link
+        // also disqualifies. Covers the `|| multi_target.is_some()` branch
+        // separately from the `!targets.is_empty()` branch.
+        let mut sub = mana_producing_resolved();
+        sub.targets = vec![crate::types::ability::TargetRef::Object(ObjectId(99))];
+        let mut head = mana_producing_resolved();
+        head.sub_ability = Some(Box::new(sub));
+        assert!(!is_triggered_mana_ability(&head, Some(&mana_added_event())));
+    }
+
+    #[test]
+    fn classifier_walks_else_ability_for_criterion_c() {
+        // CR 608.2c: `else_ability` is the "Otherwise" branch of a
+        // conditional ability. A mana head with a non-mana `else_ability`
+        // (e.g. "if X, add G; otherwise draw a card") must still use the
+        // stack — inline resolution of the else branch would skip priority
+        // on the draw.
+        let mut head = mana_producing_resolved();
+        head.else_ability = Some(Box::new(draw_resolved()));
+        assert!(!is_triggered_mana_ability(&head, Some(&mana_added_event())));
+    }
+
+    #[test]
+    fn classifier_walks_else_ability_for_criterion_a() {
+        // Mirror for criterion (a): a targeted `else_ability` branch
+        // disqualifies even when the main chain is target-free.
+        let mut else_branch = mana_producing_resolved();
+        else_branch.targets = vec![crate::types::ability::TargetRef::Object(ObjectId(7))];
+        let mut head = mana_producing_resolved();
+        head.else_ability = Some(Box::new(else_branch));
+        assert!(!is_triggered_mana_ability(&head, Some(&mana_added_event())));
     }
 }
