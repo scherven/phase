@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { FormatConfig, GameFormat, MatchType } from "../../adapter/types";
 import { FORMAT_DEFAULTS, useMultiplayerStore } from "../../stores/multiplayerStore";
@@ -36,31 +36,62 @@ const FORMAT_OPTIONS: { format: GameFormat; label: string }[] = [
 
 const DIFFICULTY_OPTIONS = ["VeryEasy", "Easy", "Medium", "Hard", "VeryHard"];
 
+/** P2P's WebRTC mesh supports 2-4 peers (see `p2p-adapter.ts:165`). The
+ * HostSetup UI clamps format player counts to this ceiling so multi-seat
+ * formats like Commander can still be hosted while 6-player FreeForAll
+ * can't advertise an unreachable configuration. */
+const P2P_MAX_PEERS = 4;
+
 export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
-  const storeDisplayName = useMultiplayerStore((s) => s.displayName);
-  const setStoreDisplayName = useMultiplayerStore((s) => s.setDisplayName);
+  // Player name is edited in `PlayerIdentityBanner` above this form (see
+  // MultiplayerPage). We read it here only to submit it and to seed the
+  // room-name placeholder — this form itself intentionally has no
+  // player-name field to avoid the two-inputs-for-one-value confusion.
+  const displayName = useMultiplayerStore((s) => s.displayName);
   const setFormatConfig = useMultiplayerStore((s) => s.setFormatConfig);
 
-  const [displayName, setDisplayName] = useState(storeDisplayName);
+  // Seed the format picker from whatever the user last selected (persisted
+  // in the store). This means navigating away and back to host-setup keeps
+  // the chosen format, and downstream views (the deck picker reached via
+  // "Change Deck") can read the format from the store to filter decks.
+  const storeFormatConfig = useMultiplayerStore((s) => s.formatConfig);
+  const initialFormatConfig = storeFormatConfig ?? FORMAT_DEFAULTS.Standard;
+
+  const [roomName, setRoomName] = useState("");
   const [isPublic, setIsPublic] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [password, setPassword] = useState("");
   const [timerSeconds, setTimerSeconds] = useState<number | null>(null);
-  const [selectedFormat, setSelectedFormat] = useState<GameFormat>("Standard");
-  const [formatConfig, setLocalFormatConfig] = useState<FormatConfig>(FORMAT_DEFAULTS.Standard);
-  const [playerCount, setPlayerCount] = useState(FORMAT_DEFAULTS.Standard.min_players);
+  const [selectedFormat, setSelectedFormat] = useState<GameFormat>(
+    initialFormatConfig.format,
+  );
+  const [formatConfig, setLocalFormatConfig] =
+    useState<FormatConfig>(initialFormatConfig);
+  const [playerCount, setPlayerCount] = useState(initialFormatConfig.min_players);
   const [matchType, setMatchType] = useState<MatchType>("Bo1");
   const [aiSeats, setAiSeats] = useState<AiSeatConfig[]>([]);
 
+  // Mirror the in-flight format to the store on every change so sibling
+  // views (the deck picker shown when the user clicks "Change Deck" out
+  // of this form) can filter by the format the user is actively
+  // configuring — not just the one they submitted last time.
+  useEffect(() => {
+    setFormatConfig({ ...formatConfig, max_players: playerCount });
+  }, [formatConfig, playerCount, setFormatConfig]);
+
   const isP2P = connectionMode === "p2p";
-  const maxPlayers = isP2P ? 2 : formatConfig.max_players;
+  const maxPlayers = isP2P
+    ? Math.min(formatConfig.max_players, P2P_MAX_PEERS)
+    : formatConfig.max_players;
   const accentTone = isP2P ? "cyan" : "emerald";
 
   const handleFormatSelect = (format: GameFormat) => {
     const defaults = FORMAT_DEFAULTS[format];
     setSelectedFormat(format);
     setLocalFormatConfig(defaults);
-    const newCount = isP2P ? 2 : defaults.min_players;
+    // Let multi-seat formats start at their own minimum (e.g. Commander's
+    // min is 2, so it still defaults to a duel but users can bump up to 4).
+    const newCount = defaults.min_players;
     setPlayerCount(newCount);
     if (newCount !== 2) {
       setMatchType("Bo1");
@@ -94,11 +125,9 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
   };
 
   const handleHost = () => {
-    if (displayName !== storeDisplayName) {
-      setStoreDisplayName(displayName);
-    }
     const finalConfig = { ...formatConfig, max_players: playerCount };
     setFormatConfig(finalConfig);
+    const trimmedRoomName = roomName.trim();
     onHost({
       displayName,
       public: isPublic,
@@ -107,18 +136,24 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
       formatConfig: finalConfig,
       matchType: playerCount === 2 ? matchType : "Bo1",
       aiSeats,
+      roomName: trimmedRoomName.length > 0 ? trimmedRoomName : null,
     });
   };
 
-  // Filter formats: P2P only shows 2-player formats
+  // Filter formats: P2P supports 2-4 peers via WebRTC mesh, so any format
+  // whose minimum is reachable from that ceiling is listable. Multi-seat
+  // formats that need more than 4 players (e.g. 6-player FreeForAll) are
+  // hidden here to avoid advertising a configuration we can't actually host.
   const availableFormats = isP2P
-    ? FORMAT_OPTIONS.filter((f) => FORMAT_DEFAULTS[f.format].max_players <= 2)
+    ? FORMAT_OPTIONS.filter(
+        (f) => FORMAT_DEFAULTS[f.format].min_players <= P2P_MAX_PEERS,
+      )
     : FORMAT_OPTIONS;
 
   return (
     <form
       onSubmit={(e) => { e.preventDefault(); handleHost(); }}
-      className="relative z-10 flex w-full max-w-md flex-col items-center gap-6 px-4"
+      className="relative z-10 flex w-full max-w-xl flex-col items-center gap-6 px-4"
     >
       <MenuPanel className="flex w-full flex-col gap-6">
         <div className="space-y-2">
@@ -133,19 +168,26 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
         </div>
 
         <div className="flex w-full flex-col gap-4">
-        {/* Display name */}
+        {/* Room name — per-match label. Distinct from the player's name
+            (edited in the `PlayerIdentityBanner` above this form). Blank
+            falls back to the player's name on the server side. */}
         <div>
           <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-gray-400">
-            Display Name
+            Room Name <span className="text-slate-600">(optional)</span>
           </label>
           <input
             type="text"
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Enter your name"
-            maxLength={20}
+            value={roomName}
+            onChange={(e) => setRoomName(e.target.value)}
+            placeholder={
+              displayName ? `${displayName}'s table` : "e.g. Friday Night Commander"
+            }
+            maxLength={40}
             className="w-full rounded-[16px] bg-black/18 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none ring-1 ring-white/10 focus:ring-white/20"
           />
+          <p className="mt-1 text-[11px] text-slate-500">
+            Shown to players browsing the lobby. Leave blank to use your name.
+          </p>
         </div>
 
         {/* Format selection */}
@@ -194,8 +236,12 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
               />
             </div>
 
-            {/* Player count (only show if format supports variable player counts) */}
-            {!isP2P && formatConfig.min_players !== formatConfig.max_players && (
+            {/* Player count — hidden for fixed-seat formats like Standard
+                (min==max==2). Shown in both server and P2P modes when the
+                format supports a range; `maxPlayers` already clamps to the
+                P2P mesh ceiling so the P2P picker never offers a seat the
+                transport can't host. */}
+            {formatConfig.min_players !== maxPlayers && (
               <div className="flex items-center justify-between">
                 <span className="text-xs text-gray-400">Players</span>
                 <div className="flex rounded-[14px] bg-black/18 p-0.5 ring-1 ring-white/10">
