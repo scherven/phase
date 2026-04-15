@@ -660,6 +660,12 @@ fn find_defiler_reduction(
             } = &def.mode
             {
                 if spell_colors.contains(color) {
+                    // CR 118.3 + CR 119.4b + CR 119.8: Don't offer the Defiler
+                    // prompt when the caster can't actually pay the life — this
+                    // keeps the UI from presenting an impossible choice.
+                    if !super::life_costs::can_pay_life_cost(state, caster, *life_cost) {
+                        return None;
+                    }
                     return Some((*life_cost, mana_reduction.clone()));
                 }
             }

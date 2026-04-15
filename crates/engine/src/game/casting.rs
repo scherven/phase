@@ -1,7 +1,7 @@
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, CardPlayMode, ChoiceType, Effect, GameRestriction,
-    QuantityExpr, ResolvedAbility, RestrictionPlayerScope, StaticDefinition, TargetFilter,
-    TargetRef,
+    AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, CardPlayMode, ChoiceType, Effect,
+    GameRestriction, QuantityExpr, ResolvedAbility, RestrictionPlayerScope, StaticDefinition,
+    TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
@@ -1801,6 +1801,41 @@ pub fn can_cast_object_now(state: &GameState, player: PlayerId, object_id: Objec
         return false;
     }
 
+    // CR 702.34a + CR 118.3 + CR 119.8: Flashback's non-mana cost (e.g. "pay N
+    // life") is an additional cost. Pre-check affordability so a CantLoseLife
+    // lock or insufficient life filters the flashback from legal actions.
+    if prepared.casting_variant == CastingVariant::Flashback {
+        if let Some(FlashbackCost::NonMana(ref cost)) =
+            super::keywords::effective_flashback_cost(state, prepared.object_id)
+        {
+            if let Some(amount) = find_pay_life_cost(cost) {
+                if !super::life_costs::can_pay_life_cost(state, player, amount) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // CR 601.2b + CR 118.3 + CR 119.8: Additional-cost affordability — any
+    // `AbilityCost::PayLife` attached as an additional cost (Required or
+    // Optional-but-required-to-cast) must be payable for the spell to be cast.
+    // For Optional additional costs this is a false-negative in the locked case
+    // only if the optional cost is the ONLY affordability gate, which is never
+    // the case; the mana cost already has to be payable on its own.
+    if let Some(additional) = state
+        .objects
+        .get(&prepared.object_id)
+        .and_then(|o| o.additional_cost.as_ref())
+    {
+        if let AdditionalCost::Required(cost) = additional {
+            if let Some(amount) = find_pay_life_cost(cost) {
+                if !super::life_costs::can_pay_life_cost(state, player, amount) {
+                    return false;
+                }
+            }
+        }
+    }
+
     // CR 702.172: Spree spells must afford at least one mode to be castable
     if let Some(ref modal) = prepared.modal {
         if !modal.mode_costs.is_empty() {
@@ -2185,6 +2220,17 @@ fn find_non_self_sacrifice(cost: &AbilityCost) -> Option<&TargetFilter> {
     }
 }
 
+/// Walk a cost tree and return the first `PayLife` amount found, if any.
+/// Used to pre-validate pay-life affordability before simulation, since
+/// `pay_ability_cost` treats `AbilityCost::PayLife` as a no-op.
+fn find_pay_life_cost(cost: &AbilityCost) -> Option<u32> {
+    match cost {
+        AbilityCost::PayLife { amount } => Some(*amount),
+        AbilityCost::Composite { costs } => costs.iter().find_map(find_pay_life_cost),
+        _ => None,
+    }
+}
+
 /// CR 118.3: Find permanents controlled by `player` matching `filter` on the battlefield.
 /// Excludes `source_id` so the source cannot be sacrificed as its own cost.
 pub(super) fn find_eligible_sacrifice_targets(
@@ -2236,6 +2282,15 @@ fn can_pay_ability_cost_now(
     // to avoid listing unpayable Waterbend abilities as legal actions.
     if let Some(wb_cost) = find_waterbend_cost(cost) {
         if !can_pay_cost_after_auto_tap(state, player, source_id, wb_cost) {
+            return false;
+        }
+    }
+    // CR 118.3 + CR 119.4b + CR 119.8: Pay-life is paid interactively (or via
+    // the effect resolver); `pay_ability_cost`'s `PayLife` arm is a no-op.
+    // Pre-check both insufficient-life and CantLoseLife so locked or underfunded
+    // activated abilities never appear as legal actions.
+    if let Some(amount) = find_pay_life_cost(cost) {
+        if !super::life_costs::can_pay_life_cost(state, player, amount) {
             return false;
         }
     }
