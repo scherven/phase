@@ -120,8 +120,8 @@ mod tests {
     use super::*;
     use engine::game::zones::create_object;
     use engine::types::ability::{
-        AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaProduction, QuantityExpr,
-        TargetFilter, TypedFilter,
+        AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaContribution, ManaProduction,
+        QuantityExpr, TargetFilter, TypedFilter,
     };
     use engine::types::card_type::{CardType, CoreType};
     use engine::types::game_state::GameState;
@@ -153,7 +153,10 @@ mod tests {
         let mut ability = AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::Mana {
-                produced: ManaProduction::Fixed { colors: Vec::new() },
+                produced: ManaProduction::Fixed {
+                    colors: Vec::new(),
+                    contribution: ManaContribution::Base,
+                },
                 restrictions: Vec::new(),
                 grants: Vec::new(),
                 expiry: None,

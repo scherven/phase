@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn available_mana_counts_creature_mana_dorks() {
         use engine::types::ability::{
-            AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaProduction,
+            AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaContribution, ManaProduction,
         };
         use engine::types::mana::ManaColor;
 
@@ -274,6 +274,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],

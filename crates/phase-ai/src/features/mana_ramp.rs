@@ -295,8 +295,8 @@ fn target_filter_is_opponent_scoped(filter: &TargetFilter) -> bool {
 mod tests {
     use super::*;
     use engine::types::ability::{
-        AbilityCost, AbilityDefinition, AbilityKind, ControllerRef, Effect, ManaProduction,
-        QuantityExpr, TargetFilter, TypedFilter,
+        AbilityCost, AbilityDefinition, AbilityKind, ControllerRef, Effect, ManaContribution,
+        ManaProduction, QuantityExpr, TargetFilter, TypedFilter,
     };
     use engine::types::card::CardFace;
     use engine::types::card_type::{CardType, CoreType};
@@ -324,7 +324,10 @@ mod tests {
         let mut ability = AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::Mana {
-                produced: ManaProduction::Fixed { colors: Vec::new() },
+                produced: ManaProduction::Fixed {
+                    colors: Vec::new(),
+                    contribution: ManaContribution::Base,
+                },
                 restrictions: Vec::new(),
                 grants: Vec::new(),
                 expiry: None,
@@ -367,7 +370,10 @@ mod tests {
         AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Mana {
-                produced: ManaProduction::Fixed { colors: Vec::new() },
+                produced: ManaProduction::Fixed {
+                    colors: Vec::new(),
+                    contribution: ManaContribution::Base,
+                },
                 restrictions: Vec::new(),
                 grants: Vec::new(),
                 expiry: None,

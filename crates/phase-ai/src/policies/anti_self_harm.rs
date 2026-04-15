@@ -2007,7 +2007,7 @@ mod tests {
     /// penalized — the tapped creature can't block, wasting the pump.
     #[test]
     fn pre_cast_penalizes_pump_when_creature_mana_source_must_tap() {
-        use engine::types::ability::{AbilityCost, AbilityKind, ManaProduction};
+        use engine::types::ability::{AbilityCost, AbilityKind, ManaContribution, ManaProduction};
         use engine::types::mana::ManaColor;
 
         let mut state = make_state();
@@ -2024,6 +2024,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],
@@ -2097,7 +2098,7 @@ mod tests {
     /// Fix 1 counterpart: if there are enough lands to pay, no penalty should apply.
     #[test]
     fn pre_cast_no_penalty_when_lands_cover_pump_cost() {
-        use engine::types::ability::{AbilityCost, AbilityKind, ManaProduction};
+        use engine::types::ability::{AbilityCost, AbilityKind, ManaContribution, ManaProduction};
         use engine::types::mana::ManaColor;
 
         let mut state = make_state();
@@ -2113,6 +2114,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],

@@ -212,7 +212,10 @@ mod tests {
         let mut ability = AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::Mana {
-                produced: engine::types::ability::ManaProduction::Fixed { colors: Vec::new() },
+                produced: engine::types::ability::ManaProduction::Fixed {
+                    colors: Vec::new(),
+                    contribution: engine::types::ability::ManaContribution::Base,
+                },
                 restrictions: Vec::new(),
                 grants: Vec::new(),
                 expiry: None,
