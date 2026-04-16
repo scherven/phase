@@ -197,6 +197,12 @@ Getting this wrong produces silent failures: possessive forms that fall through 
 
 **`match_phrase_variants()`** — shared backbone for all phrase helpers. If you need a new phrase helper (e.g., `contains_sacrifice_clause`), implement it via `match_phrase_variants` rather than duplicating the normalization logic.
 
+**Damage-to-players helper path** — for damage phrases, exact player-set text is not a `parse_target()` job:
+
+- Use `parse_damage_each_player_scope()` in `oracle_effect/mod.rs` for exact `each player`, `each opponent`, or `each foe` damage text.
+- Reuse `parse_damage_player_scope()` when a compound damage parser needs the same noun parse, such as `each opponent and each creature they control`.
+- Do not push these phrases into `parse_target()`. `DamageEachPlayer` vs. `DamageAll` is an effect-layer semantic distinction, and moving it into generic target parsing causes player damage to be misclassified as object damage.
+
 ### Phase 5 — Interactive Effects (if applicable)
 
 **Goal:** Effects that require player choices (scry, dig, reveal+choose, search) work end-to-end.

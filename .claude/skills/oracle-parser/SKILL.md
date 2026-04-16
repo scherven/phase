@@ -349,6 +349,7 @@ Predicate hierarchy: `try_parse_subject_continuous_clause()` → `try_parse_subj
 - `try_split_targeted_compound()` — "verb target X and verb2 it": uses `parse_target()` remainder to find split, inherits parent target via `replace_target_with_parent()`
 - `try_parse_compound_shuffle()` — "shuffle X and Y into libraries": two ChangeZone effects
 - `try_parse_for_each_effect()` — "draw a card for each creature": delegates to `parse_numeric_imperative_ast()` + `with_for_each_quantity()` + `thread_for_each_subject()`
+- `parse_damage_player_scope()` / `parse_damage_each_player_scope()` — shared damage-player routing helpers. Use these for exact `each player` / `each opponent` / `each foe` damage phrases before falling back to `DamageAll`. Keep this semantic split in `oracle_effect/mod.rs`; do not push it into `parse_target()`, which remains object/filter-oriented.
 
 ### Special-Case Matchers in `parse_effect_clause()`
 
@@ -425,6 +426,15 @@ Predicate hierarchy: `try_parse_subject_continuous_clause()` → `try_parse_subj
 | `oracle_util.rs` | `TextPair` (dual original/lowercase slices with `strip_prefix`/`strip_suffix`), `parse_number` wrapper, mana symbol parsing, `strip_reminder_text`, `normalize_card_name_refs`, possessive/pronoun matching (`contains_possessive`, `contains_object_pronoun`, `starts_with_possessive`), `match_phrase_variants`, `merge_or_filters`, `SELF_REF_TYPE_PHRASES`, `SELF_REF_PARSE_ONLY_PHRASES` | Case-bridging structural ops, shared string utilities, phrase matching |
 | `oracle_target.rs` | `parse_target` (full target extraction), `parse_type_phrase` (type descriptions without "target"), `parse_player_reference`, `parse_event_context_ref`, `parse_zone_suffix` | High-level target/filter extraction from Oracle text |
 | `oracle_quantity.rs` | `parse_quantity_ref` (semantic interpretation), `parse_cda_quantity` (CDAs), `parse_for_each_clause` ("for each [filter]") | Semantic quantity interpretation from Oracle text |
+
+**Damage-player routing** (`oracle_effect/mod.rs`) — exact player-set phrases in damage effects have a dedicated helper path:
+
+| Helper | Purpose | Use When |
+|--------|---------|----------|
+| `parse_damage_player_scope()` | Parse the player noun for damage phrases: `player`, `opponent`, `foe` | Reusing the noun parse across simple and compound damage clauses |
+| `parse_damage_each_player_scope()` | Parse exact `each player/opponent/foe` with punctuation-only tails allowed | Routing `DealDamage` text to `DamageEachPlayer` instead of `DamageAll` |
+
+Rule: if the Oracle text is a damage effect that names a set of players, resolve that at the effect layer with these helpers. Do not teach `parse_target()` that `each opponent` is a player-damage target, because that would blur the object-target/filter boundary and reintroduce object-vs-player bugs.
 
 ### Sub-Ability Chains & Target Propagation
 

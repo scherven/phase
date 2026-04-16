@@ -2841,15 +2841,7 @@ fn try_parse_compound_player_object_damage(lower: &str) -> Option<ParsedEffectCl
     let (after_each, _) = tag::<_, _, VerboseError<&str>>("each ")
         .parse(after_amount)
         .ok()?;
-    let (after_player, player_filter) = alt((
-        value(
-            PlayerFilter::Opponent,
-            tag::<_, _, VerboseError<&str>>("opponent"),
-        ),
-        value(PlayerFilter::All, tag("player")),
-    ))
-    .parse(after_each)
-    .ok()?;
+    let (after_player, player_filter) = parse_damage_player_scope(after_each).ok()?;
 
     // " and each " connector
     let (after_and_each, _) = tag::<_, _, VerboseError<&str>>(" and each ")
@@ -5073,6 +5065,33 @@ fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
     (Some(scope), deconjugated)
 }
 
+/// Parse the player noun used by damage-to-players phrases.
+/// Shared by simple `each player/opponent` damage routing and compound
+/// `each opponent and each creature ...` damage clauses.
+pub(super) fn parse_damage_player_scope(
+    input: &str,
+) -> nom::IResult<&str, PlayerFilter, VerboseError<&str>> {
+    alt((
+        value(
+            PlayerFilter::Opponent,
+            alt((tag::<_, _, VerboseError<&str>>("opponent"), tag("foe"))),
+        ),
+        value(PlayerFilter::All, tag("player")),
+    ))
+    .parse(input)
+}
+
+/// Parse an exact `each player` / `each opponent` / `each foe` damage scope.
+/// Returns `None` for compound phrases so dedicated compound parsers can handle them.
+pub(super) fn parse_damage_each_player_scope(text: &str) -> Option<PlayerFilter> {
+    let (rest, filter) = preceded(tag("each "), parse_damage_player_scope)
+        .parse(text)
+        .ok()?;
+    rest.chars()
+        .all(|c| c.is_ascii_whitespace() || c.is_ascii_punctuation())
+        .then_some(filter)
+}
+
 fn strip_leading_duration(text: &str) -> Option<(Duration, &str)> {
     let lower = text.to_lowercase();
     if let Some((duration, rest)) = nom_on_lower(text, &lower, |i| {
@@ -5907,17 +5926,7 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                     // "each player" → DamageEachPlayer (per-player varying damage)
                     // "each creature" → DamageAll (uniform damage to objects)
                     // "each foe" — archaic synonym for opponent (friend/foe cards)
-                    if scan_contains_phrase(target_phrase, "player")
-                        || scan_contains_phrase(target_phrase, "opponent")
-                        || scan_contains_phrase(target_phrase, "foe")
-                    {
-                        let player_filter = if scan_contains_phrase(target_phrase, "opponent")
-                            || scan_contains_phrase(target_phrase, "foe")
-                        {
-                            PlayerFilter::Opponent
-                        } else {
-                            PlayerFilter::All
-                        };
+                    if let Some(player_filter) = parse_damage_each_player_scope(target_phrase) {
                         return Some((
                             Effect::DamageEachPlayer {
                                 amount: qty,
@@ -6003,6 +6012,15 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
         .parse(after_to)
         .is_ok()
     {
+        if let Some(player_filter) = parse_damage_each_player_scope(after_to) {
+            return Some((
+                Effect::DamageEachPlayer {
+                    amount,
+                    player_filter,
+                },
+                "",
+            ));
+        }
         let (target, rem) = parse_target(after_to);
         return Some((Effect::DamageAll { amount, target }, rem));
     }
@@ -6639,6 +6657,46 @@ mod tests {
                 amount: QuantityExpr::Fixed { value: 3 },
                 target: TargetFilter::Any,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn effect_damage_to_each_opponent_uses_player_scope() {
+        let e = parse_effect("~ deals 1 damage to each opponent");
+        assert!(matches!(
+            e,
+            Effect::DamageEachPlayer {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player_filter: PlayerFilter::Opponent,
+            }
+        ));
+    }
+
+    #[test]
+    fn damage_each_player_scope_rejects_compound_phrase() {
+        assert_eq!(
+            parse_damage_each_player_scope("each opponent and each creature they control"),
+            None
+        );
+    }
+
+    #[test]
+    fn damage_each_player_scope_allows_trailing_punctuation() {
+        assert_eq!(
+            parse_damage_each_player_scope("each opponent,"),
+            Some(PlayerFilter::Opponent)
+        );
+    }
+
+    #[test]
+    fn effect_damage_to_each_player_uses_player_scope() {
+        let e = parse_effect("~ deals 1 damage to each player");
+        assert!(matches!(
+            e,
+            Effect::DamageEachPlayer {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player_filter: PlayerFilter::All,
             }
         ));
     }
