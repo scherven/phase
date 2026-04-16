@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { GameFormat } from "../../adapter/types";
 import { parseJoinCode } from "../../services/serverDetection";
-import { isLobbyEntryCompatible, useMultiplayerStore } from "../../stores/multiplayerStore";
+import { FORMAT_DEFAULTS, isLobbyEntryCompatible, useMultiplayerStore } from "../../stores/multiplayerStore";
 import { MenuPanel } from "../menu/MenuShell";
 import { menuButtonClass } from "../menu/buttonStyles";
 import { GameListItem } from "./GameListItem";
@@ -76,6 +76,19 @@ export function LobbyView({
   const ensureSubscriptionSocket = useMultiplayerStore(
     (s) => s.ensureSubscriptionSocket,
   );
+  const setFormatConfig = useMultiplayerStore((s) => s.setFormatConfig);
+
+  // If the user is browsing a specific format and clicks Host, seed the
+  // host-setup form with that format — they were clearly looking for that
+  // game type. Falls back to whatever format the store already remembers
+  // when no filter is active. Mirrors the same store channel HostSetup
+  // already reads from on mount, so no new props or prop threading.
+  const handleHost = useCallback(() => {
+    if (formatFilter) {
+      setFormatConfig(FORMAT_DEFAULTS[formatFilter]);
+    }
+    onHostGame();
+  }, [formatFilter, setFormatConfig, onHostGame]);
 
   useEffect(() => {
     // P2P mode uses a direct PeerJS code and has no lobby to subscribe to.
@@ -369,7 +382,7 @@ export function LobbyView({
         </div>
         {isServer && (
           <button
-            onClick={onHostGame}
+            onClick={handleHost}
             className={menuButtonClass({ tone: "emerald", size: "md" })}
           >
             Host Game
