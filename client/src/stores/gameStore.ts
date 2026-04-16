@@ -26,7 +26,7 @@ export function legalResultState(result: LegalActionsResult): Pick<GameStoreStat
 }
 
 // Re-export persistence API so existing imports keep working
-export type { ActiveGameMeta } from "../services/gamePersistence";
+export type { ActiveGameMeta, PersistedP2PHostSession } from "../services/gamePersistence";
 export {
   saveGame,
   loadGame,
@@ -36,6 +36,9 @@ export {
   saveActiveGame,
   loadActiveGame,
   clearActiveGame,
+  saveP2PHostSession,
+  loadP2PHostSession,
+  clearP2PHostSession,
 } from "../services/gamePersistence";
 
 export type GameMode = "ai" | "online" | "local" | "p2p-host" | "p2p-join";

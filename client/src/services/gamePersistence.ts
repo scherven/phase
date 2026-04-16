@@ -1,13 +1,59 @@
 import { createStore, del, get, set } from "idb-keyval";
 
-import type { GameState } from "../adapter/types";
+import type { FormatConfig, GameState, MatchConfig } from "../adapter/types";
 import { ACTIVE_GAME_KEY, GAME_CHECKPOINTS_PREFIX, GAME_KEY_PREFIX } from "../constants/storage";
 
 export interface ActiveGameMeta {
   id: string;
-  mode: "ai" | "local" | "online";
+  /**
+   * `"online"` = server-mode WebSocket game. `"p2p-host"` = P2P host
+   * game with local authoritative state; eligible for host-resume on
+   * reload. P2P guests don't have an active meta — reconnection is
+   * driven by the host's room code + the guest's persisted session
+   * token.
+   */
+  mode: "ai" | "local" | "online" | "p2p-host";
   difficulty: string;
 }
+
+/**
+ * Persistent snapshot of a P2P host session so a reloaded/crashed host
+ * can resume the game on the same room code. Mirrors the server-side
+ * `PersistedSession` pattern in `server-core::persist`:
+ *
+ * - `state: GameState` lives in a separate IDB record via `saveGame`
+ *   (written on every action). This record is only written on
+ *   lifecycle events (guest join, reconnect, game start, kick, elim).
+ * - `playerTokens` is keyed by PlayerId numeric value so non-contiguous
+ *   seats (e.g., pre-game disconnect + rejoin) round-trip correctly.
+ * - `kickedTokens` and `eliminatedSeats` preserve security / semantic
+ *   invariants across restart — without them, a kicked guest could
+ *   reconnect on a resumed host, and a conceded guest could re-enter
+ *   the seat the engine thinks is eliminated.
+ */
+export interface PersistedP2PHostSession {
+  gameId: string;
+  /** Bare 5-char room code; the PeerJS prefix is reattached by `hostRoom`. */
+  roomCode: string;
+  brokerGameCode?: string;
+  useBroker: boolean;
+  /** PlayerId.0 → token. PlayerId 0 is the host's own slot. */
+  playerTokens: Record<number, string>;
+  /** PlayerId.0 → deck submitted by that guest (pre-game data). */
+  guestDecks: Record<number, unknown>;
+  /** Tokens that were kicked — refused on reconnect on resume. */
+  kickedTokens: string[];
+  /** PlayerId.0 values that conceded. */
+  eliminatedSeats: number[];
+  playerCount: number;
+  formatConfig?: FormatConfig;
+  matchConfig?: MatchConfig;
+  hostDeckData: unknown;
+  /** True once `initializeGame` has run; false while still in lobby. */
+  gameStarted: boolean;
+}
+
+const P2P_HOST_KEY_PREFIX = "phase-p2p-host:";
 
 /**
  * Dedicated IndexedDB store for game state persistence.
@@ -60,11 +106,48 @@ export async function clearGame(gameId: string): Promise<void> {
   try {
     await del(GAME_KEY_PREFIX + gameId, getGameStore());
     await del(GAME_CHECKPOINTS_PREFIX + gameId, getGameStore());
+    // P2P host meta is scoped to the same gameId — a completed/reset game
+    // must drop its resume metadata too, or the menu's Resume button
+    // would surface a game the engine has forgotten.
+    await del(P2P_HOST_KEY_PREFIX + gameId, getGameStore());
   } catch { /* best effort */ }
   const active = loadActiveGame();
   if (active?.id === gameId) {
     clearActiveGame();
   }
+}
+
+// ── P2P Host Session (IndexedDB) ────────────────────────────────────────
+
+export async function saveP2PHostSession(
+  gameId: string,
+  session: PersistedP2PHostSession,
+): Promise<void> {
+  try {
+    await set(P2P_HOST_KEY_PREFIX + gameId, session, getGameStore());
+  } catch (err) {
+    console.warn("[saveP2PHostSession] IndexedDB write failed:", err);
+  }
+}
+
+export async function loadP2PHostSession(
+  gameId: string,
+): Promise<PersistedP2PHostSession | null> {
+  try {
+    const s = await get<PersistedP2PHostSession>(
+      P2P_HOST_KEY_PREFIX + gameId,
+      getGameStore(),
+    );
+    return s ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearP2PHostSession(gameId: string): Promise<void> {
+  try {
+    await del(P2P_HOST_KEY_PREFIX + gameId, getGameStore());
+  } catch { /* best-effort */ }
 }
 
 // ── Checkpoints (IndexedDB) ─────────────────────────────────────────────
