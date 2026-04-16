@@ -646,6 +646,26 @@ export function MyDecks({
         </>)}
       </div>
 
+      {/* Format-filter banner: in select mode, when the caller pins a format
+          (host pre-chosen format on host-setup, or the host's format on join),
+          the deck list is filtered to only legal decks. Without this banner the
+          filtering is silent — users see a shorter list with no explanation. */}
+      {mode === "select" && selectedFormat && (
+        <div className="flex w-full items-center justify-between gap-3 rounded-xl border border-indigo-400/25 bg-indigo-500/[0.08] px-4 py-2.5">
+          <div className="flex items-center gap-2 text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5 text-indigo-300">
+              <path fillRule="evenodd" d="M2 4a1 1 0 0 1 1-1h10a1 1 0 0 1 .8 1.6L10 9.333V13a1 1 0 0 1-.553.894l-2 1A1 1 0 0 1 6 14V9.333L2.2 4.6A1 1 0 0 1 2 4Z" clipRule="evenodd" />
+            </svg>
+            <span className="text-indigo-100">
+              Showing decks legal in <span className="font-semibold">{selectedFormat}</span>
+            </span>
+            <span className="text-xs text-indigo-300/70">
+              · {searchFiltered.length} of {deckNames.length}
+            </span>
+          </div>
+        </div>
+      )}
+
       {isEvaluating && (
         <div className="flex w-full items-center justify-center gap-2.5 rounded-xl border border-indigo-400/20 bg-indigo-500/10 px-4 py-3">
           <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-indigo-400" />

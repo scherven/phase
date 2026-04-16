@@ -117,14 +117,16 @@ export function MultiplayerPage() {
     setActiveDeckName(localStorage.getItem(ACTIVE_DECK_KEY));
   }, []);
 
-  // Follow the server-address sentinel one-way: if the user switches to
-  // "None" mid-session (via `ServerPicker`), flip to P2P so the lobby
-  // stops subscribing. The reverse transition (picking a real server
-  // from "None") is left to the user — auto-flipping back to server
-  // mode would fight a user who explicitly chose P2P.
+  // Track the server-address sentinel both ways. Empty → P2P stops the
+  // lobby from trying to subscribe to a non-existent server. Real address
+  // → server flips back when the user picks a real server from the
+  // "Pick server" affordance (`LobbyView` opens `ServerPicker` even from
+  // P2P mode), since selecting a server IS the explicit user intent.
   useEffect(() => {
     if (!serverAddress && connectionMode === "server") {
       setConnectionMode("p2p");
+    } else if (serverAddress && connectionMode === "p2p") {
+      setConnectionMode("server");
     }
   }, [serverAddress, connectionMode]);
 
@@ -474,14 +476,15 @@ export function MultiplayerPage() {
         format,
         context,
       };
-      if (activeDeckName) {
-        void executeAction(action);
-      } else {
-        setPendingAction(action);
-        setView("deck-select");
-      }
+      // Always route through deck-select on join so the user picks against
+      // the host's format-filtered list. Even with an active deck, that
+      // deck may be illegal in the host's format — better to surface the
+      // mismatch immediately in the filtered picker than to fail server-
+      // side after we've already navigated into the game.
+      setPendingAction(action);
+      setView("deck-select");
     },
-    [activeDeckName, executeAction, joinP2PRoom],
+    [joinP2PRoom],
   );
 
   const handleBack = () => {
@@ -559,13 +562,14 @@ export function MultiplayerPage() {
       <MenuShell eyebrow="Multiplayer" title={title} description={description} layout="stacked">
         <div className="flex w-full flex-col items-center">
         {/* Player identity — always available on lobby/host-setup so users
-            can edit their name without hunting in Preferences. Sits above
-            the deck banner so the two "about you" rows (name + deck) stack
-            as a unit. */}
+            can edit their name without hunting in Preferences. */}
         {(view === "lobby" || view === "host-setup") && <PlayerIdentityBanner />}
 
-        {/* Active deck indicator — shown on lobby/host-setup when a deck is selected */}
-        {(view === "lobby" || view === "host-setup") && activeDeckName && (
+        {/* Active deck indicator — host-setup only. Deck commitment is
+            meaningless at the lobby level because no format is chosen yet;
+            joining a table picks the deck against the host's format via
+            the deck-select view. */}
+        {view === "host-setup" && activeDeckName && (
           <div className="mx-auto mb-4 flex w-full max-w-xl items-center justify-between gap-3 rounded-[16px] border border-white/8 bg-black/16 px-4 py-2.5">
             <div className="min-w-0">
               <div className="text-[0.6rem] uppercase tracking-[0.22em] text-slate-500">
@@ -590,11 +594,11 @@ export function MultiplayerPage() {
           <DeckLegalityChip check={liveCheck} />
         )}
 
-        {/* No deck warning — shown on lobby/host-setup when no deck is selected */}
-        {(view === "lobby" || view === "host-setup") && !activeDeckName && (
+        {/* No deck warning — host-setup only, for the same reason as above. */}
+        {view === "host-setup" && !activeDeckName && (
           <div className="mx-auto mb-4 flex w-full max-w-xl items-center justify-between gap-3 rounded-[16px] border border-amber-500/20 bg-amber-500/8 px-4 py-2.5">
             <span className="text-xs text-amber-200">
-              No deck selected — you'll need to pick one before hosting or joining.
+              No deck selected — you'll need to pick one before hosting.
             </span>
             <button
               onClick={() => {

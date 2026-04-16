@@ -233,6 +233,20 @@ export function LobbyView({
               {serverAddress.replace(/^wss?:\/\//, "").split("/")[0]}
             </button>
           )}
+          {/* In P2P mode the user has no other path back to ServerPicker —
+              the server-address chip above is hidden, and ServerOfflinePrompt
+              only fires when we tried to use a server. Offer an explicit
+              affordance so users who picked "P2P only" aren't trapped. */}
+          {isP2P && (
+            <button
+              type="button"
+              onClick={() => setServerPickerOpen(true)}
+              title="Pick a server to use online lobby mode"
+              className="rounded-full border border-white/10 bg-black/18 px-2.5 py-0.5 text-[10px] text-slate-300 transition-colors hover:border-white/18 hover:bg-white/6"
+            >
+              Pick server
+            </button>
+          )}
           {isServer && playerCount > 0 && (
             <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
               {playerCount} online

@@ -4,7 +4,6 @@ import { audioManager } from "../../audio/AudioManager.ts";
 import { cacheThemeManifest, clearThemeCache } from "../../audio/audioCache.ts";
 import { BUILT_IN_THEMES, findManifest, validateThemeManifest } from "../../audio/themeRegistry.ts";
 import { PLANESWALKER_THEME } from "../../audio/planeswalkerTheme.ts";
-import { isValidWebSocketUrl } from "../../services/serverDetection.ts";
 import { usePreferencesStore } from "../../stores/preferencesStore.ts";
 import { useMultiplayerStore } from "../../stores/multiplayerStore.ts";
 import type { AnimationSpeed, CombatPacing, VfxQuality } from "../../animation/types.ts";
@@ -160,13 +159,11 @@ export function PreferencesModal({
     }
   }, [removeCustomThemeUrl, audioThemeId]);
 
-  // Multiplayer settings
+  // Multiplayer settings — server picking lives in `ServerPicker` (opened
+  // from the lobby header in either server or P2P mode), not here.
   const displayName = useMultiplayerStore((s) => s.displayName);
-  const serverAddress = useMultiplayerStore((s) => s.serverAddress);
   const setDisplayName = useMultiplayerStore((s) => s.setDisplayName);
-  const setServerAddress = useMultiplayerStore((s) => s.setServerAddress);
   const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab);
-  const [connTest, setConnTest] = useState<"idle" | "testing" | "ok" | "fail">("idle");
 
   return (
     <ModalPanelShell
@@ -432,52 +429,11 @@ export function PreferencesModal({
                       />
                   </SettingGroup>
 
-                  <SettingGroup label="Server Address">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <input
-                        type="text"
-                        value={serverAddress}
-                        onChange={(e) => setServerAddress(e.target.value)}
-                        placeholder="ws://localhost:9374/ws"
-                        className="min-h-11 flex-1 rounded-[14px] border border-white/10 bg-black/18 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-sky-400/40 focus:outline-none"
-                      />
-                      <button
-                        onClick={() => {
-                          if (!isValidWebSocketUrl(serverAddress)) {
-                            setConnTest("fail");
-                            return;
-                          }
-                          setConnTest("testing");
-                          const ws = new WebSocket(serverAddress);
-                          const timeout = setTimeout(() => {
-                            ws.close();
-                            setConnTest("fail");
-                          }, 3000);
-                          ws.onopen = () => {
-                            clearTimeout(timeout);
-                            ws.close();
-                            setConnTest("ok");
-                          };
-                          ws.onerror = () => {
-                            clearTimeout(timeout);
-                            setConnTest("fail");
-                          };
-                        }}
-                        className="min-h-11 rounded-[14px] border border-white/10 bg-black/18 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-200 transition hover:bg-white/6 sm:self-auto"
-                      >
-                        Test
-                      </button>
-                    </div>
-                    {connTest === "ok" && (
-                      <p className="mt-1 text-xs text-emerald-400">Connected</p>
-                    )}
-                    {connTest === "fail" && (
-                      <p className="mt-1 text-xs text-red-400">Connection failed</p>
-                    )}
-                    {connTest === "testing" && (
-                      <p className="mt-1 text-xs text-gray-400">Testing...</p>
-                    )}
-                  </SettingGroup>
+                  <p className="text-xs text-slate-400">
+                    Server selection moved to the lobby — open Multiplayer and use
+                    the server chip (or "Pick server" in P2P mode) to switch
+                    regions, configure a self-hosted instance, or test connectivity.
+                  </p>
                 </SettingsSection>
               )}
             </div>

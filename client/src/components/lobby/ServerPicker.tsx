@@ -27,13 +27,43 @@ interface ServerPickerProps {
   onApply: (url: string) => void;
 }
 
+type ConnTestState = "idle" | "testing" | "ok" | "fail";
+
 export function ServerPicker({ onClose, onApply }: ServerPickerProps) {
   const currentUrl = useMultiplayerStore((s) => s.serverAddress);
   const [customUrl, setCustomUrl] = useState(
     PRESETS.some((p) => p.url === currentUrl) ? "" : currentUrl,
   );
   const [error, setError] = useState<string | null>(null);
+  const [connTest, setConnTest] = useState<ConnTestState>("idle");
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // 3s WebSocket probe — opens the URL, succeeds on `onopen`, fails on
+  // `onerror` or timeout. Cheap diagnostic that catches the common cases
+  // (server down, wrong port, blocked by firewall) before the user
+  // commits the address.
+  const testUrl = (url: string) => {
+    const trimmed = url.trim();
+    if (!isValidWebSocketUrl(trimmed)) {
+      setConnTest("fail");
+      return;
+    }
+    setConnTest("testing");
+    const ws = new WebSocket(trimmed);
+    const timeout = window.setTimeout(() => {
+      ws.close();
+      setConnTest("fail");
+    }, 3000);
+    ws.onopen = () => {
+      window.clearTimeout(timeout);
+      ws.close();
+      setConnTest("ok");
+    };
+    ws.onerror = () => {
+      window.clearTimeout(timeout);
+      setConnTest("fail");
+    };
+  };
 
   // Dismiss on outside-click or Escape — this picker is a preferences dialog,
   // not a forced choice, so unlike ServerOfflinePrompt it is dismissible.
@@ -145,10 +175,23 @@ export function ServerPicker({ onClose, onApply }: ServerPickerProps) {
               onChange={(e) => {
                 setCustomUrl(e.target.value);
                 setError(null);
+                setConnTest("idle");
               }}
               placeholder="wss://your-server.example/ws"
               className="flex-1 rounded-[14px] bg-black/18 px-3 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none ring-1 ring-white/10 focus:ring-white/20"
             />
+            <button
+              type="button"
+              onClick={() => testUrl(customUrl)}
+              disabled={!customUrl.trim() || connTest === "testing"}
+              className={menuButtonClass({
+                tone: "neutral",
+                size: "sm",
+                disabled: !customUrl.trim() || connTest === "testing",
+              })}
+            >
+              Test
+            </button>
             <button
               type="submit"
               disabled={!customUrl.trim()}
@@ -163,6 +206,15 @@ export function ServerPicker({ onClose, onApply }: ServerPickerProps) {
           </form>
           {error && (
             <p className="mt-2 text-xs text-rose-300">{error}</p>
+          )}
+          {connTest === "ok" && (
+            <p className="mt-2 text-xs text-emerald-300">Connected</p>
+          )}
+          {connTest === "fail" && (
+            <p className="mt-2 text-xs text-rose-300">Connection failed</p>
+          )}
+          {connTest === "testing" && (
+            <p className="mt-2 text-xs text-slate-400">Testing…</p>
           )}
         </div>
 
