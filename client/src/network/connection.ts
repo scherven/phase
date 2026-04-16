@@ -348,7 +348,7 @@ export async function hostRoom(
  * `DataConnection` drops and attempt auto-reconnect via
  * `peer.connect(hostPeerId)`.
  */
-export function joinRoom(code: string, signal?: AbortSignal): Promise<JoinResult> {
+export function joinRoom(code: string, signal?: AbortSignal, timeoutMs = 30_000): Promise<JoinResult> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new DOMException("Aborted", "AbortError"));
@@ -382,7 +382,7 @@ export function joinRoom(code: string, signal?: AbortSignal): Promise<JoinResult
         signal?.removeEventListener("abort", onAbort);
         reject(new Error("Connection timed out. Check the room code and try again."));
         peer.destroy();
-      }, 30_000);
+      }, timeoutMs);
 
       conn.on("open", () => {
         traceP2P("Guest", "conn-open", { peerId, connOpen: conn.open });

@@ -831,6 +831,8 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         adapter.onEvent((event) => {
           if (event.type === "playerSlotsUpdated" || event.type === "lobbyProgress") {
             set({ playerSlots: adapter.getPlayerSlots() });
+          } else if (event.type === "roomFull") {
+            get().showToast("Room full — ready to start!");
           } else if (event.type === "error") {
             get().showToast(event.message);
           }

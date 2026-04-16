@@ -26,6 +26,7 @@ import type {
   SeatView,
 } from "../multiplayer/seatTypes";
 import type { BrokerClient } from "../services/brokerClient";
+import { evaluateDeckCompatibilityJs } from "../services/engineRuntime";
 import {
   clearP2PHostSession,
   type PersistedP2PHostSession,
@@ -75,6 +76,7 @@ export type P2PAdapterEvent =
   | { type: "gameResumed" }
   | { type: "lobbyProgress"; joined: number; total: number }
   | { type: "playerSlotsUpdated"; slots: PlayerSlot[] }
+  | { type: "roomFull" }
   | { type: "reconnecting"; attempt: number }
   | { type: "reconnectFailed"; reason: string };
 
@@ -535,7 +537,6 @@ export class P2PHostAdapter implements EngineAdapter {
       }
       if (mutation.type === "Start") {
         throw new AdapterError("P2P_ERROR", "Use startPregameGame() for Start mutations", false);
-      return;
       }
 
       const result = await this.wasm.applySeatMutation(
@@ -588,6 +589,10 @@ export class P2PHostAdapter implements EngineAdapter {
       }
       this.broadcastSeatSnapshot();
       this.syncLobbyMetadata();
+
+      if (this.firstWaitingSeat() === null) {
+        this.emit({ type: "roomFull" });
+      }
     });
   }
 
@@ -720,7 +725,6 @@ export class P2PHostAdapter implements EngineAdapter {
 
   private handleNewGuest(session: PeerSession, deckData: unknown, displayName?: string): void {
     if (this.gameStarted) {
-      // Lobby is closed; reject. (Reconnect should have been used instead.)
       session.send({ type: "kick", reason: "Game already in progress" });
       session.close("Game in progress");
       return;
@@ -732,22 +736,73 @@ export class P2PHostAdapter implements EngineAdapter {
       return;
     }
 
-    // Issue a token immediately on join. The guest needs it for reconnect
-    // even during the deck-collection window.
+    const guestDeck = (deckData as DeckListPayload).player;
+
     const token = crypto.randomUUID();
     this.playerTokens.set(pid, token);
     this.guestSessions.set(pid, session);
-    this.guestDecks.set(pid, (deckData as DeckListPayload).player);
+    this.guestDecks.set(pid, guestDeck);
     if (displayName) this.guestNames.set(pid, displayName);
     this.pregameSeatState.seats[pid] = { type: "JoinedHuman" };
     this.pregameSeatState.tokens[pid] = token;
     this.saveSession();
 
-    // Route subsequent messages from this guest.
     session.onMessage((msg) => this.handleGuestMessage(pid, msg));
 
     this.broadcastSeatSnapshot();
     this.syncLobbyMetadata();
+
+    if (this.formatConfig) {
+      void this.validateGuestDeck(pid, guestDeck);
+    }
+
+    if (this.firstWaitingSeat() === null) {
+      this.emit({ type: "roomFull" });
+    }
+  }
+
+  private async validateGuestDeck(
+    pid: PlayerId,
+    deck: DeckListPayload["player"],
+  ): Promise<void> {
+    await this.enqueuePregameOp(async () => {
+      if (this.gameStarted) return;
+      if (this.pregameSeatState.seats[pid]?.type !== "JoinedHuman") return;
+
+      try {
+        const result = await evaluateDeckCompatibilityJs({
+          main_deck: deck.main_deck,
+          sideboard: deck.sideboard,
+          commander: deck.commander ?? [],
+          selected_format: this.formatConfig!.format,
+        }) as { selected_format_compatible?: boolean | null; selected_format_reasons: string[] };
+
+        if (this.gameStarted) return;
+        if (result.selected_format_compatible === false) {
+          const reason = result.selected_format_reasons[0]
+            ?? `Deck is not legal in ${this.formatConfig!.format}.`;
+          const session = this.guestSessions.get(pid);
+          if (session) {
+            session.send({ type: "kick", reason: `Deck rejected: ${reason}` });
+            session.close("Deck validation failed");
+          }
+          this.guestSessions.delete(pid);
+          this.playerTokens.delete(pid);
+          this.guestDecks.delete(pid);
+          this.guestNames.delete(pid);
+          this.pregameSeatState.seats[pid] = { type: "WaitingHuman" };
+          this.pregameSeatState.tokens[pid] = "";
+          this.saveSession();
+          this.broadcastSeatSnapshot();
+          this.syncLobbyMetadata();
+        }
+      } catch (err) {
+        traceAdapter("Host", "guest-deck-validation-error", {
+          pid,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
   }
 
   async initializeGame(): Promise<SubmitResult> {
@@ -895,6 +950,13 @@ export class P2PHostAdapter implements EngineAdapter {
 
   restoreState(_state: GameState): void {
     throw new AdapterError("P2P_ERROR", "Undo not supported in P2P games", false);
+  }
+
+  async sendConcede(): Promise<void> {
+    await this.concedePlayer(0, "Host conceded", "conceded");
+    for (const [, s] of this.guestSessions) {
+      s.send({ type: "player_conceded", playerId: 0, reason: "Host conceded" });
+    }
   }
 
   /**
@@ -1481,6 +1543,11 @@ export class P2PGuestAdapter implements EngineAdapter {
 
   restoreState(_state: GameState): void {
     throw new AdapterError("P2P_ERROR", "Undo not supported in P2P games", false);
+  }
+
+  sendConcede(): void {
+    if (!this.session) return;
+    this.session.send({ type: "concede" });
   }
 
   dispose(): void {

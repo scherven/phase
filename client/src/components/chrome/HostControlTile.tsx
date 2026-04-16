@@ -81,10 +81,10 @@ function SeatRow({
   return (
     <div className="py-1">
       <div className="flex items-center justify-between gap-2">
-        <span className={`text-xs ${isOpen ? "italic text-slate-500" : "text-slate-300"}`}>
+        <span className={`text-sm ${isOpen ? "italic text-slate-500" : "text-slate-300"}`}>
           {isOpen ? "Waiting…" : slot.name || `Seat ${slot.playerId}`}
         </span>
-        <span className={`text-[10px] font-medium ${seatColor(slot.kind)}`}>
+        <span className={`text-xs font-medium ${seatColor(slot.kind)}`}>
           {seatLabel(slot.kind)}
         </span>
       </div>
@@ -106,7 +106,7 @@ function SeatRow({
                     },
                   })
                 }
-                className="rounded border border-cyan-500/20 px-2 py-0.5 text-[10px] text-cyan-300"
+                className="rounded border border-cyan-500/20 px-2 py-0.5 text-xs text-cyan-300"
               >
                 Add AI
               </button>
@@ -114,7 +114,7 @@ function SeatRow({
                 <button
                   type="button"
                   onClick={() => mutate({ type: "Remove", data: { seatIndex: slot.playerId } })}
-                  className="rounded border border-white/10 px-2 py-0.5 text-[10px] text-slate-400"
+                  className="rounded border border-white/10 px-2 py-0.5 text-xs text-slate-400"
                 >
                   Remove
                 </button>
@@ -140,7 +140,7 @@ function SeatRow({
                     },
                   })
                 }
-                className="rounded border border-white/10 bg-slate-950 px-1 py-0.5 text-[10px] text-slate-200"
+                className="rounded border border-white/10 bg-slate-950 px-1 py-0.5 text-xs text-slate-200"
               >
                 {AI_DIFFICULTIES.map((difficulty) => (
                   <option key={difficulty} value={difficulty}>
@@ -167,7 +167,7 @@ function SeatRow({
                     },
                   })
                 }
-                className="rounded border border-white/10 bg-slate-950 px-1 py-0.5 text-[10px] text-slate-200"
+                className="rounded border border-white/10 bg-slate-950 px-1 py-0.5 text-xs text-slate-200"
               >
                 {deckChoices.map(({ label, choice }) => (
                   <option
@@ -186,7 +186,7 @@ function SeatRow({
                     data: { seatIndex: slot.playerId, kind: { type: "WaitingHuman" } },
                   })
                 }
-                className="rounded border border-white/10 px-2 py-0.5 text-[10px] text-slate-300"
+                className="rounded border border-white/10 px-2 py-0.5 text-xs text-slate-300"
               >
                 Human
               </button>
@@ -194,7 +194,7 @@ function SeatRow({
                 <button
                   type="button"
                   onClick={() => mutate({ type: "Remove", data: { seatIndex: slot.playerId } })}
-                  className="rounded border border-white/10 px-2 py-0.5 text-[10px] text-slate-400"
+                  className="rounded border border-white/10 px-2 py-0.5 text-xs text-slate-400"
                 >
                   Remove
                 </button>
@@ -212,7 +212,7 @@ function SeatRow({
                     data: { seatIndex: slot.playerId, kind: { type: "WaitingHuman" } },
                   });
                 }}
-                className="rounded border border-amber-500/20 px-2 py-0.5 text-[10px] text-amber-300"
+                className="rounded border border-amber-500/20 px-2 py-0.5 text-xs text-amber-300"
               >
                 Kick
               </button>
@@ -233,7 +233,7 @@ function SeatRow({
                     },
                   });
                 }}
-                className="rounded border border-cyan-500/20 px-2 py-0.5 text-[10px] text-cyan-300"
+                className="rounded border border-cyan-500/20 px-2 py-0.5 text-xs text-cyan-300"
               >
                 Replace AI
               </button>
@@ -291,7 +291,7 @@ export function HostControlTile() {
 
   return (
     <div
-      className="fixed right-3 z-30 w-56"
+      className="fixed right-3 z-30 w-72"
       style={{ top: "calc(env(titlebar-area-height, 0px) + 0.75rem)" }}
     >
       <div className="rounded-xl border border-white/10 bg-black/70 shadow-lg shadow-black/40 backdrop-blur-md">
@@ -361,7 +361,7 @@ export function HostControlTile() {
         )}
         {canEditSeats && hostSession && (
           <div className="border-t border-white/5 px-3 py-2">
-            <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">
+            <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">
               {occupiedSeats}/{playerSlots.length} seats occupied
             </div>
             <div className="flex flex-wrap gap-2">
@@ -369,7 +369,7 @@ export function HostControlTile() {
                 <button
                   type="button"
                   onClick={() => seatMutate({ type: "Start" })}
-                  className="rounded border border-emerald-500/20 px-2 py-1 text-[11px] font-medium text-emerald-300"
+                  className="rounded border border-emerald-500/20 px-2 py-1 text-xs font-medium text-emerald-300"
                 >
                   Start Game
                 </button>
@@ -379,7 +379,7 @@ export function HostControlTile() {
                     <button
                       type="button"
                       onClick={startWithCurrentPlayers}
-                      className="rounded border border-emerald-500/20 px-2 py-1 text-[11px] font-medium text-emerald-300"
+                      className="rounded border border-emerald-500/20 px-2 py-1 text-xs font-medium text-emerald-300"
                     >
                       Start Now
                     </button>
@@ -387,7 +387,7 @@ export function HostControlTile() {
                   <button
                     type="button"
                     onClick={fillWithAiAndStart}
-                    className="rounded border border-cyan-500/20 px-2 py-1 text-[11px] font-medium text-cyan-300"
+                    className="rounded border border-cyan-500/20 px-2 py-1 text-xs font-medium text-cyan-300"
                   >
                     Fill With AI
                   </button>

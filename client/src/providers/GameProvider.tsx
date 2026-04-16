@@ -381,19 +381,16 @@ export function GameProvider({
               }
             }
 
-            // Always display the peer `roomCode` to the host — it's the
-            // 5-char code the client's `parseRoomCode` recognizes and
-            // the one that works through the direct-dial path. The
-            // broker's `gameCode` uses a different, wider alphabet (6
-            // chars, includes 0/L) and is strictly an internal lobby
-            // key — it's *not* something a guest can type into the
-            // join field. Lobby-row clicks route through `resolveGuest`
-            // which translates the broker key → peer id for the guest.
-            onP2PEventRef.current?.({
-              type: "roomCreated",
-              roomCode: host.roomCode,
-            });
-            onP2PEventRef.current?.({ type: "waitingForGuest" });
+            // Only show the lobby tile for fresh hosts waiting for guests.
+            // Resume flows skip this — the game is already started and the
+            // tile re-appearing on a live game page is confusing.
+            if (!isResume) {
+              onP2PEventRef.current?.({
+                type: "roomCreated",
+                roomCode: host.roomCode,
+              });
+              onP2PEventRef.current?.({ type: "waitingForGuest" });
+            }
 
             // The adapter owns the host Peer reference and subscribes to
             // guest connections via `hostRoom()`'s documented
@@ -446,7 +443,7 @@ export function GameProvider({
           } else {
             // p2p-join
             const code = joinCode!;
-            const { conn, peer } = await joinRoom(code, signal);
+            const { conn, peer } = await joinRoom(code, signal, 10_000);
             hostPeerHandle = peer;
             signal.throwIfAborted();
 

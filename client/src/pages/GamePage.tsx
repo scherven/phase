@@ -356,7 +356,9 @@ export function GamePage() {
         setWaitingForOpponent(true);
         break;
       case "guestConnected":
-        // Guest connected, game init will follow
+        break;
+      case "roomFull":
+        useMultiplayerStore.getState().showToast("Room full — ready to start!");
         break;
       case "opponentDisconnected":
         setOpponentDisconnected(true);
@@ -403,7 +405,28 @@ export function GamePage() {
         // Treat conceded players the same as kicked for dialog dismissal.
         setDisconnectChoice((cur) => (cur?.playerId === event.playerId ? null : cur));
         break;
+      case "playerIdentity":
+        setReconnectState({ status: "idle" });
+        useMultiplayerStore.getState().clearToast();
+        break;
+      case "reconnecting":
+        setReconnectState({
+          status: "reconnecting",
+          attempt: event.attempt,
+          maxAttempts: 0,
+        });
+        useMultiplayerStore.getState().showToast(
+          `Host disconnected — reconnecting (attempt ${event.attempt})…`,
+        );
+        break;
+      case "reconnectFailed":
+        setReconnectState({ status: "failed" });
+        break;
+      case "playerSlotsUpdated":
+        useMultiplayerStore.setState({ playerSlots: event.slots });
+        break;
       case "error":
+        useMultiplayerStore.getState().showToast(event.message);
         setReconnectState({ status: "failed" });
         break;
       case "hostingFailed": {
@@ -600,8 +623,12 @@ function GamePageContent({
   }, [turnNumber]);
 
   const handleConcede = useCallback(() => {
-    if (adapter && adapter instanceof WebSocketAdapter) {
-      adapter.sendConcede();
+    if (adapter) {
+      if (adapter instanceof WebSocketAdapter) {
+        adapter.sendConcede();
+      } else if ("sendConcede" in adapter && typeof adapter.sendConcede === "function") {
+        void (adapter.sendConcede as () => void | Promise<void>)();
+      }
     }
     onHideConcedeDialog();
   }, [adapter, onHideConcedeDialog]);
@@ -791,8 +818,10 @@ function GamePageContent({
       {/* Reconnecting banner */}
       {reconnectState.status === "reconnecting" && (
         <div className="fixed left-0 right-0 top-0 z-40 bg-amber-600 px-4 py-2 text-center text-sm font-semibold text-white">
-          Reconnecting... (attempt {reconnectState.attempt}/
-          {reconnectState.maxAttempts})
+          Reconnecting…{" "}
+          {reconnectState.maxAttempts > 0
+            ? `(attempt ${reconnectState.attempt}/${reconnectState.maxAttempts})`
+            : `(attempt ${reconnectState.attempt})`}
         </div>
       )}
 
