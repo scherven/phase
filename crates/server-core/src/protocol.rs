@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// (clients see "Invalid message: unknown variant") rather than at the
 /// handshake. When making such changes, plan a deprecation window where
 /// both the old and new variants coexist, then bump and remove the old.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Git short-hash of the build. Emitted by `build.rs`; falls back to `"dev"`
 /// when git isn't available (containers, source tarballs).
@@ -38,14 +38,7 @@ pub enum ServerMode {
     LobbyOnly,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeckData {
-    pub main_deck: Vec<String>,
-    #[serde(default)]
-    pub sideboard: Vec<String>,
-    #[serde(default)]
-    pub commander: Vec<String>,
-}
+pub use engine::starter_decks::DeckData;
 
 /// AI seat configuration sent by the client when creating a game with AI opponents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,16 +89,15 @@ pub struct LobbyGame {
     pub is_p2p: bool,
 }
 
+pub use seat_reducer::types::{DeckChoice, SeatKind, SeatMutation, SeatView};
+
 /// Info about a single player slot in a waiting room, sent to all connected players.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerSlotInfo {
-    pub player_id: String,
+    pub player_id: u8,
     pub name: String,
-    pub is_ready: bool,
-    pub is_ai: bool,
-    pub ai_difficulty: String,
-    pub deck_name: Option<String>,
+    pub kind: SeatKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

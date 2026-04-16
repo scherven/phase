@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 [dependencies]
 engine = { path = "../engine" }
 phase-ai = { path = "../phase-ai" }
+seat-reducer = { path = "../seat-reducer" }
 rand = "0.9"
 rand_chacha = "0.9"
 wasm-bindgen = "0.2.114"

@@ -2,6 +2,13 @@
 /* eslint-disable */
 
 /**
+ * Apply a seat mutation to a seat state, using the TLS card database for deck
+ * resolution. Both arguments are JSON strings; returns the `SeatDelta` as a JS
+ * object on success, or a JS error string on failure.
+ */
+export function apply_seat_mutation(state_json: string, mutation_json: string): any;
+
+/**
  * Clear the game state without dropping the WASM instance or card database.
  *
  * Used by the singleton adapter to reset between game sessions. Any in-flight
@@ -185,6 +192,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly apply_seat_mutation: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly evaluate_deck_compatibility_js: (a: any) => [number, number, number];
     readonly export_game_state_json: () => [number, number, number, number];
     readonly get_ai_action: (a: number, b: number, c: number) => [number, number, number];

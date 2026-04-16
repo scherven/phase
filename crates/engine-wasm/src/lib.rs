@@ -19,6 +19,11 @@ use engine::types::mana::ManaCost;
 use engine::types::match_config::MatchConfig;
 use engine::types::{GameAction, GameState, PlayerId};
 
+use engine::game::deck_loading::PlayerDeckPayload;
+use engine::game::{resolve_player_deck_list, PlayerDeckList};
+use engine::starter_decks;
+use seat_reducer::types::{DeckChoice, DeckResolver, ReducerCtx, SeatMutation, SeatState};
+
 /// Result of `get_legal_actions_js` — bundles actions with the engine's auto-pass
 /// recommendation so frontends don't need to classify action meaningfulness.
 #[derive(Serialize)]
@@ -557,6 +562,50 @@ pub fn select_action_from_scores(
     match phase_ai::softmax_select_pairs(&scored, config.temperature, &mut rng) {
         Some(action) => Ok(to_js(&action)),
         None => Ok(JsValue::NULL),
+    }
+}
+
+/// Apply a seat mutation to a seat state, using the TLS card database for deck
+/// resolution. Both arguments are JSON strings; returns the `SeatDelta` as a JS
+/// object on success, or a JS error string on failure.
+#[wasm_bindgen]
+pub fn apply_seat_mutation(state_json: &str, mutation_json: &str) -> Result<JsValue, JsValue> {
+    struct WasmDeckResolver;
+    impl DeckResolver for WasmDeckResolver {
+        fn resolve(&self, choice: &DeckChoice) -> Result<PlayerDeckPayload, String> {
+            let deck_data = match choice {
+                DeckChoice::Random => starter_decks::random_starter_deck(),
+                DeckChoice::Named(name) => starter_decks::find_starter_deck(name)
+                    .ok_or_else(|| format!("Starter deck not found: {name}"))?,
+            };
+            CARD_DB.with(|cell| {
+                let db = cell.borrow();
+                let db = db.as_ref().ok_or("Card database not loaded")?;
+                Ok(resolve_player_deck_list(
+                    db,
+                    &PlayerDeckList {
+                        main_deck: deck_data.main_deck,
+                        sideboard: deck_data.sideboard,
+                        commander: deck_data.commander,
+                    },
+                ))
+            })
+        }
+    }
+
+    let mut state: SeatState = serde_json::from_str(state_json)
+        .map_err(|e| JsValue::from_str(&format!("Invalid SeatState: {e}")))?;
+    let mutation: SeatMutation = serde_json::from_str(mutation_json)
+        .map_err(|e| JsValue::from_str(&format!("Invalid SeatMutation: {e}")))?;
+
+    let ctx = ReducerCtx {
+        platform: Platform::Wasm,
+        deck_resolver: &WasmDeckResolver,
+    };
+
+    match seat_reducer::apply(&mut state, mutation, &ctx) {
+        Ok(delta) => Ok(to_js(&delta)),
+        Err(e) => Err(JsValue::from_str(&format!("{e:?}"))),
     }
 }
 

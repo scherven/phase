@@ -11,7 +11,6 @@ import { JoinErrorDialog } from "../components/lobby/JoinErrorDialog";
 import { LobbyView } from "../components/lobby/LobbyView";
 import { PlayerIdentityBanner } from "../components/lobby/PlayerIdentityBanner";
 import { ServerOfflinePrompt } from "../components/lobby/ServerOfflinePrompt";
-import { WaitingScreen } from "../components/lobby/WaitingScreen";
 import { ConnectionToast } from "../components/multiplayer/ConnectionToast";
 import { MenuParticles } from "../components/menu/MenuParticles";
 import { MenuShell } from "../components/menu/MenuShell";
@@ -27,7 +26,7 @@ import { useGameStore, saveActiveGame } from "../stores/gameStore";
 import type { HostSettings } from "../components/lobby/HostSetup";
 
 type ConnectionMode = "server" | "p2p";
-type MultiplayerView = "lobby" | "host-setup" | "deck-select" | "waiting";
+type MultiplayerView = "lobby" | "host-setup" | "deck-select";
 
 type PendingAction =
   | { type: "host"; settings: HostSettings; connectionMode: ConnectionMode }
@@ -49,18 +48,10 @@ export function MultiplayerPage() {
   useAudioContext("lobby");
   const navigate = useNavigate();
 
-  const hostingStatus = useMultiplayerStore((s) => s.hostingStatus);
-  const hostGameCode = useMultiplayerStore((s) => s.hostGameCode);
-  const hostIsPublic = useMultiplayerStore((s) => s.hostIsPublic);
   const startHosting = useMultiplayerStore((s) => s.startHosting);
-  const cancelHosting = useMultiplayerStore((s) => s.cancelHosting);
-  const playerSlots = useMultiplayerStore((s) => s.playerSlots);
   const showToast = useMultiplayerStore((s) => s.showToast);
 
-  // If returning to this page while hosting, show waiting view immediately
-  const [view, setView] = useState<MultiplayerView>(
-    hostingStatus !== "idle" ? "waiting" : "lobby",
-  );
+  const [view, setView] = useState<MultiplayerView>("lobby");
   const [activeDeckName, setActiveDeckName] = useState<string | null>(null);
   // Initial mode tracks `serverAddress`: if the user has picked "None" in
   // `ServerPicker` (empty string sentinel), skip straight to P2P so the
@@ -117,18 +108,18 @@ export function MultiplayerPage() {
     setActiveDeckName(localStorage.getItem(ACTIVE_DECK_KEY));
   }, []);
 
-  // Track the server-address sentinel both ways. Empty → P2P stops the
-  // lobby from trying to subscribe to a non-existent server. Real address
-  // → server flips back when the user picks a real server from the
-  // "Pick server" affordance (`LobbyView` opens `ServerPicker` even from
-  // P2P mode), since selecting a server IS the explicit user intent.
+  // Sync connectionMode when the user changes their server address via
+  // ServerPicker. Empty address → P2P (no server to talk to). Restored
+  // address → server (selecting a server IS the explicit intent). Only
+  // reacts to serverAddress changes — not connectionMode — so an explicit
+  // "Use Direct Code" selection isn't immediately reversed.
   useEffect(() => {
-    if (!serverAddress && connectionMode === "server") {
+    if (!serverAddress) {
       setConnectionMode("p2p");
-    } else if (serverAddress && connectionMode === "p2p") {
+    } else {
       setConnectionMode("server");
     }
-  }, [serverAddress, connectionMode]);
+  }, [serverAddress]);
 
   // Live legality check: whenever the user is on host-setup with an active
   // deck and a chosen format, re-run the engine's compatibility check after
@@ -168,14 +159,6 @@ export function MultiplayerPage() {
       window.clearTimeout(handle);
     };
   }, [view, activeDeckName, storeFormatConfig?.format]);
-
-  // Reset view to lobby if hosting ends while we're on the waiting screen
-  // (e.g. WebSocket error/disconnect)
-  useEffect(() => {
-    if (hostingStatus === "idle" && view === "waiting") {
-      setView("lobby");
-    }
-  }, [hostingStatus, view]);
 
   // In deck-select, tapping a deck tile IS the confirmation — there's no
   // other use for the screen since we don't show deck contents. We persist
@@ -401,8 +384,6 @@ export function MultiplayerPage() {
             return false;
           }
           startHosting(action.settings, deck);
-          // Navigate to main menu — the HostingBanner takes over as the
-          // hosting indicator. User can browse freely while waiting.
           navigate("/");
         }
       } else {
@@ -488,11 +469,6 @@ export function MultiplayerPage() {
   );
 
   const handleBack = () => {
-    if (view === "waiting") {
-      // Don't cancel hosting — just navigate away. The banner persists.
-      navigate("/");
-      return;
-    }
     if (view === "deck-select") {
       // With a pending action the user clearly came from a host/join
       // attempt; without one they came from the "Change Deck" affordance,
@@ -531,20 +507,16 @@ export function MultiplayerPage() {
       ? "Join or host a table."
       : view === "host-setup"
         ? "Set up your table."
-        : view === "deck-select"
-          ? "Choose a deck."
-          : "Waiting for players.";
+        : "Choose a deck.";
 
   const description =
     view === "lobby"
       ? "Browse available tables, join by code, or host a new match."
       : view === "host-setup"
         ? "Adjust format, privacy, and timing before opening the room."
-        : view === "deck-select"
-          ? selectedFormat
-            ? `Pick a deck for ${selectedFormat}.`
-            : "Pick the deck you want to bring online."
-          : "Share the code and wait for the room to fill.";
+        : selectedFormat
+          ? `Pick a deck for ${selectedFormat}.`
+          : "Pick the deck you want to bring online.";
 
   return (
     <div className="menu-scene relative flex min-h-screen flex-col overflow-hidden">
@@ -684,16 +656,6 @@ export function MultiplayerPage() {
           </>
         )}
 
-        {view === "waiting" && hostGameCode && (
-          <WaitingScreen
-            gameCode={hostGameCode}
-            isPublic={hostIsPublic}
-            onCancel={cancelHosting}
-            playerSlots={playerSlots.length > 0 ? playerSlots : undefined}
-            currentPlayerId="0"
-            isHost
-          />
-        )}
         </div>
       </MenuShell>
       <ConnectionToast />

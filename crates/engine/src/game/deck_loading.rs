@@ -72,6 +72,15 @@ fn resolve_names(db: &CardDatabase, names: &[String]) -> Vec<DeckEntry> {
     entries
 }
 
+/// Resolve a single player's deck list (name-only) into a `PlayerDeckPayload`
+/// using a `CardDatabase` for lookup. Unresolvable names are silently skipped.
+pub fn resolve_player_deck_list(db: &CardDatabase, list: &PlayerDeckList) -> PlayerDeckPayload {
+    PlayerDeckPayload {
+        main_deck: resolve_names(db, &list.main_deck),
+        sideboard: resolve_names(db, &list.sideboard),
+    }
+}
+
 /// Resolve a DeckList (name-only) into a DeckPayload (full CardFace objects)
 /// using a CardDatabase for lookup. Unresolvable names are silently skipped.
 pub fn resolve_deck_list(db: &CardDatabase, list: &DeckList) -> DeckPayload {

@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, useLocation } from "react-router";
 
 import { BuildBadge } from "./components/chrome/BuildBadge";
-import { HostingBanner } from "./components/chrome/HostingBanner";
+import { HostControlTile } from "./components/chrome/HostControlTile";
 import { SplashScreen } from "./components/splash/SplashScreen";
 import { useFeedInitialization } from "./hooks/useFeedInitialization";
 import { useHostingSession } from "./hooks/useHostingSession";
@@ -71,7 +71,7 @@ function AppContent() {
         </Routes>
       </Suspense>
       {!location.pathname.startsWith("/game/") && <BuildBadge />}
-      <HostingBanner />
+      <HostControlTile />
     </div>
   );
 }

@@ -103,6 +103,15 @@ impl LobbyManager {
         }
     }
 
+    /// Updates the `max_players` count for an existing lobby entry. Called
+    /// after a seat Remove mutation so the lobby listing reflects the new
+    /// capacity. No-op if the game isn't tracked.
+    pub fn set_max_players(&mut self, game_code: &str, max: u8) {
+        if let Some(meta) = self.games.get_mut(game_code) {
+            meta.max_players = max as u32;
+        }
+    }
+
     /// Returns the host's build identity for a game, used to gate joins in
     /// `JoinGameWithPassword` when the guest's build differs from the host's.
     pub fn host_build_commit(&self, game_code: &str) -> Option<&str> {

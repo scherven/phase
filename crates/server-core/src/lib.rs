@@ -12,7 +12,8 @@ pub use filter::filter_state_for_player;
 pub use lobby::LobbyManager;
 pub use persist::{PersistedLobbyMeta, PersistedSession};
 pub use protocol::{
-    AiSeatRequest, ClientMessage, DeckData, LobbyGame, PlayerSlotInfo, ServerMessage,
+    AiSeatRequest, ClientMessage, DeckChoice, DeckData, LobbyGame, PlayerSlotInfo, SeatKind,
+    SeatMutation, SeatView, ServerMessage,
 };
 pub use reconnect::ReconnectManager;
 pub use session::{acting_player, generate_game_code, generate_player_token, SessionManager};

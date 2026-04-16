@@ -1,5 +1,5 @@
 [package]
-name = "server-core"
+name = "seat-reducer"
 version.workspace = true
 edition = "2021"
 license.workspace = true
@@ -7,15 +7,7 @@ license.workspace = true
 [dependencies]
 engine = { path = "../engine" }
 phase-ai = { path = "../phase-ai" }
-seat-reducer = { path = "../seat-reducer" }
 serde = { workspace = true }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-tracing = { workspace = true }
-rand = "0.9"
-rand_chacha = "0.9"
 
 [dev-dependencies]
-proptest = "1"
 serde_json = "1"
-tempfile = "3"

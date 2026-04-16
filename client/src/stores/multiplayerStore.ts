@@ -98,13 +98,29 @@ export interface HostingSettings {
   roomName: string | null;
 }
 
+/** Discriminated union mirroring `seat_reducer::types::SeatKind`. */
+export type SeatKind =
+  | { type: "HostHuman" }
+  | { type: "JoinedHuman" }
+  | { type: "WaitingHuman" }
+  | { type: "Ai"; data: { difficulty: string; deck: DeckChoice } };
+
+export type DeckChoice =
+  | { type: "Random" }
+  | { type: "Named"; data: string };
+
 export interface PlayerSlot {
-  playerId: string;
+  playerId: number;
   name: string;
-  isReady: boolean;
-  isAi: boolean;
-  aiDifficulty: string;
-  deckName: string | null;
+  kind: SeatKind;
+}
+
+/** Snapshot of the host's session config, captured at startHosting time.
+ *  Immutable after creation — format lock prevents mid-wait changes. */
+export interface HostSession {
+  formatConfig: FormatConfig;
+  timerSeconds: number | null;
+  matchType: MatchType;
 }
 
 /** Single toast entry keyed by caller.
@@ -162,6 +178,7 @@ interface MultiplayerState {
   hostGameCode: string | null;
   hostIsPublic: boolean;
   hostingStatus: HostingStatus;
+  hostSession: HostSession | null;
   pendingGameRoute: string | null;
   // Server identity from the most recent ServerHello (ephemeral — not persisted).
   // null before the first hello; updated when the hosting WS or the game WS
@@ -196,7 +213,6 @@ interface MultiplayerActions {
   clearAllToasts: () => void;
   setFormatConfig: (config: FormatConfig | null) => void;
   setPlayerSlots: (slots: PlayerSlot[]) => void;
-  toggleReady: (playerId: string) => void;
   setSpectators: (names: string[]) => void;
   setIsSpectator: (value: boolean) => void;
   setPlayerDisconnected: (playerId: number) => void;
@@ -392,6 +408,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
       hostGameCode: null,
       hostIsPublic: false,
       hostingStatus: "idle" as HostingStatus,
+      hostSession: null,
       pendingGameRoute: null,
       serverInfo: null,
 
@@ -441,12 +458,6 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         ),
       setFormatConfig: (config) => set({ formatConfig: config }),
       setPlayerSlots: (slots) => set({ playerSlots: slots }),
-      toggleReady: (playerId) =>
-        set((state) => ({
-          playerSlots: state.playerSlots.map((slot) =>
-            slot.playerId === playerId ? { ...slot, isReady: !slot.isReady } : slot,
-          ),
-        })),
       setSpectators: (names) => set({ spectators: names }),
       setIsSpectator: (value) => set({ isSpectator: value }),
       setPlayerDisconnected: (pid) =>
@@ -482,6 +493,11 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           hostIsPublic: settings.public,
           hostingStatus: "connecting",
           hostGameCode: null,
+          hostSession: {
+            formatConfig: settings.formatConfig,
+            timerSeconds: settings.timerSeconds,
+            matchType: settings.matchType,
+          },
           pendingGameRoute: null,
         });
 
@@ -507,10 +523,11 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
             const gameId = crypto.randomUUID();
             saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
             useGameStore.setState({ gameId });
-            // Reset hosting state FIRST so banner hides, then set route
+            // Reset hosting state FIRST so tile hides, then set route
             set({
               hostGameCode: null,
               hostingStatus: "idle",
+              hostSession: null,
               playerSlots: [],
               pendingGameRoute: `/game/${gameId}?mode=host`,
             });
@@ -539,6 +556,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
               hostGameCode: null,
               hostIsPublic: false,
               hostingStatus: "idle",
+              hostSession: null,
               playerSlots: [],
             });
             get().showToast("Invalid server address. Update it in Settings.");
@@ -601,6 +619,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
               hostGameCode: null,
               hostIsPublic: false,
               hostingStatus: "idle",
+              hostSession: null,
               playerSlots: [],
             });
             get().showToast("Connection to server lost.");
@@ -661,6 +680,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           hostGameCode: null,
           hostIsPublic: false,
           hostingStatus: "idle",
+          hostSession: null,
           playerSlots: [],
           pendingGameRoute: null,
         });

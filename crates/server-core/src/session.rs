@@ -18,6 +18,7 @@ use engine::types::match_config::MatchConfig;
 use engine::types::player::PlayerId;
 use phase_ai::config::{AiConfig, AiDifficulty, Platform};
 use rand::{Rng, SeedableRng};
+use seat_reducer::types::{DeckChoice, SeatKind};
 use tracing::{debug, info, warn};
 
 use crate::filter::filter_state_for_player;
@@ -59,6 +60,11 @@ pub struct GameSession {
     /// Lobby metadata for games waiting for players. Set at creation, cleared when game fills.
     /// Stored here so it's available during shutdown flush without querying the LobbyManager.
     pub lobby_meta: Option<PersistedLobbyMeta>,
+    /// True once the game has started (decks loaded, `start_game` called).
+    /// A room can be full (`is_full()`) but not yet started — the host must
+    /// send `SeatMutation::Start` to begin. Set by the existing auto-start
+    /// paths in `join_game_with_name` and `create_game_with_ai`.
+    pub game_started: bool,
 }
 
 impl GameSession {
@@ -99,30 +105,45 @@ impl GameSession {
             .count() as u32
     }
 
+    /// Returns true if the game hasn't started yet (mutations are still legal).
+    pub fn is_pregame(&self) -> bool {
+        !self.game_started
+    }
+
     /// Build slot info for all seats in this game session.
     pub fn player_slot_info(&self) -> Vec<PlayerSlotInfo> {
         (0..self.player_count as usize)
             .map(|i| {
                 let pid = PlayerId(i as u8);
                 let is_ai = self.ai_seats.contains(&pid);
-                let claimed = !self.player_tokens[i].is_empty() || is_ai;
-                let ai_difficulty = self
-                    .ai_configs
-                    .get(&pid)
-                    .map(|c| format!("{:?}", c.difficulty))
-                    .unwrap_or_default();
+                let claimed = !self.player_tokens[i].is_empty();
+
+                let kind = if i == 0 {
+                    SeatKind::HostHuman
+                } else if is_ai {
+                    let difficulty = self
+                        .ai_configs
+                        .get(&pid)
+                        .map(|c| c.difficulty)
+                        .unwrap_or(AiDifficulty::Medium);
+                    SeatKind::Ai {
+                        difficulty,
+                        deck: DeckChoice::Random,
+                    }
+                } else if claimed {
+                    SeatKind::JoinedHuman
+                } else {
+                    SeatKind::WaitingHuman
+                };
 
                 PlayerSlotInfo {
-                    player_id: format!("{}", pid.0),
-                    name: if claimed {
+                    player_id: pid.0,
+                    name: if claimed || is_ai {
                         self.display_names[i].clone()
                     } else {
                         String::new()
                     },
-                    is_ready: claimed,
-                    is_ai,
-                    ai_difficulty,
-                    deck_name: None, // deck names not exposed to other players
+                    kind,
                 }
             })
             .collect()
@@ -179,7 +200,7 @@ impl GameSession {
             player_count: self.player_count,
             ai_seats: self.ai_seats.iter().map(|pid| pid.0).collect(),
             ai_difficulties,
-            game_started: self.is_full(),
+            game_started: self.game_started,
             lobby_meta: self.lobby_meta.clone(),
         }
     }
@@ -234,6 +255,7 @@ impl GameSession {
             ai_seats,
             ai_configs,
             lobby_meta: ps.lobby_meta,
+            game_started: ps.game_started,
         }
     }
 }
@@ -324,6 +346,7 @@ impl SessionManager {
             ai_seats: HashSet::new(),
             ai_configs: HashMap::new(),
             lobby_meta: None,
+            game_started: false,
         };
 
         self.token_to_game
@@ -399,6 +422,7 @@ impl SessionManager {
 
             // Initialize the game via engine
             let _result = start_game(&mut session.state);
+            session.game_started = true;
         }
 
         let filtered = filter_state_for_player(&session.state, player_id);
@@ -480,6 +504,7 @@ impl SessionManager {
         session.state.all_card_names = card_names.into();
         session.state.log_player_names = session.display_names.clone();
         let _result = start_game(&mut session.state);
+        session.game_started = true;
 
         (game_code, player_token)
     }

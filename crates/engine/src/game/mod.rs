@@ -65,8 +65,8 @@ pub mod visibility;
 pub mod zones;
 
 pub use deck_loading::{
-    create_commander_from_card_face, load_deck_into_state, resolve_deck_list, DeckEntry, DeckList,
-    DeckPayload,
+    create_commander_from_card_face, load_deck_into_state, resolve_deck_list,
+    resolve_player_deck_list, DeckEntry, DeckList, DeckPayload, PlayerDeckList,
 };
 pub use deck_validation::{
     evaluate_deck_compatibility, validate_deck_for_format, CompatibilityCheck,
