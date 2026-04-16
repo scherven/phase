@@ -18,6 +18,11 @@ import { WasmAdapter } from "./wasm-adapter";
 import { createPeerSession, type PeerSession } from "../network/peer";
 import type { P2PMessage } from "../network/protocol";
 import type { BrokerClient } from "../services/brokerClient";
+import {
+  clearP2PHostSession,
+  type PersistedP2PHostSession,
+  saveP2PHostSession,
+} from "../services/gamePersistence";
 import { saveP2PSession } from "../services/p2pSession";
 
 /**
@@ -77,6 +82,14 @@ type GameRunState = "running" | "paused-disconnect" | "paused-manual";
 
 /** Default grace window for guest auto-reconnect, in milliseconds. */
 const DEFAULT_GRACE_PERIOD_MS = 30_000;
+/**
+ * Grace window applied to every persisted seat when a host resumes.
+ * Wider than the in-flight default because the entire resume scenario
+ * is "host was away for a while, guests may take a while to come
+ * back." 5 minutes leaves headroom for browser reopen + tab warm-up +
+ * reconnect backoff.
+ */
+const RESUME_GRACE_PERIOD_MS = 5 * 60_000;
 
 /**
  * Guest auto-reconnect backoff schedule. Escalates briskly for early
@@ -170,6 +183,26 @@ export class P2PHostAdapter implements EngineAdapter {
   private guestDeckResolvers: Array<() => void> = [];
   private hostConnectionUnsub: (() => void) | null = null;
 
+  /**
+   * Identifier used as the key when this adapter writes its resume
+   * metadata via `saveP2PHostSession`. Absent means the adapter is
+   * running without persistence (tests, ephemeral hosts) — save-hooks
+   * short-circuit as no-ops.
+   */
+  private readonly gameId: string | null;
+  /** Bare 5-char room code without PEER_ID_PREFIX — persisted in the session record. */
+  private readonly roomCode: string | null;
+  /** True when the adapter was constructed from a persisted session (resume flow). */
+  private readonly isResume: boolean;
+  /**
+   * Pending GameState snapshot to hand to `wasm.resumeMultiplayerHostState`
+   * during `initialize()`. Set in the constructor from `resumeData.state`;
+   * nulled after the WASM call consumes it. Held on the adapter rather
+   * than threaded through `initialize()` so the EngineAdapter interface
+   * stays uniform across fresh/resume flows.
+   */
+  private resumeGameState: GameState | null = null;
+
   constructor(
     private readonly hostDeckData: unknown,
     private readonly hostPeer: Peer,
@@ -201,6 +234,21 @@ export class P2PHostAdapter implements EngineAdapter {
      * PeerJS peer ID the guest dials over.
      */
     private readonly brokerGameCode?: string,
+    /**
+     * Persistence binding for host resume. When provided, the adapter
+     * writes a `PersistedP2PHostSession` snapshot at every lifecycle
+     * event (guest join, reconnect, game start, kick, concede) so a
+     * crashed/reloaded host can come back on the same room code.
+     *
+     * `resumeData` carries a prior session to rehydrate (for resume
+     * flows) — the engine state is separately loaded via
+     * `wasm.resumeMultiplayerHostState` in `initialize()`.
+     */
+    persistence?: {
+      gameId: string;
+      roomCode: string;
+      resumeData?: { state: GameState; session: PersistedP2PHostSession };
+    },
   ) {
     if (playerCount < 2 || playerCount > 4) {
       throw new AdapterError(
@@ -216,6 +264,128 @@ export class P2PHostAdapter implements EngineAdapter {
         false,
       );
     }
+    this.gameId = persistence?.gameId ?? null;
+    this.roomCode = persistence?.roomCode ?? null;
+    this.isResume = persistence?.resumeData !== undefined;
+
+    if (persistence?.resumeData) {
+      this.resumeGameState = persistence.resumeData.state;
+      this.rehydrateFromPersistedSession(persistence.resumeData.session);
+    }
+  }
+
+  /**
+   * Restore in-memory adapter maps from a persisted session so the
+   * resumed host agrees with its guests about seat assignments,
+   * kicked tokens, and eliminated players. Called from the constructor
+   * when `resumeData` is provided.
+   *
+   * Engine state is restored separately via
+   * `wasm.resumeMultiplayerHostState` in `initialize()` — this method
+   * only handles adapter-owned transport + security state.
+   */
+  private rehydrateFromPersistedSession(session: PersistedP2PHostSession): void {
+    for (const [pidStr, token] of Object.entries(session.playerTokens)) {
+      this.playerTokens.set(Number(pidStr), token);
+    }
+    for (const [pidStr, deck] of Object.entries(session.guestDecks)) {
+      this.guestDecks.set(Number(pidStr), deck);
+    }
+    for (const token of session.kickedTokens) this.kickedTokens.add(token);
+    for (const pid of session.eliminatedSeats) {
+      this.eliminatedSeats.add(pid);
+    }
+    // `nextSeat` is the smallest seat index not yet assigned. For a
+    // 3-player resumed game with seats 0/1/2 filled, it must be 3 so
+    // no new joiner clobbers an existing seat.
+    const seatIds = Object.keys(session.playerTokens).map(Number);
+    this.nextSeat = seatIds.length > 0 ? Math.max(...seatIds) + 1 : 1;
+    this.gameStarted = session.gameStarted;
+
+    // Every persisted guest is "disconnected" from the resumed host's
+    // POV until they dial back in. Arming a grace window for each means
+    // `handleReconnect` takes its existing valid path when a returning
+    // guest sends their token — no special-case branch needed.
+    // Skip the host seat (PlayerId 0) which is this adapter's owner.
+    // Skip eliminated seats — already out, no grace needed.
+    for (const pidStr of Object.keys(session.playerTokens)) {
+      const pid = Number(pidStr);
+      if (pid === 0) continue;
+      if (this.eliminatedSeats.has(pid)) continue;
+      this.armResumeGrace(pid);
+    }
+    // Mid-game resume: the game is paused until at least one guest
+    // reconnects. Pre-game resume (lobby): state stays "running" since
+    // `initializeGame` hasn't been called yet.
+    if (this.gameStarted && this.disconnectedSeats.size > 0) {
+      this.gameRunState = "paused-disconnect";
+    }
+  }
+
+  /**
+   * Open a reconnect grace window for a seat. Used only by resume
+   * rehydration to pre-seed `disconnectedSeats` — mid-game disconnects
+   * go through `handleGuestDisconnect` which carries additional
+   * broadcast and run-state responsibilities.
+   *
+   * Uses `RESUME_GRACE_PERIOD_MS` (5m) rather than the default 30s:
+   * returning guests may need to discover the host's revival through
+   * their reconnect backoff, which can take minutes.
+   */
+  private armResumeGrace(pid: PlayerId): void {
+    const timer = setTimeout(() => {
+      if (!this.playerTokens.has(pid)) return;
+      void this.concedePlayer(pid, "Resume grace expired", "conceded")
+        .catch((err) => {
+          console.error("[P2PHost] resume-grace auto-concede failed:", err);
+        });
+    }, RESUME_GRACE_PERIOD_MS);
+    this.disconnectedSeats.set(pid, { disconnectedAt: Date.now(), timer });
+  }
+
+  /**
+   * Build a persisted snapshot from the current in-memory adapter
+   * state. Returns null when persistence isn't configured (tests,
+   * ephemeral hosts) so save-hooks can short-circuit cleanly.
+   */
+  private buildPersistedSession(): PersistedP2PHostSession | null {
+    if (!this.gameId || !this.roomCode) return null;
+    const playerTokens: Record<number, string> = {};
+    for (const [pid, token] of this.playerTokens.entries()) {
+      playerTokens[pid] = token;
+    }
+    const guestDecks: Record<number, unknown> = {};
+    for (const [pid, deck] of this.guestDecks.entries()) {
+      guestDecks[pid] = deck;
+    }
+    return {
+      gameId: this.gameId,
+      roomCode: this.roomCode,
+      brokerGameCode: this.brokerGameCode,
+      useBroker: this.broker !== undefined,
+      playerTokens,
+      guestDecks,
+      kickedTokens: [...this.kickedTokens],
+      eliminatedSeats: [...this.eliminatedSeats],
+      playerCount: this.playerCount,
+      formatConfig: this.formatConfig,
+      matchConfig: this.matchConfig,
+      hostDeckData: this.hostDeckData,
+      gameStarted: this.gameStarted,
+    };
+  }
+
+  /**
+   * Write the current adapter state to disk. Fire-and-forget:
+   * lifecycle event handlers don't block on IDB. Failures are logged
+   * but never thrown — losing a write means a slightly stale resume
+   * snapshot, not a crash.
+   */
+  private saveSession(): void {
+    if (!this.gameId) return;
+    const snapshot = this.buildPersistedSession();
+    if (!snapshot) return;
+    void saveP2PHostSession(this.gameId, snapshot);
   }
 
   /**
@@ -248,7 +418,7 @@ export class P2PHostAdapter implements EngineAdapter {
   }
 
   async initialize(): Promise<void> {
-    traceAdapter("Host", "initialize-start", {});
+    traceAdapter("Host", "initialize-start", { isResume: this.isResume });
     // Subscribe SYNCHRONOUSLY before any `await`. `hostRoom()` buffers
     // inbound guest connections that arrived between peer-open and the
     // first `onGuestConnected` subscribe, and flushes them into this
@@ -261,7 +431,21 @@ export class P2PHostAdapter implements EngineAdapter {
     });
 
     await this.wasm.initialize();
-    await this.wasm.setMultiplayerMode(true);
+    // Resume path: load the persisted GameState with a fresh RNG seed
+    // and atomic multiplayer-flag flip. `resumeMultiplayerHostState`
+    // mirrors server-core's `from_persisted` pattern. Fresh-host path:
+    // just flip the flag; engine state is populated by the guests
+    // joining + `initializeGame`.
+    if (this.isResume && this.resumeGameState) {
+      await this.wasm.resumeMultiplayerHostState(this.resumeGameState);
+      this.resumeGameState = null;
+      traceAdapter("Host", "initialize-resume", {
+        tokens: this.playerTokens.size,
+        gameStarted: this.gameStarted,
+      });
+    } else {
+      await this.wasm.setMultiplayerMode(true);
+    }
     traceAdapter("Host", "initialize-complete", {});
   }
 
@@ -329,6 +513,7 @@ export class P2PHostAdapter implements EngineAdapter {
     this.playerTokens.set(pid, token);
     this.guestSessions.set(pid, session);
     this.guestDecks.set(pid, deckData);
+    this.saveSession();
 
     // Route subsequent messages from this guest.
     session.onMessage((msg) => this.handleGuestMessage(pid, msg));
@@ -380,6 +565,10 @@ export class P2PHostAdapter implements EngineAdapter {
       undefined,
     );
     this.gameStarted = true;
+    // Mark the session as started-and-playable. From this point forward
+    // a reload can resume mid-game; before this, reload goes back to
+    // the lobby and guests must rejoin fresh.
+    this.saveSession();
     this.emit({ type: "playerIdentity", playerId: 0 });
 
     // Tear down the public lobby entry only *after* the engine is live.
@@ -469,6 +658,14 @@ export class P2PHostAdapter implements EngineAdapter {
     throw new AdapterError("P2P_ERROR", "Undo not supported in P2P games", false);
   }
 
+  /**
+   * Release all transport + engine resources. PRESERVES the persisted
+   * resume record so a subsequent reload can pick up the game. Called
+   * on React unmount (navigation, StrictMode remount, tab close).
+   *
+   * Explicit user quit goes through `terminateGame()` instead, which
+   * clears the persistence before disposing.
+   */
   dispose(): void {
     if (this.hostConnectionUnsub) this.hostConnectionUnsub();
     for (const { timer } of this.disconnectedSeats.values()) {
@@ -494,6 +691,23 @@ export class P2PHostAdapter implements EngineAdapter {
     // `closed` flag, so a prior error-path close in GameProvider is safe.
     this.broker?.close();
     this.listeners = [];
+  }
+
+  /**
+   * Explicit user quit — clears the persisted resume record so the
+   * menu's Resume button won't surface this game next session, then
+   * delegates to `dispose()` for teardown.
+   *
+   * Callers: "Leave game" affordance, game-over cleanup, concede flows
+   * that should end the session permanently. Should NOT be called from
+   * component unmount / tab close / StrictMode remount — those need
+   * persistence preserved and go through `dispose()`.
+   */
+  terminateGame(): void {
+    if (this.gameId) {
+      void clearP2PHostSession(this.gameId);
+    }
+    this.dispose();
   }
 
   private async handleGuestMessage(
@@ -601,6 +815,7 @@ export class P2PHostAdapter implements EngineAdapter {
       if (pid === this.nextSeat - 1) {
         this.nextSeat = pid;
       }
+      this.saveSession();
       this.broadcastLobbyProgress();
       return;
     }
@@ -741,6 +956,7 @@ export class P2PHostAdapter implements EngineAdapter {
       try { session.close("Player conceded"); } catch { /* best-effort */ }
     }
     this.eliminatedSeats.add(pid);
+    this.saveSession();
     try {
       const concedeAction = {
         type: "Concede",
@@ -791,6 +1007,10 @@ export class P2PHostAdapter implements EngineAdapter {
   async kickPlayer(pid: PlayerId, reason: string = "Kicked by host"): Promise<void> {
     const token = this.playerTokens.get(pid);
     if (token) this.kickedTokens.add(token);
+    // Persist the kick before the session close — the kickedTokens set
+    // survives host reload so a kicked guest can't sneak back in on
+    // resume.
+    this.saveSession();
     // Remove session BEFORE concedePlayer so we can send the `kick` wire
     // message on the way out; concedePlayer's own session-cleanup is a no-op
     // for an already-removed seat.
