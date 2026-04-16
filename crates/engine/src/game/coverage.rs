@@ -1565,8 +1565,22 @@ fn static_details(stat: &StaticDefinition) -> Vec<(String, String)> {
     if let Some(affected) = &stat.affected {
         d.push(("affects".into(), fmt_target(affected)));
     }
-    if !stat.modifications.is_empty() {
-        d.push(("modifications".into(), stat.modifications.len().to_string()));
+    // Composable modifications (GrantTrigger / GrantAbility) are emitted as
+    // children, so list only the simple ones here as a joined pill.
+    let simple: Vec<String> = stat
+        .modifications
+        .iter()
+        .filter(|m| {
+            !matches!(
+                m,
+                ContinuousModification::GrantTrigger { .. }
+                    | ContinuousModification::GrantAbility { .. }
+            )
+        })
+        .map(fmt_modification)
+        .collect();
+    if !simple.is_empty() {
+        d.push(("mods".into(), simple.join(", ")));
     }
     if stat.condition.is_some() {
         d.push(("conditional".into(), "yes".into()));
@@ -1620,35 +1634,32 @@ pub fn build_parse_details(
 
     // Triggers
     for trig in &face.triggers {
-        // CR 603.8: StateCondition triggers use the priority pipeline, not
-        // the event-based trigger registry — they are supported.
-        let mode_supported = !matches!(&trig.mode, TriggerMode::Unknown(_))
-            && (trigger_registry.contains_key(&trig.mode)
-                || matches!(&trig.mode, TriggerMode::StateCondition));
-        let mut children = Vec::new();
-        if let Some(execute) = &trig.execute {
-            children.push(build_ability_item(execute));
-        }
-        items.push(ParsedItem {
-            category: ParseCategory::Trigger,
-            label: format!("{}", trig.mode),
-            source_text: trig.description.clone(),
-            supported: mode_supported && children.iter().all(|c| c.is_fully_supported()),
-            details: trigger_details(trig),
-            children,
-        });
+        items.push(build_trigger_item(trig, trigger_registry));
     }
 
     // Static abilities
     for stat in &face.static_abilities {
+        let mode_supported =
+            static_registry.contains_key(&stat.mode) || is_data_carrying_static(&stat.mode);
+        let mut children = Vec::new();
+        for modif in &stat.modifications {
+            match modif {
+                ContinuousModification::GrantTrigger { trigger } => {
+                    children.push(build_trigger_item(trigger, trigger_registry));
+                }
+                ContinuousModification::GrantAbility { definition } => {
+                    children.push(build_ability_item(definition));
+                }
+                _ => {}
+            }
+        }
         items.push(ParsedItem {
             category: ParseCategory::Static,
             label: format!("{}", stat.mode),
             source_text: stat.description.clone(),
-            supported: static_registry.contains_key(&stat.mode)
-                || is_data_carrying_static(&stat.mode),
+            supported: mode_supported,
             details: static_details(stat),
-            children: vec![],
+            children,
         });
     }
 
@@ -1687,6 +1698,32 @@ pub fn build_parse_details(
     }
 
     items
+}
+
+/// Build a `ParsedItem` for a single `TriggerDefinition`, recursing into its
+/// `execute` ability. Shared between top-level triggers and triggers granted
+/// by static abilities (`ContinuousModification::GrantTrigger`).
+fn build_trigger_item(
+    trig: &TriggerDefinition,
+    trigger_registry: &HashMap<TriggerMode, crate::game::triggers::TriggerMatcher>,
+) -> ParsedItem {
+    // CR 603.8: StateCondition triggers use the priority pipeline, not the
+    // event-based trigger registry — they are supported.
+    let mode_supported = !matches!(&trig.mode, TriggerMode::Unknown(_))
+        && (trigger_registry.contains_key(&trig.mode)
+            || matches!(&trig.mode, TriggerMode::StateCondition));
+    let mut children = Vec::new();
+    if let Some(execute) = &trig.execute {
+        children.push(build_ability_item(execute));
+    }
+    ParsedItem {
+        category: ParseCategory::Trigger,
+        label: format!("{}", trig.mode),
+        source_text: trig.description.clone(),
+        supported: mode_supported && children.iter().all(|c| c.is_fully_supported()),
+        details: trigger_details(trig),
+        children,
+    }
 }
 
 /// Build a `ParsedItem` for a single `AbilityDefinition`, recursing into
