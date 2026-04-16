@@ -197,6 +197,67 @@ pub(crate) fn handle_sacrifice_for_cost(
     }
 }
 
+/// Blight cost — put -1/-1 counters on chosen creatures after player selection.
+pub(crate) fn handle_blight_choice(
+    state: &mut GameState,
+    player: PlayerId,
+    pending: PendingCast,
+    count: usize,
+    legal_creatures: &[ObjectId],
+    chosen: &[ObjectId],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if chosen.len() != count {
+        return Err(EngineError::InvalidAction(format!(
+            "Must blight exactly {} creature(s), got {}",
+            count,
+            chosen.len()
+        )));
+    }
+    for id in chosen {
+        if !legal_creatures.contains(id) {
+            return Err(EngineError::InvalidAction(
+                "Selected creature not eligible for blight".to_string(),
+            ));
+        }
+    }
+
+    // Put a -1/-1 counter on each chosen creature
+    for &id in chosen {
+        if let Some(obj) = state.objects.get_mut(&id) {
+            *obj.counters
+                .entry(crate::types::counter::CounterType::Minus1Minus1)
+                .or_insert(0) += 1;
+        }
+    }
+
+    // Resume casting
+    if let Some(ability_index) = pending.activation_ability_index {
+        push_activated_ability_to_stack(
+            state,
+            player,
+            pending.object_id,
+            ability_index,
+            pending.ability,
+            pending.activation_cost.as_ref(),
+            events,
+        )
+    } else {
+        pay_and_push(
+            state,
+            player,
+            pending.object_id,
+            pending.card_id,
+            pending.ability,
+            &pending.cost,
+            pending.casting_variant,
+            pending.distribute,
+            pending.origin_zone,
+            events,
+        )
+    }
+}
+
 /// CR 702.34a: Tap creatures cost — complete the tap-creatures cost after player selection.
 pub(crate) fn handle_tap_creatures_for_spell_cost(
     state: &mut GameState,
@@ -784,8 +845,9 @@ fn pay_additional_cost(
             }
         }
         AbilityCost::Blight { count } => {
-            // Place blight counters on caster's lands
-            let lands: Vec<ObjectId> = state
+            // Blight N — player chooses creature(s) to put -1/-1 counters on.
+            // Per reminder text: "(You may put a -1/-1 counter on a creature you control.)"
+            let creatures: Vec<ObjectId> = state
                 .battlefield
                 .iter()
                 .copied()
@@ -795,22 +857,16 @@ fn pay_additional_cost(
                             && obj
                                 .card_types
                                 .core_types
-                                .contains(&crate::types::card_type::CoreType::Land)
+                                .contains(&crate::types::card_type::CoreType::Creature)
                     })
                 })
                 .collect();
-            for (i, &land_id) in lands.iter().enumerate() {
-                if i >= count as usize {
-                    break;
-                }
-                if let Some(obj) = state.objects.get_mut(&land_id) {
-                    *obj.counters
-                        .entry(crate::types::counter::CounterType::Generic(
-                            "blight".to_string(),
-                        ))
-                        .or_insert(0) += 1;
-                }
-            }
+            return Ok(WaitingFor::BlightChoice {
+                player,
+                count: count as usize,
+                creatures,
+                pending_cast: Box::new(pending),
+            });
         }
         AbilityCost::Discard { count, .. } => {
             // CR 601.2b: Discard requires interactive card selection — return a WaitingFor.

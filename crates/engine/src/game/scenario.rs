@@ -1092,6 +1092,7 @@ impl GameRunner {
             WaitingFor::ChooseXValue { .. } => "ChooseXValue",
             WaitingFor::CombatTaxPayment { .. } => "CombatTaxPayment",
             WaitingFor::PhyrexianPayment { .. } => "PhyrexianPayment",
+            WaitingFor::BlightChoice { .. } => "BlightChoice",
         }
     }
 

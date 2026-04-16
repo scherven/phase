@@ -24,6 +24,7 @@ type ChooseFromZoneChoice = Extract<WaitingFor, { type: "ChooseFromZoneChoice" }
 type EffectZoneChoice = Extract<WaitingFor, { type: "EffectZoneChoice" }>;
 type DiscardToHandSize = Extract<WaitingFor, { type: "DiscardToHandSize" }>;
 type SacrificeForCost = Extract<WaitingFor, { type: "SacrificeForCost" }>;
+type BlightChoice = Extract<WaitingFor, { type: "BlightChoice" }>;
 type ExileFromGraveyardForCost = Extract<WaitingFor, { type: "ExileFromGraveyardForCost" }>;
 type CollectEvidenceChoice = Extract<WaitingFor, { type: "CollectEvidenceChoice" }>;
 type HarmonizeTapChoice = Extract<WaitingFor, { type: "HarmonizeTapChoice" }>;
@@ -119,6 +120,9 @@ export function CardChoiceModal() {
     case "SacrificeForCost":
       if (!canActForWaitingState) return null;
       return <SacrificeModal data={waitingFor.data} />;
+    case "BlightChoice":
+      if (!canActForWaitingState) return null;
+      return <BlightModal data={waitingFor.data} />;
     case "CrewVehicle":
       if (!canActForWaitingState) return null;
       return <CrewModal data={waitingFor.data} />;
@@ -864,6 +868,87 @@ function SacrificeModal({ data }: { data: SacrificeForCost["data"] }) {
                 <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-red-500/20">
                   <span className="rounded-full bg-red-500/90 px-3 py-1 text-xs font-bold text-white">
                     Sacrifice
+                  </span>
+                </div>
+              )}
+            </motion.button>
+          );
+        })}
+      </ScrollableCardStrip>
+    </ChoiceOverlay>
+  );
+}
+
+// ── Blight Modal ─────────────────────────────────────────────────────────────
+
+function BlightModal({ data }: { data: BlightChoice["data"] }) {
+  const dispatch = useGameDispatch();
+  const objects = useGameStore((s) => s.gameState?.objects);
+  const inspectObject = useUiStore((s) => s.inspectObject);
+  const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
+
+  const toggleSelect = useCallback(
+    (id: ObjectId) => {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) {
+          next.delete(id);
+        } else if (next.size < data.count) {
+          next.add(id);
+        }
+        return next;
+      });
+    },
+    [data.count],
+  );
+
+  const handleConfirm = useCallback(() => {
+    dispatch({
+      type: "SelectCards",
+      data: { cards: Array.from(selected) },
+    });
+  }, [dispatch, selected]);
+
+  if (!objects) return null;
+
+  const isReady = selected.size === data.count;
+
+  return (
+    <ChoiceOverlay
+      title="Blight"
+      subtitle={`Put a -1/-1 counter on ${data.count} creature${data.count > 1 ? "s" : ""} you control`}
+      footer={<ConfirmButton onClick={handleConfirm} disabled={!isReady} label={`Confirm (${selected.size}/${data.count})`} />}
+    >
+      <ScrollableCardStrip>
+        {data.creatures.map((id, index) => {
+          const obj = objects[id];
+          if (!obj) return null;
+          const isSelected = selected.has(id);
+          return (
+            <motion.button
+              key={id}
+              className={`relative rounded-lg transition ${
+                isSelected
+                  ? "z-10 ring-2 ring-purple-400/80"
+                  : "hover:shadow-[0_0_16px_rgba(200,200,255,0.3)]"
+              }`}
+              initial={{ opacity: 0, y: 60, scale: 0.85 }}
+              animate={{ opacity: isSelected ? 1 : 0.7, y: 0, scale: 1 }}
+              transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
+              whileHover={{ scale: 1.05, y: -6 }}
+              onClick={() => toggleSelect(id)}
+              onMouseEnter={() => inspectObject(id)}
+              onMouseLeave={() => inspectObject(null)}
+            >
+              <CardImage
+                cardName={obj.name}
+                size="normal"
+                className={CHOICE_CARD_IMAGE_CLASS}
+              />
+              {isSelected && (
+                <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-purple-500/20">
+                  <span className="rounded-full bg-purple-500/90 px-3 py-1 text-xs font-bold text-white">
+                    -1/-1
                   </span>
                 </div>
               )}

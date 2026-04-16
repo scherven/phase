@@ -680,6 +680,32 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             },
             GameAction::CancelCast,
         ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
+        // Blight: player selected creature(s) to put -1/-1 counters on as cost.
+        (
+            WaitingFor::BlightChoice {
+                player,
+                count,
+                creatures,
+                pending_cast,
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => engine_casting::handle_blight_choice(
+            state,
+            *player,
+            *pending_cast.clone(),
+            *count,
+            creatures,
+            &chosen,
+            &mut events,
+        )?,
+        (
+            WaitingFor::BlightChoice {
+                player,
+                pending_cast,
+                ..
+            },
+            GameAction::CancelCast,
+        ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events),
         // CR 702.34a: Player selected creatures to tap as a spell cost (flashback tap cost).
         (
             WaitingFor::TapCreaturesForSpellCost {

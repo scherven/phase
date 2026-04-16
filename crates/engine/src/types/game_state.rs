@@ -1023,6 +1023,16 @@ pub enum WaitingFor {
         /// The pending cast to resume after the sacrifice is complete.
         pending_cast: Box<PendingCast>,
     },
+    /// Blight N — player must choose creature(s) to put -1/-1 counters on as cost.
+    BlightChoice {
+        player: PlayerId,
+        /// How many creatures to blight.
+        count: usize,
+        /// Pre-filtered eligible creatures on the battlefield.
+        creatures: Vec<ObjectId>,
+        /// The pending cast to resume after blight is complete.
+        pending_cast: Box<PendingCast>,
+    },
     /// CR 702.34a / CR 601.2b: Player must choose untapped creatures to tap as a spell cost
     /// (e.g., "Flashback—Tap three untapped white creatures you control").
     TapCreaturesForSpellCost {
@@ -1328,6 +1338,7 @@ impl WaitingFor {
             | WaitingFor::ChooseDungeonRoom { player, .. }
             | WaitingFor::DiscardForCost { player, .. }
             | WaitingFor::SacrificeForCost { player, .. }
+            | WaitingFor::BlightChoice { player, .. }
             | WaitingFor::TapCreaturesForSpellCost { player, .. }
             | WaitingFor::TapCreaturesForManaAbility { player, .. }
             | WaitingFor::ChooseManaColor { player, .. }
@@ -1386,6 +1397,7 @@ impl WaitingFor {
             | WaitingFor::DefilerPayment { pending_cast, .. }
             | WaitingFor::DiscardForCost { pending_cast, .. }
             | WaitingFor::SacrificeForCost { pending_cast, .. }
+            | WaitingFor::BlightChoice { pending_cast, .. }
             | WaitingFor::TapCreaturesForSpellCost { pending_cast, .. }
             | WaitingFor::ExileFromGraveyardForCost { pending_cast, .. }
             | WaitingFor::HarmonizeTapChoice { pending_cast, .. } => Some(pending_cast),
@@ -2564,6 +2576,12 @@ mod tests {
             permanents: vec![ObjectId(1)],
             pending_cast: dummy_pending(),
         }));
+        variants.push(Box::new(WaitingFor::BlightChoice {
+            player: PlayerId(0),
+            count: 1,
+            creatures: vec![ObjectId(1)],
+            pending_cast: dummy_pending(),
+        }));
         variants.push(Box::new(WaitingFor::HarmonizeTapChoice {
             player: PlayerId(0),
             eligible_creatures: vec![ObjectId(1)],
@@ -2606,7 +2624,7 @@ mod tests {
             mana_reduction: ManaCost::zero(),
             pending_cast: dummy_pending(),
         }));
-        assert_eq!(variants.len(), 26);
+        assert_eq!(variants.len(), 27);
     }
 
     #[test]

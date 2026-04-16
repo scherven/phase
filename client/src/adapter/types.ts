@@ -530,6 +530,7 @@ export type WaitingFor =
   | { type: "WarpCostChoice"; data: { player: PlayerId; object_id: ObjectId; card_id: CardId; normal_cost: ManaCost; warp_cost: ManaCost } }
   | { type: "DiscardForCost"; data: { player: PlayerId; count: number; cards: ObjectId[]; pending_cast: PendingCast } }
   | { type: "SacrificeForCost"; data: { player: PlayerId; count: number; permanents: ObjectId[]; pending_cast: PendingCast } }
+  | { type: "BlightChoice"; data: { player: PlayerId; count: number; creatures: ObjectId[]; pending_cast: PendingCast } }
   | { type: "TapCreaturesForManaAbility"; data: { player: PlayerId; count: number; creatures: ObjectId[]; pending_mana_ability: unknown } }
   | { type: "ChooseManaColor"; data: { player: PlayerId; color_options: ManaType[]; pending_mana_ability: unknown } }
   | { type: "TapCreaturesForSpellCost"; data: { player: PlayerId; count: number; creatures: ObjectId[]; pending_cast: PendingCast } }

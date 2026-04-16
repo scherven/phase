@@ -44,6 +44,8 @@ fn optional_cost_paid_sets_flag() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.add_basic_land(P0, ManaColor::White);
+    // Blight requires a creature target; add one to the battlefield.
+    let blight_target_id = scenario.add_creature(P0, "Blight Target", 2, 2).id();
 
     let spell_id = scenario
         .add_creature_to_hand(P0, "Blight Bolt", 0, 0)
@@ -79,20 +81,44 @@ fn optional_cost_paid_sets_flag() {
         runner.state().waiting_for,
     );
 
-    // Pay the additional cost
-    let result3 = runner
+    // Pay the additional cost — this opens BlightChoice.
+    let result_opt = runner
         .act(GameAction::DecideOptionalCost { pay: true })
         .expect("decide optional cost should succeed");
+    assert!(
+        matches!(result_opt.waiting_for, WaitingFor::BlightChoice { .. }),
+        "expected BlightChoice after paying, got {:?}",
+        result_opt.waiting_for,
+    );
+
+    // Select the creature to blight.
+    let result3 = runner
+        .act(GameAction::SelectCards {
+            cards: vec![blight_target_id],
+        })
+        .expect("blight selection should succeed");
 
     assert!(
         matches!(result3.waiting_for, WaitingFor::Priority { .. }),
-        "expected Priority after paying, got {:?}",
+        "expected Priority after blight, got {:?}",
         result3.waiting_for,
     );
 
     assert!(
         top_stack_cost_paid(&runner),
         "additional_cost_paid should be true when cost is paid"
+    );
+
+    // Verify the -1/-1 counter landed on the chosen creature.
+    use engine::types::counter::CounterType;
+    assert_eq!(
+        runner.state().objects[&blight_target_id]
+            .counters
+            .get(&CounterType::Minus1Minus1)
+            .copied()
+            .unwrap_or(0),
+        1,
+        "blight should place a -1/-1 counter on the chosen creature"
     );
 }
 

@@ -192,6 +192,15 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
             GameAction::SelectCards { cards: chosen },
         )
         | (
+            WaitingFor::BlightChoice {
+                player: _,
+                creatures: cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
             WaitingFor::ExileFromGraveyardForCost {
                 player: _,
                 cards,
