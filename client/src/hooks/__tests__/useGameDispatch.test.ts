@@ -118,8 +118,11 @@ describe("useGameDispatch", () => {
 
   it("serializes rapid dispatches", async () => {
     const { result } = renderHook(() => useGameDispatch());
+    // Use two structurally distinct actions so the in-flight dedup
+    // (which short-circuits identical rapid dispatches) doesn't drop the
+    // second one — we want to verify queueing, not deduplication.
     const action1 = { type: "PassPriority" as const };
-    const action2 = { type: "PassPriority" as const };
+    const action2 = { type: "CancelAutoPass" as const };
 
     const callOrder: number[] = [];
     mockAdapter.submitAction
