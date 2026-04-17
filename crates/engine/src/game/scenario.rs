@@ -1084,6 +1084,7 @@ impl GameRunner {
             WaitingFor::WardSacrificeChoice { .. } => "WardSacrificeChoice",
             WaitingFor::LearnChoice { .. } => "LearnChoice",
             WaitingFor::CrewVehicle { .. } => "CrewVehicle",
+            WaitingFor::StationTarget { .. } => "StationTarget",
             WaitingFor::ChooseDungeon { .. } => "ChooseDungeon",
             WaitingFor::ChooseDungeonRoom { .. } => "ChooseDungeonRoom",
             WaitingFor::PopulateChoice { .. } => "PopulateChoice",

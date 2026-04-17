@@ -60,6 +60,13 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         )
         | (
             WaitingFor::Priority { .. },
+            GameAction::ActivateStation {
+                spacecraft_id: source_id,
+                ..
+            },
+        )
+        | (
+            WaitingFor::Priority { .. },
             GameAction::Equip {
                 equipment_id: source_id,
                 ..

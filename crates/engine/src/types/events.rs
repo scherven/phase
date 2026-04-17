@@ -237,6 +237,17 @@ pub enum GameEvent {
         vehicle_id: ObjectId,
         creatures: Vec<ObjectId>,
     },
+    /// CR 702.184a: A Spacecraft's station ability resolved.
+    /// Fires the `TriggerMode::Stationed` event for triggers on the Spacecraft
+    /// that care about the act of being stationed. Carries the tapped creature
+    /// and the number of counters added so downstream consumers (logs, future
+    /// "whenever ~ is stationed by a creature with X" triggers) can see the
+    /// inputs without re-deriving them.
+    Stationed {
+        spacecraft_id: ObjectId,
+        creature_id: ObjectId,
+        counters_added: u32,
+    },
     ReplacementApplied {
         source_id: ObjectId,
         event_type: String,

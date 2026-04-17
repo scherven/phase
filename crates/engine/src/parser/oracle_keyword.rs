@@ -648,6 +648,7 @@ pub fn keyword_display_name(keyword: &Keyword) -> String {
         Keyword::Transmute(_) => "transmute".to_string(),
         Keyword::Cleave(_) => "cleave".to_string(),
         Keyword::Undaunted => "undaunted".to_string(),
+        Keyword::Station => "station".to_string(),
         Keyword::Unknown(s) => s.to_lowercase(),
     }
 }

@@ -145,7 +145,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::ClassLevelGained { .. }
         | GameEvent::DayNightChanged { .. }
         | GameEvent::PowerToughnessChanged { .. }
-        | GameEvent::VehicleCrewed { .. } => LogCategory::State,
+        | GameEvent::VehicleCrewed { .. }
+        | GameEvent::Stationed { .. } => LogCategory::State,
 
         GameEvent::SpeedChanged { .. } => LogCategory::Special,
 
@@ -773,6 +774,18 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
             }
             segs
         }
+        GameEvent::Stationed {
+            spacecraft_id,
+            creature_id,
+            counters_added,
+        } => vec![
+            card_seg(state, *spacecraft_id),
+            text(" stationed by "),
+            card_seg(state, *creature_id),
+            text(" (+"),
+            num(*counters_added as i32),
+            text(" charge)"),
+        ],
         GameEvent::RoomEntered { .. } => vec![text("Room entered")],
         GameEvent::DungeonCompleted { .. } => vec![text("Dungeon completed")],
         GameEvent::InitiativeTaken { .. } => vec![text("Initiative taken")],

@@ -101,6 +101,7 @@ pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
         TriggerMode::EntersOrAttacks => match_enters_or_attacks,
         TriggerMode::AttacksOrBlocks => match_attacks_or_blocks,
         TriggerMode::Crewed | TriggerMode::BecomesCrewed => match_vehicle_crewed,
+        TriggerMode::Stationed => match_stationed,
         TriggerMode::NinjutsuActivated => match_ninjutsu_activated,
         TriggerMode::Firebend => match_firebend,
         TriggerMode::Airbend => match_airbend,
@@ -155,7 +156,6 @@ pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
         | TriggerMode::SeekAll
         | TriggerMode::SetInMotion
         | TriggerMode::Specializes
-        | TriggerMode::Stationed
         | TriggerMode::Trains
         | TriggerMode::UnlockDoor
         | TriggerMode::VisitAttraction
@@ -382,7 +382,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
         TriggerMode::SeekAll,
         TriggerMode::SetInMotion,
         TriggerMode::Specializes,
-        TriggerMode::Stationed,
+        // TriggerMode::Stationed — moved to real matcher below
         TriggerMode::Trains,
         TriggerMode::UnlockDoor,
         TriggerMode::VisitAttraction,
@@ -398,6 +398,10 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
     // CR 702.122d: Crew trigger matchers
     r.insert(TriggerMode::Crewed, match_vehicle_crewed);
     r.insert(TriggerMode::BecomesCrewed, match_vehicle_crewed);
+
+    // CR 702.184a: Station trigger matcher — "Whenever ~ is stationed" fires
+    // when the station ability resolves for this specific Spacecraft.
+    r.insert(TriggerMode::Stationed, match_stationed);
 
     // CR 702.49a: Ninjutsu activation trigger
     r.insert(TriggerMode::NinjutsuActivated, match_ninjutsu_activated);
@@ -1905,6 +1909,18 @@ pub(super) fn match_vehicle_crewed(
     _state: &GameState,
 ) -> bool {
     matches!(event, GameEvent::VehicleCrewed { vehicle_id, .. } if *vehicle_id == source_id)
+}
+
+/// CR 702.184a: Matches when a Spacecraft's station ability resolves.
+/// Fires for "Whenever ~ is stationed" on the specific Spacecraft only —
+/// other Spacecraft being stationed never triggers this.
+pub(super) fn match_stationed(
+    event: &GameEvent,
+    _trigger: &TriggerDefinition,
+    source_id: ObjectId,
+    _state: &GameState,
+) -> bool {
+    matches!(event, GameEvent::Stationed { spacecraft_id, .. } if *spacecraft_id == source_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -3905,5 +3921,47 @@ mod tests {
             ObjectId(1),
             &state
         ));
+    }
+
+    // ---------------------------------------------------------------------------
+    // CR 702.184a: Station trigger matcher tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn stationed_matches_when_spacecraft_id_matches() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::Stationed);
+        let event = GameEvent::Stationed {
+            spacecraft_id: ObjectId(42),
+            creature_id: ObjectId(7),
+            counters_added: 3,
+        };
+        assert!(match_stationed(&event, &trigger, ObjectId(42), &state));
+    }
+
+    #[test]
+    fn stationed_rejects_when_spacecraft_id_differs() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::Stationed);
+        let event = GameEvent::Stationed {
+            spacecraft_id: ObjectId(99),
+            creature_id: ObjectId(7),
+            counters_added: 3,
+        };
+        // The trigger is bound to ObjectId(42), but the event is about ObjectId(99) —
+        // it must NOT fire (no cross-Spacecraft triggering).
+        assert!(!match_stationed(&event, &trigger, ObjectId(42), &state));
+    }
+
+    #[test]
+    fn stationed_rejects_non_station_event() {
+        let state = setup();
+        let trigger = make_trigger(TriggerMode::Stationed);
+        let event = GameEvent::VehicleCrewed {
+            vehicle_id: ObjectId(42),
+            creatures: vec![ObjectId(7)],
+        };
+        // Crew events don't trigger station listeners.
+        assert!(!match_stationed(&event, &trigger, ObjectId(42), &state));
     }
 }

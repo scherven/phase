@@ -1365,6 +1365,36 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             &creature_ids,
             &mut events,
         )?,
+        // CR 702.184a: Station activation from Priority — enters target-selection state.
+        (
+            WaitingFor::Priority { player },
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        ) => {
+            let p = *player;
+            handle_station_activation(state, p, spacecraft_id, &mut events)?
+        }
+        // CR 702.184a: Station creature selection — resolves the ability.
+        (
+            WaitingFor::StationTarget {
+                player,
+                spacecraft_id,
+                eligible_creatures,
+            },
+            GameAction::ActivateStation {
+                spacecraft_id: _sid,
+                creature_id: Some(cid),
+            },
+        ) => handle_station_resolution(
+            state,
+            *player,
+            *spacecraft_id,
+            eligible_creatures,
+            cid,
+            &mut events,
+        )?,
         (WaitingFor::Priority { player }, GameAction::Transform { object_id }) => {
             let p = *player;
             let obj = state
@@ -2546,6 +2576,179 @@ fn handle_crew_resolution(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::Crew,
         source_id: vehicle_id,
+    });
+
+    state.priority_passes.clear();
+    state.priority_pass_count = 0;
+    Ok(WaitingFor::Priority { player })
+}
+
+// ---------------------------------------------------------------------------
+// CR 702.184a: Station — keyword action with per-card dispatch (mirrors Crew)
+// ---------------------------------------------------------------------------
+
+/// CR 702.184a: Activate a Spacecraft's station ability from Priority.
+/// Per CR 702.184a: "Activate only as a sorcery." — the activation is rejected
+/// outside the active player's main phase, empty stack, own priority.
+fn handle_station_activation(
+    state: &mut GameState,
+    player: PlayerId,
+    spacecraft_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let obj = state
+        .objects
+        .get(&spacecraft_id)
+        .ok_or_else(|| EngineError::InvalidAction("Spacecraft not found".to_string()))?;
+
+    if obj.zone != Zone::Battlefield {
+        return Err(EngineError::InvalidAction(
+            "Spacecraft is not on the battlefield".to_string(),
+        ));
+    }
+    if obj.controller != player {
+        return Err(EngineError::InvalidAction(
+            "You don't control this Spacecraft".to_string(),
+        ));
+    }
+    if !obj
+        .keywords
+        .iter()
+        .any(|k| matches!(k, crate::types::keywords::Keyword::Station))
+    {
+        return Err(EngineError::InvalidAction(
+            "Object has no Station keyword".to_string(),
+        ));
+    }
+
+    // CR 702.184a: "Activate only as a sorcery."
+    if !super::restrictions::is_sorcery_speed_window(state, player) {
+        return Err(EngineError::ActionNotAllowed(
+            "Station may only be activated as a sorcery".to_string(),
+        ));
+    }
+
+    // CR 702.184a: "Tap another untapped creature you control" — the chosen
+    // creature is NOT the Spacecraft, is a creature, is untapped, and is
+    // controlled by the activating player.
+    let eligible_creatures: Vec<ObjectId> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|&id| {
+            id != spacecraft_id
+                && state
+                    .objects
+                    .get(&id)
+                    .map(|o| {
+                        o.controller == player
+                            && !o.tapped
+                            && o.card_types
+                                .core_types
+                                .contains(&crate::types::card_type::CoreType::Creature)
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    if eligible_creatures.is_empty() {
+        return Err(EngineError::ActionNotAllowed(
+            "No eligible creatures to tap for Station".to_string(),
+        ));
+    }
+
+    let _ = events; // No events emitted during activation (cost payment happens at resolution).
+    state.priority_passes.clear();
+    state.priority_pass_count = 0;
+    Ok(WaitingFor::StationTarget {
+        player,
+        spacecraft_id,
+        eligible_creatures,
+    })
+}
+
+/// CR 702.184a: Resolve Station by tapping the chosen creature and adding
+/// charge counters equal to the tapped creature's power.
+fn handle_station_resolution(
+    state: &mut GameState,
+    player: PlayerId,
+    spacecraft_id: ObjectId,
+    eligible_creatures: &[ObjectId],
+    creature_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    // CR 702.184a: Re-validate the chosen creature is still eligible (pending-effect
+    // time gap between activation and resolution). Mirrors the HarmonizeTap idiom.
+    if !eligible_creatures.contains(&creature_id) {
+        return Err(EngineError::InvalidAction(
+            "Creature not in eligible list".to_string(),
+        ));
+    }
+
+    let spacecraft = state
+        .objects
+        .get(&spacecraft_id)
+        .ok_or_else(|| EngineError::InvalidAction("Spacecraft no longer exists".to_string()))?;
+    if spacecraft.zone != Zone::Battlefield || spacecraft.controller != player {
+        return Err(EngineError::InvalidAction(
+            "Spacecraft is no longer valid for stationing".to_string(),
+        ));
+    }
+
+    let creature = state
+        .objects
+        .get(&creature_id)
+        .ok_or_else(|| EngineError::InvalidAction("Creature no longer exists".to_string()))?;
+    if creature.zone != Zone::Battlefield
+        || creature.controller != player
+        || creature.tapped
+        || !creature
+            .card_types
+            .core_types
+            .contains(&crate::types::card_type::CoreType::Creature)
+    {
+        return Err(EngineError::InvalidAction(
+            "Creature is no longer eligible for Station".to_string(),
+        ));
+    }
+
+    // CR 702.184a: Snapshot the creature's power BEFORE tapping — the counter
+    // count is determined at cost-payment time and is not affected by
+    // subsequent power changes. CR 702.184c lets static abilities modify the
+    // characteristic read; this implementation reads `power`, which is the
+    // default per the rule.
+    let paid_power = creature.power.unwrap_or(0).max(0) as u32;
+
+    // Tap the creature (CR 701.21a).
+    if let Some(obj) = state.objects.get_mut(&creature_id) {
+        obj.tapped = true;
+    }
+    events.push(GameEvent::PermanentTapped {
+        object_id: creature_id,
+        caused_by: None,
+    });
+
+    // CR 702.184a: Put charge counters equal to the tapped creature's power
+    // on the Spacecraft. Zero power → zero counters (still a legal resolution
+    // per CR 122.1: "any number" includes 0).
+    if paid_power > 0 {
+        super::effects::counters::add_counter_with_replacement(
+            state,
+            spacecraft_id,
+            crate::types::counter::CounterType::Generic("charge".to_string()),
+            paid_power,
+            events,
+        );
+    }
+
+    events.push(GameEvent::Stationed {
+        spacecraft_id,
+        creature_id,
+        counters_added: paid_power,
+    });
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::Station,
+        source_id: spacecraft_id,
     });
 
     state.priority_passes.clear();
@@ -8811,6 +9014,275 @@ mod crew_tests {
             }
             other => panic!("Expected CrewVehicle, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod station_tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::card_type::CoreType;
+    use crate::types::counter::CounterType;
+    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::player::PlayerId;
+    use crate::types::zones::Zone;
+
+    fn setup_game_at_main_phase() -> GameState {
+        let mut state = new_game(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        state
+    }
+
+    /// Set up a Spacecraft with the Station keyword and two eligible creatures.
+    fn setup_station_scenario() -> (GameState, ObjectId, ObjectId, ObjectId) {
+        let mut state = setup_game_at_main_phase();
+
+        let spacecraft_id = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Test Spacecraft".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&spacecraft_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Spacecraft".to_string());
+            obj.keywords.push(crate::types::keywords::Keyword::Station);
+        }
+
+        let power_5 = create_object(
+            &mut state,
+            CardId(301),
+            PlayerId(0),
+            "Power 5 Creature".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&power_5).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(5);
+            obj.toughness = Some(5);
+            obj.base_power = Some(5);
+            obj.base_toughness = Some(5);
+        }
+
+        let power_2 = create_object(
+            &mut state,
+            CardId(302),
+            PlayerId(0),
+            "Power 2 Creature".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&power_2).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            obj.base_power = Some(2);
+            obj.base_toughness = Some(2);
+        }
+
+        (state, spacecraft_id, power_5, power_2)
+    }
+
+    #[test]
+    fn station_activation_enters_station_target_state() {
+        let (mut state, spacecraft_id, p5, p2) = setup_station_scenario();
+
+        let result = apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap();
+
+        match result.waiting_for {
+            WaitingFor::StationTarget {
+                player,
+                spacecraft_id: sid,
+                eligible_creatures,
+            } => {
+                assert_eq!(player, PlayerId(0));
+                assert_eq!(sid, spacecraft_id);
+                assert!(eligible_creatures.contains(&p5));
+                assert!(eligible_creatures.contains(&p2));
+                // Spacecraft must NOT be eligible to tap itself
+                assert!(!eligible_creatures.contains(&spacecraft_id));
+            }
+            other => panic!("Expected StationTarget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn station_resolution_taps_creature_and_adds_counters_equal_to_power() {
+        let (mut state, spacecraft_id, p5, _) = setup_station_scenario();
+
+        apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap();
+
+        let result = apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: Some(p5),
+            },
+        )
+        .unwrap();
+
+        // Creature is tapped
+        assert!(state.objects.get(&p5).unwrap().tapped);
+        // Spacecraft has 5 charge counters (paid power)
+        let charge = state
+            .objects
+            .get(&spacecraft_id)
+            .unwrap()
+            .counters
+            .get(&CounterType::Generic("charge".to_string()))
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(charge, 5);
+        // Stationed event emitted
+        let stationed = result
+            .events
+            .iter()
+            .any(|e| matches!(e, GameEvent::Stationed { spacecraft_id: sid, creature_id: cid, counters_added: 5 } if *sid == spacecraft_id && *cid == p5));
+        assert!(stationed, "Stationed event must fire with correct payload");
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::Priority {
+                player: PlayerId(0)
+            }
+        ));
+    }
+
+    #[test]
+    fn station_activation_rejects_outside_sorcery_window() {
+        let (mut state, spacecraft_id, _, _) = setup_station_scenario();
+        // Move to declare attackers — no longer sorcery speed.
+        state.phase = Phase::DeclareAttackers;
+
+        let err = apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EngineError::ActionNotAllowed(_)));
+    }
+
+    #[test]
+    fn station_activation_rejects_on_opponents_turn() {
+        let (mut state, spacecraft_id, _, _) = setup_station_scenario();
+        state.active_player = PlayerId(1);
+
+        let err = apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EngineError::ActionNotAllowed(_)));
+    }
+
+    #[test]
+    fn station_cannot_tap_the_spacecraft_itself() {
+        let (mut state, spacecraft_id, _, _) = setup_station_scenario();
+
+        apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap();
+
+        // Attempt to select the spacecraft itself — rejected because it's not
+        // in the eligible list.
+        let err = apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: Some(spacecraft_id),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EngineError::InvalidAction(_)));
+    }
+
+    #[test]
+    fn station_rejects_tapped_creature_after_gap() {
+        let (mut state, spacecraft_id, p5, _) = setup_station_scenario();
+
+        apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap();
+
+        // Simulate an intervening effect that tapped p5 between activation
+        // and resolution (the HarmonizeTap-idiom revalidation scenario).
+        state.objects.get_mut(&p5).unwrap().tapped = true;
+
+        let err = apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: Some(p5),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EngineError::InvalidAction(_)));
+    }
+
+    #[test]
+    fn station_without_eligible_creature_rejected() {
+        let mut state = setup_game_at_main_phase();
+        let spacecraft_id = create_object(
+            &mut state,
+            CardId(400),
+            PlayerId(0),
+            "Lone Spacecraft".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&spacecraft_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Spacecraft".to_string());
+            obj.keywords.push(crate::types::keywords::Keyword::Station);
+        }
+
+        let err = apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, EngineError::ActionNotAllowed(_)));
     }
 }
 

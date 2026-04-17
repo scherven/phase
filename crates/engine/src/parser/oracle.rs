@@ -45,6 +45,7 @@ use super::oracle_modal::{
 };
 use super::oracle_replacement::parse_replacement_line;
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
+use super::oracle_spacecraft::parse_spacecraft_threshold_lines;
 use super::oracle_special::{
     attach_die_result_branches_to_chain, normalize_self_refs_for_static,
     parse_cumulative_upkeep_keyword, parse_defiler_cost_reduction, parse_escape_keyword,
@@ -221,16 +222,16 @@ fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Option<S
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ActivatedConstraintAst {
-    restrictions: Vec<ActivationRestriction>,
+pub(super) struct ActivatedConstraintAst {
+    pub(super) restrictions: Vec<ActivationRestriction>,
     /// CR 602.2: "Any player may activate this ability." — annotation recognized
     /// during parsing. Runtime enforcement is a future item; currently stripped
     /// so the sentence does not produce an `Unimplemented` fallback.
-    any_player_may_activate: bool,
+    pub(super) any_player_may_activate: bool,
 }
 
 impl ActivatedConstraintAst {
-    fn sorcery_speed(&self) -> bool {
+    pub(super) fn sorcery_speed(&self) -> bool {
         self.restrictions
             .contains(&ActivationRestriction::AsSorcery)
     }
@@ -498,6 +499,28 @@ pub fn parse_oracle_text(
         result.triggers.extend(triggers);
     }
 
+    // CR 702.184a + CR 721.2: Pre-parse Spacecraft "N+ | body" threshold lines
+    // into charge-counter-gated statics / triggers / activated abilities. The
+    // `Station` reminder-text paragraph is handled independently: the keyword
+    // itself comes from MTGJSON, and the creature-shift at the highest symbol
+    // (CR 721.2b) is synthesized post-parse in `database::synthesis::synthesize_station`
+    // where `face.power` / `face.toughness` are available for the base P/T.
+    let spacecraft_consumed = if subtypes.iter().any(|s| s == "Spacecraft") {
+        let (sc_statics, sc_triggers, sc_abilities, consumed) =
+            parse_spacecraft_threshold_lines(&lines, card_name);
+        result.statics.extend(sc_statics);
+        result.triggers.extend(sc_triggers);
+        for mut def in sc_abilities {
+            extract_cost_reduction_from_chain(&mut def);
+            result.abilities.push(def);
+        }
+        consumed
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+    } else {
+        std::collections::HashSet::new()
+    };
+
     // CR 207.2c + CR 601.2f: Pre-parse Strive ability word cost before main loop.
     // Strive lines have the form: "Strive — This spell costs {X} more to cast for each
     // target beyond the first." — extract the per-target surcharge cost.
@@ -530,6 +553,11 @@ pub fn parse_oracle_text(
         }
         // CR 714: Skip lines already consumed by the saga pre-parser.
         if saga_consumed.contains(&i) {
+            i += 1;
+            continue;
+        }
+        // CR 702.184a + CR 721: Skip Spacecraft threshold lines already consumed.
+        if spacecraft_consumed.contains(&i) {
             i += 1;
             continue;
         }
@@ -1656,7 +1684,7 @@ fn find_top_level_colon(line: &str) -> Option<usize> {
     None
 }
 
-fn strip_activated_constraints(text: &str) -> (String, ActivatedConstraintAst) {
+pub(super) fn strip_activated_constraints(text: &str) -> (String, ActivatedConstraintAst) {
     let mut remaining = text.trim().trim_end_matches('.').trim().to_string();
     let mut constraints = ActivatedConstraintAst::default();
 

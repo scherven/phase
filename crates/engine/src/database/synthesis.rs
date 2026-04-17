@@ -290,6 +290,105 @@ pub fn synthesize_job_select(face: &mut CardFace) {
 /// If the card has Changeling as a printed keyword, emit a characteristic-defining
 /// static ability that grants all creature types (expanded at runtime via
 /// `GameState::all_creature_types`).
+/// CR 702.184a + CR 721.2b: Synthesize Station's creature-at-threshold static.
+///
+/// The Station keyword's reminder text includes "It's an artifact creature at
+/// N+." (CR 721.2b). The threshold N is the highest station symbol printed on
+/// the card — the point at which the Spacecraft gains the Creature type and
+/// uses its printed P/T. We extract N from the parenthesized Station reminder
+/// paragraph (kept on `oracle_text` before `strip_reminder_text` eats it for
+/// the ability parser), then push a SelfRef static that:
+///
+/// - Adds `CoreType::Creature` (Layer 4 — CR 613.1d)
+/// - Sets power/toughness to the card's printed values (Layer 7b)
+///
+/// All gated by `StaticCondition::HasCounters { counter_type: "charge",
+/// minimum: N, maximum: None }`.
+///
+/// Non-battlefield zones automatically do not apply this (layer system only
+/// evaluates battlefield objects), matching CR 721.2c: while in any zone
+/// other than the battlefield, station cards do not have power or toughness.
+pub fn synthesize_station(face: &mut CardFace) {
+    if !face.keywords.iter().any(|k| matches!(k, Keyword::Station)) {
+        return;
+    }
+    let Some(oracle) = face.oracle_text.as_deref() else {
+        return;
+    };
+    let Some(threshold) = parse_station_creature_threshold(oracle) else {
+        return;
+    };
+    let (Some(PtValue::Fixed(power)), Some(PtValue::Fixed(toughness))) =
+        (face.power.as_ref(), face.toughness.as_ref())
+    else {
+        // Station cards always have printed P/T per CR 721.1; skip variable P/T.
+        return;
+    };
+    let power = *power;
+    let toughness = *toughness;
+
+    let condition = crate::types::ability::StaticCondition::HasCounters {
+        counter_type: "charge".to_string(),
+        minimum: threshold,
+        maximum: None,
+    };
+    face.static_abilities.push(
+        StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .condition(condition)
+            .modifications(vec![
+                ContinuousModification::AddType {
+                    core_type: CoreType::Creature,
+                },
+                ContinuousModification::SetPower { value: power },
+                ContinuousModification::SetToughness { value: toughness },
+            ])
+            .description(format!(
+                "CR 721.2b: It's an artifact creature at {threshold}+"
+            )),
+    );
+}
+
+/// Parse `N` from the Station reminder clause "It's an artifact creature at N+."
+/// Uses `scan_at_word_boundaries` with a nom combinator over the apostrophe
+/// variants + `parse_number` + `tag("+")` so detection is fully composable.
+/// Returns `None` if the clause is missing (allowed — some Spacecraft omit
+/// the creature shift entirely, and their creature-at-N+ semantics come from
+/// striation P/T boxes not exposed in Oracle text).
+fn parse_station_creature_threshold(oracle: &str) -> Option<u32> {
+    use crate::parser::oracle_nom::primitives as nom_primitives;
+    use nom::branch::alt;
+    use nom::bytes::complete::tag;
+    use nom::combinator::value;
+    use nom::sequence::preceded;
+    use nom::Parser;
+
+    // Normalize the parenthesized reminder text to plain prose by replacing
+    // open/close parens with spaces. `scan_at_word_boundaries` advances on
+    // ASCII spaces, so this hoists the `It's an artifact creature at N+`
+    // phrase onto a word boundary regardless of whether it appeared inside
+    // a reminder paragraph.
+    let normalized: String = oracle
+        .chars()
+        .map(|c| if c == '(' || c == ')' { ' ' } else { c })
+        .collect();
+    let lower = normalized.to_lowercase();
+    nom_primitives::scan_at_word_boundaries(&lower, |i| {
+        preceded(
+            alt((
+                value((), tag("it's an artifact creature at ")),
+                value((), tag("it\u{2019}s an artifact creature at ")),
+            )),
+            |inner| {
+                let (rest, n) = nom_primitives::parse_number(inner)?;
+                let (rest, _) = tag("+")(rest)?;
+                Ok((rest, n))
+            },
+        )
+        .parse(i)
+    })
+}
+
 pub fn synthesize_changeling_cda(face: &mut CardFace) {
     if face
         .keywords
@@ -688,6 +787,10 @@ pub fn synthesize_all(face: &mut CardFace) {
     synthesize_entwine(face);
     synthesize_siege_intrinsics(face);
     synthesize_tribute_intrinsics(face);
+    // CR 702.184a + CR 721: Spacecraft creature-shift at the reminder-text
+    // threshold. Must run after Oracle parsing so `face.power`/`face.toughness`
+    // are in place and `Keyword::Station` has been normalized.
+    synthesize_station(face);
 }
 
 /// CR 310.11a + CR 310.11b: Synthesize the two intrinsic abilities every Siege has:
@@ -1504,5 +1607,107 @@ mod siege_synthesis_tests {
         synthesize_siege_intrinsics(&mut face);
         assert_eq!(face.triggers.len(), first_trigger_count);
         assert_eq!(face.replacements.len(), first_replacement_count);
+    }
+}
+
+#[cfg(test)]
+mod station_synthesis_tests {
+    use super::*;
+    use crate::types::ability::{ContinuousModification, StaticCondition, TargetFilter};
+    use crate::types::card_type::CoreType;
+    use crate::types::statics::StaticMode;
+
+    fn spacecraft_face_with_reminder() -> CardFace {
+        let mut face = CardFace {
+            name: "Uthros Research Craft".to_string(),
+            oracle_text: Some(
+                "Station (Tap another creature you control: Put charge counters equal to its power on this Spacecraft. Station only as a sorcery. It's an artifact creature at 12+.)\n3+ | Whenever you cast an artifact spell, draw a card. Put a charge counter on this Spacecraft.\n12+ | Flying\nThis Spacecraft gets +1/+0 for each artifact you control.".to_string(),
+            ),
+            power: Some(PtValue::Fixed(0)),
+            toughness: Some(PtValue::Fixed(8)),
+            keywords: vec![Keyword::Station],
+            ..CardFace::default()
+        };
+        face.card_type.core_types.push(CoreType::Artifact);
+        face.card_type.subtypes.push("Spacecraft".to_string());
+        face
+    }
+
+    #[test]
+    fn synthesize_station_adds_creature_shift_at_threshold() {
+        let mut face = spacecraft_face_with_reminder();
+        synthesize_station(&mut face);
+        let sd = face
+            .static_abilities
+            .iter()
+            .find(|s| {
+                s.mode == StaticMode::Continuous
+                    && s.modifications.iter().any(|m| {
+                        matches!(
+                            m,
+                            ContinuousModification::AddType {
+                                core_type: CoreType::Creature,
+                            }
+                        )
+                    })
+            })
+            .expect("AddType(Creature) static must be synthesized");
+        assert_eq!(sd.affected, Some(TargetFilter::SelfRef));
+        assert!(matches!(
+            sd.condition,
+            Some(StaticCondition::HasCounters {
+                ref counter_type,
+                minimum: 12,
+                maximum: None,
+            }) if counter_type == "charge"
+        ));
+        // Exactly three modifications: AddType + SetPower(0) + SetToughness(8)
+        assert_eq!(sd.modifications.len(), 3);
+        assert!(sd
+            .modifications
+            .iter()
+            .any(|m| matches!(m, ContinuousModification::SetPower { value: 0 })));
+        assert!(sd
+            .modifications
+            .iter()
+            .any(|m| matches!(m, ContinuousModification::SetToughness { value: 8 })));
+    }
+
+    #[test]
+    fn synthesize_station_no_op_without_keyword() {
+        let mut face = spacecraft_face_with_reminder();
+        face.keywords.clear();
+        let before = face.static_abilities.len();
+        synthesize_station(&mut face);
+        assert_eq!(face.static_abilities.len(), before);
+    }
+
+    #[test]
+    fn synthesize_station_no_op_without_reminder() {
+        let mut face = spacecraft_face_with_reminder();
+        face.oracle_text = Some("Station\n8+ | Flying".to_string());
+        let before = face.static_abilities.len();
+        synthesize_station(&mut face);
+        // No reminder phrase → no creature-shift static added.
+        assert_eq!(face.static_abilities.len(), before);
+    }
+
+    #[test]
+    fn synthesize_station_supports_unicode_apostrophe() {
+        let mut face = spacecraft_face_with_reminder();
+        face.oracle_text =
+            Some("Station (It\u{2019}s an artifact creature at 7+.)\n7+ | Flying".to_string());
+        synthesize_station(&mut face);
+        let added = face.static_abilities.iter().any(|s| {
+            s.modifications.iter().any(|m| {
+                matches!(
+                    m,
+                    ContinuousModification::AddType {
+                        core_type: CoreType::Creature,
+                    }
+                )
+            })
+        });
+        assert!(added);
     }
 }

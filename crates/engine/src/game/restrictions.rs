@@ -340,6 +340,32 @@ fn activation_restriction_applies(
                 .unwrap_or(0);
             count >= *minimum && maximum.is_none_or(|max| count <= max)
         }
+        // CR 721.2a: "{N+}[abilities]" gate — activatable when the source has `minimum`
+        // (and at most `maximum`, if specified) counters of `counter_type`.
+        // Dispatches on counter_type string mirroring `StaticCondition::HasCounters`
+        // evaluation in `layers.rs` so typed variants (+1/+1, -1/-1, loyalty, stun)
+        // resolve the correct CounterType key rather than falling through to Generic.
+        ActivationRestriction::CounterThreshold {
+            counter_type,
+            minimum,
+            maximum,
+        } => {
+            let count = state
+                .objects
+                .get(&source_id)
+                .map(|obj| {
+                    let key = match counter_type.as_str() {
+                        "+1/+1" | "plus1plus1" => CounterType::Plus1Plus1,
+                        "-1/-1" | "minus1minus1" => CounterType::Minus1Minus1,
+                        "loyalty" => CounterType::Loyalty,
+                        "stun" => CounterType::Stun,
+                        other => CounterType::Generic(other.to_string()),
+                    };
+                    obj.counters.get(&key).copied().unwrap_or(0)
+                })
+                .unwrap_or(0);
+            count >= *minimum && maximum.is_none_or(|max| count <= max)
+        }
     }
 }
 
@@ -676,7 +702,10 @@ fn evaluate_condition(
 }
 
 /// CR 307.1: Sorcery-speed timing — main phase, stack empty, active player has priority.
-fn is_sorcery_speed_window(state: &crate::types::game_state::GameState, player: PlayerId) -> bool {
+pub(crate) fn is_sorcery_speed_window(
+    state: &crate::types::game_state::GameState,
+    player: PlayerId,
+) -> bool {
     matches!(state.phase, Phase::PreCombatMain | Phase::PostCombatMain)
         && state.stack.is_empty()
         && state.active_player == player

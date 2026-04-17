@@ -327,6 +327,12 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             crew_power,
             eligible_creatures,
         } => crew_vehicle_candidates(state, *player, *vehicle_id, *crew_power, eligible_creatures),
+        // CR 702.184a: Offer each eligible creature as the station cost payer.
+        WaitingFor::StationTarget {
+            player,
+            spacecraft_id,
+            eligible_creatures,
+        } => station_target_candidates(*player, *spacecraft_id, eligible_creatures),
         WaitingFor::TapCreaturesForManaAbility {
             player,
             count,
@@ -1502,6 +1508,45 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
         }
     }
 
+    // CR 702.184a: Station actions for Spacecraft (keyword action, not
+    // ActivateAbility). Sorcery-speed only — guarded by the priority arm of
+    // `handle_station_activation`; duplicating the check here keeps the AI
+    // search tree free of illegal candidates.
+    if crate::game::restrictions::is_sorcery_speed_window(state, player) {
+        for &obj_id in &state.battlefield {
+            if let Some(obj) = state.objects.get(&obj_id) {
+                if obj.controller != player {
+                    continue;
+                }
+                if !obj
+                    .keywords
+                    .iter()
+                    .any(|k| matches!(k, crate::types::keywords::Keyword::Station))
+                {
+                    continue;
+                }
+                let has_eligible = state.battlefield.iter().any(|&cid| {
+                    cid != obj_id
+                        && state.objects.get(&cid).is_some_and(|c| {
+                            c.controller == player
+                                && !c.tapped
+                                && c.card_types.core_types.contains(&CoreType::Creature)
+                        })
+                });
+                if has_eligible {
+                    actions.push(candidate(
+                        GameAction::ActivateStation {
+                            spacecraft_id: obj_id,
+                            creature_id: None,
+                        },
+                        TacticalClass::Utility,
+                        Some(player),
+                    ));
+                }
+            }
+        }
+    }
+
     // NOTE: TapLandForMana is intentionally excluded from priority candidates.
     // The engine auto-taps mana sources during mana payment (pay_mana_cost → auto_tap_mana_sources),
     // so the AI never needs to manually tap lands during priority. Including them
@@ -2018,6 +2063,28 @@ fn crew_vehicle_candidates(
         }
     }
     actions
+}
+
+/// CR 702.184a: Offer each eligible creature as the creature tapped to station.
+/// Each creature is an independent candidate — the player picks exactly one.
+fn station_target_candidates(
+    player: PlayerId,
+    spacecraft_id: crate::types::identifiers::ObjectId,
+    eligible_creatures: &[crate::types::identifiers::ObjectId],
+) -> Vec<CandidateAction> {
+    eligible_creatures
+        .iter()
+        .map(|&creature_id| {
+            candidate(
+                GameAction::ActivateStation {
+                    spacecraft_id,
+                    creature_id: Some(creature_id),
+                },
+                TacticalClass::Utility,
+                Some(player),
+            )
+        })
+        .collect()
 }
 
 fn combinations(

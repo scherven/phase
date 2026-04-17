@@ -133,6 +133,7 @@ pub enum KeywordKind {
     Transmute,
     Cleave,
     Undaunted,
+    Station,
     Unknown,
 }
 
@@ -567,6 +568,13 @@ pub enum Keyword {
     Cleave(ManaCost),
     /// CR 702.125a: Undaunted — costs {1} less for each opponent.
     Undaunted,
+    /// CR 702.184a: Station — "Tap another untapped creature you control:
+    /// Put a number of charge counters on this permanent equal to the tapped
+    /// creature's power. Activate only as a sorcery." The keyword is fixed
+    /// (no parameter) — the full semantics come from the rule text. Runtime
+    /// activation is handled via `GameAction::ActivateStation`, not through
+    /// the generic activated-ability dispatch.
+    Station,
 
     /// Fallback for unrecognized keywords.
     Unknown(String),
@@ -686,6 +694,7 @@ impl Keyword {
             Keyword::Transmute(_) => KeywordKind::Transmute,
             Keyword::Cleave(_) => KeywordKind::Cleave,
             Keyword::Undaunted => KeywordKind::Undaunted,
+            Keyword::Station => KeywordKind::Station,
             Keyword::Unknown(_) => KeywordKind::Unknown,
             _ => KeywordKind::Unknown,
         }
@@ -1184,6 +1193,8 @@ impl FromStr for Keyword {
             "jump-start" | "jumpstart" => Ok(Keyword::JumpStart),
             "cipher" => Ok(Keyword::Cipher),
             "undaunted" => Ok(Keyword::Undaunted),
+            // CR 702.184a: Station is a fixed activated ability — no parameter.
+            "station" => Ok(Keyword::Station),
             // CR 702.14: Landwalk variants — MTGJSON sends "Islandwalk" etc. as keyword names.
             "islandwalk" => Ok(Keyword::Landwalk("Island".to_string())),
             "swampwalk" => Ok(Keyword::Landwalk("Swamp".to_string())),
@@ -1551,6 +1562,8 @@ fn keyword_from_tagged(variant: &str, data: &serde_json::Value) -> Result<Keywor
         "Transmute" => Ok(Keyword::Transmute(mana(data)?)),
         "Cleave" => Ok(Keyword::Cleave(mana(data)?)),
         "Undaunted" => Ok(Keyword::Undaunted),
+        // CR 702.184a: Station — fixed activated ability keyword.
+        "Station" => Ok(Keyword::Station),
         "Unknown" => Ok(Keyword::Unknown(data.as_str().unwrap_or("").to_string())),
         _ => Ok(Keyword::Unknown(format!("{variant}:{data}"))),
     }

@@ -722,6 +722,15 @@ pub enum WaitingFor {
         /// Untapped creatures the player controls (excluding the Vehicle itself).
         eligible_creatures: Vec<ObjectId>,
     },
+    /// CR 702.184a: Player must pick another untapped creature they control
+    /// to tap as the station ability's cost. The chosen creature's power
+    /// becomes the number of charge counters added to the Spacecraft.
+    StationTarget {
+        player: PlayerId,
+        spacecraft_id: ObjectId,
+        /// Other untapped creatures the player controls (excluding the Spacecraft itself).
+        eligible_creatures: Vec<ObjectId>,
+    },
     ScryChoice {
         player: PlayerId,
         cards: Vec<ObjectId>,
@@ -1359,6 +1368,7 @@ impl WaitingFor {
             | WaitingFor::ExploreChoice { player, .. }
             | WaitingFor::EquipTarget { player, .. }
             | WaitingFor::CrewVehicle { player, .. }
+            | WaitingFor::StationTarget { player, .. }
             | WaitingFor::ScryChoice { player, .. }
             | WaitingFor::DigChoice { player, .. }
             | WaitingFor::SurveilChoice { player, .. }

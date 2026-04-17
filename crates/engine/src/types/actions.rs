@@ -65,6 +65,15 @@ pub enum GameAction {
         vehicle_id: ObjectId,
         creature_ids: Vec<ObjectId>,
     },
+    /// CR 702.184a: Activate a Spacecraft's station ability.
+    /// During Priority: creature_id is None (triggers state transition to
+    /// `WaitingFor::StationTarget`). During StationTarget: creature_id is
+    /// `Some(id)` — the single creature being tapped to station.
+    ActivateStation {
+        spacecraft_id: ObjectId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creature_id: Option<ObjectId>,
+    },
     Transform {
         object_id: ObjectId,
     },

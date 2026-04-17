@@ -3901,6 +3901,8 @@ pub enum EffectKind {
     Equip,
     /// CR 702.122a: Engine-level crew action (not via an Effect handler).
     Crew,
+    /// CR 702.184a: Engine-level station action (not via an Effect handler).
+    Station,
     /// Trigger-condition placeholders — emitters not yet implemented.
     Reveal,
     Transform,
@@ -4142,6 +4144,17 @@ pub enum ActivationRestriction {
     /// CR 711.2a + CR 711.2b: Leveler counter range — ability can only be activated when
     /// the source has at least `minimum` level counters and at most `maximum` (if specified).
     LevelCounterRange {
+        minimum: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        maximum: Option<u32>,
+    },
+    /// CR 721.2a: Counter-threshold gate — ability is present only while the source
+    /// has `minimum` (and at most `maximum`, if specified) counters of `counter_type`.
+    /// Used for Spacecraft "N+ |" threshold lines (`counter_type = "charge"`) and
+    /// any future pipe-delimited threshold layout that gates activated abilities.
+    /// Generalization of `LevelCounterRange` across arbitrary counter types.
+    CounterThreshold {
+        counter_type: String,
         minimum: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         maximum: Option<u32>,

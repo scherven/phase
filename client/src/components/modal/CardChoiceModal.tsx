@@ -31,6 +31,7 @@ type HarmonizeTapChoice = Extract<WaitingFor, { type: "HarmonizeTapChoice" }>;
 type ChooseLegend = Extract<WaitingFor, { type: "ChooseLegend" }>;
 type ManifestDreadChoice = Extract<WaitingFor, { type: "ManifestDreadChoice" }>;
 type CrewVehicle = Extract<WaitingFor, { type: "CrewVehicle" }>;
+type StationTarget = Extract<WaitingFor, { type: "StationTarget" }>;
 const CHOICE_CARD_IMAGE_CLASS = "";
 const SCRY_CARD_IMAGE_CLASS = "";
 
@@ -126,6 +127,9 @@ export function CardChoiceModal() {
     case "CrewVehicle":
       if (!canActForWaitingState) return null;
       return <CrewModal data={waitingFor.data} />;
+    case "StationTarget":
+      if (!canActForWaitingState) return null;
+      return <StationTargetModal data={waitingFor.data} />;
     case "ExileFromGraveyardForCost":
       if (!canActForWaitingState) return null;
       return <ExileFromGraveyardModal data={waitingFor.data} />;
@@ -1032,6 +1036,83 @@ function CrewModal({ data }: { data: CrewVehicle["data"] }) {
                 <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-blue-500/20">
                   <span className="rounded-full bg-blue-500/90 px-3 py-1 text-xs font-bold text-white">
                     Crew ({obj.power ?? 0})
+                  </span>
+                </div>
+              )}
+            </motion.button>
+          );
+        })}
+      </ScrollableCardStrip>
+    </ChoiceOverlay>
+  );
+}
+
+// ── Station Target Modal ────────────────────────────────────────────────────
+// CR 702.184a: Pick exactly one untapped creature you control to tap as the
+// station ability's cost. Charge counters added = that creature's power.
+
+function StationTargetModal({ data }: { data: StationTarget["data"] }) {
+  const dispatch = useGameDispatch();
+  const objects = useGameStore((s) => s.gameState?.objects);
+  const inspectObject = useUiStore((s) => s.inspectObject);
+  const [selected, setSelected] = useState<ObjectId | null>(null);
+
+  const handleConfirm = useCallback(() => {
+    if (selected == null) return;
+    dispatch({
+      type: "ActivateStation",
+      data: { spacecraft_id: data.spacecraft_id, creature_id: selected },
+    });
+  }, [dispatch, data.spacecraft_id, selected]);
+
+  if (!objects) return null;
+
+  const selectedPower = selected != null
+    ? Math.max(objects[selected]?.power ?? 0, 0)
+    : 0;
+
+  return (
+    <ChoiceOverlay
+      title="Station"
+      subtitle="Tap another untapped creature you control. Charge counters added equals its power."
+      footer={
+        <ConfirmButton
+          onClick={handleConfirm}
+          disabled={selected == null}
+          label={selected != null ? `Station (+${selectedPower} charge)` : "Station"}
+        />
+      }
+    >
+      <ScrollableCardStrip>
+        {data.eligible_creatures.map((id, index) => {
+          const obj = objects[id];
+          if (!obj) return null;
+          const isSelected = selected === id;
+          return (
+            <motion.button
+              key={id}
+              className={`relative rounded-lg transition ${
+                isSelected
+                  ? "z-10 ring-2 ring-blue-400/80"
+                  : "hover:shadow-[0_0_16px_rgba(200,200,255,0.3)]"
+              }`}
+              initial={{ opacity: 0, y: 60, scale: 0.85 }}
+              animate={{ opacity: isSelected ? 1 : 0.7, y: 0, scale: 1 }}
+              transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
+              whileHover={{ scale: 1.05, y: -6 }}
+              onClick={() => setSelected(id)}
+              onMouseEnter={() => inspectObject(id)}
+              onMouseLeave={() => inspectObject(null)}
+            >
+              <CardImage
+                cardName={obj.name}
+                size="normal"
+                className={CHOICE_CARD_IMAGE_CLASS}
+              />
+              {isSelected && (
+                <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-blue-500/20">
+                  <span className="rounded-full bg-blue-500/90 px-3 py-1 text-xs font-bold text-white">
+                    Station (+{Math.max(obj.power ?? 0, 0)})
                   </span>
                 </div>
               )}
