@@ -23,9 +23,10 @@ export class TauriAdapter implements EngineAdapter {
   private invoke: InvokeFn | null = null;
 
   async initialize(): Promise<void> {
-    // Dynamic import avoids bundling @tauri-apps/api in web builds.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tauriCore = await (Function('return import("@tauri-apps/api/core")')() as Promise<any>);
+    // Dynamic import so Vite code-splits @tauri-apps/api/core into a lazy
+    // chunk that only loads inside Tauri. Avoids the `new Function(...)` hack
+    // that would require 'unsafe-eval' in the Tauri CSP.
+    const tauriCore = await import("@tauri-apps/api/core");
     this.invoke = tauriCore.invoke as InvokeFn;
   }
 

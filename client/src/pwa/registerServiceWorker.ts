@@ -1,4 +1,5 @@
 import { registerSW } from "virtual:pwa-register";
+import { isTauri } from "../services/sidecar";
 import { markPendingAutoUpdate } from "./updateMarker";
 import {
   setUpdateStatus,
@@ -73,7 +74,7 @@ function setActivatingStatus(): void {
 }
 
 export function checkForServiceWorkerUpdate(): boolean {
-  if (import.meta.env.DEV || !("serviceWorker" in navigator) || !manualCheckForUpdate) {
+  if (import.meta.env.DEV || isTauri() || !("serviceWorker" in navigator) || !manualCheckForUpdate) {
     pushUpdateDebug("Manual update check ignored (no service worker support or updater not ready).", "warn");
     return false;
   }
@@ -96,7 +97,9 @@ export function checkForServiceWorkerUpdate(): boolean {
 }
 
 export function registerServiceWorker() {
-  if (import.meta.env.DEV || !("serviceWorker" in navigator) || isRegistered) {
+  // Tauri serves the app from a custom scheme (tauri.localhost / tauri://) where
+  // service workers don't register reliably; updates ship via the Tauri updater instead.
+  if (import.meta.env.DEV || isTauri() || !("serviceWorker" in navigator) || isRegistered) {
     return;
   }
 
