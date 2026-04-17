@@ -1301,6 +1301,9 @@ fn evaluate_replacement_condition(
             let turn_ok = match active_player_req {
                 Some(ControllerRef::You) => state.active_player == controller,
                 Some(ControllerRef::Opponent) => state.active_player != controller,
+                // CR 109.4: TargetPlayer active-player gate is nonsensical at
+                // replacement-check time (no ability context). Fail closed.
+                Some(ControllerRef::TargetPlayer) => false,
                 None => true,
             };
             if !turn_ok {
@@ -1321,6 +1324,9 @@ fn evaluate_replacement_condition(
             let turn_ok = match active_player_req {
                 Some(ControllerRef::You) => state.active_player == controller,
                 Some(ControllerRef::Opponent) => state.active_player != controller,
+                // CR 109.4: TargetPlayer active-player gate is nonsensical at
+                // replacement-check time (no ability context). Fail closed.
+                Some(ControllerRef::TargetPlayer) => false,
                 None => true,
             };
             if !turn_ok {
@@ -1356,6 +1362,11 @@ fn evaluate_replacement_condition(
                         .find(|p| p.id != controller && !p.is_eliminated)
                         .map_or(controller, |p| p.id)
                 }
+                // CR 109.4: Target-player scope has no meaning for a replacement
+                // damage-history condition (no ability-target context here).
+                // Fall back to the replacement controller; parser never emits
+                // this variant in replacement conditions.
+                ControllerRef::TargetPlayer => controller,
             };
             // Check if the affected object was dealt damage this turn by a source
             // controlled by the required controller.
@@ -1533,6 +1544,10 @@ pub fn find_applicable_replacements(
                                 crate::types::ability::ControllerRef::Opponent => {
                                     *owner != obj.controller
                                 }
+                                // CR 109.4: Target-player scope has no meaning
+                                // for static token-creation replacements. Fail
+                                // closed — parser never emits this variant here.
+                                crate::types::ability::ControllerRef::TargetPlayer => false,
                             };
                             if !matches {
                                 continue;
@@ -1552,6 +1567,9 @@ pub fn find_applicable_replacements(
                             Some(crate::types::ability::ControllerRef::You) => {
                                 *player_id == obj.controller
                             }
+                            // CR 109.4: Target-player scope has no meaning at
+                            // replacement-application time. Fail closed.
+                            Some(crate::types::ability::ControllerRef::TargetPlayer) => false,
                             None => {
                                 // Default: controller-only (backward compatible)
                                 *player_id == obj.controller

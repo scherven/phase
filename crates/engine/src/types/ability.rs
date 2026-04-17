@@ -954,6 +954,13 @@ pub enum DamageKindFilter {
 pub enum ControllerRef {
     You,
     Opponent,
+    /// CR 109.4 + CR 115.1: Filter controller is the player chosen as a target
+    /// of the enclosing ability (e.g., "each creature target player controls").
+    /// At resolution time, `filter_inner` reads the first `TargetRef::Player`
+    /// from `ability.targets`. At target-selection time, `collect_target_slots`
+    /// surfaces a companion `TargetFilter::Player` slot so the player is chosen
+    /// as part of CR 601.2c / CR 603.3d target declaration.
+    TargetPlayer,
 }
 
 /// CR 700.5: Qualities that can be shared across multi-target selections.
@@ -4820,6 +4827,10 @@ pub enum TriggerConstraint {
     NthDrawThisTurn { n: u32 },
     /// "At the beginning of each opponent's [phase]"
     OnlyDuringOpponentsTurn,
+    /// CR 505.1: Trigger fires only during the controller's main phase
+    /// (precombat or postcombat). Used by cards that print "during your
+    /// main phase" as a trigger timing restriction.
+    OnlyDuringYourMainPhase,
     /// CR 716.2a: "When this Class becomes level N" — fire only at the specified level.
     AtClassLevel { level: u8 },
     /// CR 603.4: "This ability triggers only the first N times each turn." — generalizes

@@ -136,6 +136,9 @@ fn collect_player_targets(
             .filter(|p| match controller {
                 Some(ControllerRef::You) => p.id == ability.controller,
                 Some(ControllerRef::Opponent) => p.id != ability.controller,
+                // CR 109.4: TargetPlayer is ambiguous here (phase_out targets are
+                // resolved from ability.targets directly); fail closed.
+                Some(ControllerRef::TargetPlayer) => false,
                 None => true,
             })
             .map(|p| p.id)

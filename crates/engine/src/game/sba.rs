@@ -197,6 +197,9 @@ fn static_affects_player(
         Some(TargetFilter::Typed(TypedFilter { controller, .. })) => match controller {
             Some(ControllerRef::You) => source_controller == player_id,
             Some(ControllerRef::Opponent) => source_controller != player_id,
+            // CR 109.4: TargetPlayer has no meaning for static-ability scoping
+            // against a player. Fail closed.
+            Some(ControllerRef::TargetPlayer) => false,
             None => true,
         },
         Some(TargetFilter::Player) => true,

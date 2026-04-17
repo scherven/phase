@@ -1445,6 +1445,19 @@ fn parse_controller_suffix(text: &str) -> Option<(ControllerRef, usize)> {
 
     // Additional patterns via nom tag().
     if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("target player controls")
+            .parse(trimmed)
+    {
+        // CR 109.4 + CR 115.1: "target player controls" → ControllerRef::TargetPlayer.
+        // The enclosing ability gains a companion TargetFilter::Player target slot
+        // (surfaced by collect_target_slots) so the player is chosen at target
+        // declaration; filter_inner resolves against ability.targets at match time.
+        return Some((
+            ControllerRef::TargetPlayer,
+            leading_ws + trimmed.len() - rest.len(),
+        ));
+    }
+    if let Ok((rest, _)) =
         tag::<_, _, nom_language::error::VerboseError<&str>>("that player controls").parse(trimmed)
     {
         // "that player controls" → ControllerRef::You, resolved against scope_player
@@ -3635,6 +3648,45 @@ mod tests {
         assert_eq!(
             f,
             TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::Opponent))
+        );
+        assert_eq!(rest.trim(), "");
+    }
+
+    /// CR 109.4 + CR 115.1: "other creature target player controls" produces
+    /// a filter scoped to a chosen player target. The companion
+    /// `TargetFilter::Player` target slot is surfaced by `collect_target_slots`
+    /// in the engine at target-declaration time; this parser test just verifies
+    /// the filter's controller marker is `TargetPlayer` and the `other` modifier
+    /// is preserved.
+    #[test]
+    fn other_creature_target_player_controls() {
+        let (f, rest) = parse_type_phrase("other creature target player controls");
+        match f {
+            TargetFilter::Typed(ref tf) => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert_eq!(tf.controller, Some(ControllerRef::TargetPlayer));
+                assert!(
+                    tf.properties
+                        .iter()
+                        .any(|p| matches!(p, FilterProp::Another)),
+                    "expected `Another` property for `other` modifier, got {:?}",
+                    tf.properties
+                );
+            }
+            other => panic!("Expected Typed filter, got {:?}", other),
+        }
+        assert_eq!(rest.trim(), "");
+    }
+
+    /// Sibling coverage: bare "creatures target player controls" without
+    /// "each other" prefix. Confirms the controller parser is independent of
+    /// modifier words.
+    #[test]
+    fn creatures_target_player_controls() {
+        let (f, rest) = parse_type_phrase("creatures target player controls");
+        assert_eq!(
+            f,
+            TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::TargetPlayer))
         );
         assert_eq!(rest.trim(), "");
     }

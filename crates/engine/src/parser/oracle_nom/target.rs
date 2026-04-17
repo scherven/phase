@@ -102,12 +102,19 @@ fn parse_color_prefix(input: &str) -> OracleResult<'_, ManaColor> {
     Ok((rest, c))
 }
 
-/// Parse a controller suffix: "you control", "an opponent controls".
+/// Parse a controller suffix: "you control", "an opponent controls",
+/// "target player controls".
+///
+/// CR 109.4 + CR 115.1: "target player controls" generates a filter referencing
+/// a chosen player target; the enclosing ability must surface a companion
+/// TargetFilter::Player slot so the player is selected as part of target
+/// declaration.
 pub fn parse_controller_suffix(input: &str) -> OracleResult<'_, ControllerRef> {
     alt((
         value(ControllerRef::You, tag("you control")),
         value(ControllerRef::Opponent, tag("an opponent controls")),
         value(ControllerRef::Opponent, tag("your opponents control")),
+        value(ControllerRef::TargetPlayer, tag("target player controls")),
     ))
     .parse(input)
 }

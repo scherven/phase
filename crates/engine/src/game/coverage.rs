@@ -326,6 +326,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             let label = match ctrl {
                 ControllerRef::You => "you",
                 ControllerRef::Opponent => "opponent",
+                ControllerRef::TargetPlayer => "target player",
             };
             parts.push(label.into());
         } else {
@@ -387,6 +388,7 @@ fn fmt_controller(ctrl: &ControllerRef) -> String {
     match ctrl {
         ControllerRef::You => "you control",
         ControllerRef::Opponent => "opponent controls",
+        ControllerRef::TargetPlayer => "target player controls",
     }
     .into()
 }

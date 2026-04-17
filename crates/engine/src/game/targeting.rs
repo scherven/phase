@@ -61,6 +61,10 @@ pub fn find_legal_targets(
                 let include = match controller {
                     Some(ControllerRef::Opponent) => is_opponent,
                     Some(ControllerRef::You) => !is_opponent,
+                    // CR 109.4: TargetPlayer is nonsensical when enumerating target
+                    // candidates (the "target player" is what's being chosen here).
+                    // Fail closed.
+                    Some(ControllerRef::TargetPlayer) => false,
                     None => true,
                 };
                 if include {

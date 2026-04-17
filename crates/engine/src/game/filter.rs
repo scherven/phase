@@ -234,6 +234,24 @@ fn filter_inner(
                             return false;
                         }
                     }
+                    // CR 109.4 + CR 115.1: "target player controls" — filter scope
+                    // is the player chosen as a target of the enclosing ability.
+                    // Read the first TargetRef::Player from ability.targets. Fail
+                    // closed if no player target is present (the parser should
+                    // surface a TargetFilter::Player slot via collect_target_slots
+                    // whenever this variant appears).
+                    ControllerRef::TargetPlayer => {
+                        let target_player = ability.and_then(|a| {
+                            a.targets.iter().find_map(|t| match t {
+                                TargetRef::Player(pid) => Some(*pid),
+                                TargetRef::Object(_) => None,
+                            })
+                        });
+                        match target_player {
+                            Some(pid) if pid == obj.controller => {}
+                            _ => return false,
+                        }
+                    }
                 }
             }
             // All properties must match
@@ -360,6 +378,20 @@ fn zone_change_filter_inner(
                     }
                     ControllerRef::Opponent if source_controller == Some(record.controller) => {
                         return false;
+                    }
+                    // CR 109.4 + CR 115.1: "target player controls" — match the
+                    // record's controller against the chosen player target.
+                    ControllerRef::TargetPlayer => {
+                        let target_player = ability.and_then(|a| {
+                            a.targets.iter().find_map(|t| match t {
+                                TargetRef::Player(pid) => Some(*pid),
+                                TargetRef::Object(_) => None,
+                            })
+                        });
+                        match target_player {
+                            Some(pid) if pid == record.controller => {}
+                            _ => return false,
+                        }
                     }
                     _ => {}
                 }
@@ -526,6 +558,11 @@ pub fn spell_record_matches_filter(
                 match ctrl {
                     ControllerRef::You => {}
                     ControllerRef::Opponent => return false,
+                    // CR 109.4: A target-player-scoped filter has no meaning for
+                    // a spell-history record (no ability context to resolve the
+                    // target). Fail closed — this combination should not be
+                    // produced by the parser.
+                    ControllerRef::TargetPlayer => return false,
                 }
             }
 
@@ -631,6 +668,9 @@ fn spell_object_matches_filter_inner(
                 match ctrl {
                     ControllerRef::You if caster != source_controller => return false,
                     ControllerRef::Opponent if caster == source_controller => return false,
+                    // CR 109.4: Target-player scope is undefined for spell-cast
+                    // history (no ability context). Fail closed.
+                    ControllerRef::TargetPlayer => return false,
                     _ => {}
                 }
             }
@@ -933,6 +973,17 @@ fn matches_filter_prop(
             ControllerRef::Opponent => {
                 source.controller.is_some() && source.controller != Some(obj.owner)
             }
+            // CR 109.5: Ownership relative to a chosen target player.
+            // Resolves against the first TargetRef::Player in ability.targets.
+            ControllerRef::TargetPlayer => source
+                .ability
+                .and_then(|a| {
+                    a.targets.iter().find_map(|t| match t {
+                        TargetRef::Player(pid) => Some(*pid),
+                        TargetRef::Object(_) => None,
+                    })
+                })
+                .is_some_and(|pid| pid == obj.owner),
         },
         FilterProp::EnchantedBy => source.attached_to == Some(object_id),
         FilterProp::EquippedBy => source.attached_to == Some(object_id),
@@ -1116,6 +1167,16 @@ fn zone_change_record_matches_property(
             ControllerRef::Opponent => {
                 source.controller.is_some() && source.controller != Some(record.owner)
             }
+            // CR 109.5: Ownership relative to a chosen target player.
+            ControllerRef::TargetPlayer => source
+                .ability
+                .and_then(|a| {
+                    a.targets.iter().find_map(|t| match t {
+                        TargetRef::Player(pid) => Some(*pid),
+                        TargetRef::Object(_) => None,
+                    })
+                })
+                .is_some_and(|pid| pid == record.owner),
         },
         // CR 701.12: Source's chosen creature type applied to the snapshot subtypes.
         FilterProp::IsChosenCreatureType => source.chosen_creature_type.is_some_and(|chosen| {
@@ -1343,6 +1404,10 @@ pub fn player_matches_target_filter(
         TargetFilter::Typed(ref tf) if tf.type_filters.is_empty() => match &tf.controller {
             Some(ControllerRef::You) => source_controller == Some(player_id),
             Some(ControllerRef::Opponent) => source_controller.is_some_and(|c| c != player_id),
+            // CR 109.4: TargetPlayer has no meaning when matching a player against
+            // a filter without ability context. Fail closed (mirrors the pattern
+            // established at filter.rs:526–569 for spell-record filters).
+            Some(ControllerRef::TargetPlayer) => false,
             None => true,
         },
         // Typed filters with type_filters don't match players

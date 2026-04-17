@@ -1,6 +1,6 @@
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, Effect, ModalChoice, ModalSelectionConstraint,
-    ResolvedAbility, TargetFilter, TargetRef,
+    AbilityCondition, AbilityDefinition, ControllerRef, Effect, ModalChoice,
+    ModalSelectionConstraint, ResolvedAbility, TargetFilter, TargetRef, TypedFilter,
 };
 use crate::types::game_state::{
     GameState, TargetSelectionConstraint, TargetSelectionProgress, TargetSelectionSlot,
@@ -530,6 +530,30 @@ fn collect_target_slots(
     ability: &ResolvedAbility,
     slots: &mut Vec<TargetSelectionSlot>,
 ) -> Result<(), EngineError> {
+    // CR 109.4 + CR 115.1: If the effect contains a filter referencing
+    // `ControllerRef::TargetPlayer` (e.g. "each creature target player controls"
+    // on `PutCounterAll`), surface a companion `TargetFilter::Player` slot
+    // BEFORE the effect's primary filter slot. The chosen player is read back
+    // at filter-evaluation time via `ability.targets`. Runs before the primary
+    // filter so the player is chosen first (target declaration order matches
+    // Oracle text order).
+    if effect_references_target_player(&ability.effect) {
+        let player_targets = targeting::find_legal_targets(
+            state,
+            &TargetFilter::Player,
+            ability.controller,
+            ability.source_id,
+        );
+        if player_targets.is_empty() && !ability.optional_targeting {
+            return Err(EngineError::ActionNotAllowed(
+                "No legal targets available".to_string(),
+            ));
+        }
+        slots.push(TargetSelectionSlot {
+            legal_targets: player_targets,
+            optional: ability.optional_targeting,
+        });
+    }
     if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
         let legal_targets = legal_targets_for_ability_filter(state, ability, filter, slots);
         if legal_targets.is_empty() && !ability.optional_targeting {
@@ -577,7 +601,57 @@ fn collect_target_slots(
     Ok(())
 }
 
+/// CR 109.4 + CR 115.1: Returns true if any filter inside `effect` references
+/// `ControllerRef::TargetPlayer`. Used to surface a companion
+/// `TargetFilter::Player` target slot for mass-placement effects like
+/// `PutCounterAll { target: Typed { controller: TargetPlayer, .. } }`.
+fn effect_references_target_player(effect: &Effect) -> bool {
+    match effect.target_filter() {
+        Some(f) if filter_references_target_player(f) => return true,
+        _ => {}
+    }
+    // Also inspect mass-placement `target` fields that are NOT surfaced as
+    // target slots (PutCounterAll, DestroyAll, PumpAll, DamageAll, etc. —
+    // their `target_filter()` returns None because the field is a mass
+    // filter, not a targeting filter).
+    match effect {
+        Effect::PutCounterAll { target, .. }
+        | Effect::DestroyAll { target, .. }
+        | Effect::PumpAll { target, .. }
+        | Effect::DamageAll { target, .. }
+        | Effect::TapAll { target, .. }
+        | Effect::UntapAll { target, .. }
+        | Effect::ChangeZoneAll { target, .. }
+        | Effect::DoublePTAll { target, .. } => filter_references_target_player(target),
+        _ => false,
+    }
+}
+
+/// Tree-walks a `TargetFilter` and returns true if any `TypedFilter` inside
+/// it has `controller == Some(ControllerRef::TargetPlayer)`.
+fn filter_references_target_player(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(TypedFilter { controller, .. }) => {
+            matches!(controller, Some(ControllerRef::TargetPlayer))
+        }
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            filters.iter().any(filter_references_target_player)
+        }
+        TargetFilter::Not { filter } => filter_references_target_player(filter),
+        _ => false,
+    }
+}
+
 fn collect_target_slot_specs(ability: &ResolvedAbility, specs: &mut Vec<TargetSlotSpec>) {
+    // CR 109.4 + CR 115.1: Companion TargetFilter::Player slot surfaced by
+    // `collect_target_slots` must have a matching spec here so subsequent
+    // slot recomputation treats it correctly.
+    if effect_references_target_player(&ability.effect) {
+        specs.push(TargetSlotSpec {
+            filter: TargetFilter::Player,
+            optional: ability.optional_targeting,
+        });
+    }
     if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
         if let Some(spec) = ability.multi_target.as_ref() {
             match spec.max {
@@ -2125,6 +2199,100 @@ mod tests {
         assert!(slots[0]
             .legal_targets
             .contains(&TargetRef::Player(PlayerId(1))));
+    }
+
+    /// CR 109.4 + CR 115.1: `PutCounterAll` with a filter referencing
+    /// `ControllerRef::TargetPlayer` surfaces a companion `TargetFilter::Player`
+    /// target slot so the player is chosen at target-declaration time. This
+    /// covers the Splinter & Leo mode-2 gap ("put a +1/+1 counter on each other
+    /// creature target player controls") and is the class-level fix for every
+    /// mass-placement effect (DestroyAll, PumpAll, DamageAll, etc.).
+    #[test]
+    fn build_target_slots_surfaces_player_slot_for_target_player_filter() {
+        use crate::game::filter::{matches_target_filter, FilterContext};
+        use crate::game::zones::create_object;
+        use crate::types::card_type::CoreType;
+        use crate::types::identifiers::CardId;
+
+        let mut state = crate::types::game_state::GameState::new_two_player(42);
+        let your_creature = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Your Creature".to_string(),
+            Zone::Battlefield,
+        );
+        let opp_creature = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Opponent Creature".to_string(),
+            Zone::Battlefield,
+        );
+        for c in [your_creature, opp_creature] {
+            state
+                .objects
+                .get_mut(&c)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+
+        let ability = ResolvedAbility::new(
+            Effect::PutCounterAll {
+                counter_type: "P1P1".to_string(),
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Typed(
+                    TypedFilter::creature().controller(ControllerRef::TargetPlayer),
+                ),
+            },
+            vec![],
+            ObjectId(900),
+            PlayerId(0),
+        );
+
+        // Target-slot surfacing: a companion Player slot must appear, offering
+        // both players as legal choices.
+        let slots = build_target_slots(&state, &ability).expect("should build");
+        assert_eq!(
+            slots.len(),
+            1,
+            "expected a single TargetFilter::Player slot for TargetPlayer filter"
+        );
+        assert!(slots[0]
+            .legal_targets
+            .contains(&TargetRef::Player(PlayerId(0))));
+        assert!(slots[0]
+            .legal_targets
+            .contains(&TargetRef::Player(PlayerId(1))));
+
+        // Runtime filter evaluation: with player=0 chosen, only P0's creatures
+        // match the TypedFilter. With player=1 chosen, only P1's match.
+        for (chosen, expected_match) in [(PlayerId(0), your_creature), (PlayerId(1), opp_creature)]
+        {
+            let mut resolved = ability.clone();
+            resolved.targets = vec![TargetRef::Player(chosen)];
+            let ctx = FilterContext::from_ability(&resolved);
+            let filter = TargetFilter::Typed(
+                TypedFilter::creature().controller(ControllerRef::TargetPlayer),
+            );
+            assert!(
+                matches_target_filter(&state, expected_match, &filter, &ctx),
+                "chosen player P{} — creature they control should match",
+                chosen.0
+            );
+            let other = if expected_match == your_creature {
+                opp_creature
+            } else {
+                your_creature
+            };
+            assert!(
+                !matches_target_filter(&state, other, &filter, &ctx),
+                "chosen player P{} — other player's creature should NOT match",
+                chosen.0
+            );
+        }
     }
 
     #[test]
