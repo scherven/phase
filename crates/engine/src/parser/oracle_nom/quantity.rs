@@ -261,6 +261,9 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         parse_target_power_ref,
         parse_target_life_ref,
         parse_basic_land_type_count,
+        // Bare suffix form — reachable when a parent combinator has already
+        // consumed "there are N " (see `parse_there_are_conditions`).
+        parse_basic_land_types_among_lands_you_control,
         parse_devotion_ref,
         parse_counters_among_ref,
     )))
@@ -657,11 +660,24 @@ fn parse_target_life_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     .parse(input)
 }
 
-/// Parse "the number of basic land types among lands you control" (Domain).
-fn parse_basic_land_type_count(input: &str) -> OracleResult<'_, QuantityRef> {
+/// Parse the bare domain suffix: "basic land types among lands you control".
+///
+/// Factored out so both the full "the number of ..." form (Domain quantity) and
+/// the "there are N ..." condition form (see `parse_there_are_conditions` in
+/// `oracle_nom/condition.rs`) share a single tag authority.
+fn parse_basic_land_types_among_lands_you_control(input: &str) -> OracleResult<'_, QuantityRef> {
     value(
         QuantityRef::BasicLandTypeCount,
-        tag("the number of basic land types among lands you control"),
+        tag("basic land types among lands you control"),
+    )
+    .parse(input)
+}
+
+/// Parse "the number of basic land types among lands you control" (Domain).
+fn parse_basic_land_type_count(input: &str) -> OracleResult<'_, QuantityRef> {
+    preceded(
+        tag("the number of "),
+        parse_basic_land_types_among_lands_you_control,
     )
     .parse(input)
 }

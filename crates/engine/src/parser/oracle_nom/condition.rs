@@ -6,7 +6,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::bytes::complete::take_until;
-use nom::combinator::{map, value};
+use nom::combinator::{map, opt, value};
 use nom::sequence::preceded;
 use nom::Parser;
 
@@ -948,20 +948,33 @@ fn parse_entered_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
     ))
 }
 
-/// Parse "there are N or more [things] in your graveyard" conditions.
+/// Parse "there are N [or more] [things] ..." conditions.
 ///
 /// Covers threshold ("seven or more cards"), delirium ("four or more card types"),
 /// mana values ("five or more mana values"), and typed cards ("creature cards",
 /// "instant and/or sorcery cards", "land cards", "historic cards", etc.).
+///
+/// The "or more" modifier is optional. When present, the comparator is GE.
+/// When absent — e.g. "there are five basic land types among lands you control"
+/// (A-Nael, Avizoa Aeronaut) — English grammar reads as "exactly N", so the
+/// comparator is EQ. CR 107.1a: Magic uses integer comparisons; exact-value
+/// checks are distinct from threshold checks.
 fn parse_there_are_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, _) = tag("there are ").parse(input)?;
     let (rest, n) = parse_number(rest)?;
-    let (rest, _) = tag(" or more ").parse(rest)?;
+    let (rest, _) = tag(" ").parse(rest)?;
+    let (rest, or_more) = opt(tag("or more ")).parse(rest)?;
     let (rest, qty) = nom_quantity::parse_quantity_ref.parse(rest)?;
+    let comparator = if or_more.is_some() {
+        Comparator::GE
+    } else {
+        Comparator::EQ
+    };
     Ok((
         rest,
-        make_quantity_ge(
+        make_quantity_comparison(
             crate::parser::oracle_quantity::canonicalize_quantity_ref(qty),
+            comparator,
             n,
         ),
     ))
@@ -1512,6 +1525,28 @@ mod tests {
                 rhs: QuantityExpr::Fixed { value: 7 },
             } => {}
             other => panic!("expected GraveyardSize GE 7, got {other:?}"),
+        }
+    }
+
+    /// CR 107.1a + CR 603.4: "there are N X" without "or more" → exact-value
+    /// comparison (EQ). Motivating card: A-Nael, Avizoa Aeronaut ("Then if there
+    /// are five basic land types among lands you control, draw a card").
+    #[test]
+    fn test_there_are_domain_exact_count() {
+        let (rest, c) =
+            parse_inner_condition("there are five basic land types among lands you control")
+                .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::BasicLandTypeCount,
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 5 },
+            } => {}
+            other => panic!("expected BasicLandTypeCount EQ 5, got {other:?}"),
         }
     }
 
