@@ -192,6 +192,28 @@ fn parse_combat_state_predicate(input: &str) -> OracleResult<'_, StaticCondition
     Ok((rest, result))
 }
 
+/// CR 301.5a: Parse "<subject> is equipped" → SourceIsEquipped.
+fn parse_source_is_equipped(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_source_subject(input)?;
+    value(StaticCondition::SourceIsEquipped, tag("is equipped")).parse(rest)
+}
+
+/// CR 701.37: Parse "<subject> is monstrous" → SourceIsMonstrous.
+fn parse_source_is_monstrous(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_source_subject(input)?;
+    value(StaticCondition::SourceIsMonstrous, tag("is monstrous")).parse(rest)
+}
+
+/// CR 301.5 + CR 303.4: Parse "<subject> is attached to a creature" → SourceAttachedToCreature.
+fn parse_source_attached_to_creature(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_source_subject(input)?;
+    value(
+        StaticCondition::SourceAttachedToCreature,
+        tag("is attached to a creature"),
+    )
+    .parse(rest)
+}
+
 /// CR 611.2b: Parse source-state conditions (tapped, untapped, entered this turn).
 fn parse_source_state_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
@@ -202,6 +224,14 @@ fn parse_source_state_conditions(input: &str) -> OracleResult<'_, StaticConditio
         // "is attacking" / "is blocking" / "is blocked" / "is attacking or blocking"
         // and their negations ("isn't attacking", etc.).
         parse_combat_state_predicate,
+        // CR 301.5a: "~ is equipped" / "this creature is equipped" / etc.
+        parse_source_is_equipped,
+        // CR 701.37: "~ is monstrous" / "this creature is monstrous" / etc.
+        parse_source_is_monstrous,
+        // CR 301.5 + CR 303.4: "~ is attached to a creature" / "this equipment is attached to a creature".
+        // Must precede `parse_source_is_type` so the specific "is attached to a creature"
+        // predicate wins over generic "is <type>" dispatch.
+        parse_source_attached_to_creature,
         // CR 400.7: Entered this turn
         value(
             StaticCondition::SourceEnteredThisTurn,
@@ -1572,6 +1602,42 @@ mod tests {
         let (rest, c) = parse_inner_condition("~ is tapped").unwrap();
         assert_eq!(rest, "");
         assert_eq!(c, StaticCondition::SourceIsTapped);
+    }
+
+    // CR 301.5a: SourceIsEquipped predicate across subjects.
+    #[test]
+    fn test_source_is_equipped() {
+        let (rest, c) = parse_inner_condition("~ is equipped").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsEquipped);
+
+        let (rest, c) = parse_inner_condition("this creature is equipped").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsEquipped);
+    }
+
+    // CR 701.37: SourceIsMonstrous predicate across subjects.
+    #[test]
+    fn test_source_is_monstrous() {
+        let (rest, c) = parse_inner_condition("this creature is monstrous").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsMonstrous);
+
+        let (rest, c) = parse_inner_condition("~ is monstrous").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsMonstrous);
+    }
+
+    // CR 301.5 + CR 303.4: SourceAttachedToCreature predicate.
+    #[test]
+    fn test_source_attached_to_creature() {
+        let (rest, c) = parse_inner_condition("~ is attached to a creature").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceAttachedToCreature);
+
+        let (rest, c) = parse_inner_condition("this creature is attached to a creature").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceAttachedToCreature);
     }
 
     // -- "You've [done X] this turn" tests (Phase 4) --

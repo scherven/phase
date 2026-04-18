@@ -792,6 +792,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         // All remaining props require on-battlefield or stack state unavailable from a snapshot.
         FilterProp::Token
         | FilterProp::Attacking
+        | FilterProp::AttackingController
         | FilterProp::Blocking
         | FilterProp::Unblocked
         | FilterProp::Tapped
@@ -904,6 +905,14 @@ fn matches_filter_prop(
                 .attackers
                 .iter()
                 .any(|attacker| attacker.object_id == object_id)
+        }),
+        // CR 508.1b: Matches attacking creatures whose defending player equals the
+        // filter's source controller ("creatures attacking you").
+        FilterProp::AttackingController => state.combat.as_ref().is_some_and(|combat| {
+            combat.attackers.iter().any(|a| {
+                a.object_id == object_id
+                    && source.controller.is_some_and(|sc| a.defending_player == sc)
+            })
         }),
         // CR 509.1a: A creature is blocking if it was declared as a blocker.
         FilterProp::Blocking => state
@@ -1211,6 +1220,7 @@ fn zone_change_record_matches_property(
         FilterProp::Tapped
         | FilterProp::Untapped
         | FilterProp::Attacking
+        | FilterProp::AttackingController
         | FilterProp::Blocking
         | FilterProp::Unblocked
         | FilterProp::AttackedThisTurn

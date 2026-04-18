@@ -339,15 +339,20 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
             }
             // Rewrite succeeded (we cleanly separated condition from effect), but the
             // recursed parser could not model the effect clause. Produce a generic
-            // Continuous Unrecognized static whose condition text is the correctly
-            // separated condition — NOT the whole remainder with effect-clause
-            // bleed-through. This is strictly better than the old fallback.
+            // Continuous static whose condition is typed via `parse_static_condition`
+            // (the same helper `parse_continuous_gets_has` uses at the " as long as "
+            // splitter). Fall back to `Unrecognized` only when that helper cannot type
+            // the text. Recursion safety: `parse_static_condition` delegates to
+            // `nom_condition::parse_inner_condition` which never re-enters this parser.
+            let condition = parse_static_condition(&split.condition_text).unwrap_or(
+                StaticCondition::Unrecognized {
+                    text: split.condition_text,
+                },
+            );
             return Some(
                 StaticDefinition::continuous()
                     .affected(TargetFilter::SelfRef)
-                    .condition(StaticCondition::Unrecognized {
-                        text: split.condition_text,
-                    })
+                    .condition(condition)
                     .description(text.to_string()),
             );
         }
@@ -521,6 +526,34 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EquippedBy]));
         if let Some(def) = parse_enchanted_equipped_predicate(rest.original, filter, &text) {
             return Some(def);
+        }
+    }
+
+    // CR 508.1b: "All creatures attacking you <predicate>" — filter scoped to attackers
+    // whose defending player is the source's controller. Must precede the generic
+    // "all creatures " branch below since that would otherwise consume the prefix
+    // and leave "attacking you <predicate>" as input to `parse_continuous_gets_has`,
+    // which expects a verb ("gets"/"has"/"is"), not a subject continuation.
+    if let Some(rest) = nom_tag_tp(&tp, "all creatures attacking you ") {
+        let filter = TargetFilter::Typed(
+            TypedFilter::creature().properties(vec![FilterProp::AttackingController]),
+        );
+        if let Some(def) = parse_continuous_gets_has(rest.original, filter, &text) {
+            return Some(def);
+        }
+    }
+
+    // CR 205.3m + CR 613.1: "Each creature you control that's a <Subtype>[ or a <Subtype>] <predicate>"
+    // Example (Auriok Steelshaper): "each creature you control that's a Soldier or a Knight gets +1/+1"
+    // Consumes a capitalized-subtype list joined by " or a " / " and a " / " or " / " and ",
+    // stopping at the first non-capitalized word (start of the predicate). Reuses
+    // `typed_filter_for_subtype` + `parse_subtype` (plural normalization) for the filter
+    // construction and `TargetFilter::Or` for the union case.
+    if let Some(rest) = nom_tag_tp(&tp, "each creature you control that's a ") {
+        if let Some((filter, predicate)) = try_parse_thats_a_subtype_list(rest.original) {
+            if let Some(def) = parse_continuous_gets_has(predicate, filter, &text) {
+                return Some(def);
+            }
         }
     }
 
@@ -4490,6 +4523,64 @@ fn is_capitalized_words(s: &str) -> bool {
         && trimmed
             .split_whitespace()
             .all(|w| w.chars().next().is_some_and(|c| c.is_uppercase()))
+}
+
+/// CR 205.3m: Parse a capitalized-subtype list of the form
+/// `<Subtype>[ (or|and)[ a] <Subtype>]*` followed by space-delimited predicate text.
+/// Returns (filter, remainder_starting_at_predicate). Invoked AFTER the caller has
+/// already consumed a leading `"<subject> that's a "` prefix.
+///
+/// For a single subtype → `TargetFilter::Typed(typed_filter_for_subtype(X).controller(You))`.
+/// For multiple → `TargetFilter::Or` of per-subtype typed filters (all controller=You).
+/// Plural subtypes are normalized via `parse_subtype`.
+fn try_parse_thats_a_subtype_list(input: &str) -> Option<(TargetFilter, &str)> {
+    use nom::multi::separated_list1;
+
+    fn parse_subtype_word(
+        input: &str,
+    ) -> nom::IResult<&str, &str, nom_language::error::VerboseError<&str>> {
+        use nom::bytes::complete::take_while1;
+        let (rest, word) = take_while1(|c: char| c.is_alphabetic() || c == '-').parse(input)?;
+        if !word.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return Err(nom::Err::Error(nom_language::error::VerboseError {
+                errors: vec![(
+                    input,
+                    nom_language::error::VerboseErrorKind::Context("expected capitalized subtype"),
+                )],
+            }));
+        }
+        Ok((rest, word))
+    }
+
+    fn parse_conjunction(
+        input: &str,
+    ) -> nom::IResult<&str, &str, nom_language::error::VerboseError<&str>> {
+        alt((tag(" or a "), tag(" and a "), tag(" or "), tag(" and "))).parse(input)
+    }
+
+    let (rest, words): (&str, Vec<&str>) = separated_list1(parse_conjunction, parse_subtype_word)
+        .parse(input)
+        .ok()?;
+    // Predicate must follow a space
+    let predicate = rest.strip_prefix(' ')?;
+    if predicate.is_empty() {
+        return None;
+    }
+    let filters: Vec<TargetFilter> = words
+        .iter()
+        .map(|w| {
+            let canonical = parse_subtype(w)
+                .map(|(c, _)| c)
+                .unwrap_or_else(|| w.to_string());
+            TargetFilter::Typed(typed_filter_for_subtype(&canonical).controller(ControllerRef::You))
+        })
+        .collect();
+    let filter = if filters.len() == 1 {
+        filters.into_iter().next()?
+    } else {
+        TargetFilter::Or { filters }
+    };
+    Some((filter, predicate))
 }
 
 /// Parse the predicate of an enchanted/equipped grant, handling:

@@ -234,6 +234,29 @@ pub(crate) fn evaluate_condition(
         StaticCondition::SourceIsTapped => {
             state.objects.get(&source_id).is_some_and(|obj| obj.tapped)
         }
+        // CR 301.5a: True when at least one Equipment is attached to the source object.
+        // Mirrors the attacher-is-equipment subtype check from `effects/attach.rs:64-67`.
+        StaticCondition::SourceIsEquipped => state.objects.values().any(|obj| {
+            obj.attached_to == Some(source_id)
+                && obj.card_types.subtypes.iter().any(|s| s == "Equipment")
+        }),
+        // CR 701.37: True when the source permanent is monstrous.
+        StaticCondition::SourceIsMonstrous => state
+            .objects
+            .get(&source_id)
+            .is_some_and(|obj| obj.monstrous),
+        // CR 301.5 + CR 303.4: True when source Aura/Equipment is attached to a creature.
+        StaticCondition::SourceAttachedToCreature => state
+            .objects
+            .get(&source_id)
+            .and_then(|obj| obj.attached_to)
+            .and_then(|target_id| state.objects.get(&target_id))
+            .is_some_and(|target| {
+                target
+                    .card_types
+                    .core_types
+                    .contains(&crate::types::card_type::CoreType::Creature)
+            }),
         // CR 113.6b: True when the source card is in the specified zone.
         StaticCondition::SourceInZone { zone } => state
             .objects

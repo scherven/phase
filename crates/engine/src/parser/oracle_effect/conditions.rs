@@ -912,6 +912,9 @@ fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<Ability
         | StaticCondition::SourceIsAttacking
         | StaticCondition::SourceIsBlocking
         | StaticCondition::SourceIsBlocked
+        | StaticCondition::SourceIsEquipped
+        | StaticCondition::SourceIsMonstrous
+        | StaticCondition::SourceAttachedToCreature
         | StaticCondition::IsMonarch
         | StaticCondition::HasCityBlessing
         | StaticCondition::OpponentPoisonAtLeast { .. }

@@ -242,6 +242,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
         match prop {
             FilterProp::Token => parts.push("token".into()),
             FilterProp::Attacking => parts.push("attacking".into()),
+            FilterProp::AttackingController => parts.push("attacking you".into()),
             FilterProp::Blocking => parts.push("blocking".into()),
             FilterProp::Unblocked => parts.push("unblocked".into()),
             FilterProp::Tapped => parts.push("tapped".into()),

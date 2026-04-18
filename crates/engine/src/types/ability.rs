@@ -1181,6 +1181,10 @@ pub enum FilterProp {
     /// looking up the name from `state.objects` (or `lki_cache` if the target
     /// has already left its zone).
     SameNameAsParentTarget,
+    /// CR 508.1b: Matches attacking creatures whose defending player equals the
+    /// filter's source controller ("creatures attacking you"). Distinct from
+    /// `Attacking`, which matches any attacker regardless of defender.
+    AttackingController,
     Other {
         value: String,
     },
@@ -1812,6 +1816,17 @@ pub enum StaticCondition {
     /// CR 611.2b: True when the source object is tapped.
     /// Used for "for as long as ~ remains tapped" duration conditions.
     SourceIsTapped,
+    /// CR 301.5a: True when at least one Equipment is attached to the source object.
+    /// Used for "as long as ~ is equipped" statics (Auriok Steelshaper, etc.).
+    SourceIsEquipped,
+    /// CR 701.37: True when the source permanent is monstrous.
+    /// Read from `GameObject::monstrous` (existing bool field).
+    /// Used for "as long as this creature is monstrous" statics (Fleecemane Lion, etc.).
+    SourceIsMonstrous,
+    /// CR 301.5 + CR 303.4: True when the source Aura/Equipment is attached to a creature.
+    /// All observed Oracle text uses "attached to a creature"; no filter parameter needed.
+    /// Used for "as long as this Equipment is attached to a creature" statics (Pact Weapon, etc.).
+    SourceAttachedToCreature,
     /// CR 608.2c: True when the source object matches the filter (type/subtype check).
     /// Used by leveler-style cards (e.g., Figure of Fable) where each activated ability
     /// gates on the source's current type. Bridges to `AbilityCondition::SourceMatchesFilter`.
@@ -6334,6 +6349,7 @@ mod tests {
         let props = vec![
             FilterProp::Token,
             FilterProp::Attacking,
+            FilterProp::AttackingController,
             FilterProp::Unblocked,
             FilterProp::Tapped,
             FilterProp::Untapped,
