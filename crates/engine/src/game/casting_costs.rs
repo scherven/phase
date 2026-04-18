@@ -1293,6 +1293,31 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
     phyrexian_choices: Option<&[crate::types::game_state::ShardChoice]>,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    // CR 702.85a: Evaluate the cascade resulting-MV constraint BEFORE mana is
+    // paid. By this point the player has chosen X (CR 601.2b runs at
+    // `enter_payment_step`/`ChooseXValue`), so `ability.chosen_x` reflects the
+    // final cost-X. Evaluating here means a rejection has nothing to rewind:
+    // no mana has left the pool, no `cost_x_paid` has been stamped, and no
+    // targets are committed beyond the announcement-time selections (which
+    // `handle_cascade_rejection` clears alongside popping the stack entry).
+    //
+    // For the constraint we synthesize the resulting MV from the printed cost
+    // + chosen_x rather than reading `obj.cost_x_paid`, since the latter is
+    // not stamped until after payment further below.
+    let cascade_resulting_mv = state
+        .objects
+        .get(&object_id)
+        .map(|obj| obj.mana_cost.mana_value() + ability.chosen_x.unwrap_or(0));
+    if let Some(resulting_mv) = cascade_resulting_mv {
+        match evaluate_cascade_constraint_with_resulting_mv(state, object_id, resulting_mv, events)
+        {
+            CascadeCheck::NotApplicable | CascadeCheck::Accepted => {}
+            CascadeCheck::Rejected { exiled_misses } => {
+                return handle_cascade_rejection(state, player, object_id, exiled_misses, events);
+            }
+        }
+    }
+
     // CR 700.14: Snapshot pool size before payment to compute actual mana spent.
     let pool_before = state
         .players
@@ -1403,20 +1428,6 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
         }
     }
 
-    // CR 702.85a: Cast-time evaluation of `CascadeResultingMvBelow`. X has
-    // been chosen and stamped, so `mana_value()` now reflects the resulting
-    // spell's MV. The object is still in its origin (exile) zone — rejection
-    // requires only popping the announcement stack entry, bottom-shuffling
-    // the exiled cards, and aborting before the Hand→Stack move. Any other
-    // `ExileWithAltCost` permissions on the object (Suspend, Airbending,
-    // Discover) have `constraint: None` and are unaffected by this scan.
-    match evaluate_cascade_constraint(state, object_id, events) {
-        CascadeCheck::NotApplicable | CascadeCheck::Accepted => {}
-        CascadeCheck::Rejected { exiled_misses } => {
-            return handle_cascade_rejection(state, player, object_id, exiled_misses, events);
-        }
-    }
-
     // CR 601.2a + CR 601.2i: The spell was announced onto the stack earlier,
     // but the object's `zone` field stayed at its origin through cost payment
     // so continuous effects that granted castability ("cards in your graveyard
@@ -1517,34 +1528,34 @@ enum CascadeCheck {
 ///
 /// On acceptance, bottom-shuffles the exiled misses here so both accept paths
 /// (plain free cast + X-cost cast) share a single cleanup point.
-fn evaluate_cascade_constraint(
+///
+/// `resulting_mv` is the resulting spell's mana value as seen by CR 702.85a's
+/// "resulting spell's mana value" comparison — i.e. printed `mana_cost.mana_value()`
+/// plus the chosen X. Caller is responsible for synthesizing this because X is
+/// known at announcement time but `obj.cost_x_paid` is not stamped until after
+/// mana payment.
+fn evaluate_cascade_constraint_with_resulting_mv(
     state: &mut GameState,
     object_id: ObjectId,
+    resulting_mv: u32,
     events: &mut Vec<GameEvent>,
 ) -> CascadeCheck {
     use crate::types::ability::{CastPermissionConstraint, CastingPermission};
 
-    let (index, resulting_mv) = match state.objects.get(&object_id) {
-        Some(obj) => {
-            // CR 202.3b: On the stack, X uses the chosen value for MV. The
-            // printed `mana_cost.mana_value()` contributes 0 for each {X} shard
-            // (CR 107.3b), so add `cost_x_paid` to reconstruct the MV as seen
-            // by the "resulting spell's mana value" comparison of CR 702.85a.
-            let resulting_mv = obj.mana_cost.mana_value() + obj.cost_x_paid.unwrap_or(0);
-            let idx = obj.casting_permissions.iter().position(|p| {
-                matches!(
-                    p,
-                    CastingPermission::ExileWithAltCost {
-                        constraint: Some(CastPermissionConstraint::CascadeResultingMvBelow { .. }),
-                        ..
-                    }
-                )
-            });
-            match idx {
-                Some(i) => (i, resulting_mv),
-                None => return CascadeCheck::NotApplicable,
-            }
-        }
+    let index = match state.objects.get(&object_id) {
+        Some(obj) => obj.casting_permissions.iter().position(|p| {
+            matches!(
+                p,
+                CastingPermission::ExileWithAltCost {
+                    constraint: Some(CastPermissionConstraint::CascadeResultingMvBelow { .. }),
+                    ..
+                }
+            )
+        }),
+        None => return CascadeCheck::NotApplicable,
+    };
+    let index = match index {
+        Some(i) => i,
         None => return CascadeCheck::NotApplicable,
     };
 
@@ -3468,7 +3479,14 @@ mod tests {
         fn accepts_when_resulting_mv_below_source() {
             let (mut state, hit, misses) = setup_x_cost_hit(4, 3);
             let mut events = Vec::new();
-            let outcome = evaluate_cascade_constraint(&mut state, hit, &mut events);
+            let resulting_mv = state.objects.get(&hit).unwrap().mana_cost.mana_value()
+                + state.objects.get(&hit).unwrap().cost_x_paid.unwrap_or(0);
+            let outcome = evaluate_cascade_constraint_with_resulting_mv(
+                &mut state,
+                hit,
+                resulting_mv,
+                &mut events,
+            );
             assert!(matches!(outcome, CascadeCheck::Accepted));
 
             let hit_obj = state.objects.get(&hit).unwrap();
@@ -3499,7 +3517,14 @@ mod tests {
         fn rejects_when_resulting_mv_equals_source() {
             let (mut state, hit, misses) = setup_x_cost_hit(4, 4);
             let mut events = Vec::new();
-            let outcome = evaluate_cascade_constraint(&mut state, hit, &mut events);
+            let resulting_mv = state.objects.get(&hit).unwrap().mana_cost.mana_value()
+                + state.objects.get(&hit).unwrap().cost_x_paid.unwrap_or(0);
+            let outcome = evaluate_cascade_constraint_with_resulting_mv(
+                &mut state,
+                hit,
+                resulting_mv,
+                &mut events,
+            );
             match outcome {
                 CascadeCheck::Rejected { exiled_misses } => {
                     assert_eq!(exiled_misses, misses);
@@ -3529,7 +3554,14 @@ mod tests {
         fn rejects_when_resulting_mv_above_source() {
             let (mut state, hit, _misses) = setup_x_cost_hit(4, 5);
             let mut events = Vec::new();
-            let outcome = evaluate_cascade_constraint(&mut state, hit, &mut events);
+            let resulting_mv = state.objects.get(&hit).unwrap().mana_cost.mana_value()
+                + state.objects.get(&hit).unwrap().cost_x_paid.unwrap_or(0);
+            let outcome = evaluate_cascade_constraint_with_resulting_mv(
+                &mut state,
+                hit,
+                resulting_mv,
+                &mut events,
+            );
             assert!(matches!(outcome, CascadeCheck::Rejected { .. }));
         }
 
