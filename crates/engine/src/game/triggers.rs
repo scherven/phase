@@ -3977,6 +3977,104 @@ pub mod tests {
         id
     }
 
+    /// Phase out a permanent via the real `phase_out_object` path so the
+    /// CR 702.26b phased-out status is authoritative (no direct `phase_status`
+    /// pokes from tests). Shared with the regression tests below.
+    fn phase_out_in_place(state: &mut GameState, id: ObjectId) {
+        let mut events = Vec::new();
+        crate::game::phasing::phase_out_object(
+            state,
+            id,
+            crate::game::game_object::PhaseOutCause::Directly,
+            &mut events,
+        );
+    }
+
+    #[test]
+    fn phased_out_torpor_orb_does_not_suppress_etb_triggers() {
+        // CR 702.26b + CR 603.2g regression: a phased-out Torpor Orb must not
+        // suppress ETB triggers. Drives `process_triggers` end-to-end — the
+        // observer's ETB trigger MUST land on the stack because the Torpor
+        // static is gated out by `battlefield_active_statics`.
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        let torpor_id = add_suppress_triggers_permanent(
+            &mut state,
+            PlayerId(0),
+            TargetFilter::Typed(TypedFilter::creature()),
+            vec![SuppressedTriggerEvent::EntersBattlefield],
+        );
+        phase_out_in_place(&mut state, torpor_id);
+        let _observer = add_etb_observer(&mut state, PlayerId(0));
+
+        let events = vec![zone_changed_event(
+            ObjectId(0xBEEF),
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        )];
+        process_triggers(&mut state, &events);
+
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "Phased-out Torpor Orb must not suppress the observer's ETB trigger"
+        );
+    }
+
+    #[test]
+    fn commander_in_command_zone_etb_trigger_does_not_fire() {
+        // CR 114.4 regression: a non-emblem object in the command zone has no
+        // functioning abilities, so its ETB observer trigger must not fire
+        // when some other creature enters. `process_triggers` must reach
+        // through `active_trigger_definitions`, which drops command-zone
+        // non-emblems.
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        // Put a triggered "ETB observer" in the command zone rather than on
+        // the battlefield. Same trigger shape as `add_etb_observer`.
+        let commander_id = create_object(
+            &mut state,
+            CardId(0xC0FFEE),
+            PlayerId(0),
+            "Commander Observer".to_string(),
+            Zone::Command,
+        );
+        {
+            let obj = state.objects.get_mut(&commander_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.is_emblem = false;
+            obj.trigger_definitions.push(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Database,
+                        Effect::Draw {
+                            count: QuantityExpr::Fixed { value: 1 },
+                        },
+                    ))
+                    .destination(Zone::Battlefield),
+            );
+        }
+
+        let events = vec![zone_changed_event(
+            ObjectId(0xBEEF),
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        )];
+        process_triggers(&mut state, &events);
+
+        assert_eq!(
+            state.stack.len(),
+            0,
+            "A non-emblem command-zone object must not fire its ETB observer trigger"
+        );
+    }
+
     #[test]
     fn suppress_triggers_torpor_blocks_creature_etb_observer() {
         // CR 603.2g + CR 603.6a: Torpor Orb-class static on battlefield suppresses

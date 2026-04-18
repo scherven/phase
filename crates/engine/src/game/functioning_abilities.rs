@@ -386,8 +386,13 @@ mod tests {
         assert!(ids.contains(&2));
     }
 
-    // --- Regression tests for the three shipped BLOCKER bugs + commander
-    // command-zone trigger gating + static condition filtering ---
+    // The phased-out Azusa test stays here because
+    // `additional_land_drops` is a direct caller of the helper — the
+    // assertion runs through a real consumer, not the helper itself.
+    // The analogous caller-level tests for Torpor Orb (triggers), Grafdigger's
+    // Cage (zones::move_to_zone), command-zone-commander-triggers (triggers),
+    // and false-condition anthem (layers) live in their respective modules'
+    // #[cfg(test)] blocks where they drive the real pipeline.
 
     fn phase_out_by_id(state: &mut GameState, id: ObjectId) {
         let mut events = Vec::new();
@@ -396,50 +401,6 @@ mod tests {
             id,
             crate::game::game_object::PhaseOutCause::Directly,
             &mut events,
-        );
-    }
-
-    #[test]
-    fn phased_out_torpor_orb_does_not_suppress_etb_triggers() {
-        use crate::types::ability::{TargetFilter, TypedFilter};
-        use crate::types::statics::SuppressedTriggerEvent;
-        let mut state = new_state();
-        let mut torpor = make_obj(1, Zone::Battlefield);
-        torpor.static_definitions = vec![StaticDefinition::new(StaticMode::SuppressTriggers {
-            source_filter: TargetFilter::Typed(TypedFilter::creature()),
-            events: vec![SuppressedTriggerEvent::EntersBattlefield],
-        })]
-        .into();
-        let id = put_on_battlefield(&mut state, torpor);
-        phase_out_by_id(&mut state, id);
-        // `battlefield_active_statics` gates by `object_functions`, which
-        // returns false for phased-out permanents, so the Torpor-class static
-        // must not appear in the iterator.
-        let n = battlefield_active_statics(&state)
-            .filter(|(_, def)| matches!(def.mode, StaticMode::SuppressTriggers { .. }))
-            .count();
-        assert_eq!(
-            n, 0,
-            "Phased-out Torpor Orb must not be visible to the suppress-triggers scan"
-        );
-    }
-
-    #[test]
-    fn phased_out_grafdiggers_cage_allows_reanimation() {
-        let mut state = new_state();
-        let mut cage = make_obj(1, Zone::Battlefield);
-        cage.static_definitions =
-            vec![StaticDefinition::new(StaticMode::CantEnterBattlefieldFrom)].into();
-        let id = put_on_battlefield(&mut state, cage);
-        phase_out_by_id(&mut state, id);
-        // The helper must suppress the phased-out Cage so ETB-from-graveyard
-        // is not blocked.
-        let n = battlefield_active_statics(&state)
-            .filter(|(_, def)| def.mode == StaticMode::CantEnterBattlefieldFrom)
-            .count();
-        assert_eq!(
-            n, 0,
-            "Phased-out Grafdigger's Cage must not block ETB-from-graveyard"
         );
     }
 
@@ -459,28 +420,6 @@ mod tests {
         assert_eq!(
             drops, 0,
             "Phased-out Azusa must not grant any extra land drops"
-        );
-    }
-
-    #[test]
-    fn commander_in_command_zone_does_not_fire_etb_trigger_on_other_permanent() {
-        // CR 114.4: A non-emblem object in the command zone (e.g., a commander
-        // waiting to be cast) has no functioning abilities — its ETB observer
-        // trigger must NOT fire when some other permanent enters.
-        let mut state = new_state();
-        let mut commander = make_obj(1, Zone::Command);
-        commander.is_emblem = false;
-        commander.trigger_definitions =
-            vec![TriggerDefinition::new(TriggerMode::ChangesZone)].into();
-        state.objects.insert(commander.id, commander);
-        state.command_zone.push(ObjectId(1));
-        // active_trigger_definitions must yield nothing for a non-emblem
-        // command-zone object.
-        let obj = state.objects.get(&ObjectId(1)).unwrap();
-        assert_eq!(
-            active_trigger_definitions(&state, obj).count(),
-            0,
-            "A non-emblem commander in the command zone must not have functioning triggers"
         );
     }
 

@@ -2892,4 +2892,67 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn false_condition_anthem_does_not_modify_power_and_toughness() {
+        // CR 604.1 / CR 613.1 regression: when an anthem-style continuous
+        // static has a `condition` that evaluates false, it must contribute
+        // NO continuous effects — the target creature's computed P/T stays
+        // at its base. Drives `evaluate_layers` end-to-end through the
+        // `battlefield_active_statics` gate.
+        let mut state = setup();
+        // IsMonarch is false by default (no monarch set).
+        assert!(state.monarch.is_none());
+
+        // "Creatures you control get +1/+1" conditioned on IsMonarch.
+        let anthem = create_object(
+            &mut state,
+            CardId(0),
+            PlayerId(0),
+            "Conditional Anthem".to_string(),
+            Zone::Battlefield,
+        );
+        let anthem_ts = state.next_timestamp();
+        {
+            let obj = state.objects.get_mut(&anthem).unwrap();
+            obj.card_types.core_types.push(CoreType::Enchantment);
+            obj.timestamp = anthem_ts;
+            obj.static_definitions.push(
+                StaticDefinition::continuous()
+                    .condition(StaticCondition::IsMonarch)
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::creature().controller(ControllerRef::You),
+                    ))
+                    .modifications(vec![
+                        ContinuousModification::AddPower { value: 1 },
+                        ContinuousModification::AddToughness { value: 1 },
+                    ]),
+            );
+        }
+
+        let bear = make_creature(&mut state, "Bear", 2, 2, PlayerId(0));
+
+        evaluate_layers(&mut state);
+
+        let bear_obj = state.objects.get(&bear).unwrap();
+        assert_eq!(
+            bear_obj.power,
+            Some(2),
+            "Anthem with false IsMonarch condition must not modify power"
+        );
+        assert_eq!(
+            bear_obj.toughness,
+            Some(2),
+            "Anthem with false IsMonarch condition must not modify toughness"
+        );
+
+        // Baseline: setting monarch flips the condition true and the anthem
+        // takes effect, proving the anthem itself is otherwise wired up and
+        // that the only reason it didn't apply above was the condition gate.
+        state.monarch = Some(PlayerId(0));
+        evaluate_layers(&mut state);
+        let bear_obj = state.objects.get(&bear).unwrap();
+        assert_eq!(bear_obj.power, Some(3));
+        assert_eq!(bear_obj.toughness, Some(3));
+    }
 }

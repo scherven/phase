@@ -919,4 +919,85 @@ mod tests {
         // Should enter because it has a permanent type (Creature)
         assert_eq!(state.objects[&id].zone, Zone::Battlefield);
     }
+
+    #[test]
+    fn phased_out_grafdiggers_cage_allows_reanimation_from_graveyard() {
+        // CR 702.26b + CR 614.1d regression: Grafdigger's Cage on the
+        // battlefield prevents a creature from entering from graveyard /
+        // library. Phased out, it must NOT — so reanimation succeeds.
+        // Drives the real `move_to_zone` -> `is_blocked_from_entering_battlefield`
+        // pipeline.
+        use crate::types::ability::{FilterProp, TargetFilter, TypeFilter, TypedFilter};
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+
+        // Grafdigger's Cage: "Creature cards in graveyards and libraries can't
+        // enter the battlefield." Affected filter = creature cards whose zone
+        // is graveyard OR library.
+        let cage = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Grafdigger's Cage".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&cage).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.static_definitions.push(
+                crate::types::ability::StaticDefinition::new(StaticMode::CantEnterBattlefieldFrom)
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::default()
+                            .with_type(TypeFilter::Creature)
+                            .properties(vec![FilterProp::InAnyZone {
+                                zones: vec![Zone::Graveyard, Zone::Library],
+                            }]),
+                    )),
+            );
+        }
+
+        // A creature card sitting in P0's graveyard, the target of reanimation.
+        let dead = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Dead Bear".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&dead).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_card_types = obj.card_types.clone();
+        }
+
+        // Baseline: with Cage functioning, reanimation is blocked.
+        let mut events = Vec::new();
+        move_to_zone(&mut state, dead, Zone::Battlefield, &mut events);
+        assert_eq!(
+            state.objects[&dead].zone,
+            Zone::Graveyard,
+            "Functioning Cage must block ETB from graveyard"
+        );
+
+        // Phase out the Cage via the real pipeline — CR 702.26b puts it into
+        // PhasedOut status, which the functioning-abilities gate must drop.
+        let mut phase_events = Vec::new();
+        crate::game::phasing::phase_out_object(
+            &mut state,
+            cage,
+            crate::game::game_object::PhaseOutCause::Directly,
+            &mut phase_events,
+        );
+
+        // Reanimate again — now the move must succeed because the phased-out
+        // Cage contributes no CantEnterBattlefieldFrom static.
+        let mut events2 = Vec::new();
+        move_to_zone(&mut state, dead, Zone::Battlefield, &mut events2);
+        assert_eq!(
+            state.objects[&dead].zone,
+            Zone::Battlefield,
+            "Phased-out Cage must not block ETB from graveyard"
+        );
+    }
 }
