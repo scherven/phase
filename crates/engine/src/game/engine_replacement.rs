@@ -386,12 +386,12 @@ pub(super) fn handle_copy_target_choice(
 }
 
 fn copy_effect_for_source(state: &GameState, source_id: ObjectId) -> Option<&AbilityDefinition> {
-    state
-        .objects
-        .get(&source_id)?
-        .replacement_definitions
-        .iter()
-        .filter_map(|replacement| replacement.execute.as_deref())
+    state.objects.get(&source_id)?;
+    // CR 702.26b + CR 114.4: `active_replacements` filters out phased-out /
+    // non-emblem command-zone sources.
+    super::functioning_abilities::active_replacements(state)
+        .filter(|(_, o, _)| o.id == source_id)
+        .filter_map(|(_, _, replacement)| replacement.execute.as_deref())
         .find(|effect_def| matches!(&*effect_def.effect, Effect::BecomeCopy { .. }))
 }
 

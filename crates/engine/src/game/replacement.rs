@@ -1428,7 +1428,12 @@ pub fn find_applicable_replacements(
     };
 
     let zones_to_scan = [Zone::Battlefield, Zone::Command];
-    for obj in state.objects.values() {
+    // CR 702.26b + CR 114.4: `active_replacements` owns the phased-out /
+    // command-zone-emblem gate across all zones. Zone-of-function (CR 903.9 for
+    // commander-zone, Leyline-class for hand) stays governed by the per-
+    // replacement metadata checked inside this loop; here we preserve the
+    // existing Battlefield/Command scan + entering-object exception.
+    for (index, obj, repl_def) in super::functioning_abilities::active_replacements(state) {
         let in_scanned_zone = zones_to_scan.contains(&obj.zone);
         let is_entering = entering_object_id == Some(obj.id);
 
@@ -1436,7 +1441,7 @@ pub fn find_applicable_replacements(
             continue;
         }
 
-        for (index, repl_def) in obj.replacement_definitions.iter().enumerate() {
+        {
             // CR 701.19: Skip consumed one-shot replacements (e.g., used regeneration shields).
             if repl_def.is_consumed {
                 continue;
