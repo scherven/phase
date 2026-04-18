@@ -622,49 +622,58 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
         }
 
         // CR 702.85a + CR 702.85c: Cascade — synthesized keyword trigger off
-        // a stack-zone spell object. Unlike Prowess (battlefield-sourced,
-        // handled inside the battlefield loop above), cascade's source is the
-        // just-cast spell itself; we iterate stack objects matching the
-        // `SpellCast` event payload. Each Cascade keyword instance triggers
-        // separately (CR 702.85c). The existing APNAP ordering (CR 603.3b)
-        // kicks in when `pending` is sorted by the caller.
+        // the just-cast spell. Unlike Prowess (battlefield-sourced, handled
+        // inside the battlefield loop above), cascade's source IS the cast
+        // object on the SpellCast event, so we read it directly rather than
+        // scanning every stack object. Each Cascade keyword instance triggers
+        // separately (CR 702.85c).
+        //
+        // CR 603.3b: APNAP ordering across triggers needs distinct timestamps
+        // even when multiple cascade instances fire from one spell — using
+        // `state.next_timestamp()` per instance gives a stable, monotonically
+        // increasing order matching how every other timestamp in the engine
+        // is allocated.
         if let GameEvent::SpellCast {
-            controller: caster,
             object_id: cast_obj_id,
             ..
         } = event
         {
-            for obj_id in trigger_source_ids_for_zone(state, Zone::Stack) {
-                let (instance_count, controller, timestamp) = match state.objects.get(&obj_id) {
-                    Some(obj) if obj.controller == *caster && obj_id == *cast_obj_id => {
-                        let n = obj
-                            .keywords
-                            .iter()
-                            .filter(|k| matches!(k, Keyword::Cascade))
-                            .count();
-                        (n, obj.controller, obj.entered_battlefield_turn.unwrap_or(0))
-                    }
-                    _ => (0, PlayerId(0), 0),
-                };
-                for _ in 0..instance_count {
-                    let cascade_effect = Effect::Cascade;
-                    let cascade_ability =
-                        ResolvedAbility::new(cascade_effect, Vec::new(), obj_id, controller);
-                    let cascade_trig_def = TriggerDefinition::new(TriggerMode::SpellCast)
-                        .description("Cascade".to_string());
-                    pending.push(PendingTrigger {
-                        source_id: obj_id,
-                        controller,
-                        condition: cascade_trig_def.condition,
-                        ability: cascade_ability,
-                        timestamp,
-                        target_constraints: Vec::new(),
-                        trigger_event: Some(event.clone()),
-                        modal: None,
-                        mode_abilities: vec![],
-                        description: None,
-                    });
-                }
+            let (instance_count, controller) = state
+                .objects
+                .get(cast_obj_id)
+                .map(|obj| {
+                    let n = obj
+                        .keywords
+                        .iter()
+                        .filter(|k| matches!(k, Keyword::Cascade))
+                        .count();
+                    (n, obj.controller)
+                })
+                .unwrap_or((0, PlayerId(0)));
+            for _ in 0..instance_count {
+                // CR 702.85a: Cascade fires only when "you cast this spell" —
+                // wire `WasCast` as the trigger condition so a future refactor
+                // that routes synthesized triggers through `check_trigger_condition`
+                // still gates the firing correctly (belt-and-suspenders alongside
+                // the SpellCast event itself).
+                let cascade_trig_def = TriggerDefinition::new(TriggerMode::SpellCast)
+                    .description("Cascade".to_string())
+                    .condition(TriggerCondition::WasCast);
+                let cascade_ability =
+                    ResolvedAbility::new(Effect::Cascade, Vec::new(), *cast_obj_id, controller);
+                let timestamp = state.next_timestamp() as u32;
+                pending.push(PendingTrigger {
+                    source_id: *cast_obj_id,
+                    controller,
+                    condition: cascade_trig_def.condition,
+                    ability: cascade_ability,
+                    timestamp,
+                    target_constraints: Vec::new(),
+                    trigger_event: Some(event.clone()),
+                    modal: None,
+                    mode_abilities: vec![],
+                    description: cascade_trig_def.description,
+                });
             }
         }
 
