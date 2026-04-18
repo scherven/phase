@@ -49,6 +49,18 @@ export async function getCardParseDetails(cardName: string) {
   return engine.get_card_parse_details(cardName);
 }
 
+export async function getCardRulings(cardName: string): Promise<CardRuling[]> {
+  await ensureCardDatabase();
+  const engine = await loadEngineModule();
+  return (engine.get_card_rulings(cardName) as CardRuling[]) ?? [];
+}
+
+/** An official WotC ruling: date + body text. Mirrors the Rust `Ruling` struct. */
+export interface CardRuling {
+  date: string;
+  text: string;
+}
+
 export async function evaluateDeckCompatibilityJs(request: unknown) {
   await ensureCardDatabase();
   const engine = await loadEngineModule();

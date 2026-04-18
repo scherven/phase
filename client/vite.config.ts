@@ -110,6 +110,12 @@ export default defineConfig({
     __CARD_DATA_META_URL__: JSON.stringify(
       process.env.CARD_DATA_META_URL || "/card-data-meta.json",
     ),
+    __SET_LIST_URL__: JSON.stringify(
+      process.env.SET_LIST_URL || "/set-list.json",
+    ),
+    __DECKS_URL__: JSON.stringify(
+      process.env.DECKS_URL || "/decks.json",
+    ),
     __AUDIO_BASE_URL__: JSON.stringify(
       process.env.AUDIO_BASE_URL || "",
     ),

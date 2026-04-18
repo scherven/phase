@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use super::legality::{normalize_legalities, CardLegalities, LegalityFormat, LegalityStatus};
+use super::mtgjson::Ruling;
 use crate::types::card::{CardFace, CardRules, LayoutKind, PrintedCardRef};
 
 use std::io::BufReader;
@@ -23,6 +24,10 @@ pub struct CardDatabase {
     /// Populated only via the export path (MTGJSON `printings` field).
     /// Used by the coverage dashboard to group cards by set.
     pub(crate) printings_index: HashMap<String, Vec<String>>,
+    /// Maps face key (lowercased card name) → official WotC rulings.
+    /// Populated only via the export path. Only front faces of multi-face
+    /// cards carry rulings; back-face lookups return the empty slice.
+    pub(crate) rulings_index: HashMap<String, Vec<Ruling>>,
     pub(crate) errors: Vec<(PathBuf, String)>,
 }
 
@@ -54,6 +59,7 @@ impl CardDatabase {
         let mut layout_index: HashMap<String, LayoutKind> = HashMap::new();
         let mut legalities = HashMap::new();
         let mut printings_index: HashMap<String, Vec<String>> = HashMap::new();
+        let mut rulings_index: HashMap<String, Vec<Ruling>> = HashMap::new();
 
         for (_name, entry) in entries {
             let key = entry.face.name.to_lowercase();
@@ -72,6 +78,10 @@ impl CardDatabase {
                 printings_index.insert(key.clone(), entry.printings);
             }
 
+            if !entry.rulings.is_empty() {
+                rulings_index.insert(key.clone(), entry.rulings);
+            }
+
             let normalized = normalize_legalities(&entry.legalities);
             if !normalized.is_empty() {
                 legalities.insert(key, normalized);
@@ -85,6 +95,7 @@ impl CardDatabase {
             layout_index,
             legalities,
             printings_index,
+            rulings_index,
             errors: Vec::new(),
         }
     }
@@ -136,6 +147,17 @@ impl CardDatabase {
             .map(Vec::as_slice)
     }
 
+    /// Returns the official WotC rulings for a card. Returns an empty slice
+    /// when the card has no recorded rulings, when the card was loaded via a
+    /// path that doesn't record rulings, or when looking up a back-face name
+    /// (rulings are attached to the front face only).
+    pub fn rulings_for(&self, name: &str) -> &[Ruling] {
+        self.rulings_index
+            .get(&name.to_lowercase())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     pub fn card_count(&self) -> usize {
         self.cards.len().max(self.face_index.len())
     }
@@ -183,6 +205,9 @@ struct CardExportEntry {
     /// Set codes the card has been printed in (from MTGJSON `printings`).
     #[serde(default)]
     printings: Vec<String>,
+    /// Official WotC rulings; populated on the front face only for multi-face cards.
+    #[serde(default)]
+    rulings: Vec<Ruling>,
 }
 
 /// Convert MTGJSON layout string to runtime `LayoutKind`.

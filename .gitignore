@@ -32,6 +32,9 @@ client/public/card-data-meta.json
 client/public/coverage-data.json
 client/public/coverage-summary.json
 client/public/scryfall-data.json
+client/public/set-list.json
+client/public/decks.json
+client/public/decks-skipped.json
 # Atomic-write staging files from gen-card-data.sh (cleaned on normal exit,
 # but may linger after SIGKILL / power loss).
 client/public/*.tmp
@@ -44,6 +47,9 @@ data/*
 !data/standard-cards.txt
 !data/mtgjson/
 data/mtgjson/AtomicCards.json
+data/mtgjson/Meta.json
+data/mtgjson/SetList.json
+data/mtgjson/decks/
 !data/abilities/
 !data/precons/
 !data/learned-weights.json

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::types::mana::{ManaCost, ManaCostShard};
 
@@ -53,7 +53,20 @@ pub struct AtomicCard {
     pub leadership_skills: Option<LeadershipSkills>,
     #[serde(default)]
     pub printings: Vec<String>,
+    #[serde(default)]
+    pub rulings: Vec<Ruling>,
     pub identifiers: AtomicIdentifiers,
+}
+
+/// An official WotC ruling attached to a card. MTGJSON mirrors these from Gatherer.
+/// Note: MTGJSON duplicates the same rulings across every face of a multi-face
+/// card (DFC, adventure, split, etc.); dedup happens at export time in
+/// `oracle_gen` by attaching rulings to the front face only.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Ruling {
+    pub date: String,
+    pub text: String,
 }
 
 /// Leadership skills from MTGJSON — indicates whether a card can serve as a
@@ -191,6 +204,37 @@ mod tests {
     fn find_unknown_card_returns_none() {
         let data = load_fixture();
         assert!(find_card(&data, "Nonexistent Card Name").is_none());
+    }
+
+    #[test]
+    fn rulings_deserialize_from_fixture() {
+        let data = load_fixture();
+        let card = find_card(&data, "Augur of Bolas").expect("Augur of Bolas should exist");
+        assert!(
+            !card.rulings.is_empty(),
+            "Augur of Bolas has published rulings in the fixture"
+        );
+        let first = &card.rulings[0];
+        assert!(!first.date.is_empty(), "ruling date should be populated");
+        assert!(!first.text.is_empty(), "ruling text should be populated");
+    }
+
+    #[test]
+    fn rulings_duplicated_across_multi_face_cards() {
+        // This test proves the premise behind our export-time dedup: MTGJSON
+        // duplicates rulings on every face of a multi-face card. We rely on
+        // this invariant when we attach rulings to the front face only.
+        let data = load_fixture();
+        let faces = data
+            .data
+            .get("Lovestruck Beast // Heart's Desire")
+            .expect("Lovestruck Beast should exist");
+        assert_eq!(faces.len(), 2);
+        assert!(!faces[0].rulings.is_empty());
+        assert_eq!(
+            faces[0].rulings, faces[1].rulings,
+            "MTGJSON mirrors rulings across every face; export-time dedup relies on this"
+        );
     }
 
     #[test]

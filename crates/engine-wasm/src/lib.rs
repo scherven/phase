@@ -49,7 +49,7 @@ struct LegalActionsResult {
 ///
 /// V8's `JSON.parse` is heavily optimized and often outperforms equivalent direct
 /// object construction for large payloads.
-fn to_js<T: Serialize>(value: &T) -> JsValue {
+fn to_js<T: Serialize + ?Sized>(value: &T) -> JsValue {
     let json = serde_json::to_string(value)
         .unwrap_or_else(|e| panic!("serde_json serialization failed: {e}"));
     js_sys::JSON::parse(&json).unwrap_or_else(|e| panic!("JSON.parse failed: {e:?}"))
@@ -171,6 +171,21 @@ pub fn get_card_face_data(name: &str) -> JsValue {
             Some(face) => to_js(face),
             None => JsValue::NULL,
         }
+    })
+}
+
+/// Returns the official WotC rulings for a card as a JS array of `{date, text}`
+/// objects. Returns an empty array if the card is not found, the database is
+/// not loaded, or the card has no rulings (back faces of multi-face cards
+/// inherit empty rulings — they're deduped at export time to the front face).
+#[wasm_bindgen]
+pub fn get_card_rulings(name: &str) -> JsValue {
+    CARD_DB.with(|cell| {
+        let db = cell.borrow();
+        let Some(db) = db.as_ref() else {
+            return to_js(&Vec::<engine::database::mtgjson::Ruling>::new());
+        };
+        to_js(db.rulings_for(name))
     })
 }
 

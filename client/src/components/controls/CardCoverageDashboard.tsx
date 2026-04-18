@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { useCardImage } from "../../hooks/useCardImage";
+import { useSetList, type SetMeta } from "../../hooks/useSetList";
 
 // Supported handlers are now derived from the coverage export, not a hardcoded list.
 // See `extractHandlerUsage` below — a handler is listed iff the parser produces it
@@ -542,6 +543,7 @@ function BySetView() {
   }, []);
 
   const sets = useMemo(() => (coverage ? aggregateBySet(coverage.cards) : []), [coverage]);
+  const setList = useSetList();
 
   if (loading) {
     return (
@@ -584,6 +586,7 @@ function BySetView() {
             <SetRow
               key={s.set_code}
               set={s}
+              setMeta={setList?.[s.set_code] ?? null}
               isExpanded={expandedSet === s.set_code}
               onToggle={() => {
                 setExpandedSet(expandedSet === s.set_code ? null : s.set_code);
@@ -608,12 +611,14 @@ function BySetView() {
 
 function SetRow({
   set,
+  setMeta,
   isExpanded,
   onToggle,
   selectedGapCard,
   onSelectGapCard,
 }: {
   set: SetCoverage;
+  setMeta: SetMeta | null;
   isExpanded: boolean;
   onToggle: () => void;
   selectedGapCard: string | null;
@@ -631,10 +636,17 @@ function SetRow({
       ? set.gap_cards.find((c) => c.card_name === selectedGapCard) ?? null
       : null;
 
+  // Compose a human-readable hover title from the enriched set metadata.
+  const titleParts = setMeta
+    ? [setMeta.name, setMeta.releaseDate, setMeta.type].filter(Boolean)
+    : [];
+  const title = titleParts.length > 0 ? titleParts.join(" · ") : undefined;
+
   return (
     <div>
       <button
         onClick={onToggle}
+        title={title}
         className={`flex w-full items-center gap-3 rounded-[10px] border px-3 py-2 text-left text-[13px] transition ${
           isExpanded
             ? "border-sky-400/30 bg-sky-500/8"
@@ -645,6 +657,11 @@ function SetRow({
         <span className="w-14 shrink-0 font-mono text-xs font-semibold uppercase tracking-wider text-slate-200">
           {set.set_code}
         </span>
+        {setMeta?.name && (
+          <span className="hidden w-[32%] max-w-[220px] shrink-0 truncate text-[11px] text-slate-400 md:inline">
+            {setMeta.name}
+          </span>
+        )}
         <div className="relative h-3 min-w-0 flex-1 overflow-hidden rounded bg-black/30">
           <div
             className={`absolute inset-y-0 left-0 rounded bg-gradient-to-r ${barColor}`}

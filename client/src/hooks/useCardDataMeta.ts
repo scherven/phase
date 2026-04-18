@@ -4,6 +4,10 @@ export interface CardDataMeta {
   generated_at: string;
   commit: string;
   commit_short: string;
+  /** MTGJSON version string (e.g. "5.3.0+20260418") sourced from their Meta.json. */
+  mtgjson_version?: string;
+  /** MTGJSON snapshot date (ISO yyyy-mm-dd). */
+  mtgjson_date?: string;
 }
 
 let cached: CardDataMeta | null = null;

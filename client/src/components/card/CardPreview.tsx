@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import type { GameObject } from "../../adapter/types.ts";
 import { useCardImage } from "../../hooks/useCardImage.ts";
 import { useIsMobile } from "../../hooks/useIsMobile.ts";
-import { useEngineCardData, useCardParseDetails, type ParsedItem } from "../../hooks/useEngineCardData.ts";
+import { useEngineCardData, useCardParseDetails, useCardRulings, type ParsedItem } from "../../hooks/useEngineCardData.ts";
+import type { CardRuling } from "../../services/engineRuntime.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { ManaCostPips } from "../mana/ManaCostPips.tsx";
@@ -472,6 +473,7 @@ interface ParsedAbilitiesPanelProps {
 
 function ParsedAbilitiesPanel({ name, cardTypes, parseDetails, maxHeight }: ParsedAbilitiesPanelProps) {
   const items = parseDetails ?? [];
+  const rulings = useCardRulings(name);
 
   return (
     <div
@@ -497,6 +499,7 @@ function ParsedAbilitiesPanel({ name, cardTypes, parseDetails, maxHeight }: Pars
           <ParsedItemRow key={itemKey(item, i)} item={item} />
         ))}
       </div>
+      {rulings.length > 0 && <RulingsSection rulings={rulings} />}
     </div>
   );
 }
@@ -508,6 +511,7 @@ function CardInfoPanel({ obj, altAvailable }: { obj: GameObject; altAvailable: b
   const colorsChanged =
     obj.color.length !== obj.base_color.length ||
     obj.color.some((c, i) => c !== obj.base_color[i]);
+  const rulings = useCardRulings(obj.name);
 
   return (
     <div className="relative w-full border-t border-gray-600 bg-gray-900/95 px-3 py-2 text-xs text-gray-200">
@@ -517,6 +521,11 @@ function CardInfoPanel({ obj, altAvailable }: { obj: GameObject; altAvailable: b
             Alt
           </kbd>
           <span>Parse</span>
+          {rulings.length > 0 && (
+            <span className="ml-1 rounded bg-indigo-900/70 px-1.5 py-0.5 text-[9px] font-normal normal-case tracking-normal text-indigo-200">
+              {rulings.length} ruling{rulings.length === 1 ? "" : "s"}
+            </span>
+          )}
         </div>
       )}
       {/* Type line */}
@@ -573,6 +582,52 @@ function CardInfoPanel({ obj, altAvailable }: { obj: GameObject; altAvailable: b
         <div className="mt-1 text-gray-400">
           Colors: {obj.color.length > 0 ? obj.color.join(", ") : "Colorless"}
         </div>
+      )}
+    </div>
+  );
+}
+
+const RULINGS_INITIAL_LIMIT = 3;
+
+function RulingsSection({ rulings }: { rulings: CardRuling[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Sort by date descending (most recent first). React interpolation escapes all
+  // text by default — never use dangerouslySetInnerHTML for ruling text.
+  const sorted = [...rulings].sort((a, b) => b.date.localeCompare(a.date));
+  const visible = expanded ? sorted : sorted.slice(0, RULINGS_INITIAL_LIMIT);
+  const hiddenCount = sorted.length - visible.length;
+
+  return (
+    <div className="mt-3 border-t border-gray-700 px-2 pb-2 pt-2 text-xs text-gray-300">
+      <div className="mb-1 font-semibold uppercase tracking-wide text-[10px] text-gray-500">
+        Rulings
+      </div>
+      <ul className="space-y-1.5">
+        {visible.map((ruling, i) => (
+          <li key={`${ruling.date}-${i}`} className="leading-snug">
+            <span className="mr-1 text-gray-500">[{ruling.date}]</span>
+            <span>{ruling.text}</span>
+          </li>
+        ))}
+      </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-1.5 text-[11px] text-indigo-300 hover:text-indigo-200"
+        >
+          Show {hiddenCount} more
+        </button>
+      )}
+      {expanded && sorted.length > RULINGS_INITIAL_LIMIT && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="mt-1.5 text-[11px] text-indigo-300 hover:text-indigo-200"
+        >
+          Show less
+        </button>
       )}
     </div>
   );

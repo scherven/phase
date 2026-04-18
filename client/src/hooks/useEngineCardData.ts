@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 
 import {
+  type CardRuling,
   getCardFaceData,
   getCardParseDetails,
+  getCardRulings,
 } from "../services/engineRuntime";
 
 /**
@@ -89,4 +91,31 @@ export function useCardParseDetails(cardName: string | null): ParsedItem[] | nul
   }, [cardName]);
 
   return items;
+}
+
+/**
+ * Returns official WotC rulings for a card. Empty array while loading, or when
+ * the card has no rulings, or for back faces of multi-face cards (rulings are
+ * attached to the front face only).
+ */
+export function useCardRulings(cardName: string | null): CardRuling[] {
+  const [rulings, setRulings] = useState<CardRuling[]>([]);
+
+  useEffect(() => {
+    if (!cardName) {
+      setRulings([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    getCardRulings(cardName).then((result) => {
+      if (cancelled) return;
+      setRulings(result);
+    });
+
+    return () => { cancelled = true; };
+  }, [cardName]);
+
+  return rulings;
 }

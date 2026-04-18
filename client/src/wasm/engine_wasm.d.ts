@@ -67,6 +67,14 @@ export function get_card_face_data(name: string): any;
 export function get_card_parse_details(name: string): any;
 
 /**
+ * Returns the official WotC rulings for a card as a JS array of `{date, text}`
+ * objects. Returns an empty array if the card is not found, the database is
+ * not loaded, or the card has no rulings (back faces of multi-face cards
+ * inherit empty rulings — they're deduped at export time to the front face).
+ */
+export function get_card_rulings(name: string): any;
+
+/**
  * Get a filtered view of the current game state for the given player.
  */
 export function get_filtered_game_state(viewer: number): any;
@@ -206,6 +214,7 @@ export interface InitOutput {
     readonly get_ai_scored_candidates: (a: number, b: number, c: number, d: bigint) => [number, number, number];
     readonly get_card_face_data: (a: number, b: number) => any;
     readonly get_card_parse_details: (a: number, b: number) => any;
+    readonly get_card_rulings: (a: number, b: number) => any;
     readonly get_filtered_game_state: (a: number) => any;
     readonly initialize_game: (a: any, b: number, c: number, d: any, e: any, f: number, g: number) => any;
     readonly is_card_commander_eligible: (a: number, b: number) => number;
