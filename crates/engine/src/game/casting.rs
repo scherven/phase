@@ -930,12 +930,13 @@ fn apply_battlefield_cost_modifiers(
 ) {
     use crate::types::ability::ControllerRef;
 
-    // CR 702.26b + CR 604.1: Functioning gate owned by
-    // `battlefield_active_statics`; the inline condition check is intentionally
-    // preserved below because it must re-evaluate against `caster`, not the
-    // static's controller, so `SpellsCastThisTurn` resolves against the casting
-    // player's history.
-    for (bf_obj, def) in super::functioning_abilities::battlefield_active_statics(state) {
+    // CR 702.26b + CR 114.4: Functioning gate (phased-out / command-zone) owned
+    // by `battlefield_functioning_statics`. We deliberately use the non-
+    // condition-filtered helper here — CR 604.1 condition evaluation must run
+    // against `caster` (so `SpellsCastThisTurn`-style conditions resolve against
+    // the casting player's history), not against the static's controller. The
+    // inline `evaluate_condition(... caster, ...)` call below does that work.
+    for (bf_obj, def) in super::functioning_abilities::battlefield_functioning_statics(state) {
         let bf_id = bf_obj.id;
         let source_controller = bf_obj.controller;
 

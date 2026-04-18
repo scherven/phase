@@ -94,6 +94,27 @@ pub fn battlefield_active_statics(
         .flat_map(move |obj| active_static_definitions(state, obj).map(move |def| (obj, def)))
 }
 
+/// Like `battlefield_active_statics` but WITHOUT condition filtering.
+///
+/// Applies only the CR 702.26b phased-out gate and the CR 114.4
+/// command-zone/emblem gate. Use this when the caller must evaluate a
+/// static's `condition` itself under a non-default controller context —
+/// e.g., cost-mod statics whose `QuantityComparison` must resolve against
+/// the *caster*, not against the source's controller.
+///
+/// For any other read site, prefer `battlefield_active_statics`, which
+/// applies the CR 604.1 / CR 613.1 condition gate on the caller's behalf.
+pub fn battlefield_functioning_statics(
+    state: &GameState,
+) -> impl Iterator<Item = (&GameObject, &StaticDefinition)> {
+    state
+        .battlefield
+        .iter()
+        .filter_map(move |id| state.objects.get(id))
+        .filter(|obj| object_functions(obj))
+        .flat_map(move |obj| obj.static_definitions.iter_all().map(move |def| (obj, def)))
+}
+
 /// Battlefield iteration specialised to a particular `StaticMode` shape.
 ///
 /// `extract` pulls the typed payload out of `StaticMode` (replacing the
@@ -451,6 +472,46 @@ mod tests {
             0,
             "A non-emblem commander in the command zone must not have functioning triggers"
         );
+    }
+
+    #[test]
+    fn battlefield_functioning_statics_does_not_filter_condition() {
+        // `battlefield_functioning_statics` applies only the phased-out /
+        // command-zone gate. A static with a false `condition` must still be
+        // yielded so callers (e.g. cost-mod) can re-evaluate it under their
+        // own controller context — whereas `battlefield_active_statics` drops
+        // it per CR 604.1 / CR 613.1.
+        let mut state = new_state();
+        assert!(state.monarch.is_none());
+        let mut obj = make_obj(1, Zone::Battlefield);
+        obj.static_definitions = vec![
+            StaticDefinition::new(StaticMode::Continuous).condition(StaticCondition::IsMonarch)
+        ]
+        .into();
+        put_on_battlefield(&mut state, obj);
+
+        assert_eq!(
+            battlefield_functioning_statics(&state).count(),
+            1,
+            "functioning-only iterator must yield the false-condition static"
+        );
+        assert_eq!(
+            battlefield_active_statics(&state).count(),
+            0,
+            "condition-gated iterator must drop the false-condition static"
+        );
+    }
+
+    #[test]
+    fn battlefield_functioning_statics_still_filters_phased_out() {
+        let mut state = new_state();
+        let mut obj = make_obj(1, Zone::Battlefield);
+        obj.static_definitions = vec![StaticDefinition::new(StaticMode::Continuous)].into();
+        obj.phase_status = crate::game::game_object::PhaseStatus::PhasedOut {
+            cause: crate::game::game_object::PhaseOutCause::Directly,
+        };
+        put_on_battlefield(&mut state, obj);
+        assert_eq!(battlefield_functioning_statics(&state).count(), 0);
     }
 
     #[test]
