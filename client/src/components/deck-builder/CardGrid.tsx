@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import type { ScryfallCard } from "../../services/scryfall";
+import type { BrowserLegalityFilter } from "./CardSearch";
 import { LegalityBadge } from "./LegalityBadge";
 
 interface CardGridProps {
@@ -7,7 +8,7 @@ interface CardGridProps {
   onAddCard: (card: ScryfallCard) => void;
   onCardHover?: (cardName: string | null) => void;
   cardCounts?: Map<string, number>;
-  format?: string;
+  legalityFormat?: BrowserLegalityFilter;
 }
 
 function getArtCropUrl(card: ScryfallCard): string {
@@ -18,7 +19,8 @@ function getArtCropUrl(card: ScryfallCard): string {
   );
 }
 
-function isFormatLegal(card: ScryfallCard, format: string): boolean {
+function isFormatLegal(card: ScryfallCard, format: BrowserLegalityFilter): boolean {
+  if (format === "all") return true;
   return card.legalities?.[format] === "legal";
 }
 
@@ -27,16 +29,18 @@ export function CardGrid({
   onAddCard,
   onCardHover,
   cardCounts,
-  format = "standard",
+  legalityFormat = "all",
 }: CardGridProps) {
   return (
     <div className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2 overflow-y-auto p-2">
       <AnimatePresence mode="popLayout">
         {cards.map((card) => {
           const imageUrl = getArtCropUrl(card);
-          const legal = isFormatLegal(card, format);
+          const legal = isFormatLegal(card, legalityFormat);
           const count = cardCounts?.get(card.name);
-          const formatLabel = format.charAt(0).toUpperCase() + format.slice(1);
+          const formatLabel = legalityFormat === "all"
+            ? "All"
+            : legalityFormat.charAt(0).toUpperCase() + legalityFormat.slice(1);
 
           return (
             <motion.button
@@ -79,9 +83,11 @@ export function CardGrid({
               )}
 
               {/* Legality badge */}
-              <div className="absolute left-1 top-1">
-                {card.legalities && <LegalityBadge legalities={card.legalities} format={format} />}
-              </div>
+              {legalityFormat !== "all" && (
+                <div className="absolute left-1 top-1">
+                  {card.legalities && <LegalityBadge legalities={card.legalities} format={legalityFormat} />}
+                </div>
+              )}
 
               {/* Card count badge */}
               {count !== undefined && count > 0 && (

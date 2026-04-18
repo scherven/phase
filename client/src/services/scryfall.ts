@@ -318,6 +318,7 @@ export function buildScryfallQuery(options: {
   type?: string;
   cmcMax?: number;
   cmcMin?: number;
+  sets?: string[];
   format?: string;
 }): string {
   const parts: string[] = [];
@@ -327,6 +328,18 @@ export function buildScryfallQuery(options: {
   if (options.type) parts.push(`t:${options.type}`);
   if (options.cmcMin !== undefined) parts.push(`cmc>=${options.cmcMin}`);
   if (options.cmcMax !== undefined) parts.push(`cmc<=${options.cmcMax}`);
+  if (options.sets?.length) {
+    const uniqueSetCodes = [...new Set(
+      options.sets
+        .map((setCode) => setCode.trim().toLowerCase())
+        .filter(Boolean),
+    )];
+    if (uniqueSetCodes.length === 1) {
+      parts.push(`set:${uniqueSetCodes[0]}`);
+    } else if (uniqueSetCodes.length > 1) {
+      parts.push(`(${uniqueSetCodes.map((setCode) => `set:${setCode}`).join(" OR ")})`);
+    }
+  }
   if (options.format) parts.push(`f:${options.format}`);
 
   return parts.join(" ");

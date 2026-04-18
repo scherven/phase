@@ -7,6 +7,7 @@ import { evaluateDeckCompatibility, type DeckCompatibilityResult } from "../../s
 import { STORAGE_KEY_PREFIX, loadSavedDeck, stampDeckMeta } from "../../constants/storage";
 import { useDeckCardData } from "../../hooks/useDeckCardData";
 import { CardSearch } from "./CardSearch";
+import type { CardSearchFilters } from "./CardSearch";
 import { CardGrid } from "./CardGrid";
 import { DeckStack } from "./DeckStack";
 import { DeckList } from "./DeckList";
@@ -37,6 +38,9 @@ interface DeckBuilderProps {
   onFormatChange: (format: DeckFormat) => void;
   initialDeckName?: string | null;
   backPath?: string;
+  searchFilters: CardSearchFilters;
+  onSearchFiltersChange: (filters: CardSearchFilters) => void;
+  onResetSearch: () => void;
 }
 
 const BASIC_LANDS = new Set([
@@ -53,6 +57,9 @@ export function DeckBuilder({
   onFormatChange,
   initialDeckName = null,
   backPath = "/",
+  searchFilters,
+  onSearchFiltersChange,
+  onResetSearch,
 }: DeckBuilderProps) {
   const navigate = useNavigate();
   const [deck, setDeck] = useState<ParsedDeck>({ main: [], sideboard: [] });
@@ -324,7 +331,9 @@ export function DeckBuilder({
           <CardSearch
             onResults={handleSearchResults}
             onSearchTrigger={handleSearchTrigger}
-            format={format}
+            filters={searchFilters}
+            onFiltersChange={onSearchFiltersChange}
+            onReset={onResetSearch}
           />
         </div>
 
@@ -336,7 +345,7 @@ export function DeckBuilder({
                 onAddCard={handleAddCard}
                 onCardHover={onCardHover}
                 cardCounts={cardCounts}
-                format={format}
+                legalityFormat={searchFilters.browseFormat}
               />
             </div>
           )}
