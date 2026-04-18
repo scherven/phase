@@ -61,6 +61,24 @@ jobs:
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
 
+      - name: Set cache keys
+        id: cache-keys
+        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache MTGJSON data
+        id: mtgjson-cache
+        uses: actions/cache@v4
+        with:
+          path: data/mtgjson
+          key: mtgjson-${{ steps.cache-keys.outputs.week }}
+          restore-keys: mtgjson-
+
+      - name: Download MTGJSON data
+        if: steps.mtgjson-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p data/mtgjson
+          curl -fSL -o data/mtgjson/AtomicCards.json "https://mtgjson.com/api/v5/AtomicCards.json"
+
       - name: Generate card data and coverage (from source)
         run: |
           mkdir -p data
