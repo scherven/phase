@@ -35,12 +35,21 @@ pub fn resolve(
         .map(|obj| obj.mana_cost.mana_value() + obj.cost_x_paid.unwrap_or(0))
         .unwrap_or(0);
 
-    // CR 702.85a: Validate the controller exists, then iterate per-card by
-    // re-reading the live library top each pass. A snapshot taken once would
-    // desync if a replacement effect (e.g., "if a card would be exiled from
-    // your library, instead ...") redirects, blocks, or reorders the move,
-    // because the snapshot remembers the pre-replacement order.
-    if !state.players.iter().any(|p| p.id == ability.controller) {
+    // CR 603.3a: Re-read the controller from the source spell at resolution
+    // time rather than trusting `ability.controller` (captured at trigger-
+    // creation time). If the cascade spell is still on the stack we use its
+    // current `controller` so a control-change effect between trigger
+    // creation and resolution is honored. If the spell has left the stack,
+    // fall back to the trigger's snapshot.
+    // TODO: unify controller-at-resolution pattern across triggers (this
+    // currently has to be done at the resolver per effect).
+    let controller = state
+        .objects
+        .get(&ability.source_id)
+        .map(|obj| obj.controller)
+        .unwrap_or(ability.controller);
+
+    if !state.players.iter().any(|p| p.id == controller) {
         return Err(EffectError::PlayerNotFound);
     }
 
@@ -54,7 +63,7 @@ pub fn resolve(
     while let Some(card_id) = state
         .players
         .iter()
-        .find(|p| p.id == ability.controller)
+        .find(|p| p.id == controller)
         .and_then(|p| p.library.first().copied())
     {
         zones::move_to_zone(state, card_id, Zone::Exile, events);
@@ -69,7 +78,7 @@ pub fn resolve(
             if state
                 .players
                 .iter()
-                .find(|p| p.id == ability.controller)
+                .find(|p| p.id == controller)
                 .is_some_and(|p| p.library.first().copied() == Some(card_id))
             {
                 // Defensive: if the card is somehow still on top, break to
@@ -106,7 +115,7 @@ pub fn resolve(
             // ineligible) must still bottom-shuffle them together with the
             // hit, and that path runs from `casting_costs`.
             state.waiting_for = WaitingFor::CascadeChoice {
-                player: ability.controller,
+                player: controller,
                 hit_card: hit,
                 exiled_misses,
                 source_mv,
