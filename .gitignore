@@ -32,6 +32,9 @@ client/public/card-data-meta.json
 client/public/coverage-data.json
 client/public/coverage-summary.json
 client/public/scryfall-data.json
+# Atomic-write staging files from gen-card-data.sh (cleaned on normal exit,
+# but may linger after SIGKILL / power loss).
+client/public/*.tmp
 
 # Coverage
 client/coverage/
