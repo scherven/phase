@@ -75,6 +75,7 @@ pub fn resolve(
                 .push(CastingPermission::ExileWithAltCost {
                     cost,
                     cast_transformed,
+                    constraint: None,
                 });
         }
     }

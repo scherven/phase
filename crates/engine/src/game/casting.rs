@@ -6592,6 +6592,7 @@ mod tests {
             .push(crate::types::ability::CastingPermission::ExileWithAltCost {
                 cost: ManaCost::generic(2),
                 cast_transformed: false,
+                constraint: None,
             });
 
         assert!(is_blocked_by_cast_only_from_zones(
@@ -7748,6 +7749,7 @@ mod tests {
                 crate::types::ability::CastingPermission::ExileWithAltCost {
                     cost: obj.mana_cost.clone(),
                     cast_transformed: false,
+                    constraint: None,
                 },
             );
         }

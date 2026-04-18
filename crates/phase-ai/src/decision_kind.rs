@@ -103,6 +103,7 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::WardDiscardChoice { .. }
         | WaitingFor::WardSacrificeChoice { .. }
         | WaitingFor::DiscoverChoice { .. }
+        | WaitingFor::CascadeChoice { .. }
         | WaitingFor::TopOrBottomChoice { .. }
         | WaitingFor::PopulateChoice { .. }
         | WaitingFor::ClashCardPlacement { .. }

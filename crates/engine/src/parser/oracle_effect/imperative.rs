@@ -606,6 +606,7 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             permission: crate::types::ability::CastingPermission::ExileWithAltCost {
                 cost,
                 cast_transformed: false,
+                constraint: None,
             },
             target,
         },

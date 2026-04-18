@@ -1228,6 +1228,7 @@ mod tests {
                 .push(CastingPermission::ExileWithAltCost {
                     cost: ManaCost::generic(2),
                     cast_transformed: false,
+                    constraint: None,
                 });
         }
 

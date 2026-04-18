@@ -621,6 +621,53 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
             }
         }
 
+        // CR 702.85a + CR 702.85c: Cascade — synthesized keyword trigger off
+        // a stack-zone spell object. Unlike Prowess (battlefield-sourced,
+        // handled inside the battlefield loop above), cascade's source is the
+        // just-cast spell itself; we iterate stack objects matching the
+        // `SpellCast` event payload. Each Cascade keyword instance triggers
+        // separately (CR 702.85c). The existing APNAP ordering (CR 603.3b)
+        // kicks in when `pending` is sorted by the caller.
+        if let GameEvent::SpellCast {
+            controller: caster,
+            object_id: cast_obj_id,
+            ..
+        } = event
+        {
+            for obj_id in trigger_source_ids_for_zone(state, Zone::Stack) {
+                let (instance_count, controller, timestamp) = match state.objects.get(&obj_id) {
+                    Some(obj) if obj.controller == *caster && obj_id == *cast_obj_id => {
+                        let n = obj
+                            .keywords
+                            .iter()
+                            .filter(|k| matches!(k, Keyword::Cascade))
+                            .count();
+                        (n, obj.controller, obj.entered_battlefield_turn.unwrap_or(0))
+                    }
+                    _ => (0, PlayerId(0), 0),
+                };
+                for _ in 0..instance_count {
+                    let cascade_effect = Effect::Cascade;
+                    let cascade_ability =
+                        ResolvedAbility::new(cascade_effect, Vec::new(), obj_id, controller);
+                    let cascade_trig_def = TriggerDefinition::new(TriggerMode::SpellCast)
+                        .description("Cascade".to_string());
+                    pending.push(PendingTrigger {
+                        source_id: obj_id,
+                        controller,
+                        condition: cascade_trig_def.condition,
+                        ability: cascade_ability,
+                        timestamp,
+                        target_constraints: Vec::new(),
+                        trigger_event: Some(event.clone()),
+                        modal: None,
+                        mode_abilities: vec![],
+                        description: None,
+                    });
+                }
+            }
+        }
+
         // CR 724.2: At the beginning of the monarch's end step, that player draws a card.
         // Synthetic game-rule trigger — not attached to any permanent.
         if let GameEvent::PhaseChanged { phase: Phase::End } = event {

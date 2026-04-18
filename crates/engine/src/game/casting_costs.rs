@@ -1403,6 +1403,20 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
         }
     }
 
+    // CR 702.85a: Cast-time evaluation of `CascadeResultingMvBelow`. X has
+    // been chosen and stamped, so `mana_value()` now reflects the resulting
+    // spell's MV. The object is still in its origin (exile) zone — rejection
+    // requires only popping the announcement stack entry, bottom-shuffling
+    // the exiled cards, and aborting before the Hand→Stack move. Any other
+    // `ExileWithAltCost` permissions on the object (Suspend, Airbending,
+    // Discover) have `constraint: None` and are unaffected by this scan.
+    match evaluate_cascade_constraint(state, object_id, events) {
+        CascadeCheck::NotApplicable | CascadeCheck::Accepted => {}
+        CascadeCheck::Rejected { exiled_misses } => {
+            return handle_cascade_rejection(state, player, object_id, exiled_misses, events);
+        }
+    }
+
     // CR 601.2a + CR 601.2i: The spell was announced onto the stack earlier,
     // but the object's `zone` field stayed at its origin through cost payment
     // so continuous effects that granted castability ("cards in your graveyard
@@ -1480,6 +1494,109 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
         });
     }
 
+    Ok(WaitingFor::Priority { player })
+}
+
+/// CR 702.85a: Outcome of evaluating a cascade cast-time constraint.
+enum CascadeCheck {
+    /// No cascade constraint on this object — the cast proceeds normally.
+    NotApplicable,
+    /// The constraint passed (resulting MV < source MV). The cast proceeds;
+    /// the misses have already been bottom-shuffled as a side effect.
+    Accepted,
+    /// The constraint failed (resulting MV >= source MV). The cast must be
+    /// aborted; the caller should unwind the announcement stack entry and
+    /// route through `handle_cascade_rejection`.
+    Rejected { exiled_misses: Vec<ObjectId> },
+}
+
+/// CR 702.85a: Inspect the casting object's `ExileWithAltCost` permissions for
+/// a cascade constraint and evaluate it against the resulting spell's mana
+/// value. Consumes the matched cascade permission (only); other permissions
+/// with `constraint: None` (Suspend, Airbending, Discover, ...) are untouched.
+///
+/// On acceptance, bottom-shuffles the exiled misses here so both accept paths
+/// (plain free cast + X-cost cast) share a single cleanup point.
+fn evaluate_cascade_constraint(
+    state: &mut GameState,
+    object_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> CascadeCheck {
+    use crate::types::ability::{CastPermissionConstraint, CastingPermission};
+
+    let (index, resulting_mv) = match state.objects.get(&object_id) {
+        Some(obj) => {
+            let idx = obj.casting_permissions.iter().position(|p| {
+                matches!(
+                    p,
+                    CastingPermission::ExileWithAltCost {
+                        constraint: Some(CastPermissionConstraint::CascadeResultingMvBelow { .. }),
+                        ..
+                    }
+                )
+            });
+            match idx {
+                Some(i) => (i, obj.mana_cost.mana_value()),
+                None => return CascadeCheck::NotApplicable,
+            }
+        }
+        None => return CascadeCheck::NotApplicable,
+    };
+
+    let permission = state
+        .objects
+        .get_mut(&object_id)
+        .expect("object present above")
+        .casting_permissions
+        .remove(index);
+    let (source_mv, exiled_misses) = match permission {
+        CastingPermission::ExileWithAltCost {
+            constraint:
+                Some(CastPermissionConstraint::CascadeResultingMvBelow {
+                    source_mv,
+                    exiled_misses,
+                }),
+            ..
+        } => (source_mv, exiled_misses),
+        _ => unreachable!("position() already filtered to this variant"),
+    };
+
+    if resulting_mv < source_mv {
+        // CR 702.85a: "cards exiled this way that weren't cast" — the hit is
+        // being cast, so only the misses bottom-shuffle.
+        crate::game::effects::cascade::shuffle_to_bottom(state, &exiled_misses, events);
+        CascadeCheck::Accepted
+    } else {
+        CascadeCheck::Rejected { exiled_misses }
+    }
+}
+
+/// CR 702.85a: Unwind a cascade-rejected cast — remove the announcement-time
+/// stack entry, bottom-shuffle the misses + hit card together in a random
+/// order, and return priority to the caster.
+fn handle_cascade_rejection(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    exiled_misses: Vec<ObjectId>,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    // CR 601.2a: Remove the announcement-time stack entry. The spell never
+    // finishes entering the stack because we abort before the Hand→Stack
+    // zone move in `finalize_cast_with_phyrexian_choices`.
+    if let Some(pos) = state.stack.iter().rposition(|entry| entry.id == object_id) {
+        state.stack.remove(pos);
+    }
+
+    // CR 702.85a: Misses + the hit (declined at cast time) all bottom-shuffle
+    // together in a random order.
+    let mut all_to_bottom = exiled_misses;
+    all_to_bottom.push(object_id);
+    crate::game::effects::cascade::shuffle_to_bottom(state, &all_to_bottom, events);
+
+    // CR 601.2a: Priority returns to the would-be caster.
+    state.priority_passes.clear();
+    state.priority_pass_count = 0;
     Ok(WaitingFor::Priority { player })
 }
 

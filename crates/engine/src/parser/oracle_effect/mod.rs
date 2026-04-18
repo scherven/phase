@@ -842,6 +842,7 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
                     permission: CastingPermission::ExileWithAltCost {
                         cost,
                         cast_transformed: false,
+                        constraint: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),

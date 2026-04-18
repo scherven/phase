@@ -25,6 +25,7 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
         WaitingFor::ScryChoice { .. }
             | WaitingFor::ManifestDreadChoice { .. }
             | WaitingFor::DiscoverChoice { .. }
+            | WaitingFor::CascadeChoice { .. }
             | WaitingFor::LearnChoice { .. }
             | WaitingFor::TopOrBottomChoice { .. }
             | WaitingFor::PopulateChoice { .. }
@@ -125,6 +126,7 @@ pub(super) fn handle_resolution_choice(
                         crate::types::ability::CastingPermission::ExileWithAltCost {
                             cost: crate::types::mana::ManaCost::zero(),
                             cast_transformed: false,
+                            constraint: None,
                         },
                     );
                 }
@@ -140,6 +142,45 @@ pub(super) fn handle_resolution_choice(
                 for card_id in shuffled {
                     zones::move_to_library_position(state, card_id, false, events);
                 }
+            }
+
+            ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
+        }
+        (
+            WaitingFor::CascadeChoice {
+                player,
+                hit_card,
+                exiled_misses,
+                source_mv,
+            },
+            GameAction::CascadeChoice { cast },
+        ) => {
+            if cast {
+                // CR 702.85a: Grant a cast-from-exile permission gated by
+                // `CascadeResultingMvBelow`. The second MV check is enforced
+                // at cast time in `casting_costs`, where X has been chosen.
+                // Bottom-shuffle of misses is deferred to that point so a
+                // cast-time rejection can still reach them.
+                if let Some(obj) = state.objects.get_mut(&hit_card) {
+                    obj.casting_permissions.push(
+                        crate::types::ability::CastingPermission::ExileWithAltCost {
+                            cost: crate::types::mana::ManaCost::zero(),
+                            cast_transformed: false,
+                            constraint: Some(
+                                crate::types::ability::CastPermissionConstraint::CascadeResultingMvBelow {
+                                    source_mv,
+                                    exiled_misses,
+                                },
+                            ),
+                        },
+                    );
+                }
+            } else {
+                // CR 702.85a: Caster declines — hit and misses all go to the
+                // bottom of the library in a random order together.
+                let mut all_to_bottom = exiled_misses;
+                all_to_bottom.push(hit_card);
+                crate::game::effects::cascade::shuffle_to_bottom(state, &all_to_bottom, events);
             }
 
             ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))

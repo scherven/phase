@@ -846,6 +846,13 @@ pub enum CastingPermission {
         cost: ManaCost,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         cast_transformed: bool,
+        /// CR 702.85a: optional cast-time predicate gating whether the cast may
+        /// proceed. `None` for the common case (Airbending, Suspend, Discover,
+        /// etc.); `Some(...)` only for mechanics that must reject after X is
+        /// chosen. Evaluated at cast finalization, before the spell moves to
+        /// the stack — see `casting_costs::finalize_cast_with_phyrexian_choices`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        constraint: Option<CastPermissionConstraint>,
     },
     /// CR 400.7i: Play from exile until duration expires (impulse draw).
     /// Building block for "exile top N, choose one, you may play it this turn" patterns.
@@ -856,6 +863,29 @@ pub enum CastingPermission {
     /// CR 702.185a: Warp — card may be cast from exile at its normal mana cost,
     /// but only after the specified turn ends. Persists for as long as card remains exiled.
     WarpExile { castable_after_turn: u32 },
+}
+
+/// CR 702.85a: Typed cast-time predicates attached to an `ExileWithAltCost`
+/// permission. Extend this enum when future mechanics need cast-time gating
+/// that cannot be evaluated at permission-grant time (e.g., X-cost spells
+/// whose mana value is only known after the caster chooses X).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum CastPermissionConstraint {
+    /// CR 702.85a: Cascade — "You may cast that card without paying its mana
+    /// cost if the resulting spell's mana value is less than this spell's
+    /// mana value." The resulting mana value is only determined after X,
+    /// Kicker, and similar choices, so this check must run at cast
+    /// finalization, not at offer time.
+    ///
+    /// `exiled_misses` is rejection-cleanup state: when the cast-time check
+    /// fails, the original `WaitingFor::CascadeChoice` has already been
+    /// cleared, so the misses ride inside the permission so the bottom-shuffle
+    /// step can still reach them.
+    CascadeResultingMvBelow {
+        source_mv: u32,
+        exiled_misses: Vec<super::identifiers::ObjectId>,
+    },
 }
 
 /// When a delayed triggered ability fires (CR 603.7).
@@ -3148,6 +3178,16 @@ pub enum Effect {
     Discover {
         mana_value_limit: u32,
     },
+    /// CR 702.85a: Cascade — when you cast a spell with cascade, exile cards from
+    /// the top of your library until you exile a nonland card whose mana value is
+    /// less than the cascade spell's mana value. You may cast that card without
+    /// paying its mana cost. Then put all exiled non-cast cards on the bottom of
+    /// your library in a random order.
+    ///
+    /// The source spell's mana value is read from `ability.source_id` at resolve
+    /// time (the cascade spell is on the stack when cascade resolves per CR 702.85a),
+    /// so no threshold parameter is stored on the variant itself.
+    Cascade,
     /// CR 701.24g: Put a card at a specific position in its owner's library.
     /// Unlike ChangeZone { destination: Library } which auto-shuffles (CR 401.3),
     /// this uses move_to_library_position for precise placement without shuffling.
@@ -3647,6 +3687,7 @@ impl Effect {
             | Effect::ExileFromTopUntil { .. }
             | Effect::RevealUntil { .. }
             | Effect::Discover { .. }
+            | Effect::Cascade
             | Effect::GiftDelivery { .. }
             | Effect::ExchangeControl { .. }
             | Effect::ChangeTargets { .. }
@@ -3789,6 +3830,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ExileFromTopUntil { .. } => "ExileFromTopUntil",
         Effect::RevealUntil { .. } => "RevealUntil",
         Effect::Discover { .. } => "Discover",
+        Effect::Cascade => "Cascade",
         Effect::PutAtLibraryPosition { .. } => "PutAtLibraryPosition",
         Effect::PutOnTopOrBottom { .. } => "PutOnTopOrBottom",
         Effect::GiftDelivery { .. } => "GiftDelivery",
@@ -3935,6 +3977,7 @@ pub enum EffectKind {
     ExileFromTopUntil,
     RevealUntil,
     Discover,
+    Cascade,
     PutAtLibraryPosition,
     PutOnTopOrBottom,
     GiftDelivery,
@@ -4086,6 +4129,7 @@ impl From<&Effect> for EffectKind {
             Effect::ExileFromTopUntil { .. } => EffectKind::ExileFromTopUntil,
             Effect::RevealUntil { .. } => EffectKind::RevealUntil,
             Effect::Discover { .. } => EffectKind::Discover,
+            Effect::Cascade => EffectKind::Cascade,
             Effect::PutAtLibraryPosition { .. } => EffectKind::PutAtLibraryPosition,
             Effect::PutOnTopOrBottom { .. } => EffectKind::PutOnTopOrBottom,
             Effect::GiftDelivery { .. } => EffectKind::GiftDelivery,

@@ -198,6 +198,22 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
                 Some(*player),
             ),
         ],
+        // CR 702.85a: Cascade offers a binary cast/decline choice. Policy
+        // default: cast (free spells are almost always correct). The decline
+        // candidate is kept legal so a tactical policy can decline when the
+        // hit has no legal targets and would fizzle.
+        WaitingFor::CascadeChoice { player, .. } => vec![
+            candidate(
+                GameAction::CascadeChoice { cast: true },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+            candidate(
+                GameAction::CascadeChoice { cast: false },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+        ],
         WaitingFor::LearnChoice { player, hand_cards } => {
             let mut actions: Vec<_> = hand_cards
                 .iter()
@@ -1313,6 +1329,7 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
         | WaitingFor::CopyTargetChoice { .. }
         | WaitingFor::ExploreChoice { .. }
         | WaitingFor::DiscoverChoice { .. }
+        | WaitingFor::CascadeChoice { .. }
         | WaitingFor::LearnChoice { .. }
         | WaitingFor::TopOrBottomChoice { .. }
         | WaitingFor::ClashCardPlacement { .. }

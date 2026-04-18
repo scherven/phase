@@ -186,6 +186,12 @@ pub enum GameAction {
         /// true = cast without paying mana cost, false = put to hand
         cast: bool,
     },
+    /// CR 702.85a: Choose to cast the cascaded card without paying its mana cost.
+    CascadeChoice {
+        /// true = cast without paying mana cost, false = decline (card joins
+        /// misses on the bottom of the library in a random order).
+        cast: bool,
+    },
     /// CR 401.4: Choose top or bottom of library.
     ChooseTopOrBottom {
         top: bool,
@@ -354,6 +360,7 @@ impl GameAction {
             | GameAction::DeclareCompanion { .. }
             | GameAction::CompanionToHand
             | GameAction::DiscoverChoice { .. }
+            | GameAction::CascadeChoice { .. }
             | GameAction::ChooseTopOrBottom { .. }
             | GameAction::ChooseBattleProtector { .. }
             | GameAction::SetAutoPass { .. }

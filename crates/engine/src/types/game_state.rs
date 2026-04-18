@@ -1158,6 +1158,25 @@ pub enum WaitingFor {
         /// Cards exiled as misses (go to bottom in random order).
         exiled_misses: Vec<ObjectId>,
     },
+    /// CR 702.85a: Player chooses to cast the cascaded card without paying its
+    /// mana cost or decline. Unlike `DiscoverChoice`, the declined card goes to
+    /// the bottom of the library in a random order together with the misses
+    /// (cascade has no put-to-hand branch).
+    CascadeChoice {
+        player: PlayerId,
+        /// The nonland card with MV < source MV that was hit.
+        hit_card: ObjectId,
+        /// Cards exiled as misses (go to bottom in random order alongside the
+        /// hit card if it is not cast).
+        exiled_misses: Vec<ObjectId>,
+        /// CR 702.85a: Source cascade spell's mana value, snapshotted at the
+        /// moment the trigger resolved. Needed at accept time to construct the
+        /// `CascadeResultingMvBelow` cast-time predicate so the resulting
+        /// spell's MV can be compared after X is chosen. Walking the stack
+        /// for the source would be fragile — nested cascades, copies, and
+        /// reordering would all misidentify the owning spell.
+        source_mv: u32,
+    },
     /// CR 401.4: Owner chooses to put a permanent on top or bottom of their library.
     TopOrBottomChoice {
         player: PlayerId,
@@ -1419,6 +1438,7 @@ impl WaitingFor {
             | WaitingFor::TributeChoice { player, .. }
             | WaitingFor::UnlessPayment { player, .. }
             | WaitingFor::DiscoverChoice { player, .. }
+            | WaitingFor::CascadeChoice { player, .. }
             | WaitingFor::TopOrBottomChoice { player, .. }
             | WaitingFor::PopulateChoice { player, .. }
             | WaitingFor::ClashCardPlacement { player, .. }

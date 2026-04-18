@@ -127,6 +127,7 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
             }
         }
         (WaitingFor::DiscoverChoice { .. }, GameAction::DiscoverChoice { .. })
+        | (WaitingFor::CascadeChoice { .. }, GameAction::CascadeChoice { .. })
         | (WaitingFor::MulliganDecision { .. }, GameAction::MulliganDecision { .. })
         | (WaitingFor::BetweenGamesChoosePlayDraw { .. }, GameAction::ChoosePlayDraw { .. })
         | (WaitingFor::TopOrBottomChoice { .. }, GameAction::ChooseTopOrBottom { .. })

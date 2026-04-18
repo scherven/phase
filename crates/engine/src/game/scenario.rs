@@ -1072,6 +1072,7 @@ impl GameRunner {
             WaitingFor::CollectEvidenceChoice { .. } => "CollectEvidenceChoice",
             WaitingFor::HarmonizeTapChoice { .. } => "HarmonizeTapChoice",
             WaitingFor::DiscoverChoice { .. } => "DiscoverChoice",
+            WaitingFor::CascadeChoice { .. } => "CascadeChoice",
             WaitingFor::TopOrBottomChoice { .. } => "TopOrBottomChoice",
             WaitingFor::ChooseLegend { .. } => "ChooseLegend",
             WaitingFor::BattleProtectorChoice { .. } => "BattleProtectorChoice",

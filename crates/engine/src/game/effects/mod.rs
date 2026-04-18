@@ -23,6 +23,7 @@ pub mod become_copy;
 pub mod become_monarch;
 pub mod bolster;
 pub mod bounce;
+pub mod cascade;
 pub mod cast_from_zone;
 pub mod change_targets;
 pub mod change_zone;
@@ -357,6 +358,9 @@ pub fn resolve_effect(
         Effect::ExileFromTopUntil { .. } => exile_from_top_until::resolve(state, ability, events),
         Effect::RevealUntil { .. } => reveal_until::resolve(state, ability, events),
         Effect::Discover { .. } => discover::resolve(state, ability, events),
+        // CR 702.85a: Cascade — synthesized from the keyword at trigger time;
+        // resolver performs the exile-until loop and sets CascadeChoice.
+        Effect::Cascade => cascade::resolve(state, ability, events),
         Effect::PutAtLibraryPosition { .. } => put_on_top::resolve(state, ability, events),
         Effect::PutOnTopOrBottom { .. } => put_on_top_or_bottom::resolve(state, ability, events),
         Effect::GiftDelivery { .. } => gift_delivery::resolve(state, ability, events),
@@ -1232,6 +1236,7 @@ pub fn resolve_ability_chain(
                 | WaitingFor::OpponentMayChoice { .. }
                 | WaitingFor::TributeChoice { .. }
                 | WaitingFor::DiscoverChoice { .. }
+                | WaitingFor::CascadeChoice { .. }
                 | WaitingFor::TopOrBottomChoice { .. }
                 | WaitingFor::ProliferateChoice { .. }
                 | WaitingFor::ExploreChoice { .. }
@@ -2143,6 +2148,7 @@ mod tests {
                     permission: crate::types::ability::CastingPermission::ExileWithAltCost {
                         cost: ManaCost::generic(2),
                         cast_transformed: false,
+                        constraint: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -2226,6 +2232,7 @@ mod tests {
                     permission: crate::types::ability::CastingPermission::ExileWithAltCost {
                         cost: ManaCost::generic(2),
                         cast_transformed: false,
+                        constraint: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -2283,6 +2290,7 @@ mod tests {
                 permission: crate::types::ability::CastingPermission::ExileWithAltCost {
                     cost: ManaCost::generic(2),
                     cast_transformed: false,
+                    constraint: None,
                 },
                 target: TargetFilter::TrackedSet {
                     id: TrackedSetId(0),
