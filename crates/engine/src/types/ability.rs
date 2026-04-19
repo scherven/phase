@@ -678,6 +678,10 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         #[serde(default)]
                         options: Vec<Vec<ManaColor>>,
                     },
+                    Mixed {
+                        colorless_count: u32,
+                        colors: Vec<ManaColor>,
+                    },
                 }
                 let helper: ManaProductionHelper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -724,6 +728,13 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     ManaProductionHelper::ChoiceAmongCombinations { options } => {
                         ManaProduction::ChoiceAmongCombinations { options }
                     }
+                    ManaProductionHelper::Mixed {
+                        colorless_count,
+                        colors,
+                    } => ManaProduction::Mixed {
+                        colorless_count,
+                        colors,
+                    },
                 })
             }
             _ => Err(serde::de::Error::custom(
