@@ -4191,6 +4191,44 @@ mod tests {
         assert!(try_parse_enters_prepared_rider("~ enters prepared and tapped.").is_none());
     }
 
+    // Dispatch-level regression: the rider combinator only accepts `~`,
+    // `this creature`, or `it` as the subject — but Oracle text ships with
+    // the card's short name (e.g. "Lluwen enters prepared."). The parser
+    // entry must normalize self-refs before dispatching, so the short-name
+    // form must synthesize the same ETB trigger as `~ enters prepared.`.
+    #[test]
+    fn enters_prepared_rider_dispatch_normalizes_short_name_subject() {
+        use crate::parser::oracle::parse_oracle_text;
+
+        let parsed = parse_oracle_text(
+            "Lluwen enters prepared.",
+            "Lluwen, Exchange Student",
+            &[],
+            &["Creature".to_string()],
+            &[],
+        );
+        assert_eq!(
+            parsed.triggers.len(),
+            1,
+            "one trigger should be synthesized"
+        );
+        let trigger = &parsed.triggers[0];
+        assert_eq!(trigger.mode, TriggerMode::ChangesZone);
+        assert_eq!(trigger.destination, Some(Zone::Battlefield));
+        assert_eq!(trigger.valid_card, Some(TargetFilter::SelfRef));
+        let exec = trigger.execute.as_ref().expect("execute should be set");
+        assert!(matches!(
+            *exec.effect,
+            crate::types::ability::Effect::BecomePrepared {
+                target: TargetFilter::SelfRef
+            }
+        ));
+        assert_eq!(
+            trigger.description.as_deref(),
+            Some("Lluwen enters prepared.")
+        );
+    }
+
     #[test]
     fn trigger_dies() {
         let def = parse_trigger_line(
