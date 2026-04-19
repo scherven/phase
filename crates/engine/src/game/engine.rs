@@ -8105,6 +8105,7 @@ mod phase_trigger_regression_tests {
         let mut ability = ResolvedAbility::new(
             Effect::Sacrifice {
                 target: TargetFilter::Any,
+                count: QuantityExpr::Fixed { value: 1 },
                 up_to: false,
             },
             vec![],
@@ -8278,6 +8279,7 @@ mod phase_trigger_regression_tests {
         let mut sacrifice_ability = ResolvedAbility::new(
             Effect::Sacrifice {
                 target: TargetFilter::Any,
+                count: QuantityExpr::Fixed { value: 1 },
                 up_to: false,
             },
             vec![TargetRef::Player(PlayerId(0))],
@@ -8417,6 +8419,7 @@ mod phase_trigger_regression_tests {
         let mut ability = ResolvedAbility::new(
             Effect::Sacrifice {
                 target: TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+                count: QuantityExpr::Fixed { value: 1 },
                 up_to: false,
             },
             vec![],

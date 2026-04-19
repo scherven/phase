@@ -434,6 +434,11 @@ pub(super) enum TargetedImperativeAst {
     },
     Sacrifice {
         target: TargetFilter,
+        /// CR 701.16a: Number of permanents to sacrifice. Defaults to
+        /// `QuantityExpr::Fixed { value: 1 }` for the common "sacrifice a X"
+        /// case; "sacrifice N X" / "sacrifice half the permanents they
+        /// control" carry the parsed dynamic count.
+        count: QuantityExpr,
     },
     Discard {
         count: QuantityExpr,

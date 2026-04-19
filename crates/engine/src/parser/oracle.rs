@@ -6488,4 +6488,139 @@ mod tests {
             ContinuousModification::GrantAbility { .. }
         ));
     }
+
+    // CR 608.2 + CR 107.1a + CR 701.16a: Pox Plague — the "Each player loses
+    // half their life, then discards half the cards in their hand, then
+    // sacrifices half the permanents they control of their choice. Round down
+    // each time." chain exercises all four fixes landed in the punisher-chain
+    // commit:
+    //   A. player_scope rewrite: `their life` / `their hand` → LifeTotal /
+    //      HandSize so per-player iteration resolves against the rebound
+    //      controller, not the empty targets list.
+    //   B. half-rounded inner: `half the cards in their hand` parses through
+    //      the new `parse_cards_in_possessive_zone` combinator, producing a
+    //      HalfRounded count rather than collapsing to 1.
+    //   C. Sacrifice.count: a dynamic count lifted from
+    //      `half the permanents they control` into the new count field, and
+    //      the embedded ObjectCount filter lifted into `Sacrifice.target` so
+    //      eligibility matches the same set the count was computed against.
+    //   D. trailing rounding: `Round down each time` consumed by
+    //      `strip_trailing_rounding_annotation` and back-applied through
+    //      `rewrite_rounding_mode` — the chunk does not become an
+    //      Unimplemented effect.
+    #[test]
+    fn pox_plague_full_parse() {
+        use crate::types::ability::{QuantityExpr, QuantityRef, RoundingMode};
+
+        let r = parse(
+            "Each player loses half their life, then discards half the cards in their hand, then sacrifices half the permanents they control of their choice. Round down each time.",
+            "Pox Plague",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+
+        // A single top-level ability with player_scope: All.
+        assert_eq!(r.abilities.len(), 1);
+        let ability = &r.abilities[0];
+        assert!(
+            matches!(
+                ability.player_scope,
+                Some(crate::types::ability::PlayerFilter::All)
+            ),
+            "expected player_scope All, got {:?}",
+            ability.player_scope
+        );
+
+        // Fix A: LoseLife amount uses controller-scoped LifeTotal.
+        match &*ability.effect {
+            Effect::LoseLife { amount, .. } => match amount {
+                QuantityExpr::HalfRounded { inner, rounding } => {
+                    assert_eq!(*rounding, RoundingMode::Down);
+                    assert!(
+                        matches!(
+                            **inner,
+                            QuantityExpr::Ref {
+                                qty: QuantityRef::LifeTotal
+                            }
+                        ),
+                        "expected LifeTotal, got {inner:?}"
+                    );
+                }
+                other => panic!("expected HalfRounded LoseLife amount, got {other:?}"),
+            },
+            other => panic!("expected LoseLife top-level, got {other:?}"),
+        }
+
+        // Fix B + A: Discard count uses HalfRounded(HandSize).
+        let discard = ability.sub_ability.as_ref().expect("discard sub_ability");
+        match &*discard.effect {
+            Effect::Discard { count, .. } => match count {
+                QuantityExpr::HalfRounded { inner, rounding } => {
+                    assert_eq!(*rounding, RoundingMode::Down);
+                    assert!(
+                        matches!(
+                            **inner,
+                            QuantityExpr::Ref {
+                                qty: QuantityRef::HandSize
+                            }
+                        ),
+                        "expected HandSize, got {inner:?}"
+                    );
+                }
+                other => panic!("expected HalfRounded Discard count, got {other:?}"),
+            },
+            other => panic!("expected Discard mid-chain, got {other:?}"),
+        }
+
+        // Fix C: Sacrifice carries HalfRounded(ObjectCount{Permanent,you-control})
+        // as count, and the same Typed filter lifted into target.
+        let sacrifice = discard.sub_ability.as_ref().expect("sacrifice sub_ability");
+        match &*sacrifice.effect {
+            Effect::Sacrifice {
+                target,
+                count,
+                up_to,
+            } => {
+                assert!(!up_to);
+                match count {
+                    QuantityExpr::HalfRounded { inner, rounding } => {
+                        assert_eq!(*rounding, RoundingMode::Down);
+                        match &**inner {
+                            QuantityExpr::Ref {
+                                qty: QuantityRef::ObjectCount { filter },
+                            } => match filter {
+                                TargetFilter::Typed(tf) => {
+                                    assert!(tf.type_filters.contains(&TypeFilter::Permanent));
+                                }
+                                other => panic!("expected Typed filter, got {other:?}"),
+                            },
+                            other => panic!("expected ObjectCount inner, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected HalfRounded Sacrifice count, got {other:?}"),
+                }
+                match target {
+                    TargetFilter::Typed(tf) => {
+                        assert!(tf.type_filters.contains(&TypeFilter::Permanent));
+                    }
+                    other => panic!("expected Typed target lifted from count, got {other:?}"),
+                }
+            }
+            other => panic!("expected Sacrifice tail, got {other:?}"),
+        }
+
+        // Fix D: "Round down each time" consumed — no Unimplemented anywhere.
+        fn walk_no_unimpl(def: &crate::types::ability::AbilityDefinition) {
+            assert!(
+                !matches!(*def.effect, Effect::Unimplemented { .. }),
+                "Unimplemented in Pox Plague chain: {:?}",
+                def.effect
+            );
+            if let Some(sub) = def.sub_ability.as_ref() {
+                walk_no_unimpl(sub);
+            }
+        }
+        walk_no_unimpl(ability);
+    }
 }

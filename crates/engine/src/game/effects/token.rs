@@ -650,6 +650,7 @@ pub fn apply_create_token_after_replacement(
                 ability: ResolvedAbility::new(
                     Effect::Sacrifice {
                         target: TargetFilter::Any,
+                        count: QuantityExpr::Fixed { value: 1 },
                         up_to: false,
                     },
                     vec![TargetRef::Object(obj_id)],

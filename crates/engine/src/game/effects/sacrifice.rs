@@ -1,6 +1,7 @@
+use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::sacrifice::{self, SacrificeOutcome};
 use crate::types::ability::{
-    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    Effect, EffectError, EffectKind, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
@@ -13,10 +14,21 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (filter, up_to) = match &ability.effect {
-        Effect::Sacrifice { target, up_to } => (target, *up_to),
-        _ => (&TargetFilter::Any, false),
+    // CR 701.16a + CR 608.2c: Resolve the dynamic sacrifice count through
+    // `resolve_quantity_with_targets` so `player_scope` iteration and per-
+    // player refs (HandSize, ObjectCount{you-control}) resolve against the
+    // rebound controller. A missing Sacrifice effect falls back to 1 so the
+    // compatibility branch below preserves existing behavior.
+    let default_count = QuantityExpr::Fixed { value: 1 };
+    let (filter, count_expr, up_to) = match &ability.effect {
+        Effect::Sacrifice {
+            target,
+            count,
+            up_to,
+        } => (target, count, *up_to),
+        _ => (&TargetFilter::Any, &default_count, false),
     };
+    let count = resolve_quantity_with_targets(state, count_expr, ability).max(0) as usize;
 
     let targeted_objects: Vec<ObjectId> = ability
         .targets
@@ -43,6 +55,17 @@ pub fn resolve(
             })
             .collect();
 
+        if count == 0 {
+            // CR 107.3a: A dynamic count that resolves to zero is a legal
+            // no-op (e.g. "sacrifice half the permanents they control" when
+            // the player controls none). Emit and exit without failing.
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::from(&ability.effect),
+                source_id: ability.source_id,
+            });
+            return Ok(());
+        }
+
         if eligible.is_empty() {
             if !up_to {
                 state.cost_payment_failed_flag = true;
@@ -54,19 +77,24 @@ pub fn resolve(
             return Ok(());
         }
 
-        if eligible.len() == 1 && !up_to {
-            match sacrifice::sacrifice_permanent(state, eligible[0], ability.controller, events) {
-                Ok(SacrificeOutcome::Complete) => {
-                    state.last_effect_count = Some(1);
+        // CR 701.16b: When the resolved count is at least the eligible pool
+        // and the sacrifice is mandatory, every eligible permanent is
+        // sacrificed — the player has no choice. Fast-path this rather than
+        // round-tripping through EffectZoneChoice.
+        if !up_to && eligible.len() <= count {
+            let mut sacrificed: i32 = 0;
+            for obj_id in eligible {
+                match sacrifice::sacrifice_permanent(state, obj_id, ability.controller, events) {
+                    Ok(SacrificeOutcome::Complete) => sacrificed += 1,
+                    Ok(SacrificeOutcome::NeedsReplacementChoice(player)) => {
+                        state.waiting_for =
+                            crate::game::replacement::replacement_choice_waiting_for(player, state);
+                        return Ok(());
+                    }
+                    Err(_) => {}
                 }
-                Ok(SacrificeOutcome::NeedsReplacementChoice(player)) => {
-                    state.waiting_for =
-                        crate::game::replacement::replacement_choice_waiting_for(player, state);
-                    return Ok(());
-                }
-                Err(_) => {}
             }
-
+            state.last_effect_count = Some(sacrificed);
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::from(&ability.effect),
                 source_id: ability.source_id,
@@ -74,10 +102,14 @@ pub fn resolve(
             return Ok(());
         }
 
+        // CR 701.16a: "Sacrifice N permanents" — the controller picks which
+        // `count` permanents out of the eligible pool. Clamped to pool size
+        // for safety; the branch above handles the mandatory-all case.
+        let choice_count = count.min(eligible.len());
         state.waiting_for = WaitingFor::EffectZoneChoice {
             player: ability.controller,
             cards: eligible,
-            count: 1,
+            count: choice_count,
             up_to,
             source_id: ability.source_id,
             effect_kind: EffectKind::Sacrifice,
@@ -148,6 +180,7 @@ mod tests {
         ResolvedAbility::new(
             Effect::Sacrifice {
                 target: TargetFilter::Any,
+                count: QuantityExpr::Fixed { value: 1 },
                 up_to: false,
             },
             vec![TargetRef::Object(target)],
@@ -160,6 +193,7 @@ mod tests {
         ResolvedAbility::new(
             Effect::Sacrifice {
                 target: TargetFilter::Any,
+                count: QuantityExpr::Fixed { value: 1 },
                 up_to,
             },
             vec![],

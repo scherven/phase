@@ -74,6 +74,22 @@ fn parse_half_rounded_inner(input: &str) -> OracleResult<'_, QuantityExpr> {
         map(parse_possessive_quantity_ref, |qty| QuantityExpr::Ref {
             qty,
         }),
+        // CR 107.1a: "half the cards in their hand" — explicit phrasing of
+        // the possessive zone count that `parse_possessive_quantity_ref`
+        // covers as "their hand". Tried before the generic `parse_quantity_ref`
+        // so the "the cards in" prefix doesn't get consumed by a more
+        // aggressive matcher.
+        map(parse_cards_in_possessive_zone, |qty| QuantityExpr::Ref {
+            qty,
+        }),
+        // CR 107.1a: "half the permanents they control" — possessive object
+        // count phrasing reachable from fractional expressions (Pox Plague:
+        // "sacrifices half the permanents they control"). Tried before the
+        // generic `parse_quantity_ref` so `parse_the_number_of` doesn't
+        // swallow the "the" without the expected "number of" connector.
+        map(parse_possessive_objects_they_control, |qty| {
+            QuantityExpr::Ref { qty }
+        }),
         map(parse_quantity_ref, |qty| QuantityExpr::Ref { qty }),
         parse_quantity_expr_number,
     ))
@@ -195,6 +211,57 @@ fn parse_your_tail(input: &str) -> OracleResult<'_, QuantityRef> {
         value(QuantityRef::LifeTotal, tag("life")),
     ))
     .parse(input)
+}
+
+/// CR 107.1a + CR 109.5: "the cards in their <zone>" / "the cards in your <zone>"
+/// — fractional-expression phrasing of the possessive zone count (Pox Plague:
+/// "discards half the cards in their hand"). Mirrors the shorthand
+/// `parse_possessive_quantity_ref` but recognizes the more explicit
+/// `"the cards in X <zone>"` form that appears inside `"half ..."` subjects
+/// where brevity wasn't chosen. Composes the shared possessive prefixes
+/// (`"their "` for target scope, `"your "` for controller scope) with the
+/// existing `parse_zone_ref_singular` so every supported zone is reachable
+/// under this form without duplicating the zone-word list.
+fn parse_cards_in_possessive_zone(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("the cards in ").parse(input)?;
+    alt((
+        map(preceded(tag("their "), parse_zone_ref_singular), |zone| {
+            QuantityRef::TargetZoneCardCount { zone }
+        }),
+        map(preceded(tag("your "), parse_zone_ref_singular), |zone| {
+            QuantityRef::ZoneCardCount {
+                zone,
+                card_types: Vec::new(),
+                scope: CountScope::Controller,
+            }
+        }),
+    ))
+    .parse(rest)
+}
+
+/// CR 107.1a + CR 109.5: "the <type> they control" / "the <type> you control"
+/// — possessive object-count phrasing (Pox Plague: "sacrifices half the
+/// permanents they control"). Mirrors `parse_number_of_controlled_type` but
+/// drops the "the number of" prefix required there, so the combinator is
+/// reachable from fractional expressions ("half the X they control"). The
+/// `"they"` arm uses `ControllerRef::You` because `player_scope` iteration
+/// rebinds controller to the iterating player; the `rewrite_player_scope_refs`
+/// walker is NOT required for this path because the typed filter's
+/// `ControllerRef::You` already resolves against the rebound controller.
+fn parse_possessive_objects_they_control(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("the ").parse(input)?;
+    let (rest, tf) = parse_type_filter_word(rest)?;
+    let (rest, _) = alt((tag(" they control"), tag(" you control"))).parse(rest)?;
+    Ok((
+        rest,
+        QuantityRef::ObjectCount {
+            filter: TargetFilter::Typed(TypedFilter {
+                type_filters: vec![tf],
+                controller: Some(ControllerRef::You),
+                properties: Vec::new(),
+            }),
+        },
+    ))
 }
 
 /// Parse an optional ", rounded up/down" / ", round up/down" suffix.

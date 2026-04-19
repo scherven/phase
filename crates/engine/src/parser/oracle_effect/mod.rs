@@ -34,7 +34,8 @@ use crate::types::ability::{
     ChooseFromZoneConstraint, ConjureCard, ContinuousModification, ControllerRef, DamageSource,
     DelayedTriggerCondition, Duration, Effect, FilterProp, GameRestriction, MultiTargetSpec,
     PlayerFilter, PtValue, QuantityExpr, QuantityRef, RestrictionExpiry, RestrictionPlayerScope,
-    StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter, UnlessCost,
+    RoundingMode, StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
+    UnlessCost,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::game_state::{DistributionUnit, NextSpellModifier, RetargetScope};
@@ -2554,9 +2555,13 @@ fn try_parse_verb_and_target<'a>(
         return Some((TargetedImperativeAst::Untap { target }, rem));
     }
     if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("sacrifice ")).parse(i)) {
-        let (target_text, _) = strip_optional_target_prefix(rest);
+        let (count, after_count) = super::oracle_util::parse_count_expr(rest).unwrap_or((
+            crate::types::ability::QuantityExpr::Fixed { value: 1 },
+            rest,
+        ));
+        let (target_text, _) = strip_optional_target_prefix(after_count.trim_start());
         let (target, rem) = parse_target(target_text);
-        return Some((TargetedImperativeAst::Sacrifice { target }, rem));
+        return Some((TargetedImperativeAst::Sacrifice { target, count }, rem));
     }
     if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("fight ")).parse(i)) {
         let (target_text, _) = strip_optional_target_prefix(rest);
@@ -4383,6 +4388,149 @@ fn append_to_deepest_sub_ability(
     cursor.sub_ability = Some(tail);
 }
 
+/// CR 107.1a: Strip a trailing "Round down each time" / "Round up each time"
+/// sentence from a chain of Oracle text, returning the stripped text and the
+/// captured rounding mode. Used by `parse_effect_chain_impl` to consume the
+/// chain-level rounding annotation (Pox Plague) before chunk splitting so
+/// the phrase doesn't become an Unimplemented chunk. The captured mode is
+/// re-applied to every `HalfRounded` in the built chain via
+/// `rewrite_rounding_mode`.
+fn strip_trailing_rounding_annotation(text: &str) -> (String, Option<RoundingMode>) {
+    let trimmed = text.trim_end();
+    let trimmed_no_dot = trimmed.trim_end_matches('.').trim_end();
+    let lower = trimmed_no_dot.to_lowercase();
+    for (phrase, mode) in [
+        ("round down each time", RoundingMode::Down),
+        ("round up each time", RoundingMode::Up),
+    ] {
+        if let Some(prefix_lower) = lower.strip_suffix(phrase) {
+            // Require a sentence boundary before the phrase — either end of
+            // text or a period followed by whitespace. Prevents matching
+            // "when you round down each time" / similar mid-sentence usage.
+            let before = &trimmed_no_dot[..prefix_lower.len()];
+            let before_trimmed = before.trim_end();
+            if before_trimmed.ends_with('.') {
+                let without_phrase = before_trimmed.trim_end_matches('.').trim_end();
+                return (without_phrase.to_string(), Some(mode));
+            }
+        }
+    }
+    (text.to_string(), None)
+}
+
+/// CR 608.2c + CR 107.1a: Apply `f` to every `QuantityExpr` reachable through
+/// the common quantity-bearing fields of an `Effect`. This is a pragmatic
+/// visitor — it covers the subset of `Effect` variants whose counts /
+/// amounts meaningfully reference player-scoped possessives ("their life",
+/// "their hand") in Oracle text. Variants not listed here keep their
+/// expressions untouched; add arms here when a new variant surfaces a
+/// possessive quantity.
+fn each_quantity_expr_mut(effect: &mut Effect, f: &mut impl FnMut(&mut QuantityExpr)) {
+    match effect {
+        Effect::LoseLife { amount, .. }
+        | Effect::GainLife { amount, .. }
+        | Effect::SetLifeTotal { amount, .. } => f(amount),
+        Effect::DealDamage { amount, .. } => f(amount),
+        Effect::Draw { count, .. }
+        | Effect::Mill { count, .. }
+        | Effect::Discard { count, .. }
+        | Effect::Scry { count, .. }
+        | Effect::Surveil { count, .. }
+        | Effect::PutCounter { count, .. } => f(count),
+        Effect::Sacrifice { count, .. } => f(count),
+        _ => {}
+    }
+}
+
+/// CR 608.2 + CR 107.2: Rewrite target-scoped `QuantityRef` variants to their
+/// controller-scoped equivalents across an ability tree. Under
+/// `player_scope: All` / `Opponent` / etc., the resolver rebinds
+/// `scoped.controller = *pid` per iterating player, but `targets` remains
+/// unchanged. `TargetLifeTotal` and `TargetZoneCardCount` resolve against
+/// `targets`, returning 0 in the scoped context; the controller-scoped
+/// `LifeTotal`, `HandSize`, `GraveyardSize`, and
+/// `ZoneCardCount{scope:Controller}` variants read the rebound controller.
+///
+/// Walks the entire `AbilityDefinition` tree (ability → sub_ability → …) so
+/// every chained clause under an each-player chain (Pox Plague:
+/// "Each player loses half their life, then discards half the cards in their
+/// hand, then sacrifices half the permanents they control") picks up the
+/// rewrite uniformly. Only reached when the top-level `def.player_scope` is
+/// set, so non-scoped abilities keep the target-scoped resolution path.
+fn rewrite_player_scope_refs(def: &mut AbilityDefinition) {
+    fn rewrite_quantity_expr(expr: &mut QuantityExpr) {
+        match expr {
+            QuantityExpr::Ref { qty } => match qty {
+                QuantityRef::TargetLifeTotal => *qty = QuantityRef::LifeTotal,
+                QuantityRef::TargetZoneCardCount { zone } => match zone {
+                    crate::types::ability::ZoneRef::Hand => *qty = QuantityRef::HandSize,
+                    crate::types::ability::ZoneRef::Graveyard => *qty = QuantityRef::GraveyardSize,
+                    crate::types::ability::ZoneRef::Library => {
+                        *qty = QuantityRef::ZoneCardCount {
+                            zone: crate::types::ability::ZoneRef::Library,
+                            card_types: Vec::new(),
+                            scope: crate::types::ability::CountScope::Controller,
+                        };
+                    }
+                    // Exile has no clean controller-scoped equivalent in the
+                    // current `QuantityRef` set. Leave untouched — the
+                    // scoped-controller resolver path does not exist for
+                    // exile card counts, so preserving the target-scoped
+                    // form at least lets a targeting ability resolve
+                    // correctly.
+                    crate::types::ability::ZoneRef::Exile => {}
+                },
+                _ => {}
+            },
+            QuantityExpr::HalfRounded { inner, .. }
+            | QuantityExpr::Multiply { inner, .. }
+            | QuantityExpr::Offset { inner, .. } => rewrite_quantity_expr(inner),
+            QuantityExpr::Fixed { .. } => {}
+        }
+    }
+
+    each_quantity_expr_mut(&mut def.effect, &mut rewrite_quantity_expr);
+    if let Some(sub) = def.sub_ability.as_mut() {
+        rewrite_player_scope_refs(sub);
+    }
+    if let Some(else_branch) = def.else_ability.as_mut() {
+        rewrite_player_scope_refs(else_branch);
+    }
+}
+
+/// CR 107.1a: Back-apply a rounding mode to every `HalfRounded` in an ability
+/// tree. Used by `parse_effect_chain_impl` after stripping a trailing
+/// "Round down each time" / "Round up each time" sentence (Pox Plague), so
+/// earlier chunks that defaulted to `RoundingMode::Down` pick up an explicit
+/// `Up` annotation that Oracle grammar places in a separate closing
+/// sentence. Class-level: handles both the redundant-default case (Pox
+/// Plague already has Down) and hypothetical "Round up each time" variants
+/// without new types.
+fn rewrite_rounding_mode(def: &mut AbilityDefinition, mode: RoundingMode) {
+    fn rewrite_quantity_expr(expr: &mut QuantityExpr, mode: RoundingMode) {
+        match expr {
+            QuantityExpr::HalfRounded { inner, rounding } => {
+                *rounding = mode;
+                rewrite_quantity_expr(inner, mode);
+            }
+            QuantityExpr::Multiply { inner, .. } | QuantityExpr::Offset { inner, .. } => {
+                rewrite_quantity_expr(inner, mode);
+            }
+            QuantityExpr::Ref { .. } | QuantityExpr::Fixed { .. } => {}
+        }
+    }
+
+    each_quantity_expr_mut(&mut def.effect, &mut |expr| {
+        rewrite_quantity_expr(expr, mode)
+    });
+    if let Some(sub) = def.sub_ability.as_mut() {
+        rewrite_rounding_mode(sub, mode);
+    }
+    if let Some(else_branch) = def.else_ability.as_mut() {
+        rewrite_rounding_mode(else_branch, mode);
+    }
+}
+
 /// Parse a compound effect chain into an `AbilityDefinition` sub-ability chain.
 ///
 /// Phase 1 keeps the existing clause/effect semantics but replaces the fragile
@@ -4405,6 +4553,13 @@ pub(crate) fn parse_effect_chain_with_context(
 }
 
 fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) -> AbilityDefinition {
+    // CR 107.1a: Strip a trailing "Round down each time" / "Round up each time"
+    // sentence before chain splitting — it is a chain-level rounding annotation
+    // (Pox Plague) that back-applies to every `HalfRounded` the chain contains.
+    // Stripped here so it doesn't become an Unimplemented chunk; the captured
+    // mode is re-applied to the built chain via `rewrite_rounding_mode`.
+    let (text, chain_rounding) = strip_trailing_rounding_annotation(text);
+    let text = text.as_str();
     let full_text = text; // Bind before `text` is shadowed by strip helpers in the loop
     let chunks = split_clause_sequence(text);
     // CR 107.3i: "Normally, all instances of X on an object have the same value."
@@ -5071,7 +5226,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
     // Chain: last has no sub_ability, each earlier one chains to next.
     // When a def already has a sub_ability (e.g., TargetOnly with attached Explore),
     // append to the deepest sub rather than overwriting.
-    if defs.len() > 1 {
+    let mut result = if defs.len() > 1 {
         let last = defs.pop().unwrap();
         let mut chain = last;
         while let Some(mut prev) = defs.pop() {
@@ -5119,7 +5274,23 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
                 },
             )
         })
+    };
+
+    // CR 608.2 + CR 107.2: If the outermost ability carries `player_scope`,
+    // rewrite target-scoped refs ("their life", "their hand") to their
+    // controller-scoped equivalents so they resolve per-iterating-player.
+    if result.player_scope.is_some() {
+        rewrite_player_scope_refs(&mut result);
     }
+
+    // CR 107.1a: Apply the chain-level rounding annotation (captured above)
+    // to every HalfRounded in the built tree. No-op when the sentence was
+    // absent (chain_rounding == None).
+    if let Some(mode) = chain_rounding {
+        rewrite_rounding_mode(&mut result, mode);
+    }
+
+    result
 }
 
 /// CR 705: Post-process parsed ability defs to consolidate coin flip conditional

@@ -289,6 +289,25 @@ fn strip_article(text: &str) -> &str {
         .unwrap_or(text)
 }
 
+/// CR 107.1a + CR 701.16a: Extract the typed filter embedded in an
+/// `ObjectCount` quantity expression. Used by the sacrifice AST builder to
+/// lift "half the permanents they control" → ObjectCount's filter into the
+/// effect's target, so eligibility matches the same set the count was
+/// computed against. Recurses through `HalfRounded` / `Multiply` / `Offset`
+/// wrappers since the filter belongs to the innermost ObjectCount; returns
+/// `None` for expressions that carry no filter (Fixed, Variable(X), etc.).
+fn extract_object_count_filter(expr: &QuantityExpr) -> Option<TargetFilter> {
+    match expr {
+        QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount { filter },
+        } => Some(filter.clone()),
+        QuantityExpr::HalfRounded { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::Offset { inner, .. } => extract_object_count_filter(inner),
+        _ => None,
+    }
+}
+
 /// CR 608.2c: Extract "unless you discard a [type] card" suffix from discard text.
 /// Returns the text with the suffix stripped and the parsed filter, or the original text
 /// with None if no "unless you discard" clause is present.
@@ -340,14 +359,65 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::UntapAll { target });
     }
-    // Simple targeted verbs: tap, untap, sacrifice — parse target after verb prefix
+    // CR 701.16a: "sacrifice [count] <filter> [of their choice]" —
+    // delegates to `parse_count_expr` so "a"/"an"/"X"/"half the permanents
+    // they control" all flow through one authority. "Of their choice" is
+    // the default per CR 701.16b (the sacrificing player chooses); strip
+    // it as a confirmation suffix rather than bleeding into the filter.
+    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
+        value((), tag("sacrifice ")).parse(input)
+    }) {
+        let (count, after_count) = super::super::oracle_util::parse_count_expr(rest).unwrap_or((
+            crate::types::ability::QuantityExpr::Fixed { value: 1 },
+            rest,
+        ));
+        let (target_text, _) = super::strip_optional_target_prefix(after_count.trim_start());
+        // Strip the "of their choice" / "of your choice" confirmation suffix —
+        // CR 701.16b makes player choice the default, so the phrase is a no-op
+        // that must be consumed so it doesn't bleed into the filter. Two
+        // shapes exist: (1) the filter precedes the phrase ("permanents
+        // they control of their choice" — split at the leading space), and
+        // (2) the count subsumes the filter and only the phrase is left
+        // ("of their choice" — treat the entire remainder as the phrase).
+        let target_text_lower = target_text.to_lowercase();
+        let target_text = if target_text_lower.starts_with("of their choice")
+            || target_text_lower.starts_with("of your choice")
+        {
+            ""
+        } else {
+            nom_primitives::split_once_on(&target_text_lower, " of their choice")
+                .or_else(|_| nom_primitives::split_once_on(&target_text_lower, " of your choice"))
+                .map(|(_, (before, _))| &target_text[..before.len()])
+                .unwrap_or(target_text)
+        };
+        // CR 107.2: Skip `parse_target` on an empty remainder — the count
+        // subsumed the filter ("sacrifice half the permanents they control
+        // of their choice"), so there is nothing left to classify. Avoids
+        // emitting a `target-fallback` parse warning for a well-formed parse.
+        let target = if target_text.trim().is_empty() {
+            TargetFilter::Any
+        } else {
+            let (target, _rem) = parse_target(target_text);
+            #[cfg(debug_assertions)]
+            super::types::assert_no_compound_remainder(_rem, text);
+            target
+        };
+        // CR 701.16a: When the count expression already carries a typed filter
+        // ("half the permanents they control" → ObjectCount{Typed[Permanent,
+        // controller:You]}) and the target text didn't yield a filter, lift the
+        // count's filter into `target` so eligibility matches the same set the
+        // count was computed against. Without this lift, Sacrifice would fall
+        // back to `Any` and the parser-warned filter would be silently dropped.
+        let target = if matches!(target, TargetFilter::Any) {
+            extract_object_count_filter(&count).unwrap_or(target)
+        } else {
+            target
+        };
+        return Some(TargetedImperativeAst::Sacrifice { target, count });
+    }
+    // Simple targeted verbs: tap, untap — parse target after verb prefix
     if let Some((verb, rest)) = nom_on_lower(text, lower, |input| {
-        alt((
-            value("tap", tag("tap ")),
-            value("untap", tag("untap ")),
-            value("sacrifice", tag("sacrifice ")),
-        ))
-        .parse(input)
+        alt((value("tap", tag("tap ")), value("untap", tag("untap ")))).parse(input)
     }) {
         let (target_text, _) = super::strip_optional_target_prefix(strip_article(rest));
         let (target, _rem) = parse_target(target_text);
@@ -356,7 +426,6 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         return match verb {
             "tap" => Some(TargetedImperativeAst::Tap { target }),
             "untap" => Some(TargetedImperativeAst::Untap { target }),
-            "sacrifice" => Some(TargetedImperativeAst::Sacrifice { target }),
             _ => unreachable!(),
         };
     }
@@ -524,8 +593,9 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         TargetedImperativeAst::Untap { target } => Effect::Untap { target },
         TargetedImperativeAst::TapAll { target } => Effect::TapAll { target },
         TargetedImperativeAst::UntapAll { target } => Effect::UntapAll { target },
-        TargetedImperativeAst::Sacrifice { target } => Effect::Sacrifice {
+        TargetedImperativeAst::Sacrifice { target, count } => Effect::Sacrifice {
             target,
+            count,
             up_to: false,
         },
         TargetedImperativeAst::Discard {
@@ -2830,6 +2900,14 @@ pub(super) fn parse_imperative_family_ast(
 
         // "you may" → optional wrapper
         "you" => nom_on_lower(text, lower, |input| value((), tag("you may ")).parse(input)).map(
+            |(_, stripped)| ImperativeFamilyAst::YouMay {
+                text: stripped.to_string(),
+            },
+        ),
+
+        // "may" → optional wrapper (produced after strip_each_player_subject strips "each player ")
+        // e.g. "Each player may discard their hand" → subject stripped → "may discard their hand"
+        "may" => nom_on_lower(text, lower, |input| value((), tag("may ")).parse(input)).map(
             |(_, stripped)| ImperativeFamilyAst::YouMay {
                 text: stripped.to_string(),
             },

@@ -381,6 +381,7 @@ pub fn room_effects(
             let mut ability = simple(
                 Effect::Sacrifice {
                     target: TargetFilter::Typed(TypedFilter::creature()),
+                    count: QuantityExpr::Fixed { value: 1 },
                     up_to: false,
                 },
                 source_id,
@@ -568,6 +569,7 @@ pub fn room_effects(
             let mut ability = simple(
                 Effect::Sacrifice {
                     target: TargetFilter::Any,
+                    count: QuantityExpr::Fixed { value: 1 },
                     up_to: false,
                 },
                 source_id,

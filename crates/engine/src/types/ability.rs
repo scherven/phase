@@ -2618,6 +2618,15 @@ pub enum Effect {
     Sacrifice {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        /// CR 701.16a: Number of permanents to sacrifice. Defaults to 1 so every
+        /// existing emission site — AST lowering, dungeon rooms, token graveyard
+        /// upkeep, emblem cost handlers, Forge importer — keeps its original
+        /// "sacrifice one" semantics without code changes. Dynamic quantities
+        /// ("sacrifice half the permanents they control") resolve per-iteration
+        /// via `resolve_quantity_with_targets`, which honors `player_scope`
+        /// controller rebinding.
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         /// CR 608.2d: When true, the player may select fewer than the required count
         /// ("sacrifice up to N"). Distinct from `optional: true` on the ability ("you may sacrifice").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
