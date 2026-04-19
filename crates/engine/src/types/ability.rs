@@ -1559,6 +1559,16 @@ pub enum QuantityRef {
     /// than this creature's power or toughness"). Returns 0 outside a
     /// trigger-event scope.
     ManaSpentOnTriggeringSpell,
+    /// CR 601.2h: Total amount of mana actually spent to cast the ability's
+    /// own source object. Resolves against `state.objects[source_id]`, reading
+    /// `GameObject::mana_spent_to_cast_amount`. Used by spell-resolution
+    /// effects that reference their own paid cost (Molten Note: "deals damage
+    /// to target creature equal to the amount of mana spent to cast this
+    /// spell"). Distinct from `ManaSpentOnTriggeringSpell`, which reads the
+    /// spell referenced by the current trigger event. For an activated
+    /// ability on a permanent, this returns the cost paid to cast the
+    /// permanent — typically useful only for self-referential spell effects.
+    ManaSpentOnSelf,
 }
 
 /// CR 107.1a: Rounding direction for fractional Oracle-text expressions.

@@ -598,6 +598,7 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::TargetZoneCardCount { .. } => "target zone card count".into(),
         QuantityRef::CostXPaid => "X paid for this spell".into(),
         QuantityRef::ManaSpentOnTriggeringSpell => "mana spent on triggering spell".into(),
+        QuantityRef::ManaSpentOnSelf => "mana spent on self".into(),
     }
 }
 
@@ -3725,6 +3726,7 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::TargetZoneCardCount { .. } => "TargetZoneCardCount",
         QuantityRef::CostXPaid => "CostXPaid",
         QuantityRef::ManaSpentOnTriggeringSpell => "ManaSpentOnTriggeringSpell",
+        QuantityRef::ManaSpentOnSelf => "ManaSpentOnSelf",
     }
 }
 
@@ -3807,6 +3809,7 @@ fn resolver_handled_features() -> HashSet<&'static str> {
         "quantity_ref:EventContextSourceToughness",
         "quantity_ref:EventContextSourceManaValue",
         "quantity_ref:ManaSpentOnTriggeringSpell",
+        "quantity_ref:ManaSpentOnSelf",
         "quantity_ref:SpellsCastThisTurn",
         "quantity_ref:EnteredThisTurn",
         "quantity_ref:CrimesCommittedThisTurn",

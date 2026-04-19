@@ -346,6 +346,15 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
         _ => {}
     }
 
+    // CR 601.2h: "the amount of mana spent to cast <subject>" — dynamic amount
+    // referring to the actual paid cost of a spell. `this spell` / `it` / `~`
+    // resolve against the ability's source object (Molten Note); `that spell`
+    // resolves against the triggering event's source (Adamant family,
+    // Expressive Firedancer conditional rider).
+    if let Some(qty) = parse_mana_spent_to_cast_amount(lower) {
+        return Some(QuantityExpr::Ref { qty });
+    }
+
     // CR 603.7c: Decompose possessive noun phrases: "{referent}'s {property}"
     if let Some((prefix, suffix)) = lower.split_once("'s ") {
         let suffix = suffix.trim();
@@ -378,6 +387,52 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
     }
 
     None
+}
+
+/// CR 601.2h: Recognize "the amount of mana [you] spent to cast <subject>" /
+/// "the amount of mana spent to cast <subject>" and map the subject phrase to
+/// the correct `QuantityRef`.
+///
+/// - `this spell` / `it` / `~` / `this creature` → `ManaSpentOnSelf` (spell
+///   resolution reading its own cost; Molten Note).
+/// - `that spell` / `that creature` → `ManaSpentOnTriggeringSpell` (trigger
+///   effect reading the triggering spell's cost; Wildgrowth Archaic,
+///   Expressive Firedancer rider, Mana Sculpt rider).
+fn parse_mana_spent_to_cast_amount(input: &str) -> Option<QuantityRef> {
+    // Consume optional leading "the ".
+    let rest = tag::<_, _, VerboseError<&str>>("the ")
+        .parse(input)
+        .map_or(input, |(r, _)| r);
+    // Consume the core phrase. Accept both "mana you spent" and "mana spent".
+    let rest = alt((
+        value(
+            (),
+            tag::<_, _, VerboseError<&str>>("amount of mana you spent to cast "),
+        ),
+        value((), tag("amount of mana spent to cast ")),
+    ))
+    .parse(rest)
+    .ok()?
+    .0;
+    // Dispatch on subject: self-referential vs triggering-spell anaphora.
+    alt((
+        value(
+            QuantityRef::ManaSpentOnSelf,
+            alt((
+                tag::<_, _, VerboseError<&str>>("this spell"),
+                tag("this creature"),
+                tag("it"),
+                tag("~"),
+            )),
+        ),
+        value(
+            QuantityRef::ManaSpentOnTriggeringSpell,
+            alt((tag("that spell"), tag("that creature"))),
+        ),
+    ))
+    .parse(rest)
+    .ok()
+    .map(|(_, qty)| qty)
 }
 
 /// CR 603.7c: Check if a possessive prefix refers to the triggering event's source object.
@@ -1116,6 +1171,45 @@ mod tests {
                     zone: ZoneRef::Hand,
                     scope: CountScope::Controller,
                 },
+            })
+        );
+    }
+
+    /// CR 601.2h: "the amount of mana spent to cast this spell" in a spell
+    /// effect context → `ManaSpentOnSelf`. Used by Molten Note.
+    #[test]
+    fn mana_spent_self_this_spell() {
+        let result = parse_event_context_quantity("the amount of mana spent to cast this spell");
+        assert_eq!(
+            result,
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentOnSelf
+            })
+        );
+    }
+
+    /// CR 601.2h: "the amount of mana spent to cast that spell" (anaphoric to
+    /// the triggering spell) → `ManaSpentOnTriggeringSpell`.
+    #[test]
+    fn mana_spent_that_spell_is_triggering_ref() {
+        let result = parse_event_context_quantity("the amount of mana spent to cast that spell");
+        assert_eq!(
+            result,
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentOnTriggeringSpell
+            })
+        );
+    }
+
+    /// CR 601.2h: "the amount of mana you spent to cast it" — "you spent"
+    /// variant with bare "it" anaphora resolves to self for spell effects.
+    #[test]
+    fn mana_spent_you_spent_it() {
+        let result = parse_event_context_quantity("the amount of mana you spent to cast it");
+        assert_eq!(
+            result,
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentOnSelf
             })
         );
     }

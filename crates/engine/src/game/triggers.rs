@@ -940,14 +940,20 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
         }
     }
 
-    // Clear transient cast_from_zone and mana_spent_to_cast on all objects after
-    // trigger collection. These fields only need to survive long enough for ETB
-    // trigger processing.
+    // Clear transient cast_from_zone and the cast-tally booleans/color breakdown
+    // on all objects after trigger collection. These fields only need to survive
+    // long enough for ETB trigger detection (CR 603.4). `mana_spent_to_cast_amount`
+    // is intentionally NOT cleared: it is a historical fact about the object
+    // (how much mana was spent to cast it) used by spell resolution effects
+    // like "deals damage equal to the amount of mana spent to cast this spell"
+    // (Molten Note) and by CR 603.4 intervening-if resolution re-checks
+    // (Hungry Graffalon / Topiary Lecturer Increment). The field is initialized
+    // to 0 by `GameObject::new` and set at cast finalization in
+    // `casting::pay_mana_cost`; it never needs to be reset.
     for obj in state.objects.values_mut() {
         obj.cast_from_zone = None;
         obj.mana_spent_to_cast = false;
         obj.colors_spent_to_cast = crate::types::mana::ColoredManaCount::default();
-        obj.mana_spent_to_cast_amount = 0;
     }
 }
 

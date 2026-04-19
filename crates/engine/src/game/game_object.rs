@@ -374,8 +374,14 @@ pub struct GameObject {
     /// (sum across all colors and generic). Populated during casting
     /// finalization alongside `mana_spent_to_cast` and `colors_spent_to_cast`.
     /// Consumed by `QuantityRef::ManaSpentOnTriggeringSpell` for intervening-if
-    /// comparisons like Increment (CR 603.4). Cleared in lockstep with
-    /// `mana_spent_to_cast` (see `triggers::clear_transient_cast_state`).
+    /// comparisons (Increment, CR 603.4) and by `QuantityRef::ManaSpentOnSelf`
+    /// for spell-resolution effects that read their own cost (Molten Note,
+    /// "deals damage equal to the amount of mana spent to cast this spell").
+    ///
+    /// Unlike `mana_spent_to_cast` / `colors_spent_to_cast`, this field is NOT
+    /// cleared after trigger collection — it is a historical fact about the
+    /// object that remains valid through spell resolution and beyond. Set once
+    /// at cast finalization; initialized to 0 by `GameObject::new`.
     #[serde(default, skip_serializing_if = "is_zero_u32_field")]
     pub mana_spent_to_cast_amount: u32,
 

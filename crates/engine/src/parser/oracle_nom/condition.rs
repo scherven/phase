@@ -51,6 +51,7 @@ pub fn parse_inner_condition(input: &str) -> OracleResult<'_, StaticCondition> {
         parse_youve_this_turn,
         parse_event_state_conditions,
         parse_mana_spent_vs_source_pt,
+        parse_mana_spent_threshold,
         parse_combat_context_conditions,
         parse_unless_pay_condition,
     ))
@@ -828,6 +829,54 @@ fn parse_mana_spent_vs_source_pt(input: &str) -> OracleResult<'_, StaticConditio
         _ => build(first),
     };
     Ok((rest, result))
+}
+
+/// CR 601.2h + CR 603.4: Intervening-if comparing the total amount of mana
+/// spent to cast the triggering spell against a fixed threshold.
+///
+/// Recognizes "[N] or more mana was spent to cast [that/this] spell/it/~" and
+/// the inverse "[N] or less mana was spent to cast …". Produces a
+/// `StaticCondition::QuantityComparison` with LHS
+/// `ManaSpentOnTriggeringSpell` that bridges to `TriggerCondition::QuantityComparison`
+/// via the existing `static_condition_to_trigger_condition` path.
+///
+/// Used by Expressive Firedancer's conditional rider ("If five or more mana
+/// was spent to cast that spell, ..."), Opus/Increment family cards with
+/// mana-threshold riders, and any future card that gates on triggering-spell
+/// cost magnitude. Complementary to `parse_mana_spent_vs_source_pt` (which
+/// handles Increment-style `greater than this creature's P/T`).
+fn parse_mana_spent_threshold(input: &str) -> OracleResult<'_, StaticCondition> {
+    // Number first — combinator verifies word boundary via existing helper.
+    let (rest, n) = parse_number(input)?;
+    // "or more" / "or fewer" / "or less" threshold word — map to comparator.
+    let (rest, comparator) = alt((
+        value(Comparator::GE, tag(" or more")),
+        value(Comparator::LE, tag(" or fewer")),
+        value(Comparator::LE, tag(" or less")),
+    ))
+    .parse(rest)?;
+    // Fixed tail: " mana was spent to cast " + subject anaphora.
+    let (rest, _) = tag(" mana was spent to cast ").parse(rest)?;
+    let (rest, _) = alt((
+        tag("that spell"),
+        tag("that creature"),
+        tag("this spell"),
+        tag("this creature"),
+        tag("it"),
+        tag("them"),
+        tag("~"),
+    ))
+    .parse(rest)?;
+    Ok((
+        rest,
+        StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentOnTriggeringSpell,
+            },
+            comparator,
+            rhs: QuantityExpr::Fixed { value: n as i32 },
+        },
+    ))
 }
 
 /// CR 509.1b + CR 506.5: Parse combat-context conditions.
@@ -2469,6 +2518,50 @@ mod tests {
                         qty: QuantityRef::SelfPower
                     }
                 );
+            }
+            other => panic!("expected QuantityComparison, got {other:?}"),
+        }
+    }
+
+    /// CR 601.2h: "N or more mana was spent to cast that spell" — threshold
+    /// intervening-if used by Expressive Firedancer's Opus rider, Mana Sculpt's
+    /// Wizard-gated delayed mana, and any future card gating on triggering-spell
+    /// cost magnitude.
+    #[test]
+    fn test_parse_condition_mana_spent_threshold_that_spell() {
+        let (rest, c) =
+            parse_condition("if five or more mana was spent to cast that spell").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs,
+                comparator,
+                rhs,
+            } => {
+                assert_eq!(
+                    lhs,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ManaSpentOnTriggeringSpell
+                    }
+                );
+                assert_eq!(comparator, Comparator::GE);
+                assert_eq!(rhs, QuantityExpr::Fixed { value: 5 });
+            }
+            other => panic!("expected QuantityComparison, got {other:?}"),
+        }
+    }
+
+    /// "or less" inverse form produces LE comparator.
+    #[test]
+    fn test_parse_condition_mana_spent_threshold_or_less() {
+        let (rest, c) = parse_condition("if three or less mana was spent to cast it").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                comparator, rhs, ..
+            } => {
+                assert_eq!(comparator, Comparator::LE);
+                assert_eq!(rhs, QuantityExpr::Fixed { value: 3 });
             }
             other => panic!("expected QuantityComparison, got {other:?}"),
         }

@@ -563,6 +563,16 @@ fn resolve_ref(
             .and_then(|id| state.objects.get(&id))
             .map(|obj| obj.mana_spent_to_cast_amount as i32)
             .unwrap_or(0),
+        // CR 601.2h: Total mana actually spent to cast the ability's source
+        // object. Used by spell effects that reference their own cost at
+        // resolution time (Molten Note). The `mana_spent_to_cast_amount`
+        // field persists through resolution (not cleared by
+        // `clear_transient_cast_state`).
+        QuantityRef::ManaSpentOnSelf => state
+            .objects
+            .get(&source_id)
+            .map(|obj| obj.mana_spent_to_cast_amount as i32)
+            .unwrap_or(0),
         // CR 305.6: Count distinct basic land types among lands the controller controls.
         QuantityRef::BasicLandTypeCount => {
             let basic_subtypes = ["Plains", "Island", "Swamp", "Mountain", "Forest"];

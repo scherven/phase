@@ -1076,6 +1076,44 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
             description: None,
         });
     }
+    // CR 608.2c: Self-ref continuation adverb. "also" after a self-ref subject
+    // is a natural-language additive connector with no semantic weight — it
+    // signals "in addition, [self-ref] [verb]…" and must reduce to plain
+    // self-ref subject-predicate dispatch. Strip only when the "also" is
+    // present; without it, the bare `~` / `this creature` subject carries
+    // target attribution that downstream Pump/PutCounter parsers rely on.
+    //
+    // Example: Expressive Firedancer sub_ability "~ also gains double strike
+    // until end of turn" → strip "~ also " → "gains double strike until end
+    // of turn" → first-word dispatch lands on gain-keyword with SelfRef
+    // target implied by the absence of an explicit target.
+    let stripped_self_ref;
+    let text = {
+        let lower = text.to_ascii_lowercase();
+        let stripped_lower = alt((
+            value((), tag::<_, _, VerboseError<&str>>("~ also ")),
+            value((), tag("this creature also ")),
+            value((), tag("this permanent also ")),
+        ))
+        .parse(lower.as_str())
+        .ok()
+        .map(|(rest, ())| {
+            let consumed = lower.len() - rest.len();
+            text[consumed..].trim_start().to_string()
+        });
+        if let Some(rest) = stripped_lower {
+            stripped_self_ref = rest;
+            stripped_self_ref.as_str()
+        } else {
+            text
+        }
+    };
+    if text.is_empty() {
+        return parsed_clause(Effect::Unimplemented {
+            name: "empty".to_string(),
+            description: None,
+        });
+    }
 
     // CR 608.2c: Deconjugate bare third-person verbs that appear after ", then" splits
     // where the subject carried over from the previous clause.

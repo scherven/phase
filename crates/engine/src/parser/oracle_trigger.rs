@@ -643,6 +643,17 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         if if_belongs_to_then_clause(&lower, first_if) {
             return (text.to_string(), None);
         }
+        // CR 603.4: A true intervening-if immediately follows the trigger
+        // condition clause. If the first `if ` appears AFTER a sentence
+        // boundary (". "), it belongs to that later sentence and scopes only
+        // to its own clause — let per-clause parsing attach it as an
+        // `AbilityCondition` via `strip_leading_general_conditional`.
+        // Example: "this creature gets +1/+1 until end of turn. If five or
+        // more mana was spent to cast that spell, this creature also gains
+        // double strike ..." — the second sentence's "if" must NOT hoist.
+        if lower[..first_if].contains(". ") {
+            return (text.to_string(), None);
+        }
     }
 
     // --- Source-referential patterns (cannot be StaticConditions) ---
