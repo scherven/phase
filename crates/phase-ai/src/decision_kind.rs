@@ -113,7 +113,10 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::ProliferateChoice { .. }
         | WaitingFor::CategoryChoice { .. }
         | WaitingFor::AssignCombatDamage { .. }
-        | WaitingFor::GameOver { .. } => DecisionKind::ActivateAbility,
+        | WaitingFor::GameOver { .. }
+        // CR 702.xxx: Paradigm (Strixhaven) — modeled as an ability-style
+        // offer decision. Assign when WotC publishes SOS CR update.
+        | WaitingFor::ParadigmCastOffer { .. } => DecisionKind::ActivateAbility,
     }
 }
 

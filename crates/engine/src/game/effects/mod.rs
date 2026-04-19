@@ -74,10 +74,12 @@ pub mod manifest;
 pub mod manifest_dread;
 pub mod mill;
 pub mod monstrosity;
+pub mod paradigm;
 pub mod pay;
 pub mod phase_out;
 pub mod player_counter;
 pub mod populate;
+pub mod prepare;
 pub mod prevent_damage;
 pub mod proliferate;
 pub mod pump;
@@ -326,6 +328,10 @@ pub fn resolve_effect(
         Effect::PhaseIn { .. } => phase_out::resolve_phase_in(state, ability, events),
         Effect::ForceBlock { .. } => force_block::resolve(state, ability, events),
         Effect::SolveCase => solve_case::resolve(state, ability, events),
+        Effect::BecomePrepared { .. } => prepare::resolve_become_prepared(state, ability, events),
+        Effect::BecomeUnprepared { .. } => {
+            prepare::resolve_become_unprepared(state, ability, events)
+        }
         Effect::SetClassLevel { .. } => set_class_level::resolve(state, ability, events),
         Effect::CreateDelayedTrigger { .. } => delayed_trigger::resolve(state, ability, events),
         Effect::AddRestriction { .. } => add_restriction::resolve(state, ability, events),

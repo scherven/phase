@@ -649,6 +649,7 @@ pub fn keyword_display_name(keyword: &Keyword) -> String {
         Keyword::Cleave(_) => "cleave".to_string(),
         Keyword::Undaunted => "undaunted".to_string(),
         Keyword::Station => "station".to_string(),
+        Keyword::Paradigm => "paradigm".to_string(),
         Keyword::Unknown(s) => s.to_lowercase(),
     }
 }
@@ -1331,5 +1332,13 @@ mod tests {
             kw,
             Keyword::HexproofFrom(HexproofFilter::CardType("artifacts".to_string()))
         );
+    }
+
+    /// CR 702.xxx: Paradigm (Strixhaven) — bare-keyword recognition.
+    /// Assign when WotC publishes SOS CR update.
+    #[test]
+    fn parse_keyword_from_oracle_paradigm() {
+        let kw = parse_keyword_from_oracle("paradigm").unwrap();
+        assert_eq!(kw, Keyword::Paradigm);
     }
 }

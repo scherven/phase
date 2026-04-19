@@ -273,6 +273,27 @@ pub enum GameAction {
     ChooseManaColor {
         choice: super::game_state::ManaChoice,
     },
+    /// CR 702.xxx: Prepare (Strixhaven) — at priority, cast a token copy of a
+    /// prepared creature's face-`b` prepare-spell. The source creature must
+    /// have `prepared.is_some()` and be controlled by the acting player.
+    /// On cast, the source becomes unprepared (single-authority via
+    /// `effects::prepare::unprepare_object`). Assign when WotC publishes SOS
+    /// CR update.
+    CastPreparedCopy {
+        source: ObjectId,
+    },
+    /// CR 702.xxx: Paradigm (Strixhaven) — accept the turn-based offer during
+    /// `WaitingFor::ParadigmCastOffer`, casting a token copy of the exiled
+    /// source spell without paying its mana cost. The exiled source stays in
+    /// exile. Assign when WotC publishes SOS CR update.
+    CastParadigmCopy {
+        source: ObjectId,
+    },
+    /// CR 702.xxx: Paradigm (Strixhaven) — decline the turn-based offer during
+    /// `WaitingFor::ParadigmCastOffer`. The exiled source stays in exile and
+    /// may be offered again next turn. Assign when WotC publishes SOS CR
+    /// update.
+    PassParadigmOffer,
     /// CR 104.3a: A player may concede the game at any time. That player leaves the game.
     /// CR 800.4a: When a player leaves a multiplayer game, all objects owned by that player
     /// leave the game and all spells/abilities controlled by that player cease to exist.
@@ -348,6 +369,8 @@ impl GameAction {
             GameAction::ChooseRingBearer { target } => Some(*target),
             GameAction::TapForConvoke { object_id, .. } => Some(*object_id),
             GameAction::ChooseLegend { keep } => Some(*keep),
+            GameAction::CastPreparedCopy { source } => Some(*source),
+            GameAction::CastParadigmCopy { source } => Some(*source),
             // Actions with no per-permanent anchor.
             GameAction::PassPriority
             | GameAction::DeclareAttackers { .. }
@@ -389,6 +412,7 @@ impl GameAction {
             | GameAction::ChooseX { .. }
             | GameAction::SubmitPhyrexianChoices { .. }
             | GameAction::ChooseManaColor { .. }
+            | GameAction::PassParadigmOffer
             | GameAction::Concede { .. } => None,
         }
     }

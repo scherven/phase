@@ -609,6 +609,35 @@ pub fn parse_oracle_text(
             }
         }
 
+        // CR 702.xxx: Prepare (Strixhaven) — "~ enters prepared." is a self-ETB
+        // trigger that produces a BecomePrepared effect on the entering
+        // creature. Normalizer converts "This creature enters prepared." →
+        // "~ enters prepared." Assign when WotC publishes SOS CR update.
+        let prep_lower = line.to_lowercase();
+        let prep_lower_trimmed = prep_lower.trim_end_matches('.').trim_end();
+        if matches!(
+            prep_lower_trimmed,
+            "~ enters prepared" | "this creature enters prepared" | "it enters prepared"
+        ) {
+            let effect_def = crate::types::ability::AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                crate::types::ability::Effect::BecomePrepared {
+                    target: crate::types::ability::TargetFilter::SelfRef,
+                },
+            );
+            let trigger = crate::types::ability::TriggerDefinition::new(
+                crate::types::triggers::TriggerMode::ChangesZone,
+            )
+            .destination(crate::types::zones::Zone::Battlefield)
+            .valid_card(crate::types::ability::TargetFilter::SelfRef)
+            .trigger_zones(vec![crate::types::zones::Zone::Battlefield])
+            .execute(effect_def)
+            .description(line.to_string());
+            result.triggers.push(trigger);
+            i += 1;
+            continue;
+        }
+
         // Priority 1: Modal block (standard "Choose one —" + modes, or Spree + modes).
         // Must run before keyword extraction so "Spree" header + follow-on `+` lines
         // are consumed as a modal block, not swallowed as a keyword-only line.

@@ -1604,6 +1604,52 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             super::companion::handle_companion_to_hand(state, *player, &mut events)
                 .map_err(EngineError::InvalidAction)?
         }
+        // CR 702.xxx: Prepare (Strixhaven) — priority-time cast of a prepared
+        // creature's face-`b` spell. Produces a token spell-copy on the stack;
+        // the source becomes unprepared at cast time. Assign when WotC
+        // publishes SOS CR update.
+        (WaitingFor::Priority { player }, GameAction::CastPreparedCopy { source }) => {
+            let p = *player;
+            // Validate controller.
+            let src = source;
+            let Some(obj) = state.objects.get(&src) else {
+                return Err(EngineError::InvalidAction(format!(
+                    "CastPreparedCopy: source {src:?} not found"
+                )));
+            };
+            if obj.controller != p {
+                return Err(EngineError::InvalidAction(
+                    "CastPreparedCopy: source not controlled by acting player".to_string(),
+                ));
+            }
+            effects::prepare::cast_prepared_copy(state, src, p, &mut events)
+                .map_err(EngineError::InvalidAction)?;
+            WaitingFor::Priority { player: p }
+        }
+        // CR 702.xxx: Paradigm (Strixhaven) — accept the turn-based offer to
+        // cast a copy of an exiled paradigm source. Assign when WotC
+        // publishes SOS CR update.
+        (
+            WaitingFor::ParadigmCastOffer { player, offers },
+            GameAction::CastParadigmCopy { source },
+        ) => {
+            let src = source;
+            if !offers.contains(&src) {
+                return Err(EngineError::InvalidAction(format!(
+                    "CastParadigmCopy: source {src:?} not in current offer set"
+                )));
+            }
+            let p = *player;
+            effects::paradigm::cast_paradigm_copy(state, src, p, &mut events)
+                .map_err(EngineError::InvalidAction)?;
+            // Return priority so the copy can resolve through normal stack flow.
+            WaitingFor::Priority { player: p }
+        }
+        // CR 702.xxx: Paradigm (Strixhaven) — decline the turn-based offer.
+        // Assign when WotC publishes SOS CR update.
+        (WaitingFor::ParadigmCastOffer { player, .. }, GameAction::PassParadigmOffer) => {
+            WaitingFor::Priority { player: *player }
+        }
         (WaitingFor::Priority { player }, GameAction::SetAutoPass { mode }) => {
             // Convert request to stored mode, capturing engine state as needed
             let stored_mode = match mode {

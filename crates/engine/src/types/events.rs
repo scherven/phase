@@ -302,6 +302,18 @@ pub enum GameEvent {
     CreatureSuspected {
         object_id: ObjectId,
     },
+    /// CR 702.xxx: Prepare (Strixhaven) — a creature became prepared.
+    /// Emitted only when the toggle actually flips (idempotent resolvers).
+    /// Assign when WotC publishes SOS CR update.
+    BecamePrepared {
+        object_id: ObjectId,
+    },
+    /// CR 702.xxx: Prepare (Strixhaven) — a creature became unprepared.
+    /// Emitted only when the toggle actually flips (idempotent resolvers).
+    /// Assign when WotC publishes SOS CR update.
+    BecameUnprepared {
+        object_id: ObjectId,
+    },
     /// CR 719.3b: A Case enchantment became solved.
     CaseSolved {
         object_id: ObjectId,

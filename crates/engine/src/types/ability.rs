@@ -3015,6 +3015,23 @@ pub enum Effect {
     },
     /// CR 719.2: Solve the source Case — it becomes solved.
     SolveCase,
+    /// CR 702.xxx: Prepare (Strixhaven) — mark the target creature as prepared.
+    /// The target must be a creature with a prepare face (CardLayout::Prepare);
+    /// on targets without a prepare face (e.g. Biblioplex Tomekeeper's Oracle
+    /// "Target creature becomes prepared. (Only creatures with prepare spells
+    /// can become prepared.)") the resolver is a no-op. Idempotent: if already
+    /// prepared, no event fires. Assign when WotC publishes SOS CR update.
+    BecomePrepared {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
+    /// CR 702.xxx: Prepare (Strixhaven) — clear the prepared state on the
+    /// target creature. Idempotent: if not prepared, no event fires. Assign
+    /// when WotC publishes SOS CR update.
+    BecomeUnprepared {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
     /// CR 716.2a: Set the class level on the source Class enchantment.
     SetClassLevel {
         level: u8,
@@ -3657,6 +3674,8 @@ impl Effect {
             | Effect::PhaseOut { target, .. }
             | Effect::PhaseIn { target, .. }
             | Effect::ForceBlock { target, .. }
+            | Effect::BecomePrepared { target, .. }
+            | Effect::BecomeUnprepared { target, .. }
             | Effect::CastFromZone { target, .. }
             | Effect::PreventDamage { target, .. }
             | Effect::Exploit { target, .. }
@@ -3844,6 +3863,8 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::PhaseIn { .. } => "PhaseIn",
         Effect::ForceBlock { .. } => "ForceBlock",
         Effect::SolveCase => "SolveCase",
+        Effect::BecomePrepared { .. } => "BecomePrepared",
+        Effect::BecomeUnprepared { .. } => "BecomeUnprepared",
         Effect::SetClassLevel { .. } => "SetClassLevel",
         Effect::CreateDelayedTrigger { .. } => "CreateDelayedTrigger",
         Effect::AddRestriction { .. } => "AddRestriction",
@@ -3990,6 +4011,10 @@ pub enum EffectKind {
     PhaseIn,
     ForceBlock,
     SolveCase,
+    /// CR 702.xxx: Prepare (Strixhaven) — mark target creature as prepared.
+    BecomePrepared,
+    /// CR 702.xxx: Prepare (Strixhaven) — clear prepared state on target.
+    BecomeUnprepared,
     SetClassLevel,
     CreateDelayedTrigger,
     AddRestriction,
@@ -4144,6 +4169,8 @@ impl From<&Effect> for EffectKind {
             Effect::PhaseIn { .. } => EffectKind::PhaseIn,
             Effect::ForceBlock { .. } => EffectKind::ForceBlock,
             Effect::SolveCase => EffectKind::SolveCase,
+            Effect::BecomePrepared { .. } => EffectKind::BecomePrepared,
+            Effect::BecomeUnprepared { .. } => EffectKind::BecomeUnprepared,
             Effect::SetClassLevel { .. } => EffectKind::SetClassLevel,
             Effect::CreateDelayedTrigger { .. } => EffectKind::CreateDelayedTrigger,
             Effect::AddRestriction { .. } => EffectKind::AddRestriction,

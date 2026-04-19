@@ -1205,6 +1205,15 @@ pub enum WaitingFor {
         player: PlayerId,
         object_id: ObjectId,
     },
+    /// CR 702.xxx: Paradigm (Strixhaven) — turn-based offer at the beginning of
+    /// the player's first precombat main phase. `offers` is the list of
+    /// exiled paradigm sources belonging to `player`; each may be cast as a
+    /// token copy without paying its mana cost, or passed. Assign when WotC
+    /// publishes SOS CR update.
+    ParadigmCastOffer {
+        player: PlayerId,
+        offers: Vec<ObjectId>,
+    },
     /// CR 701.36a: Choose a creature token you control to create a copy of.
     PopulateChoice {
         player: PlayerId,
@@ -1463,6 +1472,7 @@ impl WaitingFor {
             | WaitingFor::DiscoverChoice { player, .. }
             | WaitingFor::CascadeChoice { player, .. }
             | WaitingFor::TopOrBottomChoice { player, .. }
+            | WaitingFor::ParadigmCastOffer { player, .. }
             | WaitingFor::PopulateChoice { player, .. }
             | WaitingFor::ClashCardPlacement { player, .. }
             | WaitingFor::CompanionReveal { player, .. }

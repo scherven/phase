@@ -140,9 +140,40 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         }
     }
 
+    // CR 702.xxx: Paradigm (Strixhaven) — first-resolution hook. If the
+    // resolving spell carries `Keyword::Paradigm` and this is the first
+    // resolution of any spell with this name by the controller (per the
+    // reminder text: "After you first resolve a spell with this name"), arm
+    // the Paradigm offer: push a `ParadigmPrime` record and mint an
+    // `ExileLinkKind::ParadigmSource` link, then override destination routing
+    // to Exile. Copies (`is_token`) never arm Paradigm because their card
+    // name is derived but they are not "the" spell per the reminder. Assign
+    // when WotC publishes SOS CR update.
+    let paradigm_armed = if is_spell {
+        let obj = state.objects.get(&entry.id);
+        let has_paradigm = obj.is_some_and(|o| {
+            !o.is_token
+                && o.keywords
+                    .iter()
+                    .any(|k| matches!(k, crate::types::keywords::Keyword::Paradigm))
+        });
+        if has_paradigm {
+            let card_name = obj.map(|o| o.name.clone()).unwrap_or_default();
+            super::effects::paradigm::arm_paradigm(state, entry.id, entry.controller, &card_name)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     // CR 608.3: Determine destination zone for spells.
     if is_spell {
-        let dest = if casting_variant == CastingVariant::Adventure {
+        let dest = if paradigm_armed {
+            // CR 702.xxx: Paradigm-armed spell exiles instead of going to
+            // graveyard. The ExileLink is already created by arm_paradigm.
+            Zone::Exile
+        } else if casting_variant == CastingVariant::Adventure {
             // CR 715.3d: Adventure spell resolves → exile with casting permission.
             Zone::Exile
         } else if casting_variant == CastingVariant::Harmonize {

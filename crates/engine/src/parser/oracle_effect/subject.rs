@@ -959,6 +959,34 @@ fn build_become_clause(
         return Some(clause);
     }
 
+    // CR 702.xxx: Prepare (Strixhaven) — "becomes prepared" / "becomes
+    // unprepared" toggles the PreparedState on the target creature. Must
+    // intercept before parse_animation_spec which would try to classify
+    // "prepared" / "unprepared" as a subtype. Assign when WotC publishes SOS
+    // CR update.
+    let become_lower = become_text.to_lowercase();
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("prepared").parse(become_lower.as_str())
+    {
+        if rest.trim().is_empty() {
+            let target = application
+                .target
+                .clone()
+                .unwrap_or(crate::types::ability::TargetFilter::ParentTarget);
+            return Some(super::parsed_clause(Effect::BecomePrepared { target }));
+        }
+    }
+    if let Ok((rest, _)) =
+        tag::<_, _, VerboseError<&str>>("unprepared").parse(become_lower.as_str())
+    {
+        if rest.trim().is_empty() {
+            let target = application
+                .target
+                .clone()
+                .unwrap_or(crate::types::ability::TargetFilter::ParentTarget);
+            return Some(super::parsed_clause(Effect::BecomeUnprepared { target }));
+        }
+    }
+
     // CR 707.2 / CR 613.1a: "become a copy of [target]" — copy copiable characteristics.
     // Must intercept before parse_animation_spec which rejects "copy of" patterns.
     const COPY_PREFIX: &str = "a copy of ";

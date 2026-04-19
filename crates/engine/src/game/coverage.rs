@@ -1389,6 +1389,9 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::Tribute { count } => {
             d.push(("count".into(), count.to_string()));
         }
+        Effect::BecomePrepared { target } | Effect::BecomeUnprepared { target } => {
+            d.push(("target".into(), fmt_target(target)));
+        }
         // Effects with no interesting parameters
         Effect::Unimplemented { .. }
         | Effect::Explore

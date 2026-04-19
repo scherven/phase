@@ -135,6 +135,8 @@ pub enum KeywordKind {
     Cleave,
     Undaunted,
     Station,
+    /// CR 702.xxx: Paradigm (Strixhaven) — see `Keyword::Paradigm`.
+    Paradigm,
     Unknown,
 }
 
@@ -572,6 +574,15 @@ pub enum Keyword {
     Cleave(ManaCost),
     /// CR 702.125a: Undaunted — costs {1} less for each opponent.
     Undaunted,
+    /// CR 702.xxx: Paradigm (Strixhaven) — a keyword on instants/sorceries.
+    /// Reminder: "Then exile this spell. After you first resolve a spell with
+    /// this name, you may cast a copy of it from exile without paying its
+    /// mana cost at the beginning of each of your first main phases."
+    /// Runtime hooks in `stack.rs` (first-resolution arming) and `turns.rs`
+    /// (first-main-phase offer) carry the semantics. Assign when WotC
+    /// publishes SOS CR update.
+    Paradigm,
+
     /// CR 702.184a: Station — "Tap another untapped creature you control:
     /// Put a number of charge counters on this permanent equal to the tapped
     /// creature's power. Activate only as a sorcery." The keyword is fixed
@@ -700,6 +711,7 @@ impl Keyword {
             Keyword::Cleave(_) => KeywordKind::Cleave,
             Keyword::Undaunted => KeywordKind::Undaunted,
             Keyword::Station => KeywordKind::Station,
+            Keyword::Paradigm => KeywordKind::Paradigm,
             Keyword::Unknown(_) => KeywordKind::Unknown,
             _ => KeywordKind::Unknown,
         }
@@ -1200,6 +1212,8 @@ impl FromStr for Keyword {
             "undaunted" => Ok(Keyword::Undaunted),
             // CR 702.184a: Station is a fixed activated ability — no parameter.
             "station" => Ok(Keyword::Station),
+            // CR 702.xxx: Paradigm (Strixhaven) — bare keyword, no parameter.
+            "paradigm" => Ok(Keyword::Paradigm),
             // CR 702.14: Landwalk variants — MTGJSON sends "Islandwalk" etc. as keyword names.
             "islandwalk" => Ok(Keyword::Landwalk("Island".to_string())),
             "swampwalk" => Ok(Keyword::Landwalk("Swamp".to_string())),
@@ -1569,6 +1583,8 @@ fn keyword_from_tagged(variant: &str, data: &serde_json::Value) -> Result<Keywor
         "Undaunted" => Ok(Keyword::Undaunted),
         // CR 702.184a: Station — fixed activated ability keyword.
         "Station" => Ok(Keyword::Station),
+        // CR 702.xxx: Paradigm (Strixhaven) — bare keyword.
+        "Paradigm" => Ok(Keyword::Paradigm),
         "Unknown" => Ok(Keyword::Unknown(data.as_str().unwrap_or("").to_string())),
         _ => Ok(Keyword::Unknown(format!("{variant}:{data}"))),
     }

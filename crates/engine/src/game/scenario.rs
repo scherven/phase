@@ -1096,6 +1096,7 @@ impl GameRunner {
             WaitingFor::CombatTaxPayment { .. } => "CombatTaxPayment",
             WaitingFor::PhyrexianPayment { .. } => "PhyrexianPayment",
             WaitingFor::BlightChoice { .. } => "BlightChoice",
+            WaitingFor::ParadigmCastOffer { .. } => "ParadigmCastOffer",
         }
     }
 

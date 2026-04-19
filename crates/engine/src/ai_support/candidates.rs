@@ -1358,6 +1358,27 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
         | WaitingFor::BetweenGamesChoosePlayDraw { .. }
         | WaitingFor::MulliganDecision { .. }
         | WaitingFor::MulliganBottomCards { .. } => Vec::new(),
+        // CR 702.xxx: Paradigm (Strixhaven) — enumerate each exiled paradigm
+        // source as a cast candidate plus a pass option. Assign when WotC
+        // publishes SOS CR update.
+        WaitingFor::ParadigmCastOffer { player, offers } => {
+            let mut v: Vec<CandidateAction> = offers
+                .iter()
+                .map(|source| {
+                    candidate(
+                        GameAction::CastParadigmCopy { source: *source },
+                        TacticalClass::Spell,
+                        Some(*player),
+                    )
+                })
+                .collect();
+            v.push(candidate(
+                GameAction::PassParadigmOffer,
+                TacticalClass::Selection,
+                Some(*player),
+            ));
+            v
+        }
     };
 
     actions
