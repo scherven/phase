@@ -1030,6 +1030,14 @@ pub(super) fn try_nom_condition_as_ability_condition(text: &str) -> Option<Abili
 
     let lower = text.to_lowercase();
 
+    // CR 730.2a: "it's neither day nor night" — Daybound/Nightbound ETB initialization.
+    if tag::<_, _, VerboseError<&str>>("it's neither day nor night")
+        .parse(lower.as_str())
+        .is_ok()
+    {
+        return Some(AbilityCondition::DayNightIsNeither);
+    }
+
     if tag::<_, _, VerboseError<&str>>("you win the clash")
         .parse(lower.as_str())
         .is_ok()

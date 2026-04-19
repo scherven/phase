@@ -438,10 +438,10 @@ fn parse_search_filter_suffixes(text: &str, properties: &mut Vec<FilterProp>) {
             remaining = rest.trim_start();
         }
 
-        // End-of-filter sentinel: punctuation or a "then …" connector means the
-        // search filter has ended and what follows (reveal, put onto battlefield,
-        // shuffle, etc.) is the action chain handled by the downstream sequence
-        // parser. Not a filter-suffix gap — break without warning.
+        // End-of-filter sentinel: punctuation, "then …", "reveal …", or "put …"
+        // means the search filter has ended and what follows is the action chain
+        // handled by the downstream sequence parser. Not a filter-suffix gap — break
+        // without warning.
         if remaining.is_empty()
             || tag::<_, _, VerboseError<&str>>(",")
                 .parse(remaining)
@@ -450,6 +450,12 @@ fn parse_search_filter_suffixes(text: &str, properties: &mut Vec<FilterProp>) {
                 .parse(remaining)
                 .is_ok()
             || tag::<_, _, VerboseError<&str>>("then ")
+                .parse(remaining)
+                .is_ok()
+            || tag::<_, _, VerboseError<&str>>("reveal ")
+                .parse(remaining)
+                .is_ok()
+            || tag::<_, _, VerboseError<&str>>("put ")
                 .parse(remaining)
                 .is_ok()
         {

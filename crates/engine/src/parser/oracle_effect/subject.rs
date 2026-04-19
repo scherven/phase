@@ -1161,15 +1161,15 @@ fn try_parse_set_life_total(
 }
 
 /// CR 730.1: Parse "night" / "day" after "becomes" into SetDayNight effect.
+/// Accepts a trailing "as ~ enters" timing qualifier and ignores it.
 fn try_parse_set_day_night(become_text: &str) -> Option<ParsedEffectClause> {
     let lower = become_text.to_lowercase();
-    let to = if lower == "night" {
-        DayNight::Night
-    } else if lower == "day" {
-        DayNight::Day
-    } else {
-        return None;
-    };
+    let (_, to) = alt((
+        value(DayNight::Night, tag::<_, _, VerboseError<&str>>("night")),
+        value(DayNight::Day, tag::<_, _, VerboseError<&str>>("day")),
+    ))
+    .parse(lower.trim_start())
+    .ok()?;
 
     Some(super::parsed_clause(Effect::SetDayNight { to }))
 }

@@ -4822,6 +4822,10 @@ pub enum AbilityCondition {
     /// Used when multiple independent checks gate the same resolution
     /// (e.g., Revolt + mana value threshold on Fatal Push).
     And { conditions: Vec<AbilityCondition> },
+    /// CR 730.2a: True when it's neither day nor night (day_night is None).
+    /// Used by Daybound/Nightbound ETB initialization: "If it's neither day nor night,
+    /// it becomes day as this creature enters."
+    DayNightIsNeither,
 }
 
 /// Casting-time facts that flow with a spell from casting through resolution.

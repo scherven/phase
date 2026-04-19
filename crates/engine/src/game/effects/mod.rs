@@ -1574,6 +1574,8 @@ fn evaluate_condition(
         AbilityCondition::And { conditions } => conditions
             .iter()
             .all(|c| evaluate_condition(c, state, ability)),
+        // CR 730.2a: True when it's neither day nor night (no designation set yet).
+        AbilityCondition::DayNightIsNeither => state.day_night.is_none(),
     }
 }
 

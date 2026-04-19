@@ -3793,6 +3793,8 @@ fn condition_feature(cond: &AbilityCondition) -> (&'static str, FeatureSupport) 
         AbilityCondition::ZoneChangedThisWay { .. } => ("ZoneChangedThisWay", Unhandled),
         AbilityCondition::SourceIsTapped { .. } => ("SourceIsTapped", Unhandled),
         AbilityCondition::And { .. } => ("And", Unhandled),
+        // CR 730.2a: Daybound/Nightbound ETB initialization — handled by evaluate_condition.
+        AbilityCondition::DayNightIsNeither => ("DayNightIsNeither", Handled),
     }
 }
 
