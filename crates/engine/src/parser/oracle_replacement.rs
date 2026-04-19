@@ -1907,11 +1907,10 @@ fn parse_counter_replacement(lower: &str, original_text: &str) -> Option<Replace
         // Delegate to nom_primitives::parse_number (input already lowercase)
         let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
         QuantityModification::Plus { value }
-    } else if let Some(rest) = strip_after(lower, "that many minus ") {
+    } else {
+        let rest = strip_after(lower, "that many minus ")?;
         let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
         QuantityModification::Minus { value }
-    } else {
-        return None;
     };
 
     let def = ReplacementDefinition::new(ReplacementEvent::AddCounter)

@@ -160,7 +160,6 @@ fn adventure_cast_stomp_from_hand() {
             result.waiting_for,
             WaitingFor::AdventureCastChoice {
                 player,
-                card_id: _,
                 ..
             } if player == P0
         ),

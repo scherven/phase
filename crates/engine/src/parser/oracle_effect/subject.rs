@@ -271,11 +271,10 @@ fn try_parse_subject_restriction_clause(
         // CR 302.6: "doesn't untap during [controller's] untap step"
         let (before, after) = tp.split_at(pos);
         (before.original.trim(), after.original[1..].trim())
-    } else if let Some(pos) = tp.find(" don't untap") {
+    } else {
+        let pos = tp.find(" don't untap")?;
         let (before, after) = tp.split_at(pos);
         (before.original.trim(), after.original[1..].trim())
-    } else {
-        return None;
     };
     let application = parse_subject_application(subject, ctx)?;
     build_restriction_clause(application, predicate)

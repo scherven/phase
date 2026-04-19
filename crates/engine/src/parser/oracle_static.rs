@@ -2048,10 +2048,9 @@ fn parse_assigns_damage_from_toughness(lower: &str, text: &str) -> Option<Static
     let (rest, has_controller) =
         if let Some(r) = nom_tag_lower(lower, lower, "each creature you control ") {
             (r, true)
-        } else if let Some(r) = nom_tag_lower(lower, lower, "each creature ") {
-            (r, false)
         } else {
-            return None;
+            let r = nom_tag_lower(lower, lower, "each creature ")?;
+            (r, false)
         };
 
     let (condition_text, _) =
@@ -2139,13 +2138,12 @@ fn parse_attached_creature_assign_damage_as_though_unblocked(
             rest,
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EnchantedBy])),
         )
-    } else if let Some(rest) = nom_tag_tp(&clean, "equipped creature") {
+    } else {
+        let rest = nom_tag_tp(&clean, "equipped creature")?;
         (
             rest,
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EquippedBy])),
         )
-    } else {
-        return None;
     };
 
     let (_, _) = alt((
@@ -4136,10 +4134,9 @@ fn parse_temporal_prefix_cant_cast(tp: &str, text: &str) -> Option<StaticDefinit
     let (when, after_when) =
         if let Some(rest) = nom_tag_lower(after_during, after_during, "your turn") {
             (CastingProhibitionCondition::DuringYourTurn, rest)
-        } else if let Some(rest) = nom_tag_lower(after_during, after_during, "combat") {
-            (CastingProhibitionCondition::DuringCombat, rest)
         } else {
-            return None;
+            let rest = nom_tag_lower(after_during, after_during, "combat")?;
+            (CastingProhibitionCondition::DuringCombat, rest)
         };
 
     // Require ", " separator after temporal clause
@@ -5166,14 +5163,9 @@ fn parse_becomes_type_addition(lower: &str) -> Option<String> {
     let subtype_word = rest[..subtype_end].trim();
     // Capitalize the subtype
     let mut chars = subtype_word.chars();
-    let capitalized = match chars.next() {
-        Some(first) => {
-            let mut s = first.to_uppercase().collect::<String>();
-            s.push_str(chars.as_str());
-            s
-        }
-        None => return None,
-    };
+    let first = chars.next()?;
+    let mut capitalized = first.to_uppercase().collect::<String>();
+    capitalized.push_str(chars.as_str());
     Some(capitalized)
 }
 
@@ -5665,15 +5657,13 @@ fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<Static
         (r, true, CardPlayMode::Cast)
     } else if let Some(r) = nom_tag_lower(lower, lower, "you may play ") {
         (r, false, CardPlayMode::Play)
-    } else if let Some(r) = nom_tag_lower(lower, lower, "you may cast ") {
+    } else {
+        let r = nom_tag_lower(lower, lower, "you may cast ")?;
         // Only match if "from your graveyard" follows — avoid catching other "you may cast" statics
-        if nom_primitives::scan_contains(r, "from your graveyard") {
-            (r, false, CardPlayMode::Cast)
-        } else {
+        if !nom_primitives::scan_contains(r, "from your graveyard") {
             return None;
         }
-    } else {
-        return None;
+        (r, false, CardPlayMode::Cast)
     };
 
     let (filter_text, trailing) = nom_primitives::split_once_on(rest, " from your graveyard")
@@ -6376,10 +6366,9 @@ fn try_parse_scoped_must_attack_block(lower: &str, text: &str) -> Option<Vec<Sta
             (subj, vec![StaticMode::MustBlock])
         } else if let Some(subj) = clean.strip_suffix(" attacks or blocks each combat if able") {
             (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
-        } else if let Some(subj) = clean.strip_suffix(" attack or block each combat if able") {
-            (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
         } else {
-            return None;
+            let subj = clean.strip_suffix(" attack or block each combat if able")?;
+            (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
         };
     let subject = &clean_text[..subject_lower.len()];
 

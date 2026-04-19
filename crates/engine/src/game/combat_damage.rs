@@ -72,10 +72,7 @@ pub fn resolve_combat_damage(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
 ) -> Option<WaitingFor> {
-    let combat = match &state.combat {
-        Some(c) => c.clone(),
-        None => return None,
-    };
+    let combat = state.combat.as_ref()?.clone();
 
     // Guard: regular damage already applied (re-entry from triggers during regular step).
     if combat.regular_damage_done {

@@ -545,7 +545,7 @@ fn kaito_surveil_and_draw() {
     // Resolve the ability fully
     for _ in 0..30 {
         match &runner.state().waiting_for {
-            WaitingFor::SurveilChoice { cards: _, .. } => {
+            WaitingFor::SurveilChoice { .. } => {
                 // Put all cards on top (select none to go to bottom)
                 let _ = runner.act(GameAction::SelectCards { cards: vec![] });
             }

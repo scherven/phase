@@ -2908,10 +2908,9 @@ fn try_parse_player_counter(lower: &str) -> Option<ImperativeFamilyAst> {
     // Must end with "counter" or "counters"
     let (before_counter, plural) = if let Some(s) = rest.strip_suffix(" counters") {
         (s, true)
-    } else if let Some(s) = rest.strip_suffix(" counter") {
-        (s, false)
     } else {
-        return None;
+        let s = rest.strip_suffix(" counter")?;
+        (s, false)
     };
 
     // Parse quantity + counter kind from the remaining text.

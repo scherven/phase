@@ -122,10 +122,8 @@ fn parse_self_flash_option(
 ) -> Option<SpellCastingOption> {
     let self_ref = self_spell_phrase(body_lower, card_name)?;
     let prefix = format!("you may cast {self_ref} as though it had flash");
-    let rest = match body_lower.strip_prefix(&*prefix) {
-        Some(r) => body[body.len() - r.len()..].trim(),
-        None => return None,
-    };
+    let r = body_lower.strip_prefix(&*prefix)?;
+    let rest = body[body.len() - r.len()..].trim();
     let mut option = SpellCastingOption::as_though_had_flash();
 
     if rest.is_empty() {

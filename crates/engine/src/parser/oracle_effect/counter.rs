@@ -333,19 +333,14 @@ pub(super) fn try_parse_move_counters_from(lower: &str, ctx: &ParseContext) -> O
     let split_pos = after_from
         .find(" onto ")
         .or_else(|| after_from.find(" to "));
-    let (source_text, target_text) = match split_pos {
-        Some(pos) => {
-            let source = &after_from[..pos];
-            let rest = &after_from[pos..];
-            let target = rest
-                .strip_prefix(" onto ")
-                .or_else(|| rest.strip_prefix(" to "))
-                .unwrap_or(rest)
-                .trim();
-            (source, target)
-        }
-        None => return None,
-    };
+    let pos = split_pos?;
+    let source_text = &after_from[..pos];
+    let rest = &after_from[pos..];
+    let target_text = rest
+        .strip_prefix(" onto ")
+        .or_else(|| rest.strip_prefix(" to "))
+        .unwrap_or(rest)
+        .trim();
 
     let source = resolve_counter_target(source_text, ctx);
     let (target, _rem) = parse_target(target_text);
