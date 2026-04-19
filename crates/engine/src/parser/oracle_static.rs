@@ -5211,7 +5211,7 @@ fn parse_single_pt_value(text: &str) -> Option<i32> {
 /// Parse quoted abilities and return the appropriate ContinuousModification.
 /// CR 604.1: Trigger-prefix quoted text (when/whenever/at the beginning) becomes
 /// GrantTrigger to preserve trigger metadata; all others become GrantAbility.
-fn parse_quoted_ability_modifications(text: &str) -> Vec<ContinuousModification> {
+pub(crate) fn parse_quoted_ability_modifications(text: &str) -> Vec<ContinuousModification> {
     let mut modifications = Vec::new();
     let mut start = None;
 

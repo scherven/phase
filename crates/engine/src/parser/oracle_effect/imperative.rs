@@ -14,7 +14,9 @@ use super::types::*;
 use super::{resolve_it_pronoun, ParseContext};
 use crate::parser::oracle_nom::bridge::nom_on_lower;
 use crate::parser::oracle_nom::primitives as nom_primitives;
-use crate::parser::oracle_static::parse_continuous_modifications;
+use crate::parser::oracle_static::{
+    parse_continuous_modifications, parse_quoted_ability_modifications,
+};
 use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, CategoryChooserScope, Chooser, ContinuousModification,
@@ -1396,6 +1398,43 @@ fn parse_prevent_effect(text: &str) -> Effect {
     }
 }
 
+/// CR 113.3 + CR 604.1: Parse "gain `<quoted ability>`" / `"gain "<...>" until
+/// end of turn"` in the imperative path. Handles inline ability grants like
+/// `gain "When this creature dies, draw a card."` (Rabid Attack class) by
+/// delegating to the existing `parse_quoted_ability_modifications` helper —
+/// which already routes trigger-prefix quoted text to `GrantTrigger`,
+/// keyword-form text to `AddKeyword`, and other ability text to
+/// `GrantAbility`.
+///
+/// Returns `None` when the gain clause contains no quoted text — bare keyword
+/// grants are handled by `try_parse_gain_keyword`. Designed as a fallback
+/// after the bare-keyword path fails.
+fn try_parse_gain_quoted_ability(text: &str) -> Option<Effect> {
+    // Cheap pre-check: must contain at least one matched quote pair to be a
+    // candidate. Avoids invoking the heavier modification parser on bare
+    // keyword text.
+    if !text.contains('"') {
+        return None;
+    }
+    let (text_without_duration, duration) = super::strip_trailing_duration(text);
+    let modifications = parse_quoted_ability_modifications(text_without_duration);
+    if modifications.is_empty() {
+        return None;
+    }
+    // CR 113.3a: Granted abilities last as long as the granting effect. For
+    // sub_ability inline grants in pump-style spells the parent's UntilEndOfTurn
+    // is the typical default; preserve any explicitly stripped duration.
+    let duration = duration.or(Some(Duration::UntilEndOfTurn));
+    Some(Effect::GenericEffect {
+        static_abilities: vec![StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(modifications)
+            .description(text.to_string())],
+        duration,
+        target: None,
+    })
+}
+
 /// CR 702: Parse bare "gain [keyword]" / "gain [keyword] until end of turn"
 /// in the imperative path. Handles "gain haste", "gain trample and haste",
 /// "gain flying until end of turn", etc.
@@ -2733,8 +2772,12 @@ pub(super) fn parse_imperative_family_ast(
                 parse_numeric_imperative_ast(text, lower)
                     .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Numeric(ast)))
             } else {
-                // CR 702: keyword granting
-                try_parse_gain_keyword(text).map(ImperativeFamilyAst::GainKeyword)
+                // CR 702: bare keyword grant first; CR 113.3 + CR 604.1: fall
+                // back to quoted-ability grant when the gain clause carries an
+                // inline ability ('gain "When this creature dies, draw a card."').
+                try_parse_gain_keyword(text)
+                    .or_else(|| try_parse_gain_quoted_ability(text))
+                    .map(ImperativeFamilyAst::GainKeyword)
             }
         }
 
@@ -4624,5 +4667,49 @@ mod tests {
             }
             other => panic!("Expected ChangeZoneAll, got {other:?}"),
         }
+    }
+
+    /// CR 113.3 + CR 604.1: `gain "<quoted ability>"` in a sub_ability context
+    /// produces a `GenericEffect` wrapping a `GrantTrigger` modification when
+    /// the quoted text starts with `When`/`Whenever`/`At …`. Used by Rabid
+    /// Attack: `+1/+0 and gain "When this creature dies, draw a card."` until
+    /// end of turn.
+    #[test]
+    fn gain_quoted_trigger_ability_until_end_of_turn() {
+        let effect =
+            try_parse_gain_quoted_ability("gain \"When this creature dies, draw a card.\"")
+                .expect("expected gain-quoted-ability to parse");
+        let Effect::GenericEffect {
+            static_abilities,
+            duration,
+            ..
+        } = effect
+        else {
+            panic!("expected GenericEffect, got something else");
+        };
+        assert_eq!(duration, Some(Duration::UntilEndOfTurn));
+        let static_def = static_abilities
+            .first()
+            .expect("static_abilities must contain the granted modification");
+        let grant_trigger = static_def
+            .modifications
+            .iter()
+            .find(|m| matches!(m, ContinuousModification::GrantTrigger { .. }));
+        assert!(
+            grant_trigger.is_some(),
+            "expected a GrantTrigger modification, got modifications: {:?}",
+            static_def.modifications
+        );
+    }
+
+    /// `try_parse_gain_quoted_ability` must NOT swallow bare keyword grants —
+    /// those belong to `try_parse_gain_keyword`. Returning `None` here lets
+    /// the dispatcher's `or_else` try the bare-keyword path first.
+    #[test]
+    fn gain_quoted_ability_returns_none_for_bare_keyword() {
+        assert!(
+            try_parse_gain_quoted_ability("gain flying until end of turn").is_none(),
+            "no quote marks → not a quoted-ability candidate"
+        );
     }
 }

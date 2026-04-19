@@ -245,16 +245,29 @@ fn resolve_counter_target(text: &str, ctx: &ParseContext) -> TargetFilter {
     }
 }
 
-/// CR 121.5: Parse "put its counters on [target]" → MoveCounters effect.
-/// "its" / "this creature's" are possessive pronouns referring to the ability source.
+/// CR 121.5: Parse "put its counters on [target]" / "put those counters on
+/// [target]" → MoveCounters effect.
+///
+/// `"its"` / `"this creature's"` are possessive pronouns referring to the
+/// ability source (live state). `"those"` is an anaphoric reference to the
+/// counters that were on the source — typically used in dies / leaves-
+/// battlefield triggers gated by an `if it had counters on it` condition
+/// (Scolding Administrator class). The runtime resolver in
+/// `effects::counters::resolve_move` already performs LKI fallback on the
+/// source object (CR 400.7), so dies-triggers correctly read counters from
+/// the dying creature's last-known state regardless of pronoun form.
 pub(super) fn try_parse_move_counters<'a>(lower: &str, text: &'a str) -> Option<(Effect, &'a str)> {
     let ((), after_put) = nom_on_lower(lower, lower, |i| value((), tag("put ")).parse(i))?;
     let after_put = after_put.trim();
-    // Detect "its counters" / "this creature's counters"
+    // Detect "its counters" / "this creature's counters" / "those counters"
     let ((), after_possessive) = nom_on_lower(after_put, after_put, |i| {
         value(
             (),
-            alt((tag("its counter"), tag("this creature's counter"))),
+            alt((
+                tag("its counter"),
+                tag("this creature's counter"),
+                tag("those counter"),
+            )),
         )
         .parse(i)
     })?;
@@ -755,5 +768,39 @@ mod tests {
             "count should be hand-card-count reference, got {count:?}"
         );
         assert!(matches!(target, TargetFilter::SelfRef));
+    }
+
+    /// CR 121.5 + CR 400.7: "put those counters on [target]" — anaphoric
+    /// counter-move from a dies/leaves trigger. Source = SelfRef; the runtime
+    /// resolver in `effects::counters::resolve_move` performs LKI fallback so
+    /// the counters from the dying creature's last-known state are read.
+    /// Used by Scolding Administrator: "When this creature dies, if it had
+    /// counters on it, put those counters on up to one target creature."
+    #[test]
+    fn move_counters_those_counters_anaphora() {
+        let lower = "put those counters on up to one target creature";
+        let result = try_parse_move_counters(lower, lower);
+        let Some((
+            Effect::MoveCounters {
+                source,
+                counter_type,
+                target,
+            },
+            _,
+        )) = result
+        else {
+            panic!("expected MoveCounters, got {result:?}");
+        };
+        assert!(matches!(source, TargetFilter::SelfRef));
+        assert_eq!(counter_type, None, "all counters move (no type filter)");
+        match target {
+            TargetFilter::Typed(tf) => {
+                assert!(tf
+                    .type_filters
+                    .iter()
+                    .any(|t| matches!(t, crate::types::ability::TypeFilter::Creature)));
+            }
+            other => panic!("expected typed creature target, got {other:?}"),
+        }
     }
 }
