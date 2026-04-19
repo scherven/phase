@@ -2636,23 +2636,38 @@ pub(super) fn parse_imperative_family_ast(
         // CR 509.1b / CR 508.1d: "can't be blocked [this turn]", "can't attack", etc.
         // These appear as subjectless clauses in compound effects (e.g., "gets +2/+0 and can't be blocked this turn").
         "can't" | "cannot" => try_parse_subjectless_cant(lower),
-        // CR 705: "flip a coin" / "flip a coin until you lose a flip" / "flip it" (Kamigawa)
-        "flip" | "flips" => alt((
-            value(
+        // CR 705: "flip a coin" / "flip N coins" / "flip a coin until you lose a flip"
+        "flip" | "flips" => {
+            // Longest-match first: "flip a coin until you lose a flip" must
+            // precede plain "flip a coin". The N-coin form is tried after
+            // "until lose" (since "until lose" always has "a coin"), but
+            // before the 1-coin fallback.
+            if let Ok((_, ast)) = value::<_, _, VerboseError<&str>, _>(
                 ImperativeFamilyAst::FlipCoinUntilLose,
                 alt((
                     tag::<_, _, VerboseError<&str>>("flip a coin until you lose a flip"),
                     tag("flips a coin until they lose a flip"),
                 )),
-            ),
-            value(
+            )
+            .parse(lower)
+            {
+                return Some(ast);
+            }
+            // CR 705.1 + CR 107.1: "flip N coins" / "flip X coins" — N-coin form.
+            if let Some(ast) = try_parse_flip_n_coins(lower) {
+                return Some(ast);
+            }
+            value::<_, _, VerboseError<&str>, _>(
                 ImperativeFamilyAst::FlipCoin,
-                alt((tag("flip a coin"), tag("flips a coin"))),
-            ),
-        ))
-        .parse(lower)
-        .ok()
-        .map(|(_, ast)| ast),
+                alt((
+                    tag::<_, _, VerboseError<&str>>("flip a coin"),
+                    tag("flips a coin"),
+                )),
+            )
+            .parse(lower)
+            .ok()
+            .map(|(_, ast)| ast)
+        }
         // CR 706: "roll a d20"
         "roll" | "rolls" => {
             try_parse_roll_die_sides(lower).map(|sides| ImperativeFamilyAst::RollDie { sides })
@@ -3076,6 +3091,38 @@ fn try_parse_player_counter(lower: &str) -> Option<ImperativeFamilyAst> {
 }
 
 /// CR 706: Parse die side count from "roll a dN" / "roll a six-sided die" patterns.
+/// CR 705.1 + CR 107.1: Parse "flip N coins" / "flip X coins" / "flip two coins" —
+/// the N-coin form. Delegates the count to `parse_count_expr`, covering digit,
+/// word-number, and `X` forms uniformly. Returns None for "flip a coin" / "flip one coin"
+/// so the caller falls back to `FlipCoin` (the existing 1-flip shape).
+fn try_parse_flip_n_coins(lower: &str) -> Option<ImperativeFamilyAst> {
+    let (rest, _) = alt((tag::<_, _, VerboseError<&str>>("flip "), tag("flips ")))
+        .parse(lower)
+        .ok()?;
+
+    let (expr, after) = parse_count_expr(rest)?;
+
+    // `parse_count_expr` returns the remainder with leading whitespace trimmed
+    // ("five coins" → rest = "coins"), so we match "coins"/"coin" without the
+    // leading space. Word-boundary termination rejects "coinsomething".
+    // "flip a coin" is handled by FlipCoin; "flip one coin" would semantically
+    // match but is never printed.
+    let (after_noun, _) = alt((tag::<_, _, VerboseError<&str>>("coins"), tag("coin")))
+        .parse(after)
+        .ok()?;
+    // structural: not dispatch — checks that the next char is a non-alphanumeric boundary.
+    if !after_noun.is_empty() && !after_noun.starts_with(|c: char| !c.is_alphanumeric()) {
+        return None;
+    }
+
+    // Reject count == 1 so "flip 1 coin" (if ever printed) prefers FlipCoin.
+    if matches!(expr, QuantityExpr::Fixed { value: 1 }) {
+        return None;
+    }
+
+    Some(ImperativeFamilyAst::FlipCoins { count: expr })
+}
+
 fn try_parse_roll_die_sides(lower: &str) -> Option<u8> {
     // Strip the "roll a " / "rolls a " prefix.
     let (rest, _) = alt((tag::<_, _, VerboseError<&str>>("roll a "), tag("rolls a ")))
@@ -3244,6 +3291,11 @@ fn lower_imperative_family_effect(ast: ImperativeFamilyAst) -> Effect {
             results: vec![],
         },
         ImperativeFamilyAst::FlipCoin => Effect::FlipCoin {
+            win_effect: None,
+            lose_effect: None,
+        },
+        ImperativeFamilyAst::FlipCoins { count } => Effect::FlipCoins {
+            count,
             win_effect: None,
             lose_effect: None,
         },

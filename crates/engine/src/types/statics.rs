@@ -72,6 +72,11 @@ pub enum CastingProhibitionCondition {
     /// — prohibition active when it is NOT the controller's turn.
     /// E.g., Fires of Invention: "You can cast spells only during your turn."
     NotDuringYourTurn,
+    /// CR 117.1: "only any time they could cast a sorcery" — prohibition active when it is
+    /// not sorcery speed (main phase + active player's turn + empty stack).
+    /// E.g., Teferi, Time Raveler: "Each opponent can cast spells only any time they could
+    /// cast a sorcery."
+    NotSorcerySpeed,
 }
 
 impl fmt::Display for CastingProhibitionCondition {
@@ -80,6 +85,7 @@ impl fmt::Display for CastingProhibitionCondition {
             CastingProhibitionCondition::DuringYourTurn => write!(f, "your_turn"),
             CastingProhibitionCondition::DuringCombat => write!(f, "combat"),
             CastingProhibitionCondition::NotDuringYourTurn => write!(f, "not_your_turn"),
+            CastingProhibitionCondition::NotSorcerySpeed => write!(f, "not_sorcery_speed"),
         }
     }
 }
@@ -92,6 +98,7 @@ impl FromStr for CastingProhibitionCondition {
             "your_turn" => Ok(CastingProhibitionCondition::DuringYourTurn),
             "combat" => Ok(CastingProhibitionCondition::DuringCombat),
             "not_your_turn" => Ok(CastingProhibitionCondition::NotDuringYourTurn),
+            "not_sorcery_speed" => Ok(CastingProhibitionCondition::NotSorcerySpeed),
             other => Err(format!("unknown CastingProhibitionCondition: {other}")),
         }
     }

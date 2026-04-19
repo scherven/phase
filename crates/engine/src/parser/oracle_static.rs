@@ -1268,6 +1268,21 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
         );
     }
 
+    // CR 117.1: "can cast spells only any time they could cast a sorcery"
+    // E.g., Teferi, Time Raveler; Teferi, Mage of Zhalfir.
+    if nom_primitives::scan_contains(tp.lower, "can cast spells only any time they could cast a sorcery") {
+        let who = strip_casting_prohibition_subject(tp.lower)
+            .map(|(scope, _)| scope)
+            .unwrap_or(ProhibitionScope::Opponents);
+        return Some(
+            StaticDefinition::new(StaticMode::CantCastDuring {
+                who,
+                when: CastingProhibitionCondition::NotSorcerySpeed,
+            })
+            .description(text.to_string()),
+        );
+    }
+
     // --- CR 101.2: Temporal-prefix casting prohibitions ---
     // e.g., "During your turn, your opponents can't cast spells or activate abilities..."
     // e.g., "During combat, players can't cast instant spells or activate abilities..."
