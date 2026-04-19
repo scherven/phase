@@ -1271,10 +1271,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             triggers_processed_inline = true;
             engine_combat::handle_declare_attackers(state, *player, &attacks, &mut events)?
         }
-        (
-            WaitingFor::DeclareBlockers { player: _, .. },
-            GameAction::DeclareBlockers { assignments },
-        ) => {
+        (WaitingFor::DeclareBlockers { .. }, GameAction::DeclareBlockers { assignments }) => {
             triggers_processed_inline = true;
             engine_combat::handle_declare_blockers(state, &assignments, &mut events)?
         }

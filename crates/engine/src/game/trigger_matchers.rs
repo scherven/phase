@@ -1656,10 +1656,7 @@ pub(super) fn match_leaves_battlefield(
     state: &GameState,
 ) -> bool {
     if let GameEvent::ZoneChanged {
-        object_id,
-        from,
-        to: _,
-        ..
+        object_id, from, ..
     } = event
     {
         if *from != Zone::Battlefield {
