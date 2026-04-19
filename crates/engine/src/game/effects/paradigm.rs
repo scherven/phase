@@ -86,7 +86,7 @@ pub fn cast_paradigm_copy(
     controller: PlayerId,
     events: &mut Vec<GameEvent>,
 ) -> Result<ObjectId, String> {
-    use crate::types::ability::{ResolvedAbility, TargetRef};
+    use crate::game::ability_utils::build_resolved_from_def;
     use crate::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
     use crate::types::zones::Zone;
 
@@ -125,12 +125,11 @@ pub fn cast_paradigm_copy(
     // Back-face is preserved from clone — not needed for copy behavior.
     state.objects.insert(copy_id, copy_obj);
 
-    let resolved = ResolvedAbility::new(
-        *ability_def.effect.clone(),
-        Vec::<TargetRef>::new(),
-        copy_id,
-        controller,
-    );
+    // CR 707.10: Build a ResolvedAbility from the paradigm source's ability
+    // definition preserving sub-ability chains, optional flags, and duration
+    // metadata. `build_resolved_from_def` is the authoritative constructor
+    // used by normal casting (see `ability_utils`).
+    let resolved = build_resolved_from_def(&ability_def, copy_id, controller);
 
     state.stack.push(StackEntry {
         id: copy_id,

@@ -1205,15 +1205,26 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
-        // CR 707.10c: Copy retargeting — keep current targets as default.
+        // CR 707.10c: Copy retargeting — pick the first legal alternative for
+        // each slot when populated (initial target selection for Prepare /
+        // Paradigm copies). Falls back to keeping `current` when no
+        // alternatives are exposed (classic copy_spell::resolve path).
         WaitingFor::CopyRetarget {
             player,
             target_slots,
             ..
         } => {
-            let current: Vec<_> = target_slots.iter().map(|s| s.current.clone()).collect();
+            let targets: Vec<_> = target_slots
+                .iter()
+                .map(|s| {
+                    s.legal_alternatives
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| s.current.clone())
+                })
+                .collect();
             vec![candidate(
-                GameAction::SelectTargets { targets: current },
+                GameAction::SelectTargets { targets },
                 TacticalClass::Selection,
                 Some(*player),
             )]

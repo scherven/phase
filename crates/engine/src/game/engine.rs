@@ -1622,9 +1622,18 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     "CastPreparedCopy: source not controlled by acting player".to_string(),
                 ));
             }
-            effects::prepare::cast_prepared_copy(state, src, p, &mut events)
+            let copy_id = effects::prepare::cast_prepared_copy(state, src, p, &mut events)
                 .map_err(EngineError::InvalidAction)?;
-            WaitingFor::Priority { player: p }
+            // CR 707.10c: If the copy's spell ability has target slots, open
+            // target selection via CopyRetarget. Otherwise return to priority
+            // and let the copy resolve on the stack.
+            if effects::prepare::open_copy_target_selection(state, copy_id, p)
+                .map_err(EngineError::InvalidAction)?
+            {
+                state.waiting_for.clone()
+            } else {
+                WaitingFor::Priority { player: p }
+            }
         }
         // CR 702.xxx: Paradigm (Strixhaven) — accept the turn-based offer to
         // cast a copy of an exiled paradigm source. Assign when WotC
@@ -1640,10 +1649,18 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 )));
             }
             let p = *player;
-            effects::paradigm::cast_paradigm_copy(state, src, p, &mut events)
+            let copy_id = effects::paradigm::cast_paradigm_copy(state, src, p, &mut events)
                 .map_err(EngineError::InvalidAction)?;
-            // Return priority so the copy can resolve through normal stack flow.
-            WaitingFor::Priority { player: p }
+            // CR 707.10c: If the paradigm spell has target slots, open target
+            // selection via CopyRetarget. Otherwise return to priority so the
+            // copy resolves through normal stack flow.
+            if effects::prepare::open_copy_target_selection(state, copy_id, p)
+                .map_err(EngineError::InvalidAction)?
+            {
+                state.waiting_for.clone()
+            } else {
+                WaitingFor::Priority { player: p }
+            }
         }
         // CR 702.xxx: Paradigm (Strixhaven) — decline the turn-based offer.
         // Assign when WotC publishes SOS CR update.
@@ -1704,6 +1721,21 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     target_slots.len(),
                     targets.len()
                 )));
+            }
+            // CR 707.10c: When `legal_alternatives` is populated (e.g. copies
+            // minted by Prepare/Paradigm where initial target selection needs
+            // legality gating), validate each selected target is in its
+            // slot's alternatives. Slots with empty alternatives pre-date
+            // this check and remain permissive (retargeting an inherited
+            // target per the original CR 707.10c semantics).
+            for (idx, target) in targets.iter().enumerate() {
+                let slot = &target_slots[idx];
+                if !slot.legal_alternatives.is_empty() && !slot.legal_alternatives.contains(target)
+                {
+                    return Err(EngineError::InvalidAction(format!(
+                        "Target {target:?} not a legal alternative for copy slot {idx}"
+                    )));
+                }
             }
             // Update the copy's targets on the stack.
             if let Some(entry) = state.stack.iter_mut().find(|e| e.id == cid) {
