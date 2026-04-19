@@ -1,5 +1,5 @@
 use crate::types::ability::{
-    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    CastingPermission, Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -65,7 +65,16 @@ pub fn resolve(
 
     for obj_id in target_ids {
         if let Some(obj) = state.objects.get_mut(&obj_id) {
-            obj.casting_permissions.push(permission.clone());
+            let mut granted = permission.clone();
+            // CR 611.2a/b: Durations on a granted permission are measured against
+            // the controller of the effect that created it. Parse/template sites
+            // cannot know the controller, so they leave `granted_to` as a
+            // placeholder and it is normalized here, at grant time, to the
+            // ability's controller.
+            if let CastingPermission::PlayFromExile { granted_to, .. } = &mut granted {
+                *granted_to = ability.controller;
+            }
+            obj.casting_permissions.push(granted);
         }
     }
 

@@ -4886,6 +4886,7 @@ mod tests {
             obj.casting_permissions
                 .push(crate::types::ability::CastingPermission::PlayFromExile {
                     duration: crate::types::ability::Duration::Permanent,
+                    granted_to: PlayerId(0),
                 });
         }
 

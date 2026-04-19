@@ -770,7 +770,10 @@ pub(super) fn with_clause_duration(
             *effect_duration = Some(duration);
         }
         Effect::GrantCastingPermission {
-            permission: CastingPermission::PlayFromExile { duration: perm_dur },
+            permission:
+                CastingPermission::PlayFromExile {
+                    duration: perm_dur, ..
+                },
             ..
         } => {
             *perm_dur = duration;

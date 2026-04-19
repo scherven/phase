@@ -318,6 +318,9 @@ pub fn room_effects(
                 Effect::GrantCastingPermission {
                     permission: CastingPermission::PlayFromExile {
                         duration: Duration::UntilEndOfTurn,
+                        // Placeholder — rewritten to ability.controller at
+                        // grant time by `grant_permission::resolve`.
+                        granted_to: crate::types::player::PlayerId(0),
                     },
                     target: TargetFilter::Any,
                 },

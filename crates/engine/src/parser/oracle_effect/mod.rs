@@ -2255,7 +2255,12 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
     let duration = dur.unwrap_or(Duration::UntilEndOfTurn);
 
     Some(parsed_clause(Effect::GrantCastingPermission {
-        permission: CastingPermission::PlayFromExile { duration },
+        permission: CastingPermission::PlayFromExile {
+            duration,
+            // Placeholder — `grant_permission::resolve` rewrites this to the
+            // ability's controller at grant time (CR 611.2a/b).
+            granted_to: crate::types::player::PlayerId(0),
+        },
         target: TargetFilter::Any,
     }))
 }
@@ -10623,7 +10628,8 @@ mod tests {
             &*def.effect,
             Effect::GrantCastingPermission {
                 permission: CastingPermission::PlayFromExile {
-                    duration: Duration::UntilEndOfTurn
+                    duration: Duration::UntilEndOfTurn,
+                    ..
                 },
                 ..
             }
@@ -10641,7 +10647,8 @@ mod tests {
                 *def.effect,
                 Effect::GrantCastingPermission {
                     permission: CastingPermission::PlayFromExile {
-                        duration: Duration::UntilYourNextTurn
+                        duration: Duration::UntilYourNextTurn,
+                        ..
                     },
                     ..
                 }
@@ -10663,7 +10670,8 @@ mod tests {
                 *def.effect,
                 Effect::GrantCastingPermission {
                     permission: CastingPermission::PlayFromExile {
-                        duration: Duration::UntilYourNextTurn
+                        duration: Duration::UntilYourNextTurn,
+                        ..
                     },
                     ..
                 }
@@ -10684,7 +10692,8 @@ mod tests {
                 *def.effect,
                 Effect::GrantCastingPermission {
                     permission: CastingPermission::PlayFromExile {
-                        duration: Duration::UntilYourNextTurn
+                        duration: Duration::UntilYourNextTurn,
+                        ..
                     },
                     ..
                 }
@@ -10718,7 +10727,8 @@ mod tests {
                 *sub.effect,
                 Effect::GrantCastingPermission {
                     permission: CastingPermission::PlayFromExile {
-                        duration: Duration::UntilYourNextTurn
+                        duration: Duration::UntilYourNextTurn,
+                        ..
                     },
                     ..
                 }
@@ -10773,7 +10783,8 @@ mod tests {
                 *sub2.effect,
                 Effect::GrantCastingPermission {
                     permission: CastingPermission::PlayFromExile {
-                        duration: Duration::UntilEndOfTurn
+                        duration: Duration::UntilEndOfTurn,
+                        ..
                     },
                     ..
                 }

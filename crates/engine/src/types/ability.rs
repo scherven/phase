@@ -880,7 +880,17 @@ pub enum CastingPermission {
     },
     /// CR 400.7i: Play from exile until duration expires (impulse draw).
     /// Building block for "exile top N, choose one, you may play it this turn" patterns.
-    PlayFromExile { duration: Duration },
+    ///
+    /// `granted_to` records the player the permission was granted to — i.e. the
+    /// controller of the effect that created it (CR 611.2a/b). This is required
+    /// to correctly expire `Duration::UntilYourNextTurn` permissions at the
+    /// grantee's next untap step and `Duration::UntilEndOfTurn` permissions at
+    /// cleanup (CR 514.2). Cast-permission checks (`has_exile_cast_permission`)
+    /// do not consult this field — it governs duration pruning only.
+    PlayFromExile {
+        duration: Duration,
+        granted_to: PlayerId,
+    },
     /// CR 122.3: Cast from exile by paying {E} equal to the card's mana value.
     /// Building block for Amped Raptor and similar energy-based casting mechanics.
     ExileWithEnergyCost,
