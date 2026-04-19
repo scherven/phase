@@ -3293,6 +3293,43 @@ mod tests {
         ));
     }
 
+    // CR 702.xxx: Prepare (Strixhaven) — Biblioplex Tomekeeper's ETB is a
+    // modal trigger whose branches invoke the `becomes prepared` / `becomes
+    // unprepared` imperatives. The modal-branch builder must route each
+    // branch body through the same effect-chain parser that recognizes these
+    // imperatives at the top level. Assign when WotC publishes SOS CR update.
+    #[test]
+    fn biblioplex_modal_etb_routes_becomes_prepared_branches() {
+        let r = parse(
+            "When this creature enters, choose up to one —\n• Target creature becomes prepared. (Only creatures with prepare spells can become prepared.)\n• Target creature becomes unprepared.",
+            "Biblioplex Tomekeeper",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert!(r.abilities.is_empty());
+        assert_eq!(r.triggers.len(), 1);
+
+        let execute = r.triggers[0]
+            .execute
+            .as_ref()
+            .expect("trigger should have execute");
+        let modal = execute.modal.as_ref().expect("execute should be modal");
+        assert_eq!(modal.mode_count, 2);
+        assert_eq!(execute.mode_abilities.len(), 2);
+
+        // First branch: Target creature becomes prepared.
+        assert!(matches!(
+            *execute.mode_abilities[0].effect,
+            Effect::BecomePrepared { .. }
+        ));
+        // Second branch: Target creature becomes unprepared.
+        assert!(matches!(
+            *execute.mode_abilities[1].effect,
+            Effect::BecomeUnprepared { .. }
+        ));
+    }
+
     #[test]
     fn triggered_modal_header_supports_you_may_choose_and_constraints() {
         let r = parse(
