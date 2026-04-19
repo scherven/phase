@@ -1857,15 +1857,68 @@ fn build_cost_item(cost: &AbilityCost, items: &mut Vec<ParsedItem>) {
 }
 
 /// Build `ParsedItem` nodes for additional costs (kicker, etc.).
+///
+/// An additional cost ("As an additional cost to cast this spell, ...") is its
+/// own Oracle line, so it must emit exactly one `ParsedItem` to keep
+/// `count_effective_parsed_items` in parity with `count_effective_oracle_lines`.
+/// Without this, cards with a concrete additional cost plus one spell effect
+/// (e.g. Vicious Rivalry, Fix What's Broken) are falsely flagged by the
+/// silent-drop audit: the Oracle line is counted but no parse item is emitted
+/// because `build_cost_item` only emits for `Unimplemented` costs.
+///
+/// Behavior:
+/// - If any underlying `AbilityCost` is `Unimplemented`, fall through to the
+///   existing `build_cost_item` path which emits a `Cost:Unimplemented` item
+///   (so `extract_gap_details` still surfaces the gap). This preserves the
+///   pre-existing one-item-per-line parity in the unsupported case.
+/// - Otherwise, emit a single supported `ParsedItem` describing the additional
+///   cost kind, restoring parity for the supported case.
 fn build_additional_cost_items(additional_cost: &AdditionalCost, items: &mut Vec<ParsedItem>) {
+    if additional_cost_has_unimplemented(additional_cost) {
+        match additional_cost {
+            AdditionalCost::Optional(cost) | AdditionalCost::Required(cost) => {
+                build_cost_item(cost, items);
+            }
+            AdditionalCost::Choice(first, second) => {
+                build_cost_item(first, items);
+                build_cost_item(second, items);
+            }
+        }
+        return;
+    }
+
+    let label = match additional_cost {
+        AdditionalCost::Optional(_) => "AdditionalCost:Optional",
+        AdditionalCost::Required(_) => "AdditionalCost:Required",
+        AdditionalCost::Choice(_, _) => "AdditionalCost:Choice",
+    };
+    items.push(ParsedItem {
+        category: ParseCategory::Cost,
+        label: label.to_string(),
+        source_text: None,
+        supported: true,
+        details: vec![],
+        children: vec![],
+    });
+}
+
+/// Returns true if any leaf `AbilityCost` in the tree is `Unimplemented`.
+fn additional_cost_has_unimplemented(additional_cost: &AdditionalCost) -> bool {
     match additional_cost {
         AdditionalCost::Optional(cost) | AdditionalCost::Required(cost) => {
-            build_cost_item(cost, items);
+            ability_cost_has_unimplemented(cost)
         }
         AdditionalCost::Choice(first, second) => {
-            build_cost_item(first, items);
-            build_cost_item(second, items);
+            ability_cost_has_unimplemented(first) || ability_cost_has_unimplemented(second)
         }
+    }
+}
+
+fn ability_cost_has_unimplemented(cost: &AbilityCost) -> bool {
+    match cost {
+        AbilityCost::Unimplemented { .. } => true,
+        AbilityCost::Composite { costs } => costs.iter().any(ability_cost_has_unimplemented),
+        _ => false,
     }
 }
 
@@ -2977,9 +3030,21 @@ fn is_modal_header_line(lower: &str) -> bool {
         "choose three",
         "choose four",
         "choose five",
+        "choose six",
+        "choose seven",
+        "choose eight",
+        "choose nine",
+        "choose ten",
         "choose up to one",
         "choose up to two",
         "choose up to three",
+        "choose up to four",
+        "choose up to five",
+        "choose up to six",
+        "choose up to seven",
+        "choose up to eight",
+        "choose up to nine",
+        "choose up to ten",
         "choose any number",
         "choose x.",
     ];
@@ -3686,6 +3751,14 @@ fn resolver_handled_features() -> HashSet<&'static str> {
         "condition:QuantityCheck",
         "condition:HasMaxSpeed",
         "condition:TargetHasKeywordInstead",
+        // "If it's your turn" — handled by `evaluate_condition` in
+        // `crates/engine/src/game/effects/mod.rs` (matches active player).
+        "condition:IsYourTurn",
+        // CR 614.1a: "instead" wraps a general condition with swap-on-true semantics.
+        // Resolved by `evaluate_condition` (effects/mod.rs) which delegates to the
+        // inner condition, and by `resolve_ability_chain` which swaps parent/sub on
+        // ConditionInstead.
+        "condition:ConditionInstead",
         // -- Player scope variants handled by resolve_ability_chain --
         "player_scope:All",
         "player_scope:Opponent",
@@ -7005,5 +7078,87 @@ mod tests {
         assert!(gaps
             .iter()
             .any(|gap| gap == "Replacement:Unrecognized(you revealed a Dragon card)"));
+    }
+
+    /// Regression: cards with a concrete `AdditionalCost` + one spell ability
+    /// (e.g. Vicious Rivalry, Fix What's Broken) produce exactly one Oracle
+    /// line for the "As an additional cost..." preamble. That line must be
+    /// represented by a `ParsedItem` so that `count_effective_parsed_items`
+    /// matches `count_effective_oracle_lines` and the silent-drop audit
+    /// doesn't falsely flag the card as unsupported.
+    #[test]
+    fn additional_cost_emits_parsed_item_for_supported_cost() {
+        let mut face = make_face();
+        face.additional_cost = Some(AdditionalCost::Required(AbilityCost::PayLife { amount: 0 }));
+        face.abilities.push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+        ));
+
+        let parse_details = build_parse_details_for_face(&face);
+        // 1 ability + 1 additional-cost item = 2 parsed items, matching the
+        // two Oracle lines ("As an additional cost..." + the spell effect).
+        assert_eq!(count_effective_parsed_items(&parse_details), 2);
+
+        let mut missing = Vec::new();
+        check_silent_drops(
+            &Some(
+                "As an additional cost to cast this spell, pay X life.\n\
+                 Destroy all artifacts and creatures with mana value X or less."
+                    .to_string(),
+            ),
+            &parse_details,
+            &mut missing,
+        );
+        assert!(
+            missing.is_empty(),
+            "supported additional cost should not trigger SilentDrop: {missing:?}"
+        );
+    }
+
+    /// When the underlying additional cost is `Unimplemented`, the existing
+    /// `Cost:Unimplemented` gap must still surface (used by `extract_gap_details`).
+    #[test]
+    fn additional_cost_unimplemented_still_surfaces_gap() {
+        let mut face = make_face();
+        face.additional_cost = Some(AdditionalCost::Required(AbilityCost::Unimplemented {
+            description: "reveal a card with a red mana symbol in its mana cost".to_string(),
+        }));
+
+        let parse_details = build_parse_details_for_face(&face);
+        let gaps = extract_gap_details(&parse_details);
+        assert!(
+            gaps.iter().any(|g| g.handler.starts_with("Cost:")),
+            "unimplemented additional cost should surface as a gap: {gaps:?}"
+        );
+    }
+
+    /// Regression: `count_effective_oracle_lines` must recognize modal
+    /// headers with "choose up to four" (and higher cardinals) so spells
+    /// like Moment of Reckoning don't inflate their Oracle-line count.
+    #[test]
+    fn count_effective_oracle_lines_recognizes_choose_up_to_four() {
+        let text = "Choose up to four. You may choose the same mode more than once.\n\
+                    \u{2022} Destroy target nonland permanent.\n\
+                    \u{2022} Return target nonland permanent card from your graveyard to the battlefield.";
+        // 1 modal header; both bullets fold into the header.
+        assert_eq!(count_effective_oracle_lines(text), 1);
+    }
+
+    /// Regression: `AbilityCondition::IsYourTurn` is handled at runtime by
+    /// `evaluate_condition`; it must appear in the resolver-handled feature
+    /// set so cards like Rapier Wit aren't flagged as having an unhandled
+    /// resolver feature.
+    #[test]
+    fn is_your_turn_condition_is_marked_handled() {
+        let handled = resolver_handled_features();
+        assert!(
+            handled.contains("condition:IsYourTurn"),
+            "condition:IsYourTurn must be in resolver_handled_features",
+        );
     }
 }
