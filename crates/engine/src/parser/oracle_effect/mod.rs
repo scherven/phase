@@ -743,6 +743,54 @@ fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<Parsed
     })
 }
 
+/// CR 101.2: "Your opponents can't cast spells this turn" / "Players can't cast spells this turn."
+/// Handles blanket "can't cast spells" prohibitions from instant/sorcery effects (e.g., Silence).
+/// Must be called AFTER try_parse_cast_only_from_zones_restriction (which handles the more
+/// specific "can't cast spells from anywhere other than" variant).
+fn try_parse_cant_cast_spells_effect(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // Must contain "can't cast spells" but NOT "can't cast spells from" (that's CastOnlyFromZones).
+    if !nom_primitives::scan_contains(tp.lower, "can't cast spells")
+        && !nom_primitives::scan_contains(tp.lower, "cannot cast spells")
+    {
+        return None;
+    }
+    if nom_primitives::scan_contains(tp.lower, "can't cast spells from")
+        || nom_primitives::scan_contains(tp.lower, "cannot cast spells from")
+    {
+        return None;
+    }
+
+    // Determine affected player scope from subject prefix.
+    let affected_players = if alt((
+        tag::<_, _, VerboseError<&str>>("your opponents"),
+        tag("opponents"),
+        tag("each opponent"),
+    ))
+    .parse(tp.lower)
+    .is_ok()
+    {
+        RestrictionPlayerScope::OpponentsOfSourceController
+    } else {
+        RestrictionPlayerScope::AllPlayers
+    };
+
+    Some(ParsedEffectClause {
+        effect: Effect::AddRestriction {
+            restriction: GameRestriction::CantCastSpells {
+                source: ObjectId(0),
+                affected_players,
+                expiry: RestrictionExpiry::EndOfTurn,
+            },
+        },
+        duration: None,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+        optional: false,
+    })
+}
+
 fn try_parse_self_name_exile(tp: TextPair<'_>, ctx: &ParseContext) -> Option<ParsedEffectClause> {
     let card_name = ctx.card_name.as_deref()?;
     let (_, rest_orig) =
@@ -1259,6 +1307,12 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     }
 
     if let Some(clause) = try_parse_cast_only_from_zones_restriction(tp) {
+        return clause;
+    }
+
+    // CR 101.2: "Your opponents can't cast spells this turn" — blanket temporary prohibition.
+    // Must run AFTER cast_only_from_zones (more specific "from zones" check).
+    if let Some(clause) = try_parse_cant_cast_spells_effect(tp) {
         return clause;
     }
 
@@ -13128,6 +13182,41 @@ mod tests {
             } if allowed_zones == vec![Zone::Hand]
         ));
         assert_eq!(def.duration, Some(Duration::UntilYourNextTurn));
+    }
+
+    #[test]
+    fn cant_cast_spells_this_turn_opponents() {
+        // CR 101.2: Silence — "Your opponents can't cast spells this turn."
+        let def = parse_effect_chain(
+            "Your opponents can't cast spells this turn.",
+            AbilityKind::Spell,
+        );
+        assert!(matches!(
+            *def.effect,
+            Effect::AddRestriction {
+                restriction: GameRestriction::CantCastSpells {
+                    affected_players: RestrictionPlayerScope::OpponentsOfSourceController,
+                    expiry: RestrictionExpiry::EndOfTurn,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn cant_cast_spells_this_turn_all_players() {
+        // CR 101.2: Blanket prohibition on all players.
+        let def = parse_effect_chain("Players can't cast spells this turn.", AbilityKind::Spell);
+        assert!(matches!(
+            *def.effect,
+            Effect::AddRestriction {
+                restriction: GameRestriction::CantCastSpells {
+                    affected_players: RestrictionPlayerScope::AllPlayers,
+                    expiry: RestrictionExpiry::EndOfTurn,
+                    ..
+                }
+            }
+        ));
     }
 
     #[test]

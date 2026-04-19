@@ -162,7 +162,34 @@ fn is_blocked_by_cast_only_from_zones(
                 caster_affected && !allowed_zones.contains(&obj.zone)
             }
             GameRestriction::DamagePreventionDisabled { .. } => false,
+            GameRestriction::CantCastSpells { .. } => false,
         })
+}
+
+/// CR 101.2: Check if a CantCastSpells restriction prevents the given player
+/// from casting any spells. E.g., Silence: "Your opponents can't cast spells this turn."
+fn is_blocked_by_cant_cast_spells(state: &GameState, caster: PlayerId) -> bool {
+    state.restrictions.iter().any(|restriction| {
+        let GameRestriction::CantCastSpells {
+            source,
+            affected_players,
+            ..
+        } = restriction
+        else {
+            return false;
+        };
+        let source_controller = state
+            .objects
+            .get(source)
+            .map(|source_obj| source_obj.controller);
+        match affected_players {
+            RestrictionPlayerScope::AllPlayers => true,
+            RestrictionPlayerScope::SpecificPlayer(player) => *player == caster,
+            RestrictionPlayerScope::OpponentsOfSourceController => {
+                source_controller.is_some_and(|controller| controller != caster)
+            }
+        }
+    })
 }
 
 pub fn spell_objects_available_to_cast(state: &GameState, player: PlayerId) -> Vec<ObjectId> {
@@ -221,6 +248,11 @@ pub fn spell_objects_available_to_cast(state: &GameState, player: PlayerId) -> V
                 .map(|(obj_id, _source_id)| *obj_id)
                 .collect();
         objects.extend(permission_ids);
+    }
+
+    // CR 101.2: If a CantCastSpells restriction blocks this player, no spells are available.
+    if is_blocked_by_cant_cast_spells(state, player) {
+        return vec![];
     }
 
     objects
@@ -726,6 +758,14 @@ fn prepare_spell_cast_with_variant_override(
     if is_blocked_by_cant_cast_during(state, player) {
         return Err(EngineError::ActionNotAllowed(
             "A static ability prevents casting during this phase/turn".to_string(),
+        ));
+    }
+
+    // CR 101.2: Temporary blanket prohibition — "can't cast spells this turn."
+    // E.g., Silence: "Your opponents can't cast spells this turn."
+    if is_blocked_by_cant_cast_spells(state, player) {
+        return Err(EngineError::ActionNotAllowed(
+            "A temporary effect prevents you from casting spells this turn".to_string(),
         ));
     }
 

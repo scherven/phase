@@ -1124,6 +1124,7 @@ fn is_prevention_disabled(state: &GameState, proposed: &ProposedEvent) -> bool {
             }
         },
         GameRestriction::CastOnlyFromZones { .. } => false,
+        GameRestriction::CantCastSpells { .. } => false,
     })
 }
 

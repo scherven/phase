@@ -284,7 +284,8 @@ pub fn execute_untap(state: &mut GameState, events: &mut Vec<GameEvent>) {
         use crate::types::ability::{GameRestriction, RestrictionExpiry};
 
         match restriction {
-            GameRestriction::CastOnlyFromZones { expiry, .. } => {
+            GameRestriction::CastOnlyFromZones { expiry, .. }
+            | GameRestriction::CantCastSpells { expiry, .. } => {
                 !matches!(expiry, RestrictionExpiry::UntilPlayerNextTurn { player } if *player == active)
             }
             GameRestriction::DamagePreventionDisabled { .. } => true,
@@ -488,10 +489,9 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     state.restrictions.retain(|r| {
         use crate::types::ability::{GameRestriction, RestrictionExpiry};
         match r {
-            GameRestriction::DamagePreventionDisabled { expiry, .. } => {
-                !matches!(expiry, RestrictionExpiry::EndOfTurn)
-            }
-            GameRestriction::CastOnlyFromZones { expiry, .. } => {
+            GameRestriction::DamagePreventionDisabled { expiry, .. }
+            | GameRestriction::CastOnlyFromZones { expiry, .. }
+            | GameRestriction::CantCastSpells { expiry, .. } => {
                 !matches!(expiry, RestrictionExpiry::EndOfTurn)
             }
         }

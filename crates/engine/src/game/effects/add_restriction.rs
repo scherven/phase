@@ -31,13 +31,15 @@ pub fn resolve(
 fn fill_runtime_fields(restriction: &mut GameRestriction, ability: &ResolvedAbility) {
     match restriction {
         GameRestriction::DamagePreventionDisabled { source, .. }
-        | GameRestriction::CastOnlyFromZones { source, .. } => {
+        | GameRestriction::CastOnlyFromZones { source, .. }
+        | GameRestriction::CantCastSpells { source, .. } => {
             *source = ability.source_id;
         }
     }
 
     match restriction {
-        GameRestriction::CastOnlyFromZones { expiry, .. } => {
+        GameRestriction::CastOnlyFromZones { expiry, .. }
+        | GameRestriction::CantCastSpells { expiry, .. } => {
             if let Some(crate::types::ability::Duration::UntilYourNextTurn) =
                 ability.duration.as_ref()
             {

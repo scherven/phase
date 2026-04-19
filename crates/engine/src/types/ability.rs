@@ -804,6 +804,13 @@ pub enum GameRestriction {
         allowed_zones: Vec<Zone>,
         expiry: RestrictionExpiry,
     },
+    /// CR 101.2: A temporary effect prevents affected players from casting any spell
+    /// until the restriction expires. E.g., Silence: "Your opponents can't cast spells this turn."
+    CantCastSpells {
+        source: ObjectId,
+        affected_players: RestrictionPlayerScope,
+        expiry: RestrictionExpiry,
+    },
 }
 
 /// When a game restriction expires.
