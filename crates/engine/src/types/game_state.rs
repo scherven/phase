@@ -1941,6 +1941,15 @@ pub struct GameState {
     /// CR 400.7: Zone change creates new ObjectId, naturally resetting.
     #[serde(default)]
     pub hand_cast_free_permissions_used: HashSet<ObjectId>,
+    /// CR 702.94a + CR 603.11: Per-player first-card-drawn-this-turn tracking for
+    /// miracle's linked triggered ability. Populated by the draw pipeline on the
+    /// first `CardDrawn` event each turn per player; reset at turn start. The
+    /// `ObjectId` identifies the specific drawn card so the `MiracleReveal`
+    /// prompt can target the right hand object and enforce the CR 702.94a
+    /// "first card drawn" condition without re-counting. Absent key means the
+    /// player has not drawn yet this turn.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub first_card_drawn_this_turn: HashMap<PlayerId, ObjectId>,
     #[serde(default)]
     pub spells_cast_this_game: HashMap<PlayerId, u32>,
     /// Per-player spell cast history this turn.
@@ -2298,6 +2307,7 @@ impl GameState {
             activated_abilities_this_game: HashMap::new(),
             graveyard_cast_permissions_used: HashSet::new(),
             hand_cast_free_permissions_used: HashSet::new(),
+            first_card_drawn_this_turn: HashMap::new(),
             spells_cast_this_game: HashMap::new(),
             spells_cast_this_turn_by_player: HashMap::new(),
             players_who_searched_library_this_turn: HashSet::new(),
@@ -2460,6 +2470,7 @@ impl PartialEq for GameState {
             && self.activated_abilities_this_game == other.activated_abilities_this_game
             && self.graveyard_cast_permissions_used == other.graveyard_cast_permissions_used
             && self.hand_cast_free_permissions_used == other.hand_cast_free_permissions_used
+            && self.first_card_drawn_this_turn == other.first_card_drawn_this_turn
             && self.spells_cast_this_game == other.spells_cast_this_game
             && self.spells_cast_this_turn_by_player == other.spells_cast_this_turn_by_player
             && self.players_who_searched_library_this_turn

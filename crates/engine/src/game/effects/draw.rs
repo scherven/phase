@@ -136,6 +136,15 @@ pub fn apply_draw_after_replacement(
             player_id,
             object_id: obj_id,
         });
+        // CR 702.94a + CR 603.11: Record the first card drawn each turn per player.
+        // Keyed by PlayerId; absence of key indicates no draw has happened yet this
+        // turn. The stored `ObjectId` is the specific drawn card — consumed by the
+        // miracle reveal prompt (A5) to gate eligibility on "first card you drew
+        // this turn". Subsequent draws do NOT overwrite this entry.
+        state
+            .first_card_drawn_this_turn
+            .entry(player_id)
+            .or_insert(obj_id);
         if let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) {
             player.cards_drawn_this_turn = player.cards_drawn_this_turn.saturating_add(1);
         }
@@ -444,5 +453,72 @@ mod tests {
 
         assert_eq!(state.players[0].hand.len(), 1);
         assert_eq!(state.players[0].cards_drawn_this_turn, 1);
+    }
+
+    /// CR 702.94a + CR 603.11: First card drawn per turn is recorded so the
+    /// miracle reveal prompt can gate eligibility. Subsequent draws do NOT
+    /// overwrite the recorded ObjectId.
+    #[test]
+    fn first_card_drawn_this_turn_records_only_the_first() {
+        let mut state = GameState::new_two_player(42);
+        let first = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "First".to_string(),
+            Zone::Library,
+        );
+        let _second = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Second".to_string(),
+            Zone::Library,
+        );
+
+        // Pre-condition: no first-draw recorded yet.
+        assert!(!state.first_card_drawn_this_turn.contains_key(&PlayerId(0)));
+
+        let mut events = Vec::new();
+        resolve(&mut state, &make_ability(2), &mut events).unwrap();
+
+        // Post-condition: only the first drawn object is recorded.
+        assert_eq!(
+            state.first_card_drawn_this_turn.get(&PlayerId(0)),
+            Some(&first),
+            "first_card_drawn_this_turn should record the first drawn ObjectId and not overwrite",
+        );
+    }
+
+    /// CR 702.94a: A second resolve() call in the same turn does NOT update
+    /// the recorded first-drawn ObjectId — the entry is set on the very first
+    /// draw of the turn and stable until the turn reset clears it.
+    #[test]
+    fn first_card_drawn_this_turn_stable_across_draw_calls() {
+        let mut state = GameState::new_two_player(42);
+        let first = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "First".to_string(),
+            Zone::Library,
+        );
+        let _second = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Second".to_string(),
+            Zone::Library,
+        );
+
+        let mut events = Vec::new();
+        resolve(&mut state, &make_ability(1), &mut events).unwrap();
+        resolve(&mut state, &make_ability(1), &mut events).unwrap();
+
+        assert_eq!(
+            state.first_card_drawn_this_turn.get(&PlayerId(0)),
+            Some(&first),
+            "second draw this turn must not overwrite the first-draw entry",
+        );
     }
 }
