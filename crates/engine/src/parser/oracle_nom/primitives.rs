@@ -9,6 +9,7 @@ use nom::sequence::{delimited, preceded};
 use nom::Parser;
 
 use super::error::OracleResult;
+use crate::types::counter::CounterType;
 use crate::types::keywords::KeywordKind;
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 
@@ -251,13 +252,29 @@ pub fn parse_color(input: &str) -> OracleResult<'_, ManaColor> {
     .parse(input)
 }
 
-/// Parse a counter type: "+1/+1", "-1/-1", or a named counter type.
+/// Parse a counter type: "+1/+1", "-1/-1", or a named counter type, returning
+/// the raw token as it appeared in the Oracle text.
+///
+/// Callers that need the canonical `CounterType` enum should prefer
+/// `parse_counter_type_typed`, which maps through
+/// `crate::types::counter::parse_counter_type` so the canonical set lives in
+/// one place.
 pub fn parse_counter_type(input: &str) -> OracleResult<'_, String> {
     alt((
         map(tag("+1/+1"), |_| "+1/+1".to_string()),
         map(tag("-1/-1"), |_| "-1/-1".to_string()),
         parse_named_counter_type,
     ))
+    .parse(input)
+}
+
+/// Typed variant of `parse_counter_type` — maps the raw token through the
+/// canonical `types::counter::parse_counter_type` so callers receive a
+/// `CounterType` directly (no downstream re-parse of the same string).
+pub fn parse_counter_type_typed(input: &str) -> OracleResult<'_, CounterType> {
+    map(parse_counter_type, |raw| {
+        crate::types::counter::parse_counter_type(&raw)
+    })
     .parse(input)
 }
 

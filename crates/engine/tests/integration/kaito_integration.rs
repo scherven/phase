@@ -17,7 +17,7 @@ use engine::types::ability::{
 };
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::counter::CounterType;
+use engine::types::counter::{CounterMatch, CounterType};
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::keywords::Keyword;
@@ -71,7 +71,7 @@ fn kaito_animation_static() -> StaticDefinition {
             conditions: vec![
                 StaticCondition::DuringYourTurn,
                 StaticCondition::HasCounters {
-                    counter_type: "loyalty".to_string(),
+                    counters: CounterMatch::OfType(CounterType::Loyalty),
                     minimum: 1,
                     maximum: None,
                 },

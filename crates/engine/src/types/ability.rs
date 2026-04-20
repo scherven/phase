@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::card_type::{CardType, CoreType, Supertype};
-use super::counter::CounterType;
+use super::counter::{CounterMatch, CounterType};
 use super::events::BendingType;
 use super::game_state::{DistributionUnit, RetargetScope};
 use super::identifiers::ObjectId;
@@ -1869,9 +1869,13 @@ pub enum StaticCondition {
         condition: Box<StaticCondition>,
     },
     /// CR 122.1: True when the source object has at least `minimum` (and at most `maximum`,
-    /// if specified) counters of the given type. Used for level-up ranges (CR 711.2a + CR 711.2b).
+    /// if specified) counters matching `counters`. `CounterMatch::Any` sums across every
+    /// counter type on the object (for Oracle text that refers to "a counter on it" with
+    /// no type specified); `CounterMatch::OfType(ct)` matches only counters of that type.
+    /// Used for level-up ranges (CR 711.2a + CR 711.2b) and counter-gated statics
+    /// (e.g. Demon Wall: "as long as this creature has a counter on it").
     HasCounters {
-        counter_type: String,
+        counters: CounterMatch,
         minimum: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         maximum: Option<u32>,

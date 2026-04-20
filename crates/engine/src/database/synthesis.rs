@@ -352,7 +352,9 @@ pub fn synthesize_station(face: &mut CardFace) {
     };
 
     let condition = crate::types::ability::StaticCondition::HasCounters {
-        counter_type: "charge".to_string(),
+        counters: crate::types::counter::CounterMatch::OfType(
+            crate::types::counter::CounterType::Generic("charge".to_string()),
+        ),
         minimum: threshold,
         maximum: None,
     };
@@ -1640,10 +1642,12 @@ mod station_synthesis_tests {
         assert!(matches!(
             sd.condition,
             Some(StaticCondition::HasCounters {
-                ref counter_type,
+                counters: crate::types::counter::CounterMatch::OfType(
+                    crate::types::counter::CounterType::Generic(ref name)
+                ),
                 minimum: 12,
                 maximum: None,
-            }) if counter_type == "charge"
+            }) if name == "charge"
         ));
         // Exactly three modifications: AddType + SetPower(0) + SetToughness(8)
         assert_eq!(sd.modifications.len(), 3);
@@ -1849,10 +1853,13 @@ mod station_synthesis_tests {
                 }
                 match &s.condition {
                     Some(StaticCondition::HasCounters {
-                        counter_type,
+                        counters:
+                            crate::types::counter::CounterMatch::OfType(
+                                crate::types::counter::CounterType::Generic(name),
+                            ),
                         minimum,
                         ..
-                    }) if counter_type == "charge" => Some(*minimum),
+                    }) if name == "charge" => Some(*minimum),
                     _ => None,
                 }
             });

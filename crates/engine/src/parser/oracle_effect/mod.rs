@@ -5896,15 +5896,23 @@ fn parse_for_as_long_as_condition(condition: &str) -> Option<Duration> {
         return Some(Duration::UntilHostLeavesPlay);
     }
 
-    // "it has a {type} counter on it" / "~ has a {type} counter on it"
+    // "it has a {type} counter on it" / "~ has a {type} counter on it" / "it has a counter on it"
+    // CR 122.1: bare "a counter on it" (no type word) → CounterMatch::Any.
     if scan_contains_phrase(condition, "has a") && scan_contains_phrase(condition, "counter on it")
     {
         if let Some(after_has) = strip_after(condition, " has a ") {
             if let Some(counter_end) = after_has.find(" counter") {
-                let counter_type = after_has[..counter_end].trim().to_string();
+                let counter_type_text = after_has[..counter_end].trim();
+                let counters = if counter_type_text.is_empty() {
+                    crate::types::counter::CounterMatch::Any
+                } else {
+                    crate::types::counter::CounterMatch::OfType(
+                        crate::types::counter::parse_counter_type(counter_type_text),
+                    )
+                };
                 return Some(Duration::ForAsLongAs {
                     condition: StaticCondition::HasCounters {
-                        counter_type,
+                        counters,
                         minimum: 1,
                         maximum: None,
                     },
@@ -11933,11 +11941,13 @@ mod tests {
                 dur,
                 Some(Duration::ForAsLongAs {
                     condition: StaticCondition::HasCounters {
-                        ref counter_type,
+                        counters: crate::types::counter::CounterMatch::OfType(
+                            crate::types::counter::CounterType::Generic(ref name)
+                        ),
                         minimum: 1,
                         maximum: None,
                     },
-                }) if counter_type == "flood"
+                }) if name == "flood"
             ),
             "expected ForAsLongAs(HasCounters(flood)), got: {dur:?}"
         );
