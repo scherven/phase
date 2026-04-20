@@ -252,48 +252,41 @@ pub fn parse_color(input: &str) -> OracleResult<'_, ManaColor> {
     .parse(input)
 }
 
-/// Parse a counter type: "+1/+1", "-1/-1", or a named counter type, returning
-/// the raw token as it appeared in the Oracle text.
+/// Parse a counter type: `"+1/+1"`, `"-1/-1"`, or one of the named counter
+/// types recognized by Oracle text (`loyalty`, `charge`, `lore`, …).
 ///
-/// Callers that need the canonical `CounterType` enum should prefer
-/// `parse_counter_type_typed`, which maps through
-/// `crate::types::counter::parse_counter_type` so the canonical set lives in
-/// one place.
-pub fn parse_counter_type(input: &str) -> OracleResult<'_, String> {
-    alt((
-        map(tag("+1/+1"), |_| "+1/+1".to_string()),
-        map(tag("-1/-1"), |_| "-1/-1".to_string()),
+/// Returns the canonical `CounterType` enum via the single authoritative
+/// mapping in `crate::types::counter::parse_counter_type`. Unrecognized
+/// tokens from the named-type branch fall through to `CounterType::Generic`
+/// through that mapping — so callers never re-parse the same token.
+pub fn parse_counter_type_typed(input: &str) -> OracleResult<'_, CounterType> {
+    let (rest, raw) = alt((
+        map(tag("+1/+1"), |s: &str| s),
+        map(tag("-1/-1"), |s: &str| s),
         parse_named_counter_type,
     ))
-    .parse(input)
-}
-
-/// Typed variant of `parse_counter_type` — maps the raw token through the
-/// canonical `types::counter::parse_counter_type` so callers receive a
-/// `CounterType` directly (no downstream re-parse of the same string).
-pub fn parse_counter_type_typed(input: &str) -> OracleResult<'_, CounterType> {
-    map(parse_counter_type, |raw| {
-        crate::types::counter::parse_counter_type(&raw)
-    })
-    .parse(input)
+    .parse(input)?;
+    Ok((rest, crate::types::counter::parse_counter_type(raw)))
 }
 
 /// Parse a named counter type: "loyalty", "charge", "lore", "defense", etc.
-fn parse_named_counter_type(input: &str) -> OracleResult<'_, String> {
+/// Returns the matched slice verbatim so the caller can canonicalize it
+/// through `types::counter::parse_counter_type` (single authority).
+fn parse_named_counter_type(input: &str) -> OracleResult<'_, &str> {
     alt((
-        map(tag("loyalty"), |s: &str| s.to_string()),
-        map(tag("charge"), |s: &str| s.to_string()),
-        map(tag("lore"), |s: &str| s.to_string()),
-        map(tag("defense"), |s: &str| s.to_string()),
-        map(tag("time"), |s: &str| s.to_string()),
-        map(tag("quest"), |s: &str| s.to_string()),
-        map(tag("energy"), |s: &str| s.to_string()),
-        map(tag("valor"), |s: &str| s.to_string()),
-        map(tag("verse"), |s: &str| s.to_string()),
-        map(tag("level"), |s: &str| s.to_string()),
-        map(tag("vitality"), |s: &str| s.to_string()),
-        map(tag("vigilance"), |s: &str| s.to_string()),
-        map(tag("bounty"), |s: &str| s.to_string()),
+        tag("loyalty"),
+        tag("charge"),
+        tag("lore"),
+        tag("defense"),
+        tag("time"),
+        tag("quest"),
+        tag("energy"),
+        tag("valor"),
+        tag("verse"),
+        tag("level"),
+        tag("vitality"),
+        tag("vigilance"),
+        tag("bounty"),
     ))
     .parse(input)
 }
@@ -1021,21 +1014,21 @@ mod tests {
 
     #[test]
     fn test_parse_counter_type_plus() {
-        let (rest, ct) = parse_counter_type("+1/+1 counter").unwrap();
-        assert_eq!(ct, "+1/+1");
+        let (rest, ct) = parse_counter_type_typed("+1/+1 counter").unwrap();
+        assert_eq!(ct, CounterType::Plus1Plus1);
         assert_eq!(rest, " counter");
     }
 
     #[test]
     fn test_parse_counter_type_named() {
-        let (rest, ct) = parse_counter_type("loyalty counters").unwrap();
-        assert_eq!(ct, "loyalty");
+        let (rest, ct) = parse_counter_type_typed("loyalty counters").unwrap();
+        assert_eq!(ct, CounterType::Loyalty);
         assert_eq!(rest, " counters");
     }
 
     #[test]
     fn test_parse_counter_type_failure() {
-        assert!(parse_counter_type("unknown_counter").is_err());
+        assert!(parse_counter_type_typed("unknown_counter").is_err());
     }
 
     #[test]

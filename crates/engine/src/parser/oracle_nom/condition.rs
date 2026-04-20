@@ -267,21 +267,22 @@ fn parse_source_state_conditions(input: &str) -> OracleResult<'_, StaticConditio
 /// counter-type word × `"counter"/"counters"` × `"on it"` — each axis is a
 /// single `alt()` so new variants add one arm rather than enumerating
 /// permutations.
-fn parse_source_has_counters(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = parse_source_subject(input)?;
+pub(crate) fn parse_source_has_counters(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_counter_condition_subject(input)?;
     let (rest, _) = tag("has ").parse(rest)?;
 
     // Quantity axis: produces (minimum, maximum).
     let (rest, (minimum, maximum)) = parse_has_counters_quantity(rest)?;
 
-    // Counter type axis: either the noun starts immediately (bare "counter[s]"
-    // → Any), or a type word precedes it (e.g. "loyalty counter", "+1/+1
-    // counters"). Use `alt()` so each shape is a single dispatch branch.
+    // Counter type axis: typed first for robustness — a typed token like
+    // "loyalty counter" shares no prefix with bare "counter", so branch
+    // order is semantic-only (no longest-match dependency), but trying the
+    // more specific alternative first is the conventional pattern.
     let (rest, counters) = alt((
+        // Typed noun: `<type> counter[s]` (e.g. "a loyalty counter on it").
+        parse_typed_counter_noun,
         // Bare noun → any counter type (CR 122.1 "a counter on it").
         value(CounterMatch::Any, alt((tag("counters"), tag("counter")))),
-        // Typed noun: `<type> counter[s]`.
-        parse_typed_counter_noun,
     ))
     .parse(rest)?;
 
@@ -295,6 +296,17 @@ fn parse_source_has_counters(input: &str) -> OracleResult<'_, StaticCondition> {
             maximum,
         },
     ))
+}
+
+/// Subject axis for counter-has conditions. Accepts the canonical
+/// source-referential subjects and the bound pronoun `"it "` used in
+/// `"for as long as it has a counter on it"` style clauses. Kept separate
+/// from `parse_source_subject` because `"it "` would be ambiguous in the
+/// tapped/combat predicate family (which already uses `"it"` as part of
+/// longer phrases) — scoping the pronoun branch to this combinator avoids
+/// that coupling.
+fn parse_counter_condition_subject(input: &str) -> OracleResult<'_, &str> {
+    alt((parse_source_subject, tag("it "))).parse(input)
 }
 
 /// Quantity axis for `parse_source_has_counters`.
@@ -320,12 +332,32 @@ fn parse_n_or_more_counters(input: &str) -> OracleResult<'_, (u32, Option<u32>)>
 }
 
 /// Consume `"<type> counter"` / `"<type> counters"` and return
-/// `CounterMatch::OfType(canonical)`. Delegates to
-/// `nom_primitives::parse_counter_type` for the typed-noun combinator so the
-/// mapping lives in one place.
+/// `CounterMatch::OfType(canonical)`.
+///
+/// Terminator-anchored: reads arbitrary Oracle text up to the literal
+/// `" counter"` / `" counters"` suffix, then canonicalizes the consumed
+/// token through `types::counter::parse_counter_type`. This accepts the
+/// full set of Oracle-declared counter types (flood, charge, oil, quest,
+/// …) without needing to enumerate every name in a nom `alt()` — any
+/// unrecognized token falls through to `CounterType::Generic(raw)` via
+/// the canonical mapping.
+///
+/// Fails if the input does not contain `" counter"` before end of string,
+/// or if the token slice is empty (that case is the caller's `Any` branch).
 fn parse_typed_counter_noun(input: &str) -> OracleResult<'_, CounterMatch> {
-    let (rest, ct) = super::primitives::parse_counter_type_typed(input)?;
-    let (rest, _) = preceded(tag(" "), alt((tag("counters"), tag("counter")))).parse(rest)?;
+    let (rest_after_noun, type_slice) = take_until(" counter").parse(input)?;
+    if type_slice.is_empty() {
+        // Fail so the caller's `Any` branch (bare "counter[s]") can try.
+        return Err(nom::Err::Error(nom_language::error::VerboseError {
+            errors: vec![(
+                input,
+                nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::TakeUntil),
+            )],
+        }));
+    }
+    let (rest, _) =
+        preceded(tag(" "), alt((tag("counters"), tag("counter")))).parse(rest_after_noun)?;
+    let ct = crate::types::counter::parse_counter_type(type_slice);
     Ok((rest, CounterMatch::OfType(ct)))
 }
 
@@ -2737,6 +2769,40 @@ mod tests {
             c,
             StaticCondition::HasCounters {
                 counters: CounterMatch::OfType(CounterType::Plus1Plus1),
+                minimum: 1,
+                maximum: None,
+            }
+        );
+    }
+
+    /// Bound-pronoun subject `"it "` — used by `parse_for_as_long_as_condition`
+    /// in oracle_effect (duration clauses like "has flying for as long as it
+    /// has a flood counter on it").
+    #[test]
+    fn has_counters_pronoun_subject_it_any() {
+        let (rest, c) = parse_source_has_counters("it has a counter on it").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::HasCounters {
+                counters: CounterMatch::Any,
+                minimum: 1,
+                maximum: None,
+            }
+        );
+    }
+
+    #[test]
+    fn has_counters_pronoun_subject_it_typed_generic() {
+        // "flood" is a Generic counter type — verifies the terminator-anchored
+        // parser in `parse_typed_counter_noun` falls through to Generic via
+        // the canonical mapping rather than failing on unknown named types.
+        let (rest, c) = parse_source_has_counters("it has a flood counter on it").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::HasCounters {
+                counters: CounterMatch::OfType(CounterType::Generic("flood".to_string())),
                 minimum: 1,
                 maximum: None,
             }

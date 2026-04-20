@@ -2477,7 +2477,14 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
         .map(|(rest, _)| rest)
         .unwrap_or(before)
         .trim();
-        let (_, counter_type) = nom_primitives::parse_counter_type.parse(ct_start).ok()?;
+        // Parse through the typed combinator so the canonical mapping lives in
+        // `types::counter::parse_counter_type`. `Effect::PutCounter::counter_type`
+        // remains `String` (serialization format), so emit the canonical
+        // `as_str()` form rather than the raw Oracle token.
+        let (_, counter_type_enum) = nom_primitives::parse_counter_type_typed
+            .parse(ct_start)
+            .ok()?;
+        let counter_type = counter_type_enum.as_str().to_string();
         let counter_on_end = before.len() + "counter on ".len();
         let after_counter_on = base_tp.original[counter_on_end..].trim();
         // Strip clause separators (", then") that leak into the counter target text.
@@ -5896,28 +5903,15 @@ fn parse_for_as_long_as_condition(condition: &str) -> Option<Duration> {
         return Some(Duration::UntilHostLeavesPlay);
     }
 
-    // "it has a {type} counter on it" / "~ has a {type} counter on it" / "it has a counter on it"
-    // CR 122.1: bare "a counter on it" (no type word) → CounterMatch::Any.
-    if scan_contains_phrase(condition, "has a") && scan_contains_phrase(condition, "counter on it")
+    // CR 122.1: "<subject> has <quantity> [type] counter[s] on it" — delegate to
+    // the shared nom combinator so the typed/bare/quantity grammar lives in a
+    // single authority (`parse_inner_condition` family) rather than being
+    // duplicated here as bespoke string matching.
+    if let Ok((rest, condition)) =
+        crate::parser::oracle_nom::condition::parse_source_has_counters(condition)
     {
-        if let Some(after_has) = strip_after(condition, " has a ") {
-            if let Some(counter_end) = after_has.find(" counter") {
-                let counter_type_text = after_has[..counter_end].trim();
-                let counters = if counter_type_text.is_empty() {
-                    crate::types::counter::CounterMatch::Any
-                } else {
-                    crate::types::counter::CounterMatch::OfType(
-                        crate::types::counter::parse_counter_type(counter_type_text),
-                    )
-                };
-                return Some(Duration::ForAsLongAs {
-                    condition: StaticCondition::HasCounters {
-                        counters,
-                        minimum: 1,
-                        maximum: None,
-                    },
-                });
-            }
+        if rest.trim().is_empty() {
+            return Some(Duration::ForAsLongAs { condition });
         }
     }
 

@@ -4520,12 +4520,13 @@ pub enum ActivationRestriction {
         maximum: Option<u32>,
     },
     /// CR 721.2a: Counter-threshold gate — ability is present only while the source
-    /// has `minimum` (and at most `maximum`, if specified) counters of `counter_type`.
-    /// Used for Spacecraft "N+ |" threshold lines (`counter_type = "charge"`) and
-    /// any future pipe-delimited threshold layout that gates activated abilities.
-    /// Generalization of `LevelCounterRange` across arbitrary counter types.
+    /// has `minimum` (and at most `maximum`, if specified) counters matching `counters`.
+    /// Used for Spacecraft "N+ |" threshold lines (`counters = OfType(Generic("charge"))`)
+    /// and any future pipe-delimited threshold layout that gates activated abilities.
+    /// Generalization of `LevelCounterRange` across arbitrary counter types, mirroring
+    /// `StaticCondition::HasCounters` and `TriggerCondition::HasCounters`.
     CounterThreshold {
-        counter_type: String,
+        counters: CounterMatch,
         minimum: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         maximum: Option<u32>,
@@ -5069,9 +5070,11 @@ pub enum TriggerCondition {
     /// CR 702.112a: "if ~ is renowned" — true when the source has been made renowned.
     SourceIsRenowned,
     /// CR 711.2a + CR 711.2b: Level-up creature trigger gating — true when the source has at least
-    /// `minimum` level counters (and at most `maximum` if specified).
+    /// `minimum` counters (and at most `maximum` if specified) matching `counters`.
+    /// `CounterMatch::Any` sums across every counter type on the source; `OfType(ct)`
+    /// restricts to a single type. Mirrors `StaticCondition::HasCounters`.
     HasCounters {
-        counter_type: String,
+        counters: CounterMatch,
         minimum: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         maximum: Option<u32>,

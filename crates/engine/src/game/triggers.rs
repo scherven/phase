@@ -1743,16 +1743,22 @@ pub(crate) fn check_trigger_condition(
         TriggerCondition::SourceIsRenowned => source_id
             .and_then(|id| state.objects.get(&id))
             .is_some_and(|obj| obj.is_renowned),
-        // CR 711.2a + CR 711.2b: Level-up creature trigger gating — check level counter count on source.
+        // CR 711.2a + CR 711.2b: Level-up creature trigger gating — check counter count on source.
+        // `CounterMatch::Any` sums across every counter type; `OfType(ct)` reads a single type.
+        // Mirrors `StaticCondition::HasCounters` evaluation in `layers.rs`.
         TriggerCondition::HasCounters {
-            counter_type,
+            counters,
             minimum,
             maximum,
         } => source_id
             .and_then(|id| state.objects.get(&id))
             .is_some_and(|obj| {
-                let ct = crate::types::counter::parse_counter_type(counter_type);
-                let count = obj.counters.get(&ct).copied().unwrap_or(0);
+                let count: u32 = match counters {
+                    crate::types::counter::CounterMatch::Any => obj.counters.values().sum(),
+                    crate::types::counter::CounterMatch::OfType(ct) => {
+                        obj.counters.get(ct).copied().unwrap_or(0)
+                    }
+                };
                 count >= *minimum && maximum.is_none_or(|max| count <= max)
             }),
     }

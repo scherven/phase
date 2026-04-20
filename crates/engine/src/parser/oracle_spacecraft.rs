@@ -89,7 +89,7 @@ pub(crate) fn parse_spacecraft_threshold_lines(
             maximum: None,
         };
         let trigger_cond = TriggerCondition::HasCounters {
-            counter_type: STATION_COUNTER.to_string(),
+            counters: CounterMatch::OfType(CounterType::Generic(STATION_COUNTER.to_string())),
             minimum: threshold,
             maximum: None,
         };
@@ -142,7 +142,7 @@ pub(crate) fn parse_spacecraft_threshold_lines(
             }
             let mut restrictions = constraints.restrictions;
             restrictions.push(ActivationRestriction::CounterThreshold {
-                counter_type: STATION_COUNTER.to_string(),
+                counters: CounterMatch::OfType(CounterType::Generic(STATION_COUNTER.to_string())),
                 minimum: threshold,
                 maximum: None,
             });
@@ -310,10 +310,10 @@ mod tests {
         assert!(restr.iter().any(|r| matches!(
             r,
             ActivationRestriction::CounterThreshold {
-                counter_type,
+                counters: CounterMatch::OfType(CounterType::Generic(ref name)),
                 minimum: 1,
                 maximum: None,
-            } if counter_type == "charge"
+            } if name == "charge"
         )));
     }
 
