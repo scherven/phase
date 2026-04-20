@@ -1771,29 +1771,39 @@ pub(super) fn match_excess_damage_all(
     matches!(event, GameEvent::DamageDealt { excess, .. } if *excess > 0)
 }
 
-/// YouAttack: fires once when the trigger source's controller declares attackers.
-/// Player-centric — fires regardless of which creatures attack.
+/// YouAttack: fires once when a player declares attackers matching the trigger's
+/// player-scope filter.
+///
+/// CR 508.1m + CR 603.2c: If `trigger.valid_target` is set, the matcher resolves
+/// the attacking player (the common controller of the attackers — CR 506.2 / CR
+/// 508.1) and checks it against the filter (e.g. `ControllerRef::Opponent` for
+/// "another player attacks"). With no filter, the legacy "you attack" semantics
+/// apply: fire when any attacker is controlled by the trigger's source controller.
 pub(super) fn match_you_attack(
     event: &GameEvent,
-    _trigger: &TriggerDefinition,
+    trigger: &TriggerDefinition,
     source_id: ObjectId,
     state: &GameState,
 ) -> bool {
-    if let GameEvent::AttackersDeclared { attacker_ids, .. } = event {
-        if attacker_ids.is_empty() {
-            return false;
-        }
-        // Fire if any attacker is controlled by the source's controller
-        let source_controller = state.objects.get(&source_id).map(|o| o.controller);
-        attacker_ids.iter().any(|id| {
-            state
-                .objects
-                .get(id)
-                .map(|o| Some(o.controller) == source_controller)
-                .unwrap_or(false)
-        })
+    let GameEvent::AttackersDeclared { attacker_ids, .. } = event else {
+        return false;
+    };
+    if attacker_ids.is_empty() {
+        return false;
+    }
+    // CR 506.2: the active player is the attacking player; all attackers in
+    // a single AttackersDeclared batch share one controller.
+    let Some(attacking_player) = attacker_ids
+        .iter()
+        .find_map(|id| state.objects.get(id).map(|o| o.controller))
+    else {
+        return false;
+    };
+    if trigger.valid_target.is_some() {
+        valid_player_matches(trigger, state, attacking_player, source_id)
     } else {
-        false
+        let source_controller = state.objects.get(&source_id).map(|o| o.controller);
+        Some(attacking_player) == source_controller
     }
 }
 

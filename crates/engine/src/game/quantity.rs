@@ -990,6 +990,11 @@ pub(crate) fn resolve_player_count(
                         .last_zone_changed_ids
                         .iter()
                         .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
+                    PlayerFilter::TriggeringPlayer => state
+                        .current_trigger_event
+                        .as_ref()
+                        .and_then(|e| crate::game::targeting::extract_player_from_event(e, state))
+                        .is_some_and(|pid| pid == p.id),
                 }
         })
         .count() as i32

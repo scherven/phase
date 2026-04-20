@@ -68,6 +68,12 @@ fn players_for_filter(
             })
             .map(|player| player.id)
             .collect(),
+        PlayerFilter::TriggeringPlayer => state
+            .current_trigger_event
+            .as_ref()
+            .and_then(|e| crate::game::targeting::extract_player_from_event(e, state))
+            .into_iter()
+            .collect(),
     }
 }
 

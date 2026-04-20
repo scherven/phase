@@ -656,6 +656,7 @@ fn fmt_player_filter(pf: &PlayerFilter) -> String {
         PlayerFilter::All => "each player",
         PlayerFilter::HighestSpeed => "each player with the highest speed",
         PlayerFilter::ZoneChangedThisWay => "each player who changed a card this way",
+        PlayerFilter::TriggeringPlayer => "the triggering player",
     }
     .into()
 }
@@ -3962,6 +3963,7 @@ fn player_filter_feature(scope: &PlayerFilter) -> (&'static str, FeatureSupport)
         // Previously emitted via Debug formatting; never appeared in the handled set.
         PlayerFilter::Controller => ("Controller", Unhandled),
         PlayerFilter::ZoneChangedThisWay => ("ZoneChangedThisWay", Unhandled),
+        PlayerFilter::TriggeringPlayer => ("TriggeringPlayer", Handled),
     }
 }
 

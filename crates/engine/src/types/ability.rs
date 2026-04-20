@@ -1807,6 +1807,10 @@ pub enum PlayerFilter {
     /// "each player who [verb]ed a card this way" — scoped to players who owned objects
     /// that changed zones in the preceding effect (tracked via `last_zone_changed_ids`).
     ZoneChangedThisWay,
+    /// CR 603.7c: The player identified by `state.current_trigger_event`. Used to route
+    /// "they [verb]" effects on triggers whose subject is a player (e.g. Firemane
+    /// Commando's "another player ... they draw a card").
+    TriggeringPlayer,
 }
 
 /// An expression that produces an integer for quantity comparisons.
@@ -5189,6 +5193,24 @@ pub enum TriggerCondition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         maximum: Option<u32>,
     },
+
+    /// CR 508.1 + CR 603.2c + CR 603.4: Intervening-if for "attacks with N or more creatures"
+    /// triggers. Reads the triggering `AttackersDeclared` event and counts attackers whose
+    /// controller matches `scope` relative to the trigger's controller:
+    ///   - `ControllerRef::You` → attackers controlled by the trigger controller.
+    ///   - `ControllerRef::Opponent` → attackers controlled by a player other than the
+    ///     trigger controller. "Another player attacks with 2+" uses this scope; all
+    ///     attackers in the batch share one attacking player (the active player per
+    ///     CR 506.2), so counting "≠ trigger controller" is equivalent to counting the
+    ///     triggering player's creatures.
+    ///
+    /// True when the count meets or exceeds `minimum`.
+    AttackersDeclaredMin { scope: ControllerRef, minimum: u32 },
+    /// CR 506.2 + CR 603.4: Intervening-if "if none of those creatures attacked you".
+    /// Reads the triggering `AttackersDeclared` event's per-attacker `AttackTarget` tuples
+    /// (CR 508.1b) and returns true iff no attacker in the batch targeted the trigger's
+    /// controller directly (`AttackTarget::Player(trigger_controller)`).
+    NoneOfAttackersTargetedYou,
 
     // -- Combinators --
     /// All conditions must be true ("if you gained and lost life this turn")

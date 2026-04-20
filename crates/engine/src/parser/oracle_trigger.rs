@@ -235,7 +235,28 @@ pub fn parse_trigger_line(text: &str, card_name: &str) -> TriggerDefinition {
     def.execute = execute;
     def.optional = optional;
     def.unless_pay = unless_pay;
-    def.condition = if_condition.or(def.condition.take());
+    // CR 603.4: When the trigger-condition parser has already attached a condition
+    // (e.g. `AttackersDeclaredMin` from "attacks with N or more creatures") AND the
+    // effect text carries an intervening-if (e.g. "if none of those creatures
+    // attacked you"), both must hold simultaneously — compose with And rather than
+    // letting the intervening-if replace the event-batch predicate.
+    def.condition = match (if_condition, def.condition.take()) {
+        (Some(if_cond), Some(existing)) => Some(TriggerCondition::And {
+            conditions: vec![existing, if_cond],
+        }),
+        (Some(c), None) | (None, Some(c)) => Some(c),
+        (None, None) => None,
+    };
+
+    // CR 603.7c: When the trigger's subject is a non-self player (e.g.
+    // "whenever another player attacks ..." → valid_target carries
+    // `ControllerRef::Opponent`), a player-scoped effect body like "they draw
+    // a card" / "they lose N life" must route to the triggering player, not
+    // the trigger controller. Surface this via `player_scope =
+    // PlayerFilter::TriggeringPlayer` on the execute ability so the shared
+    // player-scope iterator in `resolve_ability_chain` rebinds `controller`
+    // for the duration of the effect.
+    rewire_player_scoped_execute_to_triggering_player(&mut def);
 
     // Check for constraint phrases in the full text.
     // Text-based constraints take precedence; fall back to any constraint already set
@@ -723,6 +744,13 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
             // CR 702.112a: "if it's renowned" / "if ~ is renowned" — renown state check
             ("if it's renowned", TriggerCondition::SourceIsRenowned),
             ("if ~ is renowned", TriggerCondition::SourceIsRenowned),
+            // CR 506.2 + CR 508.1b + CR 603.4: "if none of those creatures attacked you" —
+            // intervening-if for "whenever another player attacks with N or more creatures"
+            // triggers that reward defensive (non-aggressor) opponents.
+            (
+                "if none of those creatures attacked you",
+                TriggerCondition::NoneOfAttackersTargetedYou,
+            ),
         ],
     ) {
         return result;
@@ -1523,6 +1551,46 @@ pub(crate) fn parse_trigger_condition(condition: &str) -> (TriggerMode, TriggerD
 /// Warnings from `parse_trigger_subject` are discarded — this function is a best-effort
 /// subject extraction for pronoun resolution, not a diagnostic site. Warnings for
 /// degraded subjects are emitted by the main trigger condition path instead.
+/// CR 603.7c: If the trigger's subject is scoped to an opponent (the trigger
+/// fires off another player's action) AND its execute ability has a
+/// player-scoped effect with no explicit `player_scope`, rewire the execute to
+/// `PlayerFilter::TriggeringPlayer` so the effect resolves for the acting
+/// player rather than the trigger controller. Covers Firemane Commando's
+/// "they draw a card" branch and analogous cards whose effect is expressed
+/// from the acting player's perspective.
+fn rewire_player_scoped_execute_to_triggering_player(def: &mut TriggerDefinition) {
+    let is_opponent_subject = matches!(
+        &def.valid_target,
+        Some(TargetFilter::Typed(TypedFilter {
+            controller: Some(ControllerRef::Opponent),
+            type_filters,
+            properties,
+            ..
+        })) if type_filters.is_empty() && properties.is_empty()
+    );
+    if !is_opponent_subject {
+        return;
+    }
+    let Some(execute) = def.execute.as_deref_mut() else {
+        return;
+    };
+    if execute.player_scope.is_some() {
+        return;
+    }
+    use crate::types::ability::{Effect, PlayerFilter};
+    let routable = matches!(
+        &*execute.effect,
+        Effect::Draw { .. }
+            | Effect::GainLife { .. }
+            | Effect::LoseLife { .. }
+            | Effect::Discard { .. }
+            | Effect::Mill { .. }
+    );
+    if routable {
+        execute.player_scope = Some(PlayerFilter::TriggeringPlayer);
+    }
+}
+
 fn extract_trigger_subject_for_context(condition_text: &str) -> TargetFilter {
     let lower = condition_text.to_lowercase();
     let after_keyword = alt((
@@ -1532,6 +1600,21 @@ fn extract_trigger_subject_for_context(condition_text: &str) -> TargetFilter {
     .parse(lower.as_str())
     .map(|(rest, _)| rest)
     .unwrap_or(&lower);
+
+    // CR 608.2k: Player-actor subjects ("another player attacks …", "an opponent
+    // attacks …") — return a player-typed filter carrying `ControllerRef::Opponent`
+    // so `resolve_they_pronoun` in effect parsing maps "they" to `TriggeringPlayer`.
+    // Must precede `parse_trigger_subject`, which is object-oriented and would miss
+    // these.
+    if alt((
+        tag::<_, _, VerboseError<&str>>("another player "),
+        tag("an opponent "),
+    ))
+    .parse(after_keyword)
+    .is_ok()
+    {
+        return TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent));
+    }
 
     // Drain pre-existing warnings, call parse_trigger_subject, discard any
     // warnings it emits, then restore the originals. This avoids maintaining
@@ -2293,6 +2376,13 @@ fn try_parse_special_trigger_pattern(lower: &str) -> Option<(TriggerMode, Trigge
         return Some(result);
     }
 
+    // CR 508.1 + CR 603.2c: "whenever [actor] attack[s] with N or more creatures" —
+    // controller-scoped inverse phrasing of the subject-led "N or more creatures attack"
+    // handled above. Covers Firemane Commando's dual triggers (you / another player).
+    if let Some(result) = try_parse_attack_with_n_creatures(lower) {
+        return Some(result);
+    }
+
     if let Some(result) = try_parse_one_or_more_die(lower) {
         return Some(result);
     }
@@ -2535,6 +2625,92 @@ fn try_parse_n_or_more_attacks(lower: &str) -> Option<(TriggerMode, TriggerDefin
     }
 
     None
+}
+
+/// CR 508.1 + CR 603.2c: Parse "whenever [actor] attack[s] with N or more creatures".
+///
+/// Covers three actor scopes via nom prefix dispatch, mirroring the Tier 1.3
+/// sacrifice-trigger idiom (`Option<ControllerRef>`):
+///   - `you attack with ...`          → `ControllerRef::You`
+///   - `another player attacks with`  → `ControllerRef::Opponent`
+///   - `an opponent attacks with ...` → `ControllerRef::Opponent`
+///   - `a player attacks with ...`    → `None` (any player)
+///
+/// Produces a `TriggerMode::YouAttack` (batched) with:
+///   - `valid_target = TypedFilter::default().controller(scope)` when scope is
+///     known — this drives `match_you_attack`'s attacking-player filter AND
+///     feeds `resolve_they_pronoun` so a trailing "they draw a card" resolves
+///     to `TargetFilter::TriggeringPlayer`.
+///   - `condition = AttackersDeclaredMin { scope, minimum }` so only batches
+///     with at least N attackers from the scoped player fire the trigger.
+fn try_parse_attack_with_n_creatures(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    use nom::combinator::opt;
+
+    let (after_prefix, ()) = alt((
+        value((), tag::<_, _, VerboseError<&str>>("whenever ")),
+        value((), tag("when ")),
+    ))
+    .parse(lower)
+    .ok()?;
+
+    // Actor dispatch. Only scoped actors are handled here. "A player attacks
+    // with N or more creatures" (any-player scope, e.g. Aurelia the Law Above)
+    // would need a distinct any-player variant to be correct — until that
+    // exists, leave those triggers Unknown rather than misclassify.
+    let (after_actor, actor): (&str, ControllerRef) = alt((
+        value(
+            ControllerRef::You,
+            tag::<_, _, VerboseError<&str>>("you attack"),
+        ),
+        value(ControllerRef::Opponent, tag("another player attacks")),
+        value(ControllerRef::Opponent, tag("an opponent attacks")),
+    ))
+    .parse(after_prefix)
+    .ok()?;
+
+    // Required " with " separator.
+    let (after_with, ()) = value((), tag::<_, _, VerboseError<&str>>(" with "))
+        .parse(after_actor)
+        .ok()?;
+
+    // Parse "N or more creatures" — N is a positive integer word/digit.
+    let (after_n, n) = nom_primitives::parse_number.parse(after_with).ok()?;
+    let (after_or_more, ()) = value((), tag::<_, _, VerboseError<&str>>(" or more creatures"))
+        .parse(after_n)
+        .ok()?;
+    // Accept optional trailing " each turn" / " this turn" qualifier (unused here,
+    // but keeps the matcher permissive for CR 603.4 timing qualifiers). Must end
+    // at the condition boundary — the caller already split the effect text off,
+    // so `after_or_more` should be empty or punctuation-only.
+    let (rest, _) = opt(alt((
+        tag::<_, _, VerboseError<&str>>(" each turn"),
+        tag(" this turn"),
+    )))
+    .parse(after_or_more)
+    .ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    if n < 1 {
+        return None;
+    }
+
+    let mut def = make_base();
+    def.mode = TriggerMode::YouAttack;
+    def.batched = true;
+
+    // `valid_target` drives both the matcher's attacking-player check and the
+    // "they" pronoun resolver in the effect body.
+    def.valid_target = Some(TargetFilter::Typed(
+        TypedFilter::default().controller(actor.clone()),
+    ));
+    def.condition = Some(TriggerCondition::AttackersDeclaredMin {
+        scope: actor,
+        minimum: n,
+    });
+
+    Some((TriggerMode::YouAttack, def))
 }
 
 /// Parse "whenever one or more [subject] die" patterns.
@@ -9084,5 +9260,94 @@ mod tests {
         assert_eq!(def.mode, TriggerMode::TokenCreated);
         assert!(def.batched);
         assert!(def.valid_card.is_some());
+    }
+
+    // CR 508.1 + CR 603.2c + CR 603.4: Attacks-with-N-creatures trigger family
+    // (Firemane Commando and analogous cards).
+
+    #[test]
+    fn trigger_you_attack_with_two_or_more_creatures() {
+        let def = parse_trigger_line(
+            "Whenever you attack with two or more creatures, draw a card.",
+            "Firemane Commando",
+        );
+        assert_eq!(def.mode, TriggerMode::YouAttack);
+        assert!(def.batched);
+        assert_eq!(
+            def.valid_target,
+            Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::You)
+            ))
+        );
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::AttackersDeclaredMin {
+                scope: ControllerRef::You,
+                minimum: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn trigger_another_player_attacks_with_two_or_more_creatures_intervening_if() {
+        let def = parse_trigger_line(
+            "Whenever another player attacks with two or more creatures, they draw a card if none of those creatures attacked you.",
+            "Firemane Commando",
+        );
+        assert_eq!(def.mode, TriggerMode::YouAttack);
+        assert!(def.batched);
+        assert_eq!(
+            def.valid_target,
+            Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::Opponent)
+            ))
+        );
+        // Composed: batch-size AND none-of-those-attacked-you.
+        match &def.condition {
+            Some(TriggerCondition::And { conditions }) => {
+                assert_eq!(conditions.len(), 2);
+                assert!(matches!(
+                    &conditions[0],
+                    TriggerCondition::AttackersDeclaredMin {
+                        scope: ControllerRef::Opponent,
+                        minimum: 2,
+                    }
+                ));
+                assert!(matches!(
+                    &conditions[1],
+                    TriggerCondition::NoneOfAttackersTargetedYou
+                ));
+            }
+            other => panic!(
+                "expected And(AttackersDeclaredMin, NoneOfAttackersTargetedYou), got {other:?}"
+            ),
+        }
+        // CR 603.7c: "they draw a card" routes to the triggering player.
+        let execute = def.execute.as_ref().expect("execute");
+        assert!(matches!(
+            &*execute.effect,
+            crate::types::ability::Effect::Draw { .. }
+        ));
+        assert_eq!(
+            execute.player_scope,
+            Some(crate::types::ability::PlayerFilter::TriggeringPlayer)
+        );
+    }
+
+    #[test]
+    fn trigger_an_opponent_attacks_with_two_or_more_creatures() {
+        let def = parse_trigger_line(
+            "Whenever an opponent attacks with two or more creatures, you gain 1 life.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::YouAttack);
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::AttackersDeclaredMin {
+                scope: ControllerRef::Opponent,
+                minimum: 2,
+            })
+        );
+        assert!(def.batched);
     }
 }

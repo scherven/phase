@@ -150,6 +150,13 @@ fn matches_player_scope(
                         .last_zone_changed_ids
                         .iter()
                         .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
+                    // CR 603.7c: Match only the triggering player extracted from
+                    // `state.current_trigger_event`.
+                    PlayerFilter::TriggeringPlayer => state
+                        .current_trigger_event
+                        .as_ref()
+                        .and_then(|e| crate::game::targeting::extract_player_from_event(e, state))
+                        .is_some_and(|pid| pid == p.id),
                 }
         })
 }

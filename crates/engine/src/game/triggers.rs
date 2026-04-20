@@ -1452,6 +1452,46 @@ pub(crate) fn check_trigger_condition(
                 co_attacker_count >= *minimum as usize
             })
         }
+        // CR 508.1 + CR 603.2c: Count attackers in the triggering AttackersDeclared
+        // batch whose controller matches `scope` relative to the trigger controller.
+        TriggerCondition::AttackersDeclaredMin { scope, minimum } => {
+            let Some(GameEvent::AttackersDeclared { attacker_ids, .. }) = trigger_event else {
+                return false;
+            };
+            let count = attacker_ids
+                .iter()
+                .filter(|id| {
+                    state.objects.get(id).is_some_and(|obj| match scope {
+                        ControllerRef::You => obj.controller == controller,
+                        ControllerRef::Opponent => obj.controller != controller,
+                        // Other ControllerRef variants are not used by the attacks-with-N
+                        // combinator; treat as permissive to avoid silently dropping matches.
+                        _ => true,
+                    })
+                })
+                .count();
+            count >= *minimum as usize
+        }
+        // CR 506.2 + CR 508.1b + CR 603.4: "if none of those creatures attacked you" —
+        // Iterate the attack batch's per-attacker targets; fail the condition if any
+        // attacker controlled by a player other than the trigger controller targeted
+        // the trigger controller directly (CR 506.2: the defending player).
+        TriggerCondition::NoneOfAttackersTargetedYou => {
+            let Some(GameEvent::AttackersDeclared { attacks, .. }) = trigger_event else {
+                return false;
+            };
+            !attacks.iter().any(|(attacker_id, target)| {
+                let attacker_is_other = state
+                    .objects
+                    .get(attacker_id)
+                    .is_some_and(|obj| obj.controller != controller);
+                attacker_is_other
+                    && matches!(
+                        target,
+                        crate::game::combat::AttackTarget::Player(p) if *p == controller
+                    )
+            })
+        }
         // CR 719.2: True when the source Case is unsolved and its solve condition is met.
         TriggerCondition::SolveConditionMet => source_id
             .and_then(|id| state.objects.get(&id))
@@ -5164,5 +5204,192 @@ pub mod tests {
 
         process_triggers(&mut state, &events);
         assert_eq!(state.stack.len(), 0);
+    }
+
+    // CR 508.1 + CR 603.2c: Unit tests for the `AttackersDeclaredMin` condition
+    // (Firemane Commando's attack-batch-size gate).
+    #[test]
+    fn attackers_declared_min_counts_scope_you() {
+        let mut state = setup();
+        let trigger_controller = PlayerId(0);
+        let a1 = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "A1".to_string(),
+            Zone::Battlefield,
+        );
+        let a2 = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "A2".to_string(),
+            Zone::Battlefield,
+        );
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![a1, a2],
+            defending_player: PlayerId(1),
+            attacks: vec![
+                (a1, crate::game::combat::AttackTarget::Player(PlayerId(1))),
+                (a2, crate::game::combat::AttackTarget::Player(PlayerId(1))),
+            ],
+        };
+        let cond = TriggerCondition::AttackersDeclaredMin {
+            scope: ControllerRef::You,
+            minimum: 2,
+        };
+        assert!(check_trigger_condition(
+            &state,
+            &cond,
+            trigger_controller,
+            None,
+            Some(&event),
+        ));
+
+        // Raising the threshold to 3 → condition fails.
+        let cond3 = TriggerCondition::AttackersDeclaredMin {
+            scope: ControllerRef::You,
+            minimum: 3,
+        };
+        assert!(!check_trigger_condition(
+            &state,
+            &cond3,
+            trigger_controller,
+            None,
+            Some(&event),
+        ));
+    }
+
+    #[test]
+    fn attackers_declared_min_opponent_scope_ignores_your_attackers() {
+        let mut state = setup();
+        let trigger_controller = PlayerId(0);
+        // Attackers controlled by the trigger controller — Opponent scope must NOT count them.
+        let a1 = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "A1".to_string(),
+            Zone::Battlefield,
+        );
+        let a2 = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "A2".to_string(),
+            Zone::Battlefield,
+        );
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![a1, a2],
+            defending_player: PlayerId(1),
+            attacks: vec![
+                (a1, crate::game::combat::AttackTarget::Player(PlayerId(1))),
+                (a2, crate::game::combat::AttackTarget::Player(PlayerId(1))),
+            ],
+        };
+        let cond = TriggerCondition::AttackersDeclaredMin {
+            scope: ControllerRef::Opponent,
+            minimum: 2,
+        };
+        assert!(!check_trigger_condition(
+            &state,
+            &cond,
+            trigger_controller,
+            None,
+            Some(&event),
+        ));
+    }
+
+    // CR 506.2 + CR 508.1b: Unit tests for `NoneOfAttackersTargetedYou`.
+    #[test]
+    fn none_of_attackers_targeted_you_true_when_all_attack_elsewhere() {
+        let mut state = setup();
+        let trigger_controller = PlayerId(0);
+        // Opponent's attackers — both attacking a third party (not the trigger controller).
+        let a1 = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "A1".to_string(),
+            Zone::Battlefield,
+        );
+        let a2 = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "A2".to_string(),
+            Zone::Battlefield,
+        );
+        // A planeswalker controlled by the trigger controller — attackers targeting this
+        // planeswalker should NOT trip the "attacked you" condition (CR 506.2a).
+        let pw = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "PW".to_string(),
+            Zone::Battlefield,
+        );
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![a1, a2],
+            defending_player: PlayerId(0),
+            attacks: vec![
+                (a1, crate::game::combat::AttackTarget::Planeswalker(pw)),
+                (a2, crate::game::combat::AttackTarget::Planeswalker(pw)),
+            ],
+        };
+        let cond = TriggerCondition::NoneOfAttackersTargetedYou;
+        assert!(check_trigger_condition(
+            &state,
+            &cond,
+            trigger_controller,
+            None,
+            Some(&event),
+        ));
+    }
+
+    #[test]
+    fn none_of_attackers_targeted_you_false_when_one_attacks_you() {
+        let mut state = setup();
+        let trigger_controller = PlayerId(0);
+        let a1 = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "A1".to_string(),
+            Zone::Battlefield,
+        );
+        let a2 = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "A2".to_string(),
+            Zone::Battlefield,
+        );
+        let pw = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "PW".to_string(),
+            Zone::Battlefield,
+        );
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![a1, a2],
+            defending_player: PlayerId(0),
+            attacks: vec![
+                (a1, crate::game::combat::AttackTarget::Planeswalker(pw)),
+                (
+                    a2,
+                    crate::game::combat::AttackTarget::Player(trigger_controller),
+                ),
+            ],
+        };
+        let cond = TriggerCondition::NoneOfAttackersTargetedYou;
+        assert!(!check_trigger_condition(
+            &state,
+            &cond,
+            trigger_controller,
+            None,
+            Some(&event),
+        ));
     }
 }

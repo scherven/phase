@@ -307,6 +307,12 @@ pub(crate) fn extract_player_from_event(
         GameEvent::PlayerPerformedAction { player_id, .. } => Some(*player_id),
         GameEvent::CrimeCommitted { player_id, .. } => Some(*player_id),
         GameEvent::PlayerEliminated { player_id, .. } => Some(*player_id),
+        // CR 506.2 + CR 508.1: The attacking player is the common controller of the
+        // declared attackers in this batch. All attackers in one AttackersDeclared
+        // batch share the active player as their controller.
+        GameEvent::AttackersDeclared { attacker_ids, .. } => attacker_ids
+            .iter()
+            .find_map(|id| state.objects.get(id).map(|obj| obj.controller)),
         // For object-centric events, extract the controller
         GameEvent::BecomesTarget { source_id, .. } => {
             state.objects.get(source_id).map(|obj| obj.controller)
