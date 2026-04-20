@@ -30,6 +30,7 @@ use crate::types::ability::{
     StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::{CoreType, Supertype};
+use crate::types::counter::{parse_counter_type, CounterMatch};
 use crate::types::keywords::{Keyword, KeywordKind};
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
@@ -2470,7 +2471,15 @@ fn parse_compound_turn_counter_animation(lower: &str, text: &str) -> Option<Stat
     // Parse "[type] counters on [pronoun], "
     let rest = rest.trim_start();
     let counters_pos = rest.find(" counter")?;
-    let counter_type = rest[..counters_pos].trim().to_string();
+    let counter_type_text = rest[..counters_pos].trim();
+    // CR 122.1: bare "a counter on it" with no type word → Any; typed "a [type]
+    // counter on it" → OfType(ct). Routes through the shared mapping in
+    // `types::counter::parse_counter_type` to keep the canonical set in one place.
+    let counters = if counter_type_text.is_empty() {
+        CounterMatch::Any
+    } else {
+        CounterMatch::OfType(parse_counter_type(counter_type_text))
+    };
 
     // Skip past "counters on [pronoun], " to get the modification text
     let rest = &rest[counters_pos..];
@@ -2488,7 +2497,7 @@ fn parse_compound_turn_counter_animation(lower: &str, text: &str) -> Option<Stat
                 conditions: vec![
                     StaticCondition::DuringYourTurn,
                     StaticCondition::HasCounters {
-                        counter_type,
+                        counters,
                         minimum,
                         maximum: None,
                     },
@@ -8231,10 +8240,10 @@ mod tests {
             assert!(matches!(
                 conditions[1],
                 StaticCondition::HasCounters {
-                    ref counter_type,
+                    counters: CounterMatch::OfType(crate::types::counter::CounterType::Loyalty),
                     minimum: 1,
                     ..
-                } if counter_type == "loyalty"
+                }
             ));
         }
 

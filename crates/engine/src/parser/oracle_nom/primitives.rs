@@ -9,6 +9,7 @@ use nom::sequence::{delimited, preceded};
 use nom::Parser;
 
 use super::error::OracleResult;
+use crate::types::counter::CounterType;
 use crate::types::keywords::KeywordKind;
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 
@@ -251,55 +252,63 @@ pub fn parse_color(input: &str) -> OracleResult<'_, ManaColor> {
     .parse(input)
 }
 
-/// Parse a counter type: "+1/+1", "-1/-1", or a named counter type.
-pub fn parse_counter_type(input: &str) -> OracleResult<'_, String> {
-    alt((
-        map(tag("+1/+1"), |_| "+1/+1".to_string()),
-        map(tag("-1/-1"), |_| "-1/-1".to_string()),
+/// Parse a counter type: `"+1/+1"`, `"-1/-1"`, or one of the named counter
+/// types recognized by Oracle text (`loyalty`, `charge`, `lore`, …).
+///
+/// Returns the canonical `CounterType` enum via the single authoritative
+/// mapping in `crate::types::counter::parse_counter_type`. Unrecognized
+/// tokens from the named-type branch fall through to `CounterType::Generic`
+/// through that mapping — so callers never re-parse the same token.
+pub fn parse_counter_type_typed(input: &str) -> OracleResult<'_, CounterType> {
+    let (rest, raw) = alt((
+        map(tag("+1/+1"), |s: &str| s),
+        map(tag("-1/-1"), |s: &str| s),
         parse_named_counter_type,
     ))
-    .parse(input)
+    .parse(input)?;
+    Ok((rest, crate::types::counter::parse_counter_type(raw)))
 }
 
 /// Parse a named counter type: "loyalty", "charge", "lore", "defense", etc.
 ///
 /// CR 122.1b + CR 122.6: counter names are arbitrary strings; this list enumerates
 /// the names that appear in printed Oracle text (as of current MTG releases).
-/// Runtime routing maps these to `CounterType::Generic(name)` where no dedicated
-/// variant exists (`layers::evaluate_condition` handles the Generic fallback).
-fn parse_named_counter_type(input: &str) -> OracleResult<'_, String> {
+/// Returns the matched slice verbatim so the caller can canonicalize it through
+/// `types::counter::parse_counter_type` (single authority). Names without a
+/// dedicated `CounterType` variant map to `CounterType::Generic(name)`.
+fn parse_named_counter_type(input: &str) -> OracleResult<'_, &str> {
     // Split into two alt groups to stay within nom's 21-arm tuple limit.
     alt((
-        map(tag("loyalty"), |s: &str| s.to_string()),
-        map(tag("charge"), |s: &str| s.to_string()),
-        map(tag("lore"), |s: &str| s.to_string()),
-        map(tag("defense"), |s: &str| s.to_string()),
-        map(tag("time"), |s: &str| s.to_string()),
-        map(tag("quest"), |s: &str| s.to_string()),
-        map(tag("energy"), |s: &str| s.to_string()),
-        map(tag("valor"), |s: &str| s.to_string()),
-        map(tag("verse"), |s: &str| s.to_string()),
-        map(tag("level"), |s: &str| s.to_string()),
-        map(tag("vitality"), |s: &str| s.to_string()),
-        map(tag("vigilance"), |s: &str| s.to_string()),
-        map(tag("bounty"), |s: &str| s.to_string()),
+        tag("loyalty"),
+        tag("charge"),
+        tag("lore"),
+        tag("defense"),
+        tag("time"),
+        tag("quest"),
+        tag("energy"),
+        tag("valor"),
+        tag("verse"),
+        tag("level"),
+        tag("vitality"),
+        tag("vigilance"),
+        tag("bounty"),
     ))
     .or(alt((
-        map(tag("oil"), |s: &str| s.to_string()),
-        map(tag("divinity"), |s: &str| s.to_string()),
-        map(tag("shield"), |s: &str| s.to_string()),
-        map(tag("judgment"), |s: &str| s.to_string()),
-        map(tag("depletion"), |s: &str| s.to_string()),
-        map(tag("feather"), |s: &str| s.to_string()),
-        map(tag("flood"), |s: &str| s.to_string()),
-        map(tag("slumber"), |s: &str| s.to_string()),
-        map(tag("sleep"), |s: &str| s.to_string()),
-        map(tag("phyresis"), |s: &str| s.to_string()),
-        map(tag("fire"), |s: &str| s.to_string()),
-        map(tag("shell"), |s: &str| s.to_string()),
-        map(tag("pupa"), |s: &str| s.to_string()),
-        map(tag("net"), |s: &str| s.to_string()),
-        map(tag("stun"), |s: &str| s.to_string()),
+        tag("oil"),
+        tag("divinity"),
+        tag("shield"),
+        tag("judgment"),
+        tag("depletion"),
+        tag("feather"),
+        tag("flood"),
+        tag("slumber"),
+        tag("sleep"),
+        tag("phyresis"),
+        tag("fire"),
+        tag("shell"),
+        tag("pupa"),
+        tag("net"),
+        tag("stun"),
     )))
     .parse(input)
 }
@@ -1027,21 +1036,21 @@ mod tests {
 
     #[test]
     fn test_parse_counter_type_plus() {
-        let (rest, ct) = parse_counter_type("+1/+1 counter").unwrap();
-        assert_eq!(ct, "+1/+1");
+        let (rest, ct) = parse_counter_type_typed("+1/+1 counter").unwrap();
+        assert_eq!(ct, CounterType::Plus1Plus1);
         assert_eq!(rest, " counter");
     }
 
     #[test]
     fn test_parse_counter_type_named() {
-        let (rest, ct) = parse_counter_type("loyalty counters").unwrap();
-        assert_eq!(ct, "loyalty");
+        let (rest, ct) = parse_counter_type_typed("loyalty counters").unwrap();
+        assert_eq!(ct, CounterType::Loyalty);
         assert_eq!(rest, " counters");
     }
 
     #[test]
     fn test_parse_counter_type_failure() {
-        assert!(parse_counter_type("unknown_counter").is_err());
+        assert!(parse_counter_type_typed("unknown_counter").is_err());
     }
 
     #[test]

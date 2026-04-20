@@ -4,7 +4,7 @@ use crate::types::ability::{
     QuantityExpr, SpellCastingOptionKind,
 };
 use crate::types::card_type::{CoreType, Supertype};
-use crate::types::counter::CounterType;
+use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::game_state::CastingVariant;
 use crate::types::keywords::Keyword;
 use crate::types::mana::ManaCost;
@@ -366,27 +366,21 @@ fn activation_restriction_applies(
             count >= *minimum && maximum.is_none_or(|max| count <= max)
         }
         // CR 721.2a: "{N+}[abilities]" gate — activatable when the source has `minimum`
-        // (and at most `maximum`, if specified) counters of `counter_type`.
-        // Dispatches on counter_type string mirroring `StaticCondition::HasCounters`
-        // evaluation in `layers.rs` so typed variants (+1/+1, -1/-1, loyalty, stun)
-        // resolve the correct CounterType key rather than falling through to Generic.
+        // (and at most `maximum`, if specified) counters matching `counters`.
+        // `CounterMatch::Any` sums across every counter type on the source;
+        // `OfType(ct)` reads a single type. Mirrors `StaticCondition::HasCounters`
+        // evaluation in `layers.rs` and `TriggerCondition::HasCounters` in `triggers.rs`.
         ActivationRestriction::CounterThreshold {
-            counter_type,
+            counters,
             minimum,
             maximum,
         } => {
-            let count = state
+            let count: u32 = state
                 .objects
                 .get(&source_id)
-                .map(|obj| {
-                    let key = match counter_type.as_str() {
-                        "+1/+1" | "plus1plus1" => CounterType::Plus1Plus1,
-                        "-1/-1" | "minus1minus1" => CounterType::Minus1Minus1,
-                        "loyalty" => CounterType::Loyalty,
-                        "stun" => CounterType::Stun,
-                        other => CounterType::Generic(other.to_string()),
-                    };
-                    obj.counters.get(&key).copied().unwrap_or(0)
+                .map(|obj| match counters {
+                    CounterMatch::Any => obj.counters.values().sum(),
+                    CounterMatch::OfType(ct) => obj.counters.get(ct).copied().unwrap_or(0),
                 })
                 .unwrap_or(0);
             count >= *minimum && maximum.is_none_or(|max| count <= max)

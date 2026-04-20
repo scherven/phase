@@ -7,7 +7,7 @@ use crate::types::ability::{
     QuantityExpr, StaticCondition, StaticDefinition, TargetFilter, TypedFilter,
 };
 use crate::types::card_type::is_land_subtype;
-use crate::types::counter::CounterType;
+use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
@@ -230,36 +230,19 @@ pub(crate) fn evaluate_condition(
             !evaluate_condition(state, condition, controller, source_id)
         }
         // CR 122.1: Check counters on the source object, with optional maximum.
+        // `CounterMatch::Any` sums across every counter type (for bare "a counter on
+        // it" text); `CounterMatch::OfType(ct)` matches a specific counter type.
         StaticCondition::HasCounters {
-            counter_type,
+            counters,
             minimum,
             maximum,
         } => state
             .objects
             .get(&source_id)
             .map(|obj| {
-                let count = match counter_type.as_str() {
-                    "+1/+1" | "plus1plus1" => obj
-                        .counters
-                        .get(&CounterType::Plus1Plus1)
-                        .copied()
-                        .unwrap_or(0),
-                    "-1/-1" | "minus1minus1" => obj
-                        .counters
-                        .get(&CounterType::Minus1Minus1)
-                        .copied()
-                        .unwrap_or(0),
-                    "loyalty" => obj
-                        .counters
-                        .get(&CounterType::Loyalty)
-                        .copied()
-                        .unwrap_or(0),
-                    "stun" => obj.counters.get(&CounterType::Stun).copied().unwrap_or(0),
-                    other => obj
-                        .counters
-                        .get(&CounterType::Generic(other.to_string()))
-                        .copied()
-                        .unwrap_or(0),
+                let count: u32 = match counters {
+                    CounterMatch::Any => obj.counters.values().sum(),
+                    CounterMatch::OfType(ct) => obj.counters.get(ct).copied().unwrap_or(0),
                 };
                 count >= *minimum && maximum.is_none_or(|max| count <= max)
             })
@@ -2374,7 +2357,7 @@ mod tests {
             obj.counters.insert(CounterType::Loyalty, 3);
         }
         let cond = StaticCondition::HasCounters {
-            counter_type: "loyalty".to_string(),
+            counters: CounterMatch::OfType(CounterType::Loyalty),
             minimum: 1,
             maximum: None,
         };
@@ -2386,7 +2369,42 @@ mod tests {
         let mut state = setup();
         let id = make_creature(&mut state, "Kaito", 0, 0, PlayerId(0));
         let cond = StaticCondition::HasCounters {
-            counter_type: "loyalty".to_string(),
+            counters: CounterMatch::OfType(CounterType::Loyalty),
+            minimum: 1,
+            maximum: None,
+        };
+        assert!(!evaluate_condition(&state, &cond, PlayerId(0), id));
+    }
+
+    /// CR 122.1: `CounterMatch::Any` sums across every counter type — "has a
+    /// counter on it" fires for any non-zero counter, regardless of kind.
+    /// Motivating card: Demon Wall (`as long as this creature has a counter
+    /// on it, it can attack as though it didn't have defender`).
+    #[test]
+    fn has_counters_any_true_when_any_counter_type_present() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Demon Wall", 3, 3, PlayerId(0));
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            // Any counter type should satisfy CounterMatch::Any — use a
+            // generic counter here to prove it is not +1/+1-specific.
+            obj.counters
+                .insert(CounterType::Generic("page".to_string()), 1);
+        }
+        let cond = StaticCondition::HasCounters {
+            counters: CounterMatch::Any,
+            minimum: 1,
+            maximum: None,
+        };
+        assert!(evaluate_condition(&state, &cond, PlayerId(0), id));
+    }
+
+    #[test]
+    fn has_counters_any_false_when_no_counters() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Demon Wall", 3, 3, PlayerId(0));
+        let cond = StaticCondition::HasCounters {
+            counters: CounterMatch::Any,
             minimum: 1,
             maximum: None,
         };
@@ -2401,7 +2419,7 @@ mod tests {
         let mut state = setup();
         let id = make_creature(&mut state, "Primordial Hydra", 0, 0, PlayerId(0));
         let cond = StaticCondition::HasCounters {
-            counter_type: "+1/+1".to_string(),
+            counters: crate::types::counter::CounterMatch::OfType(CounterType::Plus1Plus1),
             minimum: 10,
             maximum: None,
         };
@@ -2455,7 +2473,7 @@ mod tests {
             conditions: vec![
                 StaticCondition::DuringYourTurn,
                 StaticCondition::HasCounters {
-                    counter_type: "loyalty".to_string(),
+                    counters: CounterMatch::OfType(CounterType::Loyalty),
                     minimum: 1,
                     maximum: None,
                 },
@@ -2482,7 +2500,7 @@ mod tests {
             conditions: vec![
                 StaticCondition::DuringYourTurn,
                 StaticCondition::HasCounters {
-                    counter_type: "loyalty".to_string(),
+                    counters: CounterMatch::OfType(CounterType::Loyalty),
                     minimum: 1,
                     maximum: None,
                 },
@@ -2501,7 +2519,7 @@ mod tests {
             conditions: vec![
                 StaticCondition::DuringYourTurn,
                 StaticCondition::HasCounters {
-                    counter_type: "loyalty".to_string(),
+                    counters: CounterMatch::OfType(CounterType::Loyalty),
                     minimum: 1,
                     maximum: None,
                 },
@@ -2529,7 +2547,7 @@ mod tests {
             conditions: vec![
                 StaticCondition::DuringYourTurn,
                 StaticCondition::HasCounters {
-                    counter_type: "loyalty".to_string(),
+                    counters: CounterMatch::OfType(CounterType::Loyalty),
                     minimum: 1,
                     maximum: None,
                 },
@@ -2566,7 +2584,7 @@ mod tests {
                 conditions: vec![
                     StaticCondition::DuringYourTurn,
                     StaticCondition::HasCounters {
-                        counter_type: "loyalty".to_string(),
+                        counters: CounterMatch::OfType(CounterType::Loyalty),
                         minimum: 1,
                         maximum: None,
                     },
@@ -2641,7 +2659,7 @@ mod tests {
                 conditions: vec![
                     StaticCondition::DuringYourTurn,
                     StaticCondition::HasCounters {
-                        counter_type: "loyalty".to_string(),
+                        counters: CounterMatch::OfType(CounterType::Loyalty),
                         minimum: 1,
                         maximum: None,
                     },

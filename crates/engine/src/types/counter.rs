@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 /// Counter types serialize as flat strings so they can be used as JSON map keys
 /// in `HashMap<CounterType, u32>`. Without this, `Generic("quest")` would serialize
 /// as `{"Generic":"quest"}` which serde_json rejects as a map key.
@@ -43,6 +45,25 @@ impl<'de> serde::Deserialize<'de> for CounterType {
         let s = String::deserialize(deserializer)?;
         Ok(parse_counter_type(&s))
     }
+}
+
+/// Which counter(s) a predicate is matching against.
+///
+/// CR 122.1: "A counter is a marker placed on an object or player…" — some
+/// Oracle text distinguishes counters by type ("a +1/+1 counter"), while
+/// other text refers to counters generically ("a counter on it", meaning
+/// any type). `CounterMatch::Any` captures the latter case so predicates
+/// can sum across every counter type on an object, and `OfType` captures
+/// the former by reusing the canonical `CounterType` enum. Prefer this over
+/// `Option<CounterType>`: "Any" is a first-class matching mode rather than
+/// an absence-of-specification.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum CounterMatch {
+    /// "a counter on it" — any counter type; predicates sum across all types.
+    Any,
+    /// A specific counter type, matching the canonical `CounterType` enum.
+    OfType(CounterType),
 }
 
 pub fn parse_counter_type(text: &str) -> CounterType {

@@ -506,7 +506,9 @@ pub fn parse_oracle_text(
         // CR 711.2a + CR 711.2b: Triggered abilities within LEVEL blocks get a HasCounters condition.
         // (Static abilities are now parsed directly in oracle_level.rs with the level condition attached.)
         let trigger_condition = TriggerCondition::HasCounters {
-            counter_type: "level".to_string(),
+            counters: crate::types::counter::CounterMatch::OfType(
+                crate::types::counter::CounterType::Generic("level".to_string()),
+            ),
             minimum,
             maximum,
         };

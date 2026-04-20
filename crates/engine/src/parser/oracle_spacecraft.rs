@@ -38,6 +38,7 @@ use crate::types::ability::{
     AbilityDefinition, AbilityKind, ActivationRestriction, ContinuousModification, StaticCondition,
     StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition,
 };
+use crate::types::counter::{CounterMatch, CounterType};
 
 /// Counter type gating Spacecraft threshold lines (CR 702.184a / CR 721).
 pub(crate) const STATION_COUNTER: &str = "charge";
@@ -83,12 +84,12 @@ pub(crate) fn parse_spacecraft_threshold_lines(
         }
 
         let static_cond = StaticCondition::HasCounters {
-            counter_type: STATION_COUNTER.to_string(),
+            counters: CounterMatch::OfType(CounterType::Generic(STATION_COUNTER.to_string())),
             minimum: threshold,
             maximum: None,
         };
         let trigger_cond = TriggerCondition::HasCounters {
-            counter_type: STATION_COUNTER.to_string(),
+            counters: CounterMatch::OfType(CounterType::Generic(STATION_COUNTER.to_string())),
             minimum: threshold,
             maximum: None,
         };
@@ -141,7 +142,7 @@ pub(crate) fn parse_spacecraft_threshold_lines(
             }
             let mut restrictions = constraints.restrictions;
             restrictions.push(ActivationRestriction::CounterThreshold {
-                counter_type: STATION_COUNTER.to_string(),
+                counters: CounterMatch::OfType(CounterType::Generic(STATION_COUNTER.to_string())),
                 minimum: threshold,
                 maximum: None,
             });
@@ -309,10 +310,10 @@ mod tests {
         assert!(restr.iter().any(|r| matches!(
             r,
             ActivationRestriction::CounterThreshold {
-                counter_type,
+                counters: CounterMatch::OfType(CounterType::Generic(ref name)),
                 minimum: 1,
                 maximum: None,
-            } if counter_type == "charge"
+            } if name == "charge"
         )));
     }
 

@@ -4,6 +4,7 @@ use nom::Parser;
 use crate::types::ability::{
     ContinuousModification, StaticCondition, StaticDefinition, TargetFilter,
 };
+use crate::types::counter::{CounterMatch, CounterType};
 
 use super::oracle::find_activated_colon;
 use super::oracle_keyword::parse_keyword_from_oracle;
@@ -58,12 +59,12 @@ pub(crate) fn parse_level_blocks(
             // Build condition from level range
             let condition = match range {
                 LevelRange::Bounded { min, max } => StaticCondition::HasCounters {
-                    counter_type: "level".to_string(),
+                    counters: CounterMatch::OfType(CounterType::Generic("level".to_string())),
                     minimum: min,
                     maximum: Some(max),
                 },
                 LevelRange::Unbounded { min } => StaticCondition::HasCounters {
-                    counter_type: "level".to_string(),
+                    counters: CounterMatch::OfType(CounterType::Generic("level".to_string())),
                     minimum: min,
                     maximum: None,
                 },

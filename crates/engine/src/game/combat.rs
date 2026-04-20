@@ -1765,6 +1765,71 @@ mod tests {
         assert!(validate_attackers(&state, &[id]).is_err());
     }
 
+    /// CR 702.3b + CR 122.1: Demon Wall — "as long as this creature has a
+    /// counter on it, it can attack as though it didn't have defender".
+    /// Exercises the `CanAttackWithDefender` static gated on
+    /// `StaticCondition::HasCounters { counters: Any, minimum: 1 }`.
+    /// With zero counters the condition is false and Defender still applies;
+    /// with a +1/+1 counter the condition holds and the attack is legal.
+    #[test]
+    fn demon_wall_attacks_only_with_counters_on_it() {
+        use crate::types::ability::{StaticCondition, StaticDefinition, TargetFilter};
+        use crate::types::counter::{CounterMatch, CounterType};
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+        let id = create_creature(&mut state, PlayerId(0), "Demon Wall", 3, 3);
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.keywords.push(Keyword::Defender);
+            obj.static_definitions.push(
+                StaticDefinition::new(StaticMode::CanAttackWithDefender)
+                    .affected(TargetFilter::SelfRef)
+                    .condition(StaticCondition::HasCounters {
+                        counters: CounterMatch::Any,
+                        minimum: 1,
+                        maximum: None,
+                    })
+                    .description(
+                        "As long as ~ has a counter on it, it can attack as though it \
+                         didn't have defender."
+                            .to_string(),
+                    ),
+            );
+        }
+
+        // No counters yet — Defender blocks the attack.
+        assert!(
+            validate_attackers(&state, &[id]).is_err(),
+            "Demon Wall with 0 counters must not attack (Defender)"
+        );
+
+        // Add a +1/+1 counter — the condition becomes true and the grant applies.
+        state
+            .objects
+            .get_mut(&id)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        assert!(
+            validate_attackers(&state, &[id]).is_ok(),
+            "Demon Wall with a counter must be able to attack"
+        );
+
+        // Generic counter type should also satisfy CounterMatch::Any.
+        state.objects.get_mut(&id).unwrap().counters.clear();
+        state
+            .objects
+            .get_mut(&id)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("page".to_string()), 1);
+        assert!(
+            validate_attackers(&state, &[id]).is_ok(),
+            "CounterMatch::Any must accept any counter type"
+        );
+    }
+
     #[test]
     fn summoning_sick_creature_cannot_attack() {
         let mut state = setup();
