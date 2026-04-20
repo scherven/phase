@@ -67,6 +67,8 @@ pub fn resolve(
     // CR 707.10: Create `count` independent copy-tokens. Each is snapshotted
     // from the same source values so that subsequent SBAs (e.g., legendary
     // rule) see identical copies.
+    let mut created_ids: Vec<crate::types::identifiers::ObjectId> =
+        Vec::with_capacity(count as usize);
     for _ in 0..count {
         // Step 3: Create a new token object on the battlefield.
         let token_id = zones::create_object(
@@ -135,7 +137,13 @@ pub fn resolve(
             object_id: token_id,
             name: name.clone(),
         });
+        created_ids.push(token_id);
     }
+
+    // CR 603.7 + CR 701.36a: Record created token IDs so sub-abilities can
+    // reference them via `TargetFilter::LastCreated` ("the token created this
+    // way", "it"). Mirrors `token::apply_create_token`.
+    state.last_created_token_ids = created_ids;
 
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),

@@ -5551,6 +5551,14 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
     // updated count (Rite of Replication / Saproling Migration / Krothuss).
     resolve_those_tokens_anaphors(&mut defs);
 
+    // CR 701.36a + CR 603.7c: Resolve "the token created this way …" and the
+    // "sacrifice it" anaphors that follow a token-creating effect (Populate,
+    // CopyTokenOf, Token). The antecedent is the populated / created token;
+    // `TargetFilter::LastCreated` at runtime resolves against
+    // `state.last_created_token_ids` (snapshotted at delayed-trigger
+    // creation for the Sacrifice case — CR 603.7c).
+    resolve_populated_token_anaphors(&mut defs);
+
     // CR 706 + CR 705: Consolidate die result table lines into their parent RollDie,
     // and coin flip conditional branches into their parent FlipCoin.
     consolidate_die_and_coin_defs(&mut defs, kind);
@@ -5723,6 +5731,114 @@ fn match_create_of_those_tokens(effect: &Effect) -> Option<u32> {
         Some(count)
     } else {
         None
+    }
+}
+
+/// CR 701.36a + CR 603.7c: Rewrite "the token created this way …" /
+/// "sacrifice it" anaphors following a token-creating effect.
+///
+/// Two rewrites, both scoped to defs whose chain contains a prior token
+/// creator (`Populate`, `CopyTokenOf`, `Token`):
+///
+/// 1. `Effect::Unimplemented { description: "the token created this way <mod>" }`
+///    → `GenericEffect { target: Some(LastCreated), static_abilities: [...],
+///    duration: Some(UntilEndOfTurn) }` where the modifications are parsed
+///    from the verb phrase ("gains haste" / "gets +1/+1" / …).
+///
+/// 2. Inside a `CreateDelayedTrigger` whose inner effect references the
+///    created token via `TargetFilter::ParentTarget` (currently the
+///    imperative parser's "it" / "that creature" default), rewrite that
+///    target to `TargetFilter::LastCreated`. At delayed-trigger creation
+///    time, `delayed_trigger::resolve` snapshots
+///    `state.last_created_token_ids` into the delayed ability's targets.
+fn resolve_populated_token_anaphors(defs: &mut [AbilityDefinition]) {
+    for i in 0..defs.len() {
+        if !defs[..i]
+            .iter()
+            .any(|d| is_token_creating_effect(&d.effect))
+        {
+            continue;
+        }
+        rewrite_populated_anaphor_in_effect(&mut defs[i].effect);
+    }
+}
+
+fn is_token_creating_effect(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::Populate | Effect::Token { .. } | Effect::CopyTokenOf { .. }
+    )
+}
+
+/// Walk an effect, rewriting the populated-token anaphor at whichever level
+/// it appears. Recurses into `CreateDelayedTrigger.effect` so the "sacrifice
+/// it" pattern inside a delayed trigger also rewrites.
+fn rewrite_populated_anaphor_in_effect(effect: &mut Effect) {
+    // Case 1: bare Unimplemented anaphor at the top level (e.g., "the token
+    // created this way gains haste").
+    if let Some(new_effect) = rewrite_token_created_this_way_unimplemented(effect) {
+        *effect = new_effect;
+        return;
+    }
+
+    // Case 2: CreateDelayedTrigger whose inner ability references the token
+    // via ParentTarget. Rewrite to LastCreated and recurse into the inner
+    // effect for any nested anaphors.
+    if let Effect::CreateDelayedTrigger { effect: inner, .. } = effect {
+        rewrite_parent_target_to_last_created(&mut inner.effect);
+        rewrite_populated_anaphor_in_effect(&mut inner.effect);
+    }
+}
+
+/// If `effect` is `Unimplemented { description: "the token created this way
+/// <verb-phrase>" }`, try to parse the verb phrase as a continuous
+/// modification set and return a replacement `GenericEffect`. Returns `None`
+/// when the shape doesn't match so the caller leaves the effect untouched.
+fn rewrite_token_created_this_way_unimplemented(effect: &Effect) -> Option<Effect> {
+    let Effect::Unimplemented { description, .. } = effect else {
+        return None;
+    };
+    let text = description.as_deref()?;
+    let lower = text.to_lowercase();
+    // Accept both "the token" (populate / single) and "the tokens" (plural)
+    // anaphors — both resolve against LastCreated.
+    let rest = lower
+        .strip_prefix("the token created this way ")
+        .or_else(|| lower.strip_prefix("the tokens created this way "))?;
+    let mods = crate::parser::oracle_static::parse_continuous_modifications(rest);
+    if mods.is_empty() {
+        return None;
+    }
+    let static_def = StaticDefinition::continuous()
+        .affected(TargetFilter::LastCreated)
+        .modifications(mods)
+        .description(text.to_string());
+    Some(Effect::GenericEffect {
+        static_abilities: vec![static_def],
+        duration: Some(Duration::UntilEndOfTurn),
+        target: Some(TargetFilter::LastCreated),
+    })
+}
+
+/// Rewrite any `TargetFilter::ParentTarget` sitting in the target slot of
+/// an effect to `TargetFilter::LastCreated`. This is the runtime bridge for
+/// "sacrifice it at the beginning of the next end step" (Determined
+/// Iteration) and related delayed-trigger anaphors: the imperative parser
+/// emits ParentTarget for bare "it", but in the populate context the
+/// antecedent is the newly created token, not a parent ability's target.
+fn rewrite_parent_target_to_last_created(effect: &mut Effect) {
+    match effect {
+        Effect::Sacrifice { target, .. }
+        | Effect::Destroy { target, .. }
+        | Effect::Bounce { target, .. }
+        | Effect::Tap { target, .. }
+        | Effect::Untap { target, .. }
+        | Effect::Pump { target, .. } => {
+            if matches!(target, TargetFilter::ParentTarget) {
+                *target = TargetFilter::LastCreated;
+            }
+        }
+        _ => {}
     }
 }
 

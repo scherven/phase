@@ -58,9 +58,28 @@ pub fn resolve(
         }
     }
 
+    // CR 603.7c + CR 701.36a: If the delayed inner effect references the
+    // "token created this way" anaphor via `TargetFilter::LastCreated`,
+    // snapshot the currently-tracked token IDs into the delayed ability's
+    // targets NOW. The delayed trigger may fire arbitrarily later, by which
+    // time `last_created_token_ids` will have been overwritten by other
+    // token-creating effects (CR 603.7c: a delayed trigger refers to a
+    // particular object even if later events change it).
+    let snapshot_targets = if effect_references_last_created(&delayed_effect)
+        && !state.last_created_token_ids.is_empty()
+    {
+        state
+            .last_created_token_ids
+            .iter()
+            .map(|&id| TargetRef::Object(id))
+            .collect()
+    } else {
+        vec![]
+    };
+
     let delayed_ability = ResolvedAbility::new(
         delayed_effect,
-        vec![],
+        snapshot_targets,
         ability.source_id,
         ability.controller,
     );
@@ -85,6 +104,14 @@ pub fn resolve(
     });
 
     Ok(())
+}
+
+/// CR 701.36a + CR 603.7c: Walk an effect (and any nested sub-ability
+/// definitions) looking for `TargetFilter::LastCreated` in a target position.
+/// Used by `resolve` to decide whether to snapshot `last_created_token_ids`
+/// into the delayed ability's `targets` at creation time.
+fn effect_references_last_created(effect: &Effect) -> bool {
+    matches!(effect.target_filter(), Some(TargetFilter::LastCreated))
 }
 
 fn bind_contextual_filter_to_condition(
