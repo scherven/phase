@@ -18,7 +18,7 @@ use crate::types::zones::Zone;
 
 use super::oracle_nom::bridge::{nom_on_lower, split_once_on_lower};
 use super::oracle_nom::primitives::scan_contains;
-use super::oracle_warnings::{clear_warnings, take_warnings};
+use super::oracle_warnings::{clear_warnings, push_warning, take_warnings};
 
 use super::oracle_casting::{
     parse_additional_cost_line, parse_casting_restriction_line, parse_spell_casting_option_line,
@@ -839,18 +839,10 @@ pub fn parse_oracle_text(
             let normalized_cost_text = normalize_self_refs_for_static(cost_text, card_name);
             let cost = parse_oracle_cost(&normalized_cost_text);
 
-            // Try parsing without normalization first; if unimplemented, retry
-            // with self-reference normalization (e.g., "Marwyn's power" → "~'s power")
-            let mut def = parse_effect_chain(&effect_text, AbilityKind::Activated);
-            if has_unimplemented(&def) {
-                let normalized_effect = normalize_self_refs_for_static(&effect_text, card_name);
-                if normalized_effect != effect_text {
-                    let alt = parse_effect_chain(&normalized_effect, AbilityKind::Activated);
-                    if !has_unimplemented(&alt) {
-                        def = alt;
-                    }
-                }
-            }
+            // Retry with `~` normalization if the first pass left an
+            // Unimplemented node or emitted a `target-fallback` warning
+            // (Metalhead class: PutCounter silently fell back to `Any`).
+            let mut def = parse_activated_with_self_ref_fallback(&effect_text, card_name);
             def.cost = Some(cost);
             def.description = Some(line.to_string());
             if constraints.sorcery_speed() {
@@ -2109,6 +2101,79 @@ pub(super) fn has_unimplemented(def: &AbilityDefinition) -> bool {
         return has_unimplemented(sub);
     }
     false
+}
+
+/// Parse an activated-ability effect chain with self-reference fallback.
+///
+/// Tries the raw text first so patterns that depend on the literal card name
+/// (e.g. possessive forms like "Marwyn's power") keep working, then retries
+/// with `~`-normalized text if the first pass left the result unimplemented
+/// *or* emitted a `target-fallback` warning. The latter is the Metalhead
+/// class: the effect parsed to a concrete variant but `parse_target` silently
+/// fell back to `TargetFilter::Any` because the bare card-name wasn't
+/// recognized as a self-reference. Warnings from the discarded pass are
+/// dropped so they don't pollute coverage output.
+pub(super) fn parse_activated_with_self_ref_fallback(
+    effect_text: &str,
+    card_name: &str,
+) -> AbilityDefinition {
+    let pre_warnings = take_warnings();
+
+    let def = parse_effect_chain(effect_text, AbilityKind::Activated);
+    let first_warnings = take_warnings();
+    let first_has_target_fallback = first_warnings
+        .iter()
+        .any(|w| w.starts_with("target-fallback"));
+    let first_clean = !has_unimplemented(&def) && !first_has_target_fallback;
+
+    if first_clean {
+        for w in pre_warnings {
+            push_warning(w);
+        }
+        for w in first_warnings {
+            push_warning(w);
+        }
+        return def;
+    }
+
+    let normalized = normalize_self_refs_for_static(effect_text, card_name);
+    if normalized == effect_text {
+        for w in pre_warnings {
+            push_warning(w);
+        }
+        for w in first_warnings {
+            push_warning(w);
+        }
+        return def;
+    }
+
+    let alt = parse_effect_chain(&normalized, AbilityKind::Activated);
+    let alt_warnings = take_warnings();
+    let alt_has_target_fallback = alt_warnings
+        .iter()
+        .any(|w| w.starts_with("target-fallback"));
+    let alt_clean = !has_unimplemented(&alt) && !alt_has_target_fallback;
+
+    for w in pre_warnings {
+        push_warning(w);
+    }
+    if alt_clean {
+        // Normalized pass is strictly better — keep only its (empty) warnings.
+        for w in alt_warnings {
+            push_warning(w);
+        }
+        alt
+    } else {
+        // Neither pass was clean; prefer the original result and preserve
+        // first-pass diagnostics so the coverage dashboard reflects reality.
+        for w in first_warnings {
+            push_warning(w);
+        }
+        for w in alt_warnings {
+            push_warning(w);
+        }
+        def
+    }
 }
 
 #[cfg(test)]
