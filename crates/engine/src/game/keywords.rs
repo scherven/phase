@@ -599,10 +599,10 @@ mod tests {
         ));
         assert!(!has_keyword(
             &obj,
-            &Keyword::Cycling(ManaCost::Cost {
+            &Keyword::Cycling(crate::types::keywords::CyclingCost::Mana(ManaCost::Cost {
                 generic: 2,
                 shards: vec![],
-            })
+            }))
         ));
     }
 

@@ -13,7 +13,7 @@ use crate::types::ability::{
 use crate::types::card::{CardFace, CardLayout};
 use crate::types::card_type::{CardType, CoreType, Supertype};
 use crate::types::counter::CounterType;
-use crate::types::keywords::{Keyword, PartnerType};
+use crate::types::keywords::{CyclingCost, Keyword, PartnerType};
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
 use crate::types::replacements::ReplacementEvent;
@@ -538,18 +538,31 @@ pub fn synthesize_cycling(face: &mut CardFace) {
         .iter()
         .filter_map(|kw| match kw {
             // CR 702.29a: Basic cycling — discard self, draw a card.
-            Keyword::Cycling(cost) => {
-                let composite_cost = AbilityCost::Composite {
-                    costs: vec![
-                        AbilityCost::Mana { cost: cost.clone() },
-                        // CR 702.29a: "Discard THIS card" — self_ref = true.
-                        AbilityCost::Discard {
-                            count: 1,
-                            filter: None,
-                            random: false,
-                            self_ref: true,
+            // Cost may be mana ("cycling {2}") or non-mana ("cycling—pay 2 life").
+            Keyword::Cycling(cycling_cost) => {
+                // CR 702.29a: "Discard THIS card" — self_ref = true.
+                let discard_self = AbilityCost::Discard {
+                    count: 1,
+                    filter: None,
+                    random: false,
+                    self_ref: true,
+                };
+                let composite_cost = match cycling_cost {
+                    CyclingCost::Mana(cost) => AbilityCost::Composite {
+                        costs: vec![AbilityCost::Mana { cost: cost.clone() }, discard_self],
+                    },
+                    CyclingCost::NonMana(ac) => match ac {
+                        // Flatten an already-Composite non-mana cost so the discard joins
+                        // the existing sub-costs instead of nesting.
+                        AbilityCost::Composite { costs } => {
+                            let mut flat = costs.clone();
+                            flat.push(discard_self);
+                            AbilityCost::Composite { costs: flat }
+                        }
+                        other => AbilityCost::Composite {
+                            costs: vec![other.clone(), discard_self],
                         },
-                    ],
+                    },
                 };
                 let mut def = AbilityDefinition::new(
                     AbilityKind::Activated,

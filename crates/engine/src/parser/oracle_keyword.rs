@@ -10,7 +10,7 @@ use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::primitives::{scan_contains, split_once_on};
 use super::oracle_target::parse_type_phrase;
 use crate::types::ability::AbilityCost;
-use crate::types::keywords::{FlashbackCost, Keyword, WardCost};
+use crate::types::keywords::{CyclingCost, FlashbackCost, Keyword, WardCost};
 
 /// CR 702.16 + CR 702.11f: Expand compound "X from A and from B" keyword lines.
 /// Handles both "protection from X and from Y" and "hexproof from X and from Y"
@@ -287,6 +287,32 @@ fn parse_flashback_cost(cost_text: &str) -> Option<FlashbackCost> {
     }
 }
 
+/// CR 702.29a: Parse a cycling cost that appears after the em-dash
+/// (e.g., "cycling—pay 2 life" → `CyclingCost::NonMana(PayLife { life: 2 })`).
+///
+/// Mirrors `parse_flashback_cost` exactly: delegates to `parse_oracle_cost`
+/// so compound comma-separated costs compose into `AbilityCost::Composite`,
+/// which the synthesis in `database::synthesis::synthesize_cycling` splices
+/// alongside the mandatory "discard this card" sub-cost.
+fn parse_cycling_cost(cost_text: &str) -> Option<CyclingCost> {
+    let trimmed = cost_text.trim().trim_end_matches('.').trim_end_matches(')');
+    // Strip reminder text in parentheses (structural punctuation, not parser dispatch).
+    let clean = if let Some(paren_idx) = trimmed.find(" (") {
+        trimmed[..paren_idx].trim()
+    } else {
+        trimmed
+    };
+    if clean.is_empty() {
+        return None;
+    }
+    let cost = super::oracle_cost::parse_oracle_cost(clean);
+    match cost {
+        AbilityCost::Mana { cost: mana_cost } => Some(CyclingCost::Mana(mana_cost)),
+        AbilityCost::Unimplemented { .. } => None,
+        other => Some(CyclingCost::NonMana(other)),
+    }
+}
+
 ///
 /// Oracle text uses space-separated format: "protection from red", "ward {2}",
 /// "flashback {2}{U}". Converts to the colon format that `FromStr` expects,
@@ -340,6 +366,18 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
             if !matches!(parsed, Keyword::Unknown(_)) {
                 return Some(parsed);
             }
+        }
+    }
+
+    // CR 702.29a: Cycling with em-dash cost (non-mana or compound cost).
+    // "cycling—pay 2 life" (Street Wraith), "cycling—{2}{R}" (if any), or compound.
+    // `parse_cycling_cost` delegates to `parse_oracle_cost` so comma-separated parts
+    // compose into `AbilityCost::Composite`; synthesis then appends the mandatory
+    // "discard this card" sub-cost. Placed before typecycling so the empty-subtype
+    // guard never has to consider em-dash forms.
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("cycling\u{2014}").parse(text) {
+        if let Some(cyc_cost) = parse_cycling_cost(rest) {
+            return Some(Keyword::Cycling(cyc_cost));
         }
     }
 
@@ -887,7 +925,31 @@ mod tests {
     fn parse_keyword_from_oracle_regular_cycling_not_typecycling() {
         // "cycling {2}" must remain regular Cycling, not Typecycling
         let kw = parse_keyword_from_oracle("cycling {2}").unwrap();
-        assert!(matches!(kw, Keyword::Cycling(_)));
+        assert!(matches!(kw, Keyword::Cycling(CyclingCost::Mana(_))));
+    }
+
+    #[test]
+    fn parse_keyword_from_oracle_cycling_em_dash_pay_life() {
+        // CR 702.29a: Street Wraith — "cycling—pay 2 life" must yield
+        // Keyword::Cycling(CyclingCost::NonMana(PayLife { life: 2 })).
+        let kw = parse_keyword_from_oracle("cycling\u{2014}pay 2 life").unwrap();
+        let Keyword::Cycling(CyclingCost::NonMana(ac)) = kw else {
+            panic!("expected Cycling NonMana variant, got {kw:?}");
+        };
+        assert!(
+            matches!(ac, AbilityCost::PayLife { .. }),
+            "expected PayLife, got {ac:?}"
+        );
+    }
+
+    #[test]
+    fn parse_keyword_from_oracle_cycling_mana_backward_compat() {
+        // Regression: plain mana cycling still dispatches through the direct
+        // `FromStr` path and yields CyclingCost::Mana (unchanged behaviour).
+        let kw = parse_keyword_from_oracle("cycling {2}").unwrap();
+        let Keyword::Cycling(CyclingCost::Mana(_)) = kw else {
+            panic!("expected Cycling Mana variant, got {kw:?}");
+        };
     }
 
     #[test]

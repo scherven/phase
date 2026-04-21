@@ -17,6 +17,18 @@ pub enum FlashbackCost {
     NonMana(AbilityCost),
 }
 
+/// CR 702.29a: Cycling cost — either a mana cost or a non-mana cost
+/// (e.g., Street Wraith's "Pay 2 life"). Mirrors `FlashbackCost` so the
+/// synthesis in `database::synthesis::synthesize_cycling` can route
+/// composite non-mana costs through the existing `AbilityCost::Composite`
+/// activated-ability pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum CyclingCost {
+    Mana(ManaCost),
+    NonMana(AbilityCost),
+}
+
 /// Discriminant-level keyword identity used when the Oracle text refers to a keyword class
 /// without caring about its parameter payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -391,7 +403,7 @@ pub enum Keyword {
     // Parameterized keywords with ManaCost
     Protection(ProtectionTarget),
     Kicker(ManaCost),
-    Cycling(ManaCost),
+    Cycling(CyclingCost),
     Flashback(FlashbackCost),
     Ward(WardCost),
     Equip(ManaCost),
@@ -966,7 +978,11 @@ impl FromStr for Keyword {
             match name_lower.as_str() {
                 "protection" => return Ok(Keyword::Protection(parse_protection_target(p))),
                 "kicker" => return Ok(Keyword::Kicker(parse_keyword_mana_cost(p))),
-                "cycling" => return Ok(Keyword::Cycling(parse_keyword_mana_cost(p))),
+                "cycling" => {
+                    return Ok(Keyword::Cycling(CyclingCost::Mana(
+                        parse_keyword_mana_cost(p),
+                    )))
+                }
                 "flashback" => {
                     return Ok(Keyword::Flashback(FlashbackCost::Mana(
                         parse_keyword_mana_cost(p),
@@ -1459,7 +1475,14 @@ fn keyword_from_tagged(variant: &str, data: &serde_json::Value) -> Result<Keywor
         }
         // Parameterized: ManaCost
         "Kicker" => Ok(Keyword::Kicker(mana(data)?)),
-        "Cycling" => Ok(Keyword::Cycling(mana(data)?)),
+        "Cycling" => {
+            // Accept both legacy ManaCost format and new CyclingCost tagged format.
+            if let Ok(cycling_cost) = serde_json::from_value::<CyclingCost>(data.clone()) {
+                Ok(Keyword::Cycling(cycling_cost))
+            } else {
+                Ok(Keyword::Cycling(CyclingCost::Mana(mana(data)?)))
+            }
+        }
         "Flashback" => {
             // Accept both legacy ManaCost format and new FlashbackCost tagged format
             if let Ok(fb_cost) = serde_json::from_value::<FlashbackCost>(data.clone()) {
@@ -1705,8 +1728,11 @@ mod tests {
         }
 
         let cycling = Keyword::from_str("Cycling:2").unwrap();
-        assert!(matches!(cycling, Keyword::Cycling(ManaCost::Cost { .. })));
-        if let Keyword::Cycling(ManaCost::Cost { generic, .. }) = &cycling {
+        assert!(matches!(
+            cycling,
+            Keyword::Cycling(CyclingCost::Mana(ManaCost::Cost { .. }))
+        ));
+        if let Keyword::Cycling(CyclingCost::Mana(ManaCost::Cost { generic, .. })) = &cycling {
             assert_eq!(*generic, 2);
         }
 
