@@ -1,6 +1,6 @@
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ControllerRef, Effect, ModalChoice,
-    ModalSelectionConstraint, ResolvedAbility, TargetFilter, TargetRef, TypedFilter,
+    ModalSelectionConstraint, ResolvedAbility, TargetFilter, TargetRef, TypeFilter, TypedFilter,
 };
 use crate::types::game_state::{
     GameState, TargetSelectionConstraint, TargetSelectionProgress, TargetSelectionSlot,
@@ -742,6 +742,10 @@ fn legal_targets_for_ability_filter(
     filter: &TargetFilter,
     existing_slots: &[TargetSelectionSlot],
 ) -> Vec<TargetRef> {
+    if let Some(targets) = damage_any_target_legal_targets(state, ability, filter) {
+        return targets;
+    }
+
     if !uses_relative_controller_you(filter) {
         return targeting::find_legal_targets(state, filter, ability.controller, ability.source_id);
     }
@@ -812,6 +816,10 @@ fn legal_targets_for_selected_slot(
     spec: &TargetSlotSpec,
     selected_slots: &[Option<TargetRef>],
 ) -> Vec<TargetRef> {
+    if let Some(targets) = damage_any_target_legal_targets(state, ability, &spec.filter) {
+        return targets;
+    }
+
     let controller = if uses_relative_controller_you(&spec.filter) {
         relative_filter_controller(ability, selected_slots)
     } else {
@@ -819,6 +827,49 @@ fn legal_targets_for_selected_slot(
     };
 
     targeting::find_legal_targets(state, &spec.filter, controller, ability.source_id)
+}
+
+fn damage_any_target_legal_targets(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    filter: &TargetFilter,
+) -> Option<Vec<TargetRef>> {
+    if !matches!(
+        (&ability.effect, filter),
+        (
+            Effect::DealDamage {
+                target: TargetFilter::Any,
+                ..
+            },
+            TargetFilter::Any
+        )
+    ) {
+        return None;
+    }
+
+    let player_targets = targeting::find_legal_targets(
+        state,
+        &TargetFilter::Player,
+        ability.controller,
+        ability.source_id,
+    );
+    let permanent_targets = targeting::find_legal_targets(
+        state,
+        &TargetFilter::Typed(TypedFilter::default().with_type(TypeFilter::AnyOf(vec![
+            TypeFilter::Creature,
+            TypeFilter::Planeswalker,
+            TypeFilter::Battle,
+        ]))),
+        ability.controller,
+        ability.source_id,
+    );
+
+    Some(
+        player_targets
+            .into_iter()
+            .chain(permanent_targets)
+            .collect(),
+    )
 }
 
 /// CR 603.12: Check if a sub-ability represents a reflexive trigger whose targeting
@@ -1671,12 +1722,14 @@ fn build_mode_sequences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::zones::create_object;
     use crate::types::ability::{
         AbilityKind, Effect, ModalChoice, ModalSelectionConstraint, QuantityExpr, QuantityRef,
         TargetFilter, TypedFilter,
     };
+    use crate::types::card_type::CoreType;
     use crate::types::game_state::{GameState, TargetSelectionConstraint, TargetSelectionSlot};
-    use crate::types::identifiers::ObjectId;
+    use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
 
@@ -2074,10 +2127,7 @@ mod tests {
 
     #[test]
     fn build_target_slots_uses_prior_player_targets_for_relative_controller_filters() {
-        use crate::game::zones::create_object;
         use crate::types::ability::ControllerRef;
-        use crate::types::card_type::CoreType;
-        use crate::types::identifiers::CardId;
         use crate::types::zones::Zone;
 
         let mut state = GameState::new_two_player(42);
@@ -2138,6 +2188,102 @@ mod tests {
         assert_eq!(
             slots[1].legal_targets,
             vec![TargetRef::Object(opponent_creature)]
+        );
+    }
+
+    #[test]
+    fn build_target_slots_restricts_deal_damage_any_to_any_target_classes() {
+        let mut state = GameState::new_two_player(42);
+        let creature = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Creature".to_string(),
+            Zone::Battlefield,
+        );
+        let land = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Land".to_string(),
+            Zone::Battlefield,
+        );
+        let planeswalker = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(1),
+            "Planeswalker".to_string(),
+            Zone::Battlefield,
+        );
+        let battle = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(1),
+            "Battle".to_string(),
+            Zone::Battlefield,
+        );
+
+        state
+            .objects
+            .get_mut(&creature)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Creature];
+        state.objects.get_mut(&land).unwrap().card_types.core_types = vec![CoreType::Land];
+        state
+            .objects
+            .get_mut(&planeswalker)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Planeswalker];
+        state
+            .objects
+            .get_mut(&battle)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Battle];
+
+        let ability = ResolvedAbility::new(
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+            vec![],
+            ObjectId(900),
+            PlayerId(0),
+        );
+
+        let slots = build_target_slots(&state, &ability).expect("damage spell should have targets");
+        assert_eq!(slots.len(), 1);
+        assert!(
+            slots[0]
+                .legal_targets
+                .contains(&TargetRef::Object(creature)),
+            "creatures are legal any-target damage recipients"
+        );
+        assert!(
+            !slots[0].legal_targets.contains(&TargetRef::Object(land)),
+            "lands must not be legal any-target damage recipients"
+        );
+        assert!(
+            slots[0]
+                .legal_targets
+                .contains(&TargetRef::Object(planeswalker)),
+            "planeswalkers are legal any-target damage recipients"
+        );
+        assert!(
+            slots[0].legal_targets.contains(&TargetRef::Object(battle)),
+            "battles are legal any-target damage recipients"
+        );
+        assert!(
+            slots[0]
+                .legal_targets
+                .contains(&TargetRef::Player(PlayerId(0)))
+                && slots[0]
+                    .legal_targets
+                    .contains(&TargetRef::Player(PlayerId(1))),
+            "players remain legal any-target damage recipients"
         );
     }
 

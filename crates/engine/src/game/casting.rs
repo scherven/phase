@@ -131,6 +131,37 @@ struct PreparedSpellCast {
     origin_zone: Zone,
 }
 
+fn combined_spell_ability_def(
+    obj: &crate::game::game_object::GameObject,
+) -> Option<AbilityDefinition> {
+    let mut spell_abilities = obj
+        .abilities
+        .iter()
+        .filter(|a| a.kind == AbilityKind::Spell);
+    let mut combined = spell_abilities.next()?.clone();
+
+    if obj.modal.is_some() {
+        return Some(combined);
+    }
+
+    for spell_ability in spell_abilities {
+        append_to_ability_def_sub_chain(&mut combined, spell_ability.clone());
+    }
+
+    Some(combined)
+}
+
+fn append_to_ability_def_sub_chain(ability: &mut AbilityDefinition, next: AbilityDefinition) {
+    let mut node = ability;
+    while node.sub_ability.is_some() {
+        node = node
+            .sub_ability
+            .as_mut()
+            .expect("sub_ability checked above");
+    }
+    node.sub_ability = Some(Box::new(next));
+}
+
 /// CR 101.2 + CR 601.2a: Temporary restrictions can limit which zones affected
 /// players may cast spells from.
 fn is_blocked_by_cast_only_from_zones(
@@ -811,11 +842,7 @@ fn prepare_spell_cast_with_variant_override(
 
     // Only Spell-kind abilities define the spell's on-cast effect and targets.
     // Activated abilities are irrelevant when casting the permanent spell.
-    let ability_def = obj
-        .abilities
-        .iter()
-        .find(|a| a.kind == AbilityKind::Spell)
-        .cloned();
+    let ability_def = combined_spell_ability_def(obj);
 
     let flash_cost = restrictions::flash_timing_cost(state, player, obj);
     // ExileWithAltCost: override mana cost when casting from exile with this permission.
@@ -2176,12 +2203,12 @@ pub fn spell_has_legal_targets(
 
     // Only Spell-kind abilities contribute targets when casting.
     // Activated/Database abilities are irrelevant to spell castability.
-    let ability_def = match obj.abilities.iter().find(|a| a.kind == AbilityKind::Spell) {
+    let ability_def = match combined_spell_ability_def(obj) {
         Some(a) => a,
         None => return true, // Permanent with no spell abilities needs no targets
     };
 
-    let resolved = build_resolved_from_def(ability_def, obj.id, player);
+    let resolved = build_resolved_from_def(&ability_def, obj.id, player);
     match build_target_slots(&simulated, &resolved) {
         Ok(target_slots) => {
             if target_slots.is_empty() {
@@ -3873,6 +3900,76 @@ mod tests {
             };
         }
         obj_id
+    }
+
+    #[test]
+    fn prepare_spell_cast_chains_all_non_modal_spell_abilities_in_order() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Two-Step Spell".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Instant);
+        obj.abilities.push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Scry {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        ));
+        obj.abilities.push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        ));
+
+        let prepared = prepare_spell_cast(&state, PlayerId(0), obj_id).unwrap();
+        let combined = prepared
+            .ability_def
+            .expect("non-modal instant should prepare a spell ability");
+        assert!(matches!(*combined.effect, Effect::Scry { .. }));
+        let sub = combined
+            .sub_ability
+            .as_ref()
+            .expect("second spell ability should be chained");
+        assert!(matches!(*sub.effect, Effect::Draw { .. }));
+    }
+
+    #[test]
+    fn can_cast_object_now_checks_targets_across_all_non_modal_spell_abilities() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(0),
+            "Draw Then Doom".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Sorcery);
+        obj.abilities.push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        ));
+        obj.abilities.push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Destroy {
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                cant_regenerate: false,
+            },
+        ));
+
+        let castable = can_cast_object_now(&state, PlayerId(0), obj_id);
+        assert!(
+            !castable,
+            "later spell abilities with unresolved targets must still gate castability"
+        );
     }
 
     fn create_sorcery_in_hand(state: &mut GameState, player: PlayerId) -> ObjectId {
