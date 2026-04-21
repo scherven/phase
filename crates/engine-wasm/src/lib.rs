@@ -14,7 +14,7 @@ use engine::game::{
     start_game, start_game_with_starting_player, validate_deck_for_format,
     DeckCompatibilityRequest, DeckList,
 };
-use engine::types::format::FormatConfig;
+use engine::types::format::{FormatConfig, GameFormat};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
 use engine::types::match_config::MatchConfig;
@@ -290,6 +290,22 @@ fn archetype_name(a: DeckArchetype) -> &'static str {
         DeckArchetype::Combo => "Combo",
         DeckArchetype::Ramp => "Ramp",
     }
+}
+
+/// CR 100.4a: Returns the sideboard policy for a given game format as a
+/// tagged union: `{"type": "Forbidden"}`, `{"type": "Limited", "data": 15}`,
+/// or `{"type": "Unlimited"}`.
+///
+/// The frontend must exhaustive-switch on `.type` — unit variants (`Forbidden`,
+/// `Unlimited`) emit no `data` field under `#[serde(tag, content)]`.
+///
+/// The engine is the single authority for format sideboard rules; the frontend
+/// never hardcodes 15 or any other cap.
+#[wasm_bindgen(js_name = sideboardPolicyForFormat)]
+pub fn sideboard_policy_for_format(format: JsValue) -> Result<JsValue, JsValue> {
+    let format: GameFormat = serde_wasm_bindgen::from_value(format)
+        .map_err(|e| JsValue::from_str(&format!("Invalid GameFormat: {e}")))?;
+    Ok(to_js(&format.sideboard_policy()))
 }
 
 /// Evaluate deck compatibility and format legality using the loaded card database.

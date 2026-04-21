@@ -6,7 +6,7 @@ use crate::database::legality::{LegalityFormat, LegalityStatus};
 use crate::database::CardDatabase;
 use crate::types::card::CardFace;
 use crate::types::card_type::{CoreType, Supertype};
-use crate::types::format::GameFormat;
+use crate::types::format::{GameFormat, SideboardPolicy};
 use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::match_config::MatchType;
@@ -164,18 +164,25 @@ fn evaluate_standard(
         unknown_cards,
         LegalityFormat::Standard,
         "Standard",
+        GameFormat::Standard.sideboard_policy(),
     )
 }
 
 /// Shared validation for constructed formats (Standard, Pioneer, Pauper, etc.):
-/// checks unknown cards, no commander slot, minimum 60 cards, and legality against
-/// the given `LegalityFormat`.
+/// checks unknown cards, no commander slot, minimum 60 cards, sideboard size,
+/// combined main+sideboard 4-per-name limit, and legality against the given
+/// `LegalityFormat`.
+///
+/// CR 100.2a + CR 100.4a: The 4-card-per-name limit applies to the combined
+/// deck and sideboard, with basic lands and "A deck can have any number"
+/// cards exempt.
 fn evaluate_constructed(
     db: &CardDatabase,
     request: &DeckCompatibilityRequest,
     unknown_cards: &BTreeSet<String>,
     legality_format: LegalityFormat,
     format_label: &str,
+    sideboard_policy: SideboardPolicy,
 ) -> CompatibilityCheck {
     let mut reasons = Vec::new();
 
@@ -191,6 +198,28 @@ fn evaluate_constructed(
         reasons.push(format!(
             "Main deck has {} cards (minimum 60)",
             request.main_deck.len()
+        ));
+    }
+
+    // CR 100.4a: In constructed play, the sideboard may contain at most 15 cards.
+    if let SideboardPolicy::Limited(max) = sideboard_policy {
+        if request.sideboard.len() as u32 > max {
+            reasons.push(format!(
+                "Sideboard has {} cards (maximum {})",
+                request.sideboard.len(),
+                max
+            ));
+        }
+    }
+
+    // CR 100.2a + CR 100.4a: The 4-card limit applies to main + sideboard combined.
+    let counts = combined_copy_counts(db, request);
+    let over_limit = copy_limit_violations(db, &counts, 4);
+    if !over_limit.is_empty() {
+        reasons.push(summarize_cards(
+            "More than 4 copies (main + sideboard combined)",
+            &over_limit,
+            6,
         ));
     }
 
@@ -278,7 +307,12 @@ fn evaluate_commander(
         }
     }
 
-    if !request.sideboard.is_empty() {
+    // CR 903.5e: Commander games do not use sideboards.
+    if matches!(
+        GameFormat::Commander.sideboard_policy(),
+        SideboardPolicy::Forbidden
+    ) && !request.sideboard.is_empty()
+    {
         reasons.push("Commander decks should not include a sideboard".to_string());
     }
 
@@ -299,33 +333,11 @@ fn evaluate_commander(
         ));
     }
 
-    let mut combined_counts: HashMap<String, u32> = HashMap::new();
-    for name in &request.main_deck {
-        *combined_counts.entry(name.to_string()).or_insert(0) += 1;
-    }
-    for name in &request.commander {
-        if !request
-            .main_deck
-            .iter()
-            .any(|card| card.eq_ignore_ascii_case(name))
-        {
-            *combined_counts.entry(name.to_string()).or_insert(0) += 1;
-        }
-    }
-
-    let mut singleton_violations = BTreeSet::new();
-    for (name, count) in combined_counts {
-        if count <= 1 {
-            continue;
-        }
-        if BASIC_LANDS
-            .iter()
-            .any(|basic| basic.eq_ignore_ascii_case(&name))
-        {
-            continue;
-        }
-        singleton_violations.insert(format!("{name} ({count} copies)"));
-    }
+    // CR 903.5b: Other than basic lands, each card in a Commander deck must have
+    // a different English name. Canonicalization (CR 201.3) is handled inside
+    // the shared helper.
+    let counts = combined_copy_counts(db, request);
+    let singleton_violations = copy_limit_violations(db, &counts, 1);
     if !singleton_violations.is_empty() {
         reasons.push(summarize_cards(
             "Singleton violations",
@@ -452,7 +464,12 @@ fn evaluate_brawl(
         }
     }
 
-    if !request.sideboard.is_empty() {
+    // CR 903.5e (via Brawl variant): Brawl formats do not use sideboards.
+    if matches!(
+        GameFormat::Brawl.sideboard_policy(),
+        SideboardPolicy::Forbidden
+    ) && !request.sideboard.is_empty()
+    {
         reasons.push(format!(
             "{format_label} decks should not include a sideboard"
         ));
@@ -476,34 +493,10 @@ fn evaluate_brawl(
         ));
     }
 
-    // Singleton rule (basic lands exempt)
-    let mut combined_counts: HashMap<String, u32> = HashMap::new();
-    for name in &request.main_deck {
-        *combined_counts.entry(name.to_string()).or_insert(0) += 1;
-    }
-    for name in &request.commander {
-        if !request
-            .main_deck
-            .iter()
-            .any(|card| card.eq_ignore_ascii_case(name))
-        {
-            *combined_counts.entry(name.to_string()).or_insert(0) += 1;
-        }
-    }
-
-    let mut singleton_violations = BTreeSet::new();
-    for (name, count) in combined_counts {
-        if count <= 1 {
-            continue;
-        }
-        if BASIC_LANDS
-            .iter()
-            .any(|basic| basic.eq_ignore_ascii_case(&name))
-        {
-            continue;
-        }
-        singleton_violations.insert(format!("{name} ({count} copies)"));
-    }
+    // CR 903.5b (Brawl variant): singleton rule, basic lands exempt, canonicalized
+    // via CR 201.3 in the shared helper.
+    let counts = combined_copy_counts(db, request);
+    let singleton_violations = copy_limit_violations(db, &counts, 1);
     if !singleton_violations.is_empty() {
         reasons.push(summarize_cards(
             "Singleton violations",
@@ -609,6 +602,7 @@ fn evaluate_selected_format(
                 unknown_cards,
                 format.legality_format().unwrap(),
                 format.label(),
+                format.sideboard_policy(),
             );
             if !check.compatible {
                 reasons.extend(check.reasons);
@@ -631,6 +625,10 @@ fn evaluate_selected_format(
         GameFormat::FreeForAll | GameFormat::TwoHeadedGiant => true,
     };
 
+    // CR 100.4 × MatchType::Bo3: BO3 requires a sideboard regardless of format.
+    // `SideboardPolicy::Unlimited` formats (FreeForAll, TwoHeadedGiant) impose
+    // no size cap, so the only cross-cutting requirement is non-empty. The
+    // constructed-policy branches above enforce the 15-card upper bound.
     if matches!(request.selected_match_type, Some(MatchType::Bo3)) && !bo3_ready {
         compatible = false;
         reasons.push("BO3 requires a sideboard".to_string());
@@ -793,6 +791,79 @@ fn mana_color_letter(color: &ManaColor) -> String {
 /// by also trying just the front face name.
 fn card_is_known(db: &CardDatabase, name: &str) -> bool {
     db.get_face_by_name(resolve_card_name(db, name)).is_some()
+}
+
+/// Combined copy counts across main deck + sideboard + commander, keyed by the
+/// canonical (DFC-resolved, lowercased) card name so `"Plains"`/`"plains"` and
+/// `"Delver of Secrets // Insectile Aberration"`/`"Delver of Secrets"` are
+/// counted as the same card.
+///
+/// CR 201.3 + CR 903.5b: For deck construction, cards with interchangeable
+/// names have the same name.
+fn combined_copy_counts(
+    db: &CardDatabase,
+    request: &DeckCompatibilityRequest,
+) -> HashMap<String, u32> {
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for name in all_deck_cards(request) {
+        let canonical = resolve_card_name(db, name).to_ascii_lowercase();
+        *counts.entry(canonical).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// CR 100.2a: Flag card names whose combined count exceeds `max_copies`,
+/// excluding basic lands and cards whose Oracle text grants a per-card deck-limit
+/// override (e.g. Relentless Rats, Shadowborn Apostle, Rat Colony, Persistent
+/// Petitioners). Seven Dwarves / Nazgûl have finite caps printed on the card
+/// (7 and 9 respectively); v1 treats them as "unlimited" and documents the gap.
+///
+/// Input counts must be keyed by canonical (DFC-resolved, lowercased) names —
+/// use `combined_copy_counts`.
+fn copy_limit_violations(
+    db: &CardDatabase,
+    counts: &HashMap<String, u32>,
+    max_copies: u32,
+) -> BTreeSet<String> {
+    let mut violations = BTreeSet::new();
+    for (canonical_name, count) in counts {
+        if *count <= max_copies {
+            continue;
+        }
+        if BASIC_LANDS
+            .iter()
+            .any(|basic| basic.eq_ignore_ascii_case(canonical_name))
+        {
+            continue;
+        }
+        if has_deck_limit_override(db, canonical_name) {
+            continue;
+        }
+        // Prefer the database's canonical display casing for error messages;
+        // fall back to the lowercased key if the face is missing (e.g. for
+        // tests with unresolved names).
+        let display = db
+            .get_face_by_name(canonical_name)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| canonical_name.clone());
+        violations.insert(format!("{display} ({count} copies)"));
+    }
+    violations
+}
+
+/// CR 100.2a exception: a card's Oracle text may read
+/// "A deck can have any number of cards named <Name>." When present, the
+/// 4-per-name constructed limit and the 1-per-name singleton limit do not
+/// apply to that card. Class-level Oracle text detection — covers Relentless
+/// Rats, Shadowborn Apostle, Rat Colony, Persistent Petitioners, and any
+/// future card printed with the same phrasing.
+fn has_deck_limit_override(db: &CardDatabase, canonical_name: &str) -> bool {
+    db.get_face_by_name(canonical_name)
+        .and_then(|face| face.oracle_text.as_deref())
+        .is_some_and(|text| {
+            text.to_ascii_lowercase()
+                .contains("a deck can have any number of cards named")
+        })
 }
 
 /// Resolves a card name to the key used in the database. For DFC names like "Front // Back",
@@ -1167,11 +1238,19 @@ mod tests {
         (0..count).map(|_| name.to_string()).collect()
     }
 
+    /// Build a 60-card main deck with 4x `name` plus 56x Plains, respecting the
+    /// 4-per-name rule (CR 100.2a) while keeping the target card in the deck.
+    fn legal_60_main(name: &str) -> Vec<String> {
+        let mut deck = expand(name, 4);
+        deck.extend(expand("Plains", 56));
+        deck
+    }
+
     #[test]
     fn standard_legal_deck_passes() {
         let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
         let request = DeckCompatibilityRequest {
-            main_deck: expand("Legal Standard", 60),
+            main_deck: legal_60_main("Legal Standard"),
             sideboard: Vec::new(),
             commander: Vec::new(),
             selected_format: None,
@@ -1179,7 +1258,11 @@ mod tests {
         };
 
         let result = evaluate_deck_compatibility(&db, &request);
-        assert!(result.standard.compatible);
+        assert!(
+            result.standard.compatible,
+            "expected legal deck to pass, reasons: {:?}",
+            result.standard.reasons
+        );
     }
 
     #[test]
@@ -1363,7 +1446,7 @@ mod tests {
     fn selected_standard_and_commander_use_corresponding_checks() {
         let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
         let standard_request = DeckCompatibilityRequest {
-            main_deck: expand("Legal Standard", 60),
+            main_deck: legal_60_main("Legal Standard"),
             sideboard: Vec::new(),
             commander: Vec::new(),
             selected_format: Some(GameFormat::Standard),
@@ -1402,7 +1485,7 @@ mod tests {
         let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
         // Legal deck: all cards are pioneer-legal
         let legal_request = DeckCompatibilityRequest {
-            main_deck: expand("Pioneer Only", 60),
+            main_deck: legal_60_main("Pioneer Only"),
             sideboard: Vec::new(),
             commander: Vec::new(),
             selected_format: Some(GameFormat::Pioneer),
@@ -1449,6 +1532,7 @@ mod tests {
             &unknown_cards,
             LegalityFormat::Pioneer,
             "Pioneer",
+            GameFormat::Pioneer.sideboard_policy(),
         );
         assert!(!check.compatible);
         assert!(check.reasons.iter().any(|r| r.contains("minimum 60")));
@@ -1792,7 +1876,7 @@ mod tests {
     fn validate_standard_accepts_legal_deck() {
         let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
         let request = DeckCompatibilityRequest {
-            main_deck: vec!["Legal Standard".to_string(); 60],
+            main_deck: legal_60_main("Legal Standard"),
             sideboard: vec![],
             commander: vec![],
             selected_format: Some(GameFormat::Standard),
@@ -1825,6 +1909,290 @@ mod tests {
             selected_match_type: None,
         };
         assert!(validate_deck_for_format(&db, &request).is_ok());
+    }
+
+    // --- Sideboard size + combined copy-limit tests (CR 100.2a, CR 100.4a, CR 201.3) ---
+
+    #[test]
+    fn constructed_sideboard_of_15_is_accepted() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: legal_60_main("Legal Standard"),
+            sideboard: expand("Plains", 15),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(
+            result.selected_format_compatible,
+            Some(true),
+            "reasons: {:?}",
+            result.selected_format_reasons
+        );
+    }
+
+    #[test]
+    fn constructed_sideboard_of_16_is_rejected() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: expand("Legal Standard", 60),
+            sideboard: expand("Plains", 16),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("Sideboard has 16") && r.contains("maximum 15")));
+    }
+
+    #[test]
+    fn combined_copies_over_four_rejected() {
+        // 3 copies of "Legal Standard" in main + 2 in sideboard = 5 combined.
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let mut main = expand("Legal Standard", 3);
+        main.extend(expand("Plains", 57));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: expand("Legal Standard", 2),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("More than 4 copies")));
+    }
+
+    #[test]
+    fn combined_copies_basic_lands_exempt() {
+        // 60 Plains in main + 15 Plains in sideboard — exempt.
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: expand("Plains", 60),
+            sideboard: expand("Plains", 15),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(result.selected_format_compatible, Some(true));
+    }
+
+    #[test]
+    fn combined_copies_case_insensitive() {
+        // Regression for B1: "Legal Standard" + "legal standard" must count as
+        // the same card (CR 201.3 / CR 100.2a canonicalization).
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let mut main = expand("Legal Standard", 3);
+        main.extend(expand("legal standard", 2)); // lowercase
+        main.extend(expand("Plains", 55));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("More than 4 copies")));
+    }
+
+    #[test]
+    fn relentless_rats_allows_more_than_four() {
+        // B2: cards whose Oracle text grants "A deck can have any number of
+        // cards named X" are exempt from the 4-per-name rule.
+        let db_json = serde_json::json!({
+            "relentless rats": {
+                "name": "Relentless Rats",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": [], "core_types": ["Creature"], "subtypes": ["Rat"] },
+                "power": null,
+                "toughness": null,
+                "loyalty": null,
+                "defense": null,
+                "oracle_text": "Relentless Rats gets +1/+1 for each other creature named Relentless Rats you control. A deck can have any number of cards named Relentless Rats.",
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "scryfall_oracle_id": null,
+                "legalities": {
+                    "standard": "legal",
+                    "commander": "legal",
+                    "pioneer": "legal"
+                }
+            }
+        })
+        .to_string();
+        let db = CardDatabase::from_json_str(&db_json).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: expand("Relentless Rats", 60),
+            sideboard: expand("Relentless Rats", 15),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(result.selected_format_compatible, Some(true));
+    }
+
+    #[test]
+    fn commander_singleton_now_case_insensitive() {
+        // Regression for B1 applied retroactively to commander: 2x "Legal
+        // Standard" with different casing used to slip past the singleton
+        // check because the HashMap was keyed by raw string.
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let mut main = expand("Legal Standard", 1);
+        main.extend(expand("legal standard", 1));
+        main.extend(expand("Plains", 97));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(!result.commander.compatible);
+        assert!(result
+            .commander
+            .reasons
+            .iter()
+            .any(|r| r.contains("Singleton violations")));
+    }
+
+    #[test]
+    fn commander_singleton_exempts_deck_limit_override() {
+        // A commander deck running 5x Relentless Rats passes the singleton
+        // check because the card grants its own deck-limit override.
+        let db_json = serde_json::json!({
+            "relentless rats": {
+                "name": "Relentless Rats",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": [], "core_types": ["Creature"], "subtypes": ["Rat"] },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": "A deck can have any number of cards named Relentless Rats.",
+                "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "legal commander": {
+                "name": "Legal Commander",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": ["Legendary"], "core_types": ["Creature"], "subtypes": [] },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "plains": {
+                "name": "Plains",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": ["Basic"], "core_types": ["Land"], "subtypes": ["Plains"] },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            }
+        })
+        .to_string();
+        let db = CardDatabase::from_json_str(&db_json).unwrap();
+        let mut main = expand("Relentless Rats", 5);
+        main.extend(expand("Plains", 94));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            result.commander.compatible,
+            "expected compatible, got reasons: {:?}",
+            result.commander.reasons
+        );
+    }
+
+    #[test]
+    fn commander_sideboard_policy_forbidden_rejects_any_sideboard() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: expand("Plains", 99),
+            sideboard: vec!["Plains".to_string()],
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("should not include a sideboard")));
+    }
+
+    #[test]
+    fn validate_deck_for_format_rejects_oversize_sideboard() {
+        // S8: registration gate must reject a 16-card sideboard for Standard.
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let request = DeckCompatibilityRequest {
+            main_deck: expand("Legal Standard", 60),
+            sideboard: expand("Plains", 16),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Standard),
+            selected_match_type: None,
+        };
+        let err = validate_deck_for_format(&db, &request)
+            .expect_err("16-card sideboard must be rejected at registration");
+        assert!(err.iter().any(|r| r.contains("Sideboard has 16")));
+    }
+
+    #[test]
+    fn free_for_all_bo3_requires_sideboard_but_no_size_cap() {
+        // S2: Unlimited policy formats allow BO3 with arbitrarily large
+        // sideboards — only the non-empty requirement applies.
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+
+        let no_sideboard = DeckCompatibilityRequest {
+            main_deck: expand("Plains", 60),
+            sideboard: Vec::new(),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::FreeForAll),
+            selected_match_type: Some(MatchType::Bo3),
+        };
+        let result = evaluate_deck_compatibility(&db, &no_sideboard);
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(result
+            .selected_format_reasons
+            .iter()
+            .any(|r| r.contains("BO3 requires a sideboard")));
+
+        let huge_sideboard = DeckCompatibilityRequest {
+            sideboard: expand("Plains", 30),
+            ..no_sideboard
+        };
+        let result = evaluate_deck_compatibility(&db, &huge_sideboard);
+        assert_eq!(result.selected_format_compatible, Some(true));
     }
 
     #[test]

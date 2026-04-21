@@ -16,6 +16,23 @@ pub enum GameFormat {
     TwoHeadedGiant,
 }
 
+/// CR 100.4 / CR 100.4a: Per-format sideboard rules.
+///
+/// - `Forbidden`: the format does not have a sideboard at all (Commander, Brawl,
+///   Historic Brawl). Semantically distinct from `Limited(0)` — those formats
+///   don't "have" a zero-size sideboard, they have no sideboard concept.
+/// - `Limited(n)`: constructed formats cap the sideboard at `n` cards.
+///   CR 100.4a sets this at 15 for standard constructed play.
+/// - `Unlimited`: casual multiplayer variants (Free-for-All, Two-Headed Giant)
+///   impose no size constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum SideboardPolicy {
+    Forbidden,
+    Limited(u32),
+    Unlimited,
+}
+
 /// Configuration for a game format, describing player counts, starting life, deck rules, etc.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatConfig {
@@ -44,6 +61,24 @@ impl GameFormat {
             GameFormat::Brawl => Some(LegalityFormat::StandardBrawl),
             GameFormat::HistoricBrawl => Some(LegalityFormat::Brawl),
             GameFormat::FreeForAll | GameFormat::TwoHeadedGiant => None,
+        }
+    }
+
+    /// CR 100.4a: Per-format sideboard policy.
+    ///
+    /// Returns `Forbidden` for Commander/Brawl/Historic Brawl (no sideboard),
+    /// `Limited(15)` for constructed formats, and `Unlimited` for casual
+    /// multiplayer variants that impose no size cap.
+    pub fn sideboard_policy(self) -> SideboardPolicy {
+        match self {
+            GameFormat::Standard
+            | GameFormat::Pioneer
+            | GameFormat::Historic
+            | GameFormat::Pauper => SideboardPolicy::Limited(15),
+            GameFormat::Commander | GameFormat::Brawl | GameFormat::HistoricBrawl => {
+                SideboardPolicy::Forbidden
+            }
+            GameFormat::FreeForAll | GameFormat::TwoHeadedGiant => SideboardPolicy::Unlimited,
         }
     }
 
@@ -220,6 +255,54 @@ mod tests {
         assert_eq!(config.min_players, 4);
         assert_eq!(config.max_players, 4);
         assert!(config.team_based);
+    }
+
+    #[test]
+    fn sideboard_policy_matches_format_semantics() {
+        assert_eq!(
+            GameFormat::Standard.sideboard_policy(),
+            SideboardPolicy::Limited(15)
+        );
+        assert_eq!(
+            GameFormat::Pauper.sideboard_policy(),
+            SideboardPolicy::Limited(15)
+        );
+        assert_eq!(
+            GameFormat::Commander.sideboard_policy(),
+            SideboardPolicy::Forbidden
+        );
+        assert_eq!(
+            GameFormat::Brawl.sideboard_policy(),
+            SideboardPolicy::Forbidden
+        );
+        assert_eq!(
+            GameFormat::HistoricBrawl.sideboard_policy(),
+            SideboardPolicy::Forbidden
+        );
+        assert_eq!(
+            GameFormat::FreeForAll.sideboard_policy(),
+            SideboardPolicy::Unlimited
+        );
+        assert_eq!(
+            GameFormat::TwoHeadedGiant.sideboard_policy(),
+            SideboardPolicy::Unlimited
+        );
+    }
+
+    #[test]
+    fn sideboard_policy_serializes_as_tagged_union() {
+        // Unit variants emit {"type": "..."} with no "data" field — the
+        // frontend consumer must switch on `.type`, never destructure `.data`
+        // unconditionally.
+        let forbidden = serde_json::to_string(&SideboardPolicy::Forbidden).unwrap();
+        assert_eq!(forbidden, r#"{"type":"Forbidden"}"#);
+
+        let unlimited = serde_json::to_string(&SideboardPolicy::Unlimited).unwrap();
+        assert_eq!(unlimited, r#"{"type":"Unlimited"}"#);
+
+        // Tuple variant carries the cap in `data`.
+        let limited = serde_json::to_string(&SideboardPolicy::Limited(15)).unwrap();
+        assert_eq!(limited, r#"{"type":"Limited","data":15}"#);
     }
 
     #[test]
