@@ -462,8 +462,14 @@ fn parse_search_filter_suffixes(text: &str, properties: &mut Vec<FilterProp>) {
             break;
         }
 
+        // Consume a filter-conjunction "and " and restart the loop so post-"and"
+        // text re-checks the sentinels above. Without the `continue`, patterns like
+        // "... and reveal them" (Flourishing Bloom-Kin) or "... and reveal it"
+        // (Archdruid's Charm) would fall through to the specific-suffix handlers,
+        // miss every arm, and emit a spurious `reveal it` / `reveal them` warning.
         if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("and ").parse(remaining) {
             remaining = rest.trim_start();
+            continue;
         }
 
         if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("with that name").parse(remaining) {

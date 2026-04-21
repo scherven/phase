@@ -355,20 +355,21 @@ fn extract_when_next_spell_filter(payload: &str) -> Option<TargetFilter> {
 fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
     use crate::types::triggers::TriggerMode;
 
-    // Must start with "when you next cast a "
-    let _ = tag::<_, _, VerboseError<&str>>("when you next cast a ")
-        .parse(tp.lower)
-        .ok()?;
+    // Must start with "when you next cast a " or "when you next cast an ".
+    // Article choice depends on the payload — "a creature spell" vs "an instant or sorcery spell".
+    let article_result: nom::IResult<&str, &str, VerboseError<&str>> =
+        alt((tag("when you next cast a "), tag("when you next cast an "))).parse(tp.lower);
+    let (_, matched_prefix) = article_result.ok()?;
 
     // Must contain "this turn, " to delimit condition from effect
     let (before_this_turn, after) = tp.rsplit_around(" this turn, ")?;
 
-    // Extract the spell qualifier payload from between "when you next cast a " and the timing
-    // tail (" this turn,"). The payload is of the shape
+    // Extract the spell qualifier payload from between the matched article prefix and
+    // the timing tail (" this turn,"). The payload is of the shape
     //   [type-phrase]? "spell" [post-spell modifier]?
-    // — e.g. "creature spell" (type only), "spell with {x} in its mana cost" (post only),
-    // or "creature spell with {x} in its mana cost" (both).
-    let condition_fragment = &before_this_turn.lower["when you next cast a ".len()..];
+    // — e.g. "creature spell" (type only), "instant or sorcery spell" (disjunction),
+    // "spell with {x} in its mana cost" (post only).
+    let condition_fragment = &before_this_turn.lower[matched_prefix.len()..];
     let combined_filter = extract_when_next_spell_filter(condition_fragment)?;
 
     // Build a SpellCast trigger definition with the combined filter

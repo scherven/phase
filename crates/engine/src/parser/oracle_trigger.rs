@@ -4009,7 +4009,9 @@ fn type_only_filter(qualifier: &str) -> Option<TargetFilter> {
 /// definition in a single place.
 pub(crate) fn parse_post_spell_modifier(modifier: &str) -> Option<TargetFilter> {
     use crate::types::ability::{FilterProp, TypedFilter};
-    let (rest, ()) = alt((
+
+    // "with {X} in its mana cost" (Brass Infiniscope): X literally appears in the mana cost.
+    if let Ok((rest, ())) = alt((
         value(
             (),
             tag::<_, _, VerboseError<&str>>("with {x} in its mana cost"),
@@ -4017,13 +4019,28 @@ pub(crate) fn parse_post_spell_modifier(modifier: &str) -> Option<TargetFilter> 
         value((), tag("with an {x} in its mana cost")),
     ))
     .parse(modifier)
-    .ok()?;
-    if !rest.trim().is_empty() {
-        return None;
+    {
+        if rest.trim().is_empty() {
+            return Some(TargetFilter::Typed(
+                TypedFilter::default().properties(vec![FilterProp::HasXInManaCost]),
+            ));
+        }
     }
-    Some(TargetFilter::Typed(
-        TypedFilter::default().properties(vec![FilterProp::HasXInManaCost]),
-    ))
+
+    // CR 202.3: "with mana value N or less" / "with mana value N or greater" /
+    // "with mana value N" — numeric CMC comparator. Delegates to the shared
+    // `parse_mana_value_suffix` combinator so the full set of comparator forms
+    // (static N, X-variable, EventContextSourceManaValue) is supported here for
+    // free alongside the search filter and target filter call sites.
+    if let Some((prop, consumed)) = super::oracle_target::parse_mana_value_suffix(modifier) {
+        if modifier[consumed..].trim().is_empty() {
+            return Some(TargetFilter::Typed(
+                TypedFilter::default().properties(vec![prop]),
+            ));
+        }
+    }
+
+    None
 }
 
 /// Parse "whenever [subject] draw(s) [possessive] Nth card each turn" into a Drawn trigger
