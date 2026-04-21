@@ -1211,13 +1211,20 @@ pub fn resolve_ability_chain(
                 // CR 608.2c: Execute else branch if present ("Otherwise, [effect]")
                 if let Some(ref else_branch) = sub.else_ability {
                     let mut else_resolved = else_branch.as_ref().clone();
-                    // Inject revealed card IDs as targets for else branches following RevealTop,
-                    // so "Otherwise, put that card into your hand" knows which card to move.
+                    // Inject revealed card IDs as targets for else branches following RevealTop
+                    // or a pure-peek Dig (reveal: false, keep_count: 0), so "Otherwise, put
+                    // that card on the bottom of your library" knows which card to move.
                     if else_resolved.targets.is_empty()
                         && !state.last_revealed_ids.is_empty()
                         && matches!(
                             ability.effect,
-                            Effect::RevealTop { .. } | Effect::Dig { reveal: true, .. }
+                            Effect::RevealTop { .. }
+                                | Effect::Dig { reveal: true, .. }
+                                | Effect::Dig {
+                                    reveal: false,
+                                    keep_count: Some(0),
+                                    ..
+                                }
                         )
                     {
                         else_resolved.targets = state

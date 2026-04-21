@@ -372,6 +372,21 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
         }
     }
 
+    // CR 604.3: "N plus the number of X" / "N plus [inner]" offset expressions.
+    // Delegates inner to parse_cda_quantity which handles "the number of …" patterns.
+    if let Some((prefix, rest)) = lower.split_once(" plus ") {
+        if let Some((n, remainder)) = parse_number(prefix.trim()) {
+            if remainder.trim().is_empty() {
+                if let Some(inner) = parse_cda_quantity(rest.trim()) {
+                    return Some(QuantityExpr::Offset {
+                        inner: Box::new(inner),
+                        offset: n as i32,
+                    });
+                }
+            }
+        }
+    }
+
     // Fall back to parse_quantity_ref for named quantity patterns
     // (e.g., "the life you've lost this turn" → LifeLostThisTurn).
     // Strip leading "the " article before matching.
