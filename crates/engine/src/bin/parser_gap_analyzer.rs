@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process;
 
+use engine::database::legality::{LegalityFormat, LegalityStatus};
 use engine::database::CardDatabase;
 use engine::game::coverage::analyze_coverage;
 use engine::game::gap_analysis::{analyze_gaps, GapCategory};
@@ -11,6 +12,7 @@ fn main() {
     let mut near_misses_only = false;
     let mut category_filter: Option<String> = None;
     let mut verb_filter: Option<String> = None;
+    let mut format_filter: Option<LegalityFormat> = None;
 
     let mut args_iter = args.iter().skip(1).peekable();
     while let Some(arg) = args_iter.next() {
@@ -18,6 +20,22 @@ fn main() {
             "--near-misses-only" => near_misses_only = true,
             "--category" => category_filter = args_iter.next().cloned(),
             "--verb" => verb_filter = args_iter.next().cloned(),
+            "--format" => {
+                let raw = args_iter.next().cloned().unwrap_or_default();
+                match LegalityFormat::from_key(&raw) {
+                    Some(fmt) => format_filter = Some(fmt),
+                    None => {
+                        let valid: Vec<&'static str> =
+                            LegalityFormat::ALL.iter().map(|f| f.as_key()).collect();
+                        eprintln!(
+                            "Unknown --format value '{}'. Valid formats: {}",
+                            raw,
+                            valid.join(", ")
+                        );
+                        process::exit(1);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -40,6 +58,14 @@ fn main() {
         eprintln!("  --near-misses-only    Show only categories A-D (parser-fix gaps)");
         eprintln!("  --category <CAT>      Filter to a single category (A, B, C, D, F, G)");
         eprintln!("  --verb <VERB>         Filter Category A/B to a specific verb");
+        eprintln!(
+            "  --format <FORMAT>     Restrict gaps to cards legal in a format ({})",
+            LegalityFormat::ALL
+                .iter()
+                .map(|f| f.as_key())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         process::exit(0);
     };
 
@@ -57,7 +83,21 @@ fn main() {
     };
 
     eprintln!("Analyzing coverage...");
-    let summary = analyze_coverage(&db);
+    let mut summary = analyze_coverage(&db);
+
+    if let Some(fmt) = format_filter {
+        let before = summary.cards.len();
+        summary
+            .cards
+            .retain(|c| db.legality_status(&c.card_name, fmt) == Some(LegalityStatus::Legal));
+        eprintln!(
+            "Filtered to {}: {} / {} cards retained",
+            fmt.as_key(),
+            summary.cards.len(),
+            before
+        );
+    }
+
     eprintln!("Classifying gaps...");
     let mut analysis = analyze_gaps(&summary);
 

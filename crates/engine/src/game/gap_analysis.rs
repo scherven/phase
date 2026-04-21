@@ -153,7 +153,10 @@ pub struct VerbBreakdown {
     pub count: usize,
     pub single_gap_unlocks: usize,
     pub top_patterns: Vec<PatternEntry>,
+    /// Capped preview (up to 5) for human-readable output.
     pub example_cards: Vec<String>,
+    /// Full deduped card list for programmatic consumers (e.g. parser-velocity skill).
+    pub affected_cards: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,7 +173,10 @@ pub struct CategorySummary {
     pub by_verb: Vec<VerbBreakdown>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub top_patterns: Vec<PatternEntry>,
+    /// Capped preview (up to 10) for human-readable output.
     pub example_cards: Vec<String>,
+    /// Full deduped card list for programmatic consumers.
+    pub affected_cards: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,7 +187,12 @@ pub struct QuickWin {
     pub verb: Option<String>,
     pub cards_unlocked: usize,
     pub pattern: String,
+    /// Capped preview (up to 5) for human-readable output.
     pub example_cards: Vec<String>,
+    /// Full deduped card list; consumed by parser-velocity skill's batch
+    /// selection. Includes every card whose single classified gap matches
+    /// this quick win's (category, verb) key — not just the 5 shown above.
+    pub affected_cards: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -262,6 +273,21 @@ fn classify_gap(
     }
 
     (GapCategory::Unclassified, None, None)
+}
+
+/// Dedupe an iterator of strings while preserving first-seen order. Used to
+/// build `affected_cards` lists from gap iterators where the input order
+/// reflects gap discovery (stable) and we want the capped `example_cards`
+/// preview to be a deterministic prefix of the full list.
+fn dedup_preserve_order<I: IntoIterator<Item = String>>(iter: I) -> Vec<String> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for s in iter {
+        if seen.insert(s.clone()) {
+            out.push(s);
+        }
+    }
+    out
 }
 
 /// Analyze a coverage summary to classify each gap by failure reason.
@@ -368,13 +394,10 @@ pub fn analyze_gaps(summary: &CoverageSummary) -> GapAnalysis {
                     top_patterns.sort_by_key(|p| std::cmp::Reverse(p.count));
                     top_patterns.truncate(10);
 
-                    let example_cards: Vec<String> = verb_gaps
-                        .iter()
-                        .map(|g| g.card_name.clone())
-                        .collect::<std::collections::HashSet<_>>()
-                        .into_iter()
-                        .take(5)
-                        .collect();
+                    let affected_cards: Vec<String> =
+                        dedup_preserve_order(verb_gaps.iter().map(|g| g.card_name.clone()));
+                    let example_cards: Vec<String> =
+                        affected_cards.iter().take(5).cloned().collect();
 
                     VerbBreakdown {
                         verb,
@@ -382,6 +405,7 @@ pub fn analyze_gaps(summary: &CoverageSummary) -> GapAnalysis {
                         single_gap_unlocks: verb_single,
                         top_patterns,
                         example_cards,
+                        affected_cards,
                     }
                 })
                 .collect();
@@ -411,13 +435,9 @@ pub fn analyze_gaps(summary: &CoverageSummary) -> GapAnalysis {
             vec![]
         };
 
-        let example_cards: Vec<String> = gaps
-            .iter()
-            .map(|g| g.card_name.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .take(10)
-            .collect();
+        let affected_cards: Vec<String> =
+            dedup_preserve_order(gaps.iter().map(|g| g.card_name.clone()));
+        let example_cards: Vec<String> = affected_cards.iter().take(10).cloned().collect();
 
         categories.insert(
             cat.label().to_string(),
@@ -427,6 +447,7 @@ pub fn analyze_gaps(summary: &CoverageSummary) -> GapAnalysis {
                 by_verb,
                 top_patterns,
                 example_cards,
+                affected_cards,
             },
         );
     }
@@ -451,6 +472,7 @@ pub fn analyze_gaps(summary: &CoverageSummary) -> GapAnalysis {
                     cards_unlocked: verb_bd.single_gap_unlocks,
                     pattern: top_pattern,
                     example_cards: verb_bd.example_cards.clone(),
+                    affected_cards: verb_bd.affected_cards.clone(),
                 });
             }
         }
@@ -471,6 +493,7 @@ pub fn analyze_gaps(summary: &CoverageSummary) -> GapAnalysis {
                 cards_unlocked: cat_summary.single_gap_unlocks,
                 pattern: top_pattern,
                 example_cards: cat_summary.example_cards.iter().take(5).cloned().collect(),
+                affected_cards: cat_summary.affected_cards.clone(),
             });
         }
     }
@@ -498,6 +521,21 @@ fn normalize_gap_pattern(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedup_preserve_order_keeps_first_seen_order() {
+        let input = ["b", "a", "b", "c", "a", "d", "b"]
+            .iter()
+            .map(|s| s.to_string());
+        let out = dedup_preserve_order(input);
+        assert_eq!(out, vec!["b", "a", "c", "d"]);
+    }
+
+    #[test]
+    fn dedup_preserve_order_empty() {
+        let out = dedup_preserve_order(std::iter::empty::<String>());
+        assert!(out.is_empty());
+    }
 
     #[test]
     fn recognized_verbs_cover_predicate_verbs() {

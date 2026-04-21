@@ -28,7 +28,7 @@ SCOPE='crates/engine/src/parser'
 # always operate on string literals; flag unconditionally.
 FORBIDDEN='\.strip_prefix\(|\.strip_suffix\(|\.split_once\(|\.rsplit_once\(|\.contains\("|\.starts_with\("|\.ends_with\("|\.find\("|\.trim_end_matches\("|\.trim_start_matches\("'
 
-files=$(git diff --name-only "$BASE" -- "$SCOPE" 2>/dev/null || true)
+files=$(git diff --name-only "$BASE" -- "$SCOPE" ':(exclude)**/*.md' 2>/dev/null || true)
 if [ -z "$files" ]; then
     exit 0
 fi
