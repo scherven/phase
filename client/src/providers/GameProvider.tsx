@@ -104,7 +104,7 @@ async function applyAiFilters(
 async function pickOpponentDeck(
   playerDeck: ParsedDeck,
   formatConfig?: FormatConfig,
-): Promise<Array<{ name: string; count: number }>> {
+): Promise<ParsedDeck> {
   const { aiDeckName, aiArchetypeFilter, aiCoverageFloor } = usePreferencesStore.getState();
 
   // 1. Honor an explicit named selection — bypass all filters and feed fallbacks.
@@ -113,7 +113,7 @@ async function pickOpponentDeck(
     const starter = getCachedFeed("starter-decks")?.decks ?? [];
     const match =
       pool.find((d) => d.name === aiDeckName) ?? starter.find((d) => d.name === aiDeckName);
-    if (match) return match.main;
+    if (match) return feedDeckToParsedDeck(match);
     // Selection no longer exists — fall through to Random.
   }
 
@@ -127,7 +127,7 @@ async function pickOpponentDeck(
     const pick = candidates.length > 0
       ? candidates[Math.floor(Math.random() * candidates.length)]
       : pool[Math.floor(Math.random() * pool.length)];
-    return pick.main;
+    return feedDeckToParsedDeck(pick);
   }
 
   // 3. Fall back to starter-decks feed.
@@ -142,11 +142,12 @@ async function pickOpponentDeck(
     const pick = candidates.length > 0
       ? candidates[Math.floor(Math.random() * candidates.length)]
       : pool[Math.floor(Math.random() * pool.length)];
-    return pick.main;
+    return feedDeckToParsedDeck(pick);
   }
 
   // 4. Local deck storage fallback (no AI filter applied — no metadata available).
   const savedCandidates: ParsedDeck[] = [];
+  const commandZoneFormat = formatConfig?.command_zone === true;
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (key?.startsWith(STORAGE_KEY_PREFIX)) {
@@ -154,17 +155,17 @@ async function pickOpponentDeck(
       const deck = loadSavedDeck(deckName);
       if (!deck) continue;
       const cardCount = deck.main.reduce((s, e) => s + e.count, 0);
-      if (cardCount >= 40 && cardCount <= 80 && !deck.commander?.length) {
+      if (commandZoneFormat ? deck.commander?.length : cardCount >= 40 && cardCount <= 80 && !deck.commander?.length) {
         savedCandidates.push(deck);
       }
     }
   }
   if (savedCandidates.length > 0) {
-    return savedCandidates[Math.floor(Math.random() * savedCandidates.length)].main;
+    return savedCandidates[Math.floor(Math.random() * savedCandidates.length)];
   }
 
   // 5. Last resort: mirror the player's deck.
-  return playerDeck.main;
+  return playerDeck;
 }
 
 /** Build a DeckList (name-only) for the WASM engine to resolve. */
@@ -185,16 +186,14 @@ async function buildDeckList(deck: ParsedDeck, formatConfig?: FormatConfig): Pro
       playerSideboard.push(entry.name);
     }
   }
-  const opponentCards = await pickOpponentDeck(deck, formatConfig);
-  const opponentNames: string[] = [];
-  for (const entry of opponentCards) {
-    for (let i = 0; i < entry.count; i++) {
-      opponentNames.push(entry.name);
-    }
-  }
+  const opponentDeck = parsedDeckToDeckData(await pickOpponentDeck(deck, formatConfig));
   return {
     player: { main_deck: playerNames, sideboard: playerSideboard, commander: deck.commander ?? [] },
-    opponent: { main_deck: opponentNames, sideboard: [], commander: [] },
+    opponent: {
+      main_deck: opponentDeck.main_deck,
+      sideboard: opponentDeck.sideboard,
+      commander: opponentDeck.commander ?? [],
+    },
     ai_decks: [],
   };
 }

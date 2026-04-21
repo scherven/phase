@@ -363,6 +363,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn opponent_commander_in_command_zone_remains_visible() {
+        let mut state = GameState::new(FormatConfig::commander(), 2, 42);
+        let commander_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Opponent Commander".to_string(),
+            Zone::Command,
+        );
+        state.objects.get_mut(&commander_id).unwrap().is_commander = true;
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+
+        assert_eq!(filtered.command_zone, vec![commander_id]);
+        let commander = filtered.objects.get(&commander_id).unwrap();
+        assert_eq!(commander.name, "Opponent Commander");
+        assert!(!commander.face_down);
+        assert_eq!(commander.zone, Zone::Command);
+        assert!(commander.is_commander);
+    }
+
     // CR 601.2 + CR 408: A spell being cast is on the stack and is public information —
     // opponents see the caster, the spell, chosen targets, and mana payment progress
     // as it happens (the MTGA "Opponent is casting X" experience). The tests below guard
