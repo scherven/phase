@@ -152,4 +152,36 @@ describe("MyDecks", () => {
     expect(screen.getByText("BO3", { selector: "span" })).toBeInTheDocument();
     expect(screen.getByText("Unknown 1")).toBeInTheDocument();
   });
+
+  it("offers an edit action in selection mode without selecting the deck", async () => {
+    saveDeck("Selectable Deck", { main: [{ name: "Island", count: 60 }], sideboard: [] });
+    vi.mocked(evaluateDeckCompatibilityBatch).mockResolvedValue({
+      "Selectable Deck": {
+        standard: { compatible: true, reasons: [] },
+        commander: { compatible: false, reasons: [] },
+        bo3_ready: false,
+        unknown_cards: [],
+        selected_format_compatible: null,
+        selected_format_reasons: [],
+        color_identity: ["U"],
+      },
+    });
+    const onSelectDeck = vi.fn();
+    const onEditDeck = vi.fn();
+
+    render(
+      <MyDecks
+        mode="select"
+        activeDeckName={null}
+        onSelectDeck={onSelectDeck}
+        onEditDeck={onEditDeck}
+      />,
+    );
+
+    expect(await screen.findByText("Selectable Deck")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit Selectable Deck" }));
+
+    expect(onEditDeck).toHaveBeenCalledWith("Selectable Deck");
+    expect(onSelectDeck).not.toHaveBeenCalled();
+  });
 });

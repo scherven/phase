@@ -28,6 +28,11 @@ import type { HostSettings } from "../components/lobby/HostSetup";
 type ConnectionMode = "server" | "p2p";
 type MultiplayerView = "lobby" | "host-setup" | "deck-select";
 
+function parseViewParam(value: string | null): MultiplayerView {
+  if (value === "host-setup" || value === "deck-select") return value;
+  return "lobby";
+}
+
 type PendingAction =
   | { type: "host"; settings: HostSettings; connectionMode: ConnectionMode }
   | {
@@ -53,7 +58,9 @@ export function MultiplayerPage() {
   const startP2PHostingSession = useMultiplayerStore((s) => s.startP2PHostingSession);
   const showToast = useMultiplayerStore((s) => s.showToast);
 
-  const [view, setView] = useState<MultiplayerView>("lobby");
+  const [view, setView] = useState<MultiplayerView>(() => (
+    parseViewParam(new URLSearchParams(location.search).get("view"))
+  ));
   const [activeDeckName, setActiveDeckName] = useState<string | null>(null);
   // Initial mode tracks `serverAddress`: if the user has picked "None" in
   // `ServerPicker` (empty string sentinel), skip straight to P2P so the
@@ -202,6 +209,20 @@ export function MultiplayerPage() {
     }
     setView(deckSelectReturn);
   };
+
+  const handleEditDeck = useCallback((name: string) => {
+    const returnParams = new URLSearchParams(location.search);
+    if (view === "lobby") {
+      returnParams.delete("view");
+    } else {
+      returnParams.set("view", view);
+    }
+    const returnSearch = returnParams.toString();
+    const returnTo = `${location.pathname}${returnSearch ? `?${returnSearch}` : ""}`;
+    navigate(
+      `/deck-builder?deck=${encodeURIComponent(name)}&returnTo=${encodeURIComponent(returnTo)}`,
+    );
+  }, [location.pathname, location.search, navigate, view]);
 
   const expandDeck = useCallback(() => {
     const deck = loadActiveDeck();
@@ -630,6 +651,7 @@ export function MultiplayerPage() {
               mode="select"
               selectedFormat={selectedFormat}
               onSelectDeck={handleSelectDeck}
+              onEditDeck={handleEditDeck}
               activeDeckName={activeDeckName}
             />
           </>

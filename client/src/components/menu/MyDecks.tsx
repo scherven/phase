@@ -89,6 +89,7 @@ interface DeckTileProps {
   isActive: boolean;
   compatibility: DeckCompatibilityResult | undefined;
   onClick: () => void;
+  onEdit?: () => void;
   onDelete?: () => void;
   onAdopt?: () => void;
   /** When true, suppress the feed badge (used in subscription view where the header already identifies the feed). */
@@ -97,7 +98,7 @@ interface DeckTileProps {
   feedDeckOverride?: FeedDeck;
 }
 
-function DeckTile({ deckName, isActive, compatibility, onClick, onDelete, onAdopt, hideFeedBadge, feedDeckOverride }: DeckTileProps) {
+function DeckTile({ deckName, isActive, compatibility, onClick, onEdit, onDelete, onAdopt, hideFeedBadge, feedDeckOverride }: DeckTileProps) {
   const [coverageHovered, setCoverageHovered] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -139,6 +140,20 @@ function DeckTile({ deckName, isActive, compatibility, onClick, onDelete, onAdop
         <span className="absolute right-2 top-2 z-10 rounded-full bg-amber-500/80 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-black">
           {feedBadge}
         </span>
+      )}
+
+      {onEdit && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onEdit(); }}
+          className={`absolute right-2 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-black/70 text-gray-300 opacity-0 transition-opacity hover:bg-indigo-600 hover:text-white group-hover:opacity-100 ${feedBadge ? "top-10" : "top-2"}`}
+          title={`Edit ${displayName}`}
+          aria-label={`Edit ${displayName}`}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5">
+            <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 2.474L6.226 11.16a2.25 2.25 0 0 1-.892.547l-2.115.705a.5.5 0 0 1-.632-.632l.705-2.115a2.25 2.25 0 0 1 .547-.892l7.174-7.346Z" />
+            <path d="M3.75 13.5a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5Z" />
+          </svg>
+        </button>
       )}
 
       {onDelete && (
@@ -752,6 +767,7 @@ export function MyDecks({
                   isActive={deckName === activeDeckName}
                   compatibility={compatibilities[deckName]}
                   onClick={() => handleTileClick(deckName)}
+                  onEdit={onEditDeck ? () => onEditDeck(deckName) : undefined}
                   onDelete={mode === "manage" ? () => handleDeleteDeck(deckName) : undefined}
                 />
               ))}
@@ -781,6 +797,7 @@ export function MyDecks({
                     isActive={deckName === activeDeckName}
                     compatibility={compatibilities[deckName]}
                     onClick={() => handleTileClick(deckName)}
+                    onEdit={onEditDeck ? () => onEditDeck(deckName) : undefined}
                   />
                 ))}
               </div>

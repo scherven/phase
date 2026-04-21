@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 
 import type { FormatConfig, GameFormat, MatchType } from "../adapter/types";
 import { useAudioContext } from "../audio/useAudioContext";
@@ -54,6 +54,7 @@ const PILL_INACTIVE = "border-white/10 text-slate-400 hover:border-white/18 hove
 
 export function GameSetupPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   useAudioContext("menu");
 
@@ -111,6 +112,13 @@ export function GameSetupPage() {
   const handleSelectDeck = (name: string) => {
     setActiveDeckName(name);
     localStorage.setItem(ACTIVE_DECK_KEY, name);
+  };
+
+  const handleEditDeck = (name: string) => {
+    const returnTo = `${location.pathname}${location.search}`;
+    navigate(
+      `/deck-builder?deck=${encodeURIComponent(name)}&returnTo=${encodeURIComponent(returnTo)}`,
+    );
   };
 
   const handleStartAI = () => {
@@ -180,6 +188,7 @@ export function GameSetupPage() {
             selectedFormat={selectedFormat ?? undefined}
             selectedMatchType={matchType}
             onSelectDeck={handleSelectDeck}
+            onEditDeck={handleEditDeck}
             activeDeckName={activeDeckName}
             bare
             onCompatibilityUpdate={setCompatibilities}
