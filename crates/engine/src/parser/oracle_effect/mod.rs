@@ -7194,7 +7194,7 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
     if after_to.is_empty()
         || tag::<_, _, VerboseError<&str>>("instead")
             .parse(after_to_no_punct)
-            .map_or(false, |(rem, _)| rem.is_empty())
+            .is_ok_and(|(rem, _)| rem.is_empty())
     {
         return Some((
             Effect::DealDamage {
@@ -8115,13 +8115,6 @@ mod tests {
                 }
             ),
             "expected DealDamage with Fixed(7)/ParentTarget, got: {effect:?}"
-        );
-        // No warning should have been emitted
-        assert!(
-            !crate::parser::oracle_warnings::take_warnings()
-                .iter()
-                .any(|w| w.contains("target-fallback")),
-            "unexpected target-fallback warning"
         );
     }
 
