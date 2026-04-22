@@ -232,6 +232,8 @@ pub fn parse_replacement_line(text: &str, card_name: &str) -> Option<Replacement
     // --- Token creation replacement: "if one or more tokens would be created..." ---
     if nom_primitives::scan_contains(&lower, "tokens would be created")
         || nom_primitives::scan_contains(&lower, "token would be created")
+        || nom_primitives::scan_contains(&lower, "would create one or more tokens")
+        || nom_primitives::scan_contains(&lower, "would create a token")
     {
         if let Some(def) = parse_token_replacement(&lower, &text) {
             return Some(def);
@@ -241,6 +243,8 @@ pub fn parse_replacement_line(text: &str, card_name: &str) -> Option<Replacement
     // --- Counter addition replacement: "if one or more ... counters would be put on..." ---
     if nom_primitives::scan_contains(&lower, "counters would be put on")
         || nom_primitives::scan_contains(&lower, "counter would be put on")
+        || nom_primitives::scan_contains(&lower, "would put one or more counters")
+        || nom_primitives::scan_contains(&lower, "would put a counter")
     {
         if let Some(def) = parse_counter_replacement(&lower, &text) {
             return Some(def);
@@ -2372,9 +2376,18 @@ fn parse_counter_replacement(lower: &str, original_text: &str) -> Option<Replace
         QuantityModification::Minus { value }
     };
 
-    let def = ReplacementDefinition::new(ReplacementEvent::AddCounter)
+    let mut def = ReplacementDefinition::new(ReplacementEvent::AddCounter)
         .quantity_modification(modification)
         .description(original_text.to_string());
+    if nom_primitives::scan_contains(lower, "permanent you control") {
+        def = def.valid_card(TargetFilter::Typed(
+            TypedFilter::permanent().controller(ControllerRef::You),
+        ));
+    } else if nom_primitives::scan_contains(lower, "creature you control") {
+        def = def.valid_card(TargetFilter::Typed(
+            TypedFilter::creature().controller(ControllerRef::You),
+        ));
+    }
 
     Some(def)
 }
@@ -2787,7 +2800,8 @@ fn parse_generic_unless_condition(
 mod tests {
     use super::*;
     use crate::types::ability::{
-        Comparator, ControllerRef, QuantityExpr, QuantityRef, ReplacementCondition, ShieldKind,
+        Comparator, ControllerRef, QuantityExpr, QuantityModification, QuantityRef,
+        ReplacementCondition, ShieldKind,
     };
     use crate::types::card_type::Supertype;
     use crate::types::keywords::Keyword;
@@ -4493,6 +4507,21 @@ mod tests {
     }
 
     #[test]
+    fn token_doubling_replacement_current_oracle_wording() {
+        let def = parse_replacement_line(
+            "If an effect would create one or more tokens under your control, it creates twice that many of those tokens instead.",
+            "Doubling Season",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::CreateToken);
+        assert_eq!(
+            def.quantity_modification,
+            Some(QuantityModification::Double)
+        );
+        assert_eq!(def.token_owner_scope, Some(ControllerRef::You));
+    }
+
+    #[test]
     fn counter_doubling_replacement() {
         let def = parse_replacement_line(
             "If one or more +1/+1 counters would be put on a creature you control, twice that many +1/+1 counters are put on it instead.",
@@ -4501,6 +4530,36 @@ mod tests {
         .unwrap();
         assert_eq!(def.event, ReplacementEvent::AddCounter);
         assert!(def.quantity_modification.is_some());
+        assert!(matches!(
+            def.valid_card,
+            Some(TargetFilter::Typed(TypedFilter {
+                type_filters,
+                controller: Some(ControllerRef::You),
+                ..
+            })) if type_filters == vec![TypeFilter::Creature]
+        ));
+    }
+
+    #[test]
+    fn counter_doubling_replacement_current_oracle_wording() {
+        let def = parse_replacement_line(
+            "If an effect would put one or more counters on a permanent you control, it puts twice that many of those counters on that permanent instead.",
+            "Doubling Season",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::AddCounter);
+        assert_eq!(
+            def.quantity_modification,
+            Some(QuantityModification::Double)
+        );
+        assert!(matches!(
+            def.valid_card,
+            Some(TargetFilter::Typed(TypedFilter {
+                type_filters,
+                controller: Some(ControllerRef::You),
+                ..
+            })) if type_filters == vec![TypeFilter::Permanent]
+        ));
     }
 
     #[test]

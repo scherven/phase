@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::types::card::CardFace;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::{ManaColor, ManaCost};
@@ -58,26 +59,58 @@ pub fn should_redirect_to_command_zone(
 /// number of colors in a commander's color identity, that quality is
 /// undefined if that player doesn't have a commander."
 pub fn commander_color_identity(state: &GameState, player: PlayerId) -> Vec<ManaColor> {
-    use super::printed_cards::derive_colors_from_mana_cost;
-
     let mut identity: Vec<ManaColor> = Vec::new();
+    if let Some(pool) = state.deck_pools.iter().find(|pool| pool.player == player) {
+        for entry in &pool.current_commander {
+            for color in card_face_color_identity(&entry.card) {
+                push_identity_color(&mut identity, color);
+            }
+        }
+        if !identity.is_empty() {
+            return identity;
+        }
+    }
+
     for obj in state
         .objects
         .values()
         .filter(|obj| obj.is_commander && obj.owner == player)
     {
         for &c in &obj.color {
-            if !identity.contains(&c) {
-                identity.push(c);
-            }
+            push_identity_color(&mut identity, c);
         }
-        for c in derive_colors_from_mana_cost(&obj.mana_cost) {
-            if !identity.contains(&c) {
-                identity.push(c);
-            }
+        for c in super::printed_cards::derive_colors_from_mana_cost(&obj.mana_cost) {
+            push_identity_color(&mut identity, c);
         }
     }
     identity
+}
+
+fn card_face_color_identity(face: &CardFace) -> Vec<ManaColor> {
+    if !face.color_identity.is_empty() {
+        return ManaColor::ALL
+            .iter()
+            .copied()
+            .filter(|color| face.color_identity.contains(color))
+            .collect();
+    }
+
+    let mut identity = Vec::new();
+    if let Some(overrides) = &face.color_override {
+        for &color in overrides {
+            push_identity_color(&mut identity, color);
+        }
+    }
+    for color in super::printed_cards::derive_colors_from_mana_cost(&face.mana_cost) {
+        push_identity_color(&mut identity, color);
+    }
+    identity
+}
+
+fn push_identity_color(identity: &mut Vec<ManaColor>, color: ManaColor) {
+    if !identity.contains(&color) {
+        identity.push(color);
+    }
 }
 
 /// CR 903.4: Each card must be within the commander's color identity.
@@ -201,9 +234,12 @@ pub fn validate_commander_deck(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::deck_loading::DeckEntry;
     use crate::game::zones::create_object;
+    use crate::types::card::CardFace;
     use crate::types::card_type::CoreType;
     use crate::types::format::FormatConfig;
+    use crate::types::game_state::PlayerDeckPool;
     use crate::types::identifiers::CardId;
     use crate::types::mana::{ManaCost, ManaCostShard};
 
@@ -392,6 +428,41 @@ mod tests {
         assert_eq!(identity.len(), 2);
         assert!(identity.contains(&ManaColor::Blue));
         assert!(identity.contains(&ManaColor::Red));
+    }
+
+    #[test]
+    fn commander_color_identity_prefers_registered_card_identity() {
+        let mut state = setup_commander_game();
+        state.deck_pools.push(PlayerDeckPool {
+            player: PlayerId(0),
+            current_commander: vec![DeckEntry {
+                card: CardFace {
+                    color_identity: vec![
+                        ManaColor::White,
+                        ManaColor::Blue,
+                        ManaColor::Black,
+                        ManaColor::Red,
+                        ManaColor::Green,
+                    ],
+                    ..CardFace::default()
+                },
+                count: 1,
+            }],
+            ..PlayerDeckPool::default()
+        });
+        create_commander_in_command_zone(&mut state, PlayerId(0), "Ramos", vec![]);
+
+        let identity = commander_color_identity(&state, PlayerId(0));
+        assert_eq!(
+            identity,
+            vec![
+                ManaColor::White,
+                ManaColor::Blue,
+                ManaColor::Black,
+                ManaColor::Red,
+                ManaColor::Green,
+            ]
+        );
     }
 
     #[test]
@@ -804,6 +875,7 @@ mod tests {
             static_abilities: vec![],
             replacements: vec![],
             color_override: None,
+            color_identity: vec![],
             scryfall_oracle_id: None,
             modal: None,
             additional_cost: None,

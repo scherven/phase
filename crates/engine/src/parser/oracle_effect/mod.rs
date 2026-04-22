@@ -9951,7 +9951,7 @@ mod tests {
             e,
             Effect::Choose {
                 choice_type: ChoiceType::CreatureType,
-                persist: false
+                persist: true
             }
         );
     }
@@ -15314,5 +15314,40 @@ mod tests {
         assert_eq!(trigger.valid_target, Some(TargetFilter::Controller));
         // Inner effect should parse as a draw.
         assert!(matches!(&*effect.effect, Effect::Draw { .. }));
+    }
+
+    #[test]
+    fn kindred_dominance_excludes_chosen_creature_type() {
+        use crate::types::ability::{ChoiceType, TypedFilter};
+
+        let def = parse_effect_chain(
+            "Choose a creature type. Destroy all creatures that aren't of the chosen type.",
+            AbilityKind::Spell,
+        );
+        let Effect::Choose {
+            choice_type,
+            persist,
+        } = &*def.effect
+        else {
+            panic!("expected Choose, got {:?}", def.effect);
+        };
+        assert_eq!(*choice_type, ChoiceType::CreatureType);
+        assert!(*persist);
+
+        let destroy = def.sub_ability.as_ref().expect("destroy continuation");
+        let Effect::DestroyAll { target, .. } = &*destroy.effect else {
+            panic!("expected DestroyAll, got {:?}", destroy.effect);
+        };
+        let expected = TargetFilter::And {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter::creature()),
+                TargetFilter::Not {
+                    filter: Box::new(TargetFilter::Typed(
+                        TypedFilter::default().properties(vec![FilterProp::IsChosenCreatureType]),
+                    )),
+                },
+            ],
+        };
+        assert_eq!(target, &expected);
     }
 }

@@ -63,6 +63,8 @@ pub struct CardFace {
     pub static_abilities: Vec<StaticDefinition>,
     pub replacements: Vec<ReplacementDefinition>,
     pub color_override: Option<Vec<ManaColor>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub color_identity: Vec<ManaColor>,
     #[serde(default)]
     pub scryfall_oracle_id: Option<String>,
     /// Modal spell metadata ("Choose one —", "Choose two —", etc.).

@@ -594,6 +594,21 @@ pub fn synthesize_cycling(face: &mut CardFace) {
                         target: TargetFilter::Controller,
                     },
                 );
+                let mut put_in_hand_def = AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::ChangeZone {
+                        origin: Some(Zone::Library),
+                        destination: Zone::Hand,
+                        target: TargetFilter::Any,
+                        owner_library: false,
+                        enter_transformed: false,
+                        under_your_control: false,
+                        enter_tapped: false,
+                        enters_attacking: false,
+                        up_to: false,
+                    },
+                );
+                put_in_hand_def.sub_ability = Some(Box::new(shuffle_def));
                 let mut def = AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::SearchLibrary {
@@ -605,7 +620,7 @@ pub fn synthesize_cycling(face: &mut CardFace) {
                 )
                 .cost(composite_cost);
                 def.activation_zone = Some(Zone::Hand);
-                def.sub_ability = Some(Box::new(shuffle_def));
+                def.sub_ability = Some(Box::new(put_in_hand_def));
                 Some(def)
             }
             _ => None,
@@ -1451,6 +1466,11 @@ fn build_oracle_face_inner(
         static_abilities: parsed.statics,
         replacements: parsed.replacements,
         color_override,
+        color_identity: mtgjson
+            .color_identity
+            .iter()
+            .filter_map(|code| map_mtgjson_color(code))
+            .collect(),
         scryfall_oracle_id: oracle_id,
         modal: parsed.modal,
         additional_cost: parsed.additional_cost,
@@ -1466,6 +1486,42 @@ fn build_oracle_face_inner(
     face.brawl_commander = compute_brawl_commander(mtgjson, &face);
     synthesize_all(&mut face);
     face
+}
+
+#[cfg(test)]
+mod cycling_synthesis_tests {
+    use super::*;
+
+    #[test]
+    fn typecycling_moves_found_card_to_hand_before_shuffle() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Typecycling {
+                cost: ManaCost::Cost {
+                    generic: 1,
+                    shards: vec![],
+                },
+                subtype: "Basic Land".to_string(),
+            }],
+            ..CardFace::default()
+        };
+
+        synthesize_cycling(&mut face);
+
+        let ability = face.abilities.first().expect("typecycling ability");
+        assert!(matches!(&*ability.effect, Effect::SearchLibrary { .. }));
+        let put_in_hand = ability.sub_ability.as_ref().expect("put in hand");
+        assert!(matches!(
+            &*put_in_hand.effect,
+            Effect::ChangeZone {
+                origin: Some(Zone::Library),
+                destination: Zone::Hand,
+                target: TargetFilter::Any,
+                ..
+            }
+        ));
+        let shuffle = put_in_hand.sub_ability.as_ref().expect("shuffle");
+        assert!(matches!(&*shuffle.effect, Effect::Shuffle { .. }));
+    }
 }
 
 #[cfg(test)]
