@@ -8116,6 +8116,13 @@ mod tests {
             ),
             "expected DealDamage with Fixed(7)/ParentTarget, got: {effect:?}"
         );
+        // No warning should have been emitted
+        assert!(
+            !crate::parser::oracle_warnings::take_warnings()
+                .iter()
+                .is_some(),
+            "unexpected target-fallback warning"
+        );
     }
 
     #[test]
