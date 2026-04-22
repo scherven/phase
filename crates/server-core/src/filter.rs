@@ -175,6 +175,7 @@ mod tests {
                 static_abilities: vec![],
                 replacements: vec![],
                 color_override: None,
+                color_identity: vec![],
                 scryfall_oracle_id: None,
                 modal: None,
                 additional_cost: None,

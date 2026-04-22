@@ -476,6 +476,73 @@ mod tests {
     }
 
     #[test]
+    fn search_choice_change_zone_continuation_moves_selected_card_to_hand() {
+        use crate::game::effects::resolve_ability_chain;
+        use crate::game::engine::apply;
+        use crate::types::ability::Effect;
+        use crate::types::actions::GameAction;
+
+        let mut state = GameState::new_two_player(42);
+        let land = add_library_land(&mut state, 1, PlayerId(0), "Forest", true);
+
+        let shuffle_step = ResolvedAbility::new(
+            Effect::Shuffle {
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let put_step = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Library),
+                destination: Zone::Hand,
+                target: TargetFilter::Any,
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        )
+        .sub_ability(shuffle_step);
+        let search_step = ResolvedAbility::new(
+            Effect::SearchLibrary {
+                filter: TargetFilter::Typed(TypedFilter::land().properties(vec![
+                    crate::types::ability::FilterProp::HasSupertype {
+                        value: crate::types::card_type::Supertype::Basic,
+                    },
+                ])),
+                count: QuantityExpr::Fixed { value: 1 },
+                reveal: true,
+                target_player: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        )
+        .sub_ability(put_step);
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &search_step, &mut events, 0).unwrap();
+        assert!(matches!(state.waiting_for, WaitingFor::SearchChoice { .. }));
+
+        apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::SelectCards { cards: vec![land] },
+        )
+        .unwrap();
+
+        assert_eq!(state.objects[&land].zone, Zone::Hand);
+        assert!(state.players[0].hand.contains(&land));
+    }
+
+    #[test]
     fn search_only_searches_controllers_library() {
         let mut state = GameState::new_two_player(42);
         let _opponent_creature = add_library_creature(&mut state, 1, PlayerId(1), "Opponent Bear");

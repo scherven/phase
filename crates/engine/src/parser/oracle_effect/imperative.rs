@@ -1274,9 +1274,9 @@ pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
             // CR 201.3 / CR 113.6: "With the chosen name" static/trigger filters
             // (Petrified Hamlet, Cheering Fanatic) resolve against the source
             // object's `chosen_attributes`. CardName choices must persist so
-            // those later references find the bound name; other choice types
-            // are consumed via `last_named_choice` and do not need persistence.
-            persist: matches!(choice_type, ChoiceType::CardName),
+            // those later references find the bound name. CreatureType choices
+            // also persist for chained filters such as "that aren't of the chosen type."
+            persist: matches!(choice_type, ChoiceType::CardName | ChoiceType::CreatureType),
             choice_type,
         },
         ChooseImperativeAst::RevealHandFilter { card_filter } => Effect::RevealHand {
