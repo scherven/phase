@@ -27,11 +27,10 @@ export function ManaSymbol({
   className = "",
 }: ManaSymbolProps) {
   const code = shardToScryfallCode(shard);
-  const src = `${SCRYFALL_SVG_BASE}/${code}.svg`;
 
   return (
     <img
-      src={src}
+      src={`${SCRYFALL_SVG_BASE}/${code}.svg`}
       alt={shard}
       className={`inline-block ${SIZE_CLASSES[size]} ${className}`}
       draggable={false}
