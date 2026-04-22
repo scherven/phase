@@ -7186,7 +7186,7 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
     }
 
     // No "to [target]" clause — the damage target is inherited from the parent effect
-    // (e.g., "it deals 4 damage instead" reuses the original target). 
+    // (e.g., "it deals 4 damage instead" reuses the original target).
     // Also matches bare "instead" with optional trailing punctuation, which
     // appears when a conditional clause like "If you're the monarch, it deals 7
     // damage instead." has no explicit target phrase.
