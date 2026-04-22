@@ -8119,8 +8119,7 @@ mod tests {
         // No warning should have been emitted
         assert!(
             crate::parser::oracle_warnings::take_warnings()
-                .first()
-                .is_none(),
+                .is_empty(),
             "unexpected target-fallback warning"
         );
     }
