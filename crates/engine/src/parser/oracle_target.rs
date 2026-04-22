@@ -1177,6 +1177,24 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         pos += remaining_offset + "of the chosen type".len();
     }
 
+    let mut exclude_chosen_type = false;
+    let remaining = lower[pos..].trim_start();
+    let remaining_offset = lower[pos..].len() - remaining.len();
+    for suffix in &[
+        "that aren't of the chosen type",
+        "that are not of the chosen type",
+        "not of the chosen type",
+    ] {
+        if tag::<_, _, nom_language::error::VerboseError<&str>>(*suffix)
+            .parse(remaining)
+            .is_ok()
+        {
+            exclude_chosen_type = true;
+            pos += remaining_offset + suffix.len();
+            break;
+        }
+    }
+
     // CR 608.2d: "of their choice" / "of his or her choice" — informational qualifier
     // on opponent-choice effects. The actual choice is handled by the WaitingFor state machine.
     let remaining_choice = lower[pos..].trim_start();
@@ -1225,6 +1243,20 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         controller,
         properties,
     });
+    let filter = if exclude_chosen_type {
+        TargetFilter::And {
+            filters: vec![
+                filter,
+                TargetFilter::Not {
+                    filter: Box::new(TargetFilter::Typed(
+                        TypedFilter::default().properties(vec![FilterProp::IsChosenCreatureType]),
+                    )),
+                },
+            ],
+        }
+    } else {
+        filter
+    };
 
     (filter, &text[pos..])
 }

@@ -526,6 +526,7 @@ mod tests {
             static_abilities: Vec::<StaticDefinition>::new(),
             replacements: Vec::<ReplacementDefinition>::new(),
             color_override: None,
+            color_identity: vec![],
             scryfall_oracle_id: Some(oracle_id.to_string()),
             modal: None::<ModalChoice>,
             additional_cost: None::<AdditionalCost>,

@@ -736,6 +736,10 @@ fn collect_unknown_cards(
 
 /// CR 903.4: Compute color identity of a single card from mana cost + color indicator.
 fn card_color_identity(face: &CardFace) -> HashSet<ManaColor> {
+    if !face.color_identity.is_empty() {
+        return face.color_identity.iter().copied().collect();
+    }
+
     let mut colors = HashSet::new();
     if let ManaCost::Cost { shards, .. } = &face.mana_cost {
         for shard in shards {
@@ -1230,6 +1234,58 @@ mod tests {
                 "static_abilities": [],
                 "replacements": [],
                 "color_override": null,
+                "scryfall_oracle_id": null,
+                "legalities": {
+                    "standard": "legal",
+                    "commander": "legal"
+                }
+            },
+            "grub commander": {
+                "name": "Grub Commander",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Legendary"],
+                    "core_types": ["Creature"],
+                    "subtypes": []
+                },
+                "power": null,
+                "toughness": null,
+                "loyalty": null,
+                "defense": null,
+                "oracle_text": null,
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "color_identity": ["Black", "Red"],
+                "scryfall_oracle_id": null,
+                "legalities": {
+                    "standard": "legal",
+                    "commander": "legal"
+                }
+            },
+            "red card": {
+                "name": "Red Card",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": [], "core_types": [], "subtypes": [] },
+                "power": null,
+                "toughness": null,
+                "loyalty": null,
+                "defense": null,
+                "oracle_text": null,
+                "non_ability_text": null,
+                "flavor_name": null,
+                "keywords": [],
+                "abilities": [],
+                "triggers": [],
+                "static_abilities": [],
+                "replacements": [],
+                "color_override": null,
+                "color_identity": ["Red"],
                 "scryfall_oracle_id": null,
                 "legalities": {
                     "standard": "legal",
@@ -2097,6 +2153,28 @@ mod tests {
             .reasons
             .iter()
             .any(|r| r.contains("Singleton violations")));
+    }
+
+    #[test]
+    fn commander_color_identity_uses_explicit_card_face_identity() {
+        let db = CardDatabase::from_json_str(&test_db_json()).unwrap();
+        let mut main = expand("Plains", 98);
+        main.push("Red Card".to_string());
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Grub Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+
+        let result = evaluate_deck_compatibility(&db, &request);
+
+        assert!(
+            result.commander.compatible,
+            "{:?}",
+            result.commander.reasons
+        );
     }
 
     #[test]
