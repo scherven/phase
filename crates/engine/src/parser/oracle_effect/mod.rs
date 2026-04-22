@@ -7186,8 +7186,16 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
     }
 
     // No "to [target]" clause — the damage target is inherited from the parent effect
-    // (e.g., "it deals 4 damage instead" reuses the original target).
-    if after_to.is_empty() {
+    // (e.g., "it deals 4 damage instead" / "it deals 7 damage instead." reuses the
+    // original target). Also matches bare "instead" with optional trailing punctuation,
+    // which appears when a conditional clause like "If you're the monarch, it deals 7
+    // damage instead." has no explicit target phrase.
+    let after_to_no_punct = after_to_lower.trim_end_matches(|c: char| c.is_ascii_punctuation());
+    if after_to.is_empty()
+        || tag::<_, _, VerboseError<&str>>("instead")
+            .parse(after_to_no_punct)
+            .map_or(false, |(rem, _)| rem.is_empty())
+    {
         return Some((
             Effect::DealDamage {
                 amount,
@@ -8087,6 +8095,33 @@ mod tests {
             ),
             "expected DealDamage with TargetPower/ParentTarget, got: {:?}",
             clause.effect
+        );
+    }
+
+    #[test]
+    fn damage_instead_no_target_uses_parent_target() {
+        // "it deals 7 damage instead." — the "instead" suffix with no "to [target]"
+        // clause must resolve to ParentTarget, not fall through to parse_target("instead").
+        let (effect, _rem) =
+            try_parse_damage_with_remainder("deals 7 damage instead.", "deals 7 damage instead.")
+                .expect("should parse 'deals N damage instead.'");
+        assert!(
+            matches!(
+                effect,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 7 },
+                    target: TargetFilter::ParentTarget,
+                    ..
+                }
+            ),
+            "expected DealDamage with Fixed(7)/ParentTarget, got: {effect:?}"
+        );
+        // No warning should have been emitted
+        assert!(
+            !crate::parser::oracle_warnings::take_warnings()
+                .iter()
+                .any(|w| w.contains("target-fallback")),
+            "unexpected target-fallback warning"
         );
     }
 
