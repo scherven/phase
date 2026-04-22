@@ -449,6 +449,17 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                     events,
                 );
             }
+
+            // CR 702.74a: Evoke-cast permanent gets the `cast_variant_paid` tag
+            // so the synthesized intervening-if ETB sacrifice trigger fires.
+            if casting_variant == CastingVariant::Evoke {
+                if let Some(obj) = state.objects.get_mut(&entry.id) {
+                    obj.cast_variant_paid = Some((
+                        crate::types::ability::CastVariantPaid::Evoke,
+                        state.turn_number,
+                    ));
+                }
+            }
         }
     }
     // Activated abilities: source stays where it is, no zone movement

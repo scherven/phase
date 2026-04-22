@@ -139,6 +139,12 @@ pub enum GameAction {
     ChooseWarpCost {
         use_warp: bool,
     },
+    /// CR 702.74a: Choose normal cast (false) or Evoke cast (true) from hand.
+    /// Evoke cast tags the resolving permanent so the synthesized intervening-if
+    /// ETB sacrifice trigger fires.
+    ChooseEvokeCost {
+        use_evoke: bool,
+    },
     /// CR 702.49: Activate a Ninjutsu-family keyword from hand or command zone during combat.
     ActivateNinjutsu {
         ninjutsu_card_id: CardId,
@@ -423,6 +429,7 @@ impl GameAction {
             | GameAction::ChooseAdventureFace { .. }
             | GameAction::ChooseModalFace { .. }
             | GameAction::ChooseWarpCost { .. }
+            | GameAction::ChooseEvokeCost { .. }
             | GameAction::ActivateNinjutsu { .. }
             | GameAction::DecideOptionalEffect { .. }
             | GameAction::PayUnlessCost { .. }

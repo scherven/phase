@@ -1011,6 +1011,18 @@ pub enum WaitingFor {
         /// The Warp keyword's alternative mana cost (for display in the choice modal).
         warp_cost: ManaCost,
     },
+    /// CR 702.74a: Player chooses between normal cast and Evoke cast from hand.
+    /// Evoke creature ETBs and sacrifices itself if cast for evoke cost. Only
+    /// presented when both costs are affordable.
+    EvokeCostChoice {
+        player: PlayerId,
+        object_id: ObjectId,
+        card_id: CardId,
+        /// The card's normal mana cost (for display in the choice modal).
+        normal_cost: ManaCost,
+        /// The Evoke keyword's alternative mana cost (for display in the choice modal).
+        evoke_cost: ManaCost,
+    },
     /// CR 601.2c: Player chooses any number of legal targets from a set.
     /// Used for "exile any number of" and similar variable-count targeting.
     MultiTargetSelection {
@@ -1537,6 +1549,7 @@ impl WaitingFor {
             | WaitingFor::AdventureCastChoice { player, .. }
             | WaitingFor::ModalFaceChoice { player, .. }
             | WaitingFor::WarpCostChoice { player, .. }
+            | WaitingFor::EvokeCostChoice { player, .. }
             | WaitingFor::ChooseRingBearer { player, .. }
             | WaitingFor::ChooseDungeon { player, .. }
             | WaitingFor::ChooseDungeonRoom { player, .. }
@@ -1785,6 +1798,10 @@ pub enum CastingVariant {
     /// CR 702.35a: Cast from exile via Madness after the discard replacement
     /// exiled the card and its madness triggered ability resolved.
     Madness,
+    /// CR 702.74a: Cast from hand via Evoke's alternative cost. On resolution,
+    /// the permanent enters tagged with `CastVariantPaid::Evoke`, which fires
+    /// the synthesized intervening-if ETB sacrifice trigger.
+    Evoke,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1030,6 +1030,18 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 Some(*player),
             ),
         ],
+        WaitingFor::EvokeCostChoice { player, .. } => vec![
+            candidate(
+                GameAction::ChooseEvokeCost { use_evoke: true },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+            candidate(
+                GameAction::ChooseEvokeCost { use_evoke: false },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+        ],
         WaitingFor::OptionalEffectChoice { .. }
         | WaitingFor::OpponentMayChoice { .. }
         | WaitingFor::TributeChoice { .. } => {

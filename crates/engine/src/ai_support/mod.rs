@@ -141,7 +141,8 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         | (WaitingFor::CombatTaxPayment { .. }, GameAction::PayCombatTax { .. })
         | (WaitingFor::AdventureCastChoice { .. }, GameAction::ChooseAdventureFace { .. })
         | (WaitingFor::ModalFaceChoice { .. }, GameAction::ChooseModalFace { .. })
-        | (WaitingFor::WarpCostChoice { .. }, GameAction::ChooseWarpCost { .. }) => false,
+        | (WaitingFor::WarpCostChoice { .. }, GameAction::ChooseWarpCost { .. })
+        | (WaitingFor::EvokeCostChoice { .. }, GameAction::ChooseEvokeCost { .. }) => false,
         (WaitingFor::MulliganBottomCards { player, count }, GameAction::SelectCards { cards }) => {
             selection_mismatch(
                 cards,

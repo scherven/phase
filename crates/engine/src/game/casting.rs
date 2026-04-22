@@ -954,6 +954,17 @@ fn prepare_spell_cast_with_variant_override(
             CastingVariant::Normal
         }
     });
+    // CR 702.74a: When the caller explicitly opted into Evoke (via
+    // `variant_override = Some(CastingVariant::Evoke)`), substitute the evoke
+    // mana cost taken from the hand object's `Keyword::Evoke(cost)` payload.
+    let evoke_cost = if casting_variant == CastingVariant::Evoke {
+        obj.keywords.iter().find_map(|k| match k {
+            crate::types::keywords::Keyword::Evoke(cost) => Some(cost.clone()),
+            _ => None,
+        })
+    } else {
+        None
+    };
     // CR 601.2b + CR 118.9a: CastFromHandFree — static permission grants free
     // casting from hand. Auto-application is restricted to `Unlimited` sources
     // (Omniscience, Tamiyo emblem); `OncePerTurn` sources (Zaffai) must be opted
@@ -1014,6 +1025,7 @@ fn prepare_spell_cast_with_variant_override(
     } else {
         miracle_cost
             .or(madness_cost)
+            .or(evoke_cost)
             .or(escape_cost)
             .or(harmonize_cost)
             .or(flashback_mana_cost)
@@ -1549,6 +1561,30 @@ pub fn handle_warp_cost_choice(
     continue_cast_from_prepared(state, player, object_id, events)
 }
 
+/// CR 702.74a: Handle Evoke cost choice and proceed with casting. When
+/// `use_evoke` is true, the cast is prepared with `CastingVariant::Evoke`
+/// (which substitutes the evoke mana cost for the printed mana cost). When
+/// false, the cast proceeds normally (no variant override → `Normal`).
+pub fn handle_evoke_cost_choice(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    _card_id: CardId,
+    use_evoke: bool,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if use_evoke {
+        let prepared = prepare_spell_cast_with_variant_override(
+            state,
+            player,
+            object_id,
+            Some(CastingVariant::Evoke),
+        )?;
+        return continue_with_prepared(state, player, prepared, events);
+    }
+    continue_cast_from_prepared(state, player, object_id, events)
+}
+
 /// Shared continuation: call prepare_spell_cast and run the standard casting
 /// pipeline (modal → targeting → payment). Extracted so handle_warp_cost_choice
 /// and handle_cast_spell can share the same post-prepare logic.
@@ -1869,6 +1905,41 @@ pub fn handle_cast_spell(
                 }
                 // If only warp or neither, let prepare_spell_cast handle it normally
                 // (it will pick CastingVariant::Warp via precedence)
+            }
+        }
+    }
+
+    // CR 702.74a: Evoke — when a hand card has Keyword::Evoke and both costs
+    // are affordable, present a choice. Auto-skip when only one cost is viable.
+    // Unlike Warp, Evoke is opt-in via variant_override (the printed mana cost
+    // remains the default), so the only routing needed is when the player picks
+    // the evoke cost.
+    if let Some(obj) = state.objects.get(&object_id) {
+        if obj.zone == Zone::Hand {
+            if let Some(evoke_cost) = obj.keywords.iter().find_map(|k| match k {
+                crate::types::keywords::Keyword::Evoke(cost) => Some(cost.clone()),
+                _ => None,
+            }) {
+                let normal_affordable =
+                    can_pay_cost_after_auto_tap(state, player, object_id, &obj.mana_cost);
+                let evoke_affordable =
+                    can_pay_cost_after_auto_tap(state, player, object_id, &evoke_cost);
+                if normal_affordable && evoke_affordable {
+                    return Ok(WaitingFor::EvokeCostChoice {
+                        player,
+                        object_id,
+                        card_id,
+                        normal_cost: obj.mana_cost.clone(),
+                        evoke_cost,
+                    });
+                }
+                if !normal_affordable && evoke_affordable {
+                    // Only evoke is payable — proceed via the evoke path.
+                    return handle_evoke_cost_choice(
+                        state, player, object_id, card_id, true, events,
+                    );
+                }
+                // Otherwise (normal-only or neither): fall through to normal cast.
             }
         }
     }

@@ -5,10 +5,10 @@ use crate::game::printed_cards::derive_colors_from_mana_cost;
 use crate::parser::oracle::{oracle_text_allows_commander, parse_oracle_text};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, CardPlayMode,
-    ChoiceType, ContinuousModification, ControllerRef, CounterTriggerFilter, Duration, Effect,
-    FilterProp, ManaContribution, ManaProduction, NinjutsuVariant, PtValue, QuantityExpr,
-    ReplacementDefinition, RuntimeHandler, StaticDefinition, TargetFilter, TriggerCondition,
-    TriggerDefinition, TypeFilter, TypedFilter,
+    CastVariantPaid, ChoiceType, ContinuousModification, ControllerRef, CounterTriggerFilter,
+    Duration, Effect, FilterProp, ManaContribution, ManaProduction, NinjutsuVariant, PtValue,
+    QuantityExpr, ReplacementDefinition, RuntimeHandler, StaticDefinition, TargetFilter,
+    TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
 };
 use crate::types::card::{CardFace, CardLayout};
 use crate::types::card_type::{CardType, CoreType, Supertype};
@@ -836,6 +836,67 @@ pub fn synthesize_madness_intrinsics(face: &mut CardFace) {
     }
 }
 
+/// CR 702.74a: Evoke is a static ability granting an alternative cost plus a
+/// linked intervening-if triggered ability. The static ability's
+/// "you may cast for evoke cost" is wired at the engine level via
+/// `CastingVariant::Evoke` (handled in `casting::handle_cast_spell` and
+/// `prepare_spell_cast_with_variant_override`); only the triggered ability
+/// needs to be synthesized here.
+///
+/// "When this permanent enters, if its evoke cost was paid, sacrifice it."
+/// `TriggerCondition::CastVariantPaid { variant: Evoke }` reads
+/// `GameObject.cast_variant_paid`, which the resolution path tags when the
+/// spell was cast via `CastingVariant::Evoke`.
+pub fn synthesize_evoke(face: &mut CardFace) {
+    if !face.keywords.iter().any(|k| matches!(k, Keyword::Evoke(_))) {
+        return;
+    }
+    // Idempotency: skip if a CastVariantPaid::Evoke ETB sacrifice trigger already
+    // exists (oracle parser already extracted it, or this synthesizer already ran).
+    let already_has_trigger = face.triggers.iter().any(|t| {
+        matches!(t.mode, TriggerMode::ChangesZone)
+            && t.destination == Some(Zone::Battlefield)
+            && matches!(t.valid_card, Some(TargetFilter::SelfRef))
+            && matches!(
+                t.condition,
+                Some(TriggerCondition::CastVariantPaid {
+                    variant: CastVariantPaid::Evoke,
+                })
+            )
+            && matches!(
+                t.execute.as_deref().map(|a| &*a.effect),
+                Some(Effect::Sacrifice {
+                    target: TargetFilter::SelfRef,
+                    ..
+                })
+            )
+    });
+    if already_has_trigger {
+        return;
+    }
+
+    let sac = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::Sacrifice {
+            target: TargetFilter::SelfRef,
+            count: QuantityExpr::Fixed { value: 1 },
+            up_to: false,
+        },
+    );
+    let trigger = TriggerDefinition::new(TriggerMode::ChangesZone)
+        .destination(Zone::Battlefield)
+        .valid_card(TargetFilter::SelfRef)
+        .condition(TriggerCondition::CastVariantPaid {
+            variant: CastVariantPaid::Evoke,
+        })
+        .execute(sac)
+        .description(
+            "CR 702.74a: When this permanent enters, if its evoke cost was paid, sacrifice it."
+                .to_string(),
+        );
+    face.triggers.push(trigger);
+}
+
 /// Run all synthesis functions in canonical order on a card face.
 /// Both `oracle_loader.rs` and `oracle_gen.rs` call this to ensure the same
 /// complete set of synthesizers is applied.
@@ -859,6 +920,7 @@ pub fn synthesize_all(face: &mut CardFace) {
     synthesize_casualty(face);
     synthesize_entwine(face);
     synthesize_madness_intrinsics(face);
+    synthesize_evoke(face);
     synthesize_siege_intrinsics(face);
     synthesize_tribute_intrinsics(face);
     // CR 721.2b: Spacecraft creature-shift at the max station-symbol striation
@@ -1386,6 +1448,155 @@ mod madness_synthesis_tests {
                 .count(),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod evoke_synthesis_tests {
+    use super::*;
+    use crate::types::mana::{ManaCost, ManaCostShard};
+
+    fn evoke_face() -> CardFace {
+        let mut face = CardFace::default();
+        face.keywords.push(Keyword::Evoke(ManaCost::Cost {
+            shards: vec![ManaCostShard::Blue],
+            generic: 1,
+        }));
+        face
+    }
+
+    /// CR 702.74a: Evoke synthesis injects an intervening-if ETB sacrifice
+    /// trigger that fires only when the evoke alt-cost was paid.
+    #[test]
+    fn synthesize_evoke_adds_conditional_etb_sac_trigger() {
+        let mut face = evoke_face();
+        synthesize_evoke(&mut face);
+
+        let trigger = face
+            .triggers
+            .iter()
+            .find(|t| {
+                matches!(t.mode, TriggerMode::ChangesZone)
+                    && t.destination == Some(Zone::Battlefield)
+                    && matches!(t.valid_card, Some(TargetFilter::SelfRef))
+            })
+            .expect("evoke should add an ETB trigger");
+        assert!(matches!(
+            trigger.condition,
+            Some(TriggerCondition::CastVariantPaid {
+                variant: CastVariantPaid::Evoke,
+            })
+        ));
+        assert!(matches!(
+            trigger.execute.as_deref().map(|a| &*a.effect),
+            Some(Effect::Sacrifice {
+                target: TargetFilter::SelfRef,
+                ..
+            })
+        ));
+    }
+
+    /// Repeated synthesis must not duplicate the trigger.
+    #[test]
+    fn synthesize_evoke_is_idempotent() {
+        let mut face = evoke_face();
+        synthesize_evoke(&mut face);
+        synthesize_evoke(&mut face);
+
+        let count = face
+            .triggers
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.condition,
+                    Some(TriggerCondition::CastVariantPaid {
+                        variant: CastVariantPaid::Evoke,
+                    })
+                )
+            })
+            .count();
+        assert_eq!(count, 1, "evoke trigger should be deduped");
+    }
+
+    /// Cards without Evoke are unaffected.
+    #[test]
+    fn synthesize_evoke_is_noop_without_keyword() {
+        let mut face = CardFace::default();
+        face.keywords.push(Keyword::Flying);
+        synthesize_evoke(&mut face);
+        assert!(face.triggers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod evoke_runtime_tests {
+    use super::*;
+    use crate::game::triggers::check_trigger_condition;
+    use crate::game::zones::create_object;
+    use crate::types::game_state::GameState;
+    use crate::types::identifiers::CardId;
+    use crate::types::player::PlayerId;
+
+    /// CR 702.74a: The synthesized intervening-if condition fires only when the
+    /// permanent's `cast_variant_paid` matches Evoke for the current turn.
+    /// Mirrors the runtime contract used by Sneak/Ninjutsu.
+    #[test]
+    fn cast_variant_paid_evoke_condition_fires_only_when_tagged() {
+        let mut state = GameState::new_two_player(0);
+        state.turn_number = 3;
+        let id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Mulldrifter".to_string(),
+            Zone::Battlefield,
+        );
+
+        let condition = TriggerCondition::CastVariantPaid {
+            variant: CastVariantPaid::Evoke,
+        };
+
+        // Untagged → false.
+        assert!(!check_trigger_condition(
+            &state,
+            &condition,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
+
+        // Tagged with a different variant → false.
+        state.objects.get_mut(&id).unwrap().cast_variant_paid =
+            Some((CastVariantPaid::Sneak, state.turn_number));
+        assert!(!check_trigger_condition(
+            &state,
+            &condition,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
+
+        // Tagged Evoke for the current turn → true.
+        state.objects.get_mut(&id).unwrap().cast_variant_paid =
+            Some((CastVariantPaid::Evoke, state.turn_number));
+        assert!(check_trigger_condition(
+            &state,
+            &condition,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
+
+        // Tagged Evoke but for a stale turn → false (per-turn freshness, CR 603.4).
+        state.objects.get_mut(&id).unwrap().cast_variant_paid =
+            Some((CastVariantPaid::Evoke, state.turn_number - 1));
+        assert!(!check_trigger_condition(
+            &state,
+            &condition,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
     }
 }
 

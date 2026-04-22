@@ -559,6 +559,23 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             use_warp,
             &mut events,
         )?,
+        // CR 702.74a: Player chooses normal cast or Evoke cast from hand.
+        (
+            WaitingFor::EvokeCostChoice {
+                player,
+                object_id,
+                card_id,
+                ..
+            },
+            GameAction::ChooseEvokeCost { use_evoke },
+        ) => casting::handle_evoke_cost_choice(
+            state,
+            *player,
+            *object_id,
+            *card_id,
+            use_evoke,
+            &mut events,
+        )?,
         (WaitingFor::ModeChoice { player, .. }, GameAction::SelectModes { indices }) => {
             casting::handle_select_modes(state, *player, indices, &mut events)?
         }

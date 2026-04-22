@@ -2333,6 +2333,9 @@ pub enum CastVariantPaid {
     Sneak,
     /// CR 702.49 variant: Web-slinging cost was paid.
     WebSlinging,
+    /// CR 702.74a: Evoke alternative cast cost was paid from hand. Read by the
+    /// synthesized intervening-if ETB sacrifice trigger.
+    Evoke,
 }
 
 impl From<NinjutsuVariant> for CastVariantPaid {

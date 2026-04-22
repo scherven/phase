@@ -84,6 +84,7 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::AdventureCastChoice { .. }
         | WaitingFor::ModalFaceChoice { .. }
         | WaitingFor::WarpCostChoice { .. }
+        | WaitingFor::EvokeCostChoice { .. }
         | WaitingFor::ChooseRingBearer { .. }
         | WaitingFor::ChooseDungeon { .. }
         | WaitingFor::ChooseDungeonRoom { .. }
