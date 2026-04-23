@@ -6,7 +6,6 @@
 //! 3. A delayed trigger is registered to bounce the Vehicle at the beginning of
 //!    the controller's next end step (CR 603.7a).
 
-use engine::game::combat::AttackTarget;
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::zones;
 use engine::types::ability::TargetRef;
