@@ -71,6 +71,7 @@ import type { P2PAdapterEvent } from "../adapter/p2p-adapter.ts";
 import { WebSocketAdapter } from "../adapter/ws-adapter.ts";
 import type { WsAdapterEvent } from "../adapter/ws-adapter.ts";
 import { useGameDispatch } from "../hooks/useGameDispatch.ts";
+import { useInspectHoverProps } from "../hooks/useInspectHoverProps.ts";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts.ts";
 import { usePreviewDismiss } from "../hooks/usePreviewDismiss.ts";
 import { clearGame, useGameStore } from "../stores/gameStore.ts";
@@ -1341,7 +1342,7 @@ function MulliganDecisionPrompt({
 }: MulliganDecisionPromptProps) {
   const player = useGameStore((s) => s.gameState?.players[playerId]);
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [buttonsVisible, setButtonsVisible] = useState(false);
 
   if (!player || !objects) {
@@ -1427,8 +1428,7 @@ function MulliganDecisionPrompt({
                 onAnimationComplete={() => {
                   if (index === handObjects.length - 1) setButtonsVisible(true);
                 }}
-                onMouseEnter={() => inspectObject(obj.id)}
-                onMouseLeave={() => inspectObject(null)}
+                {...hoverProps(obj.id)}
               >
                 <CardImage
                   cardName={obj.name}
@@ -1545,7 +1545,7 @@ function MulliganBottomCardsPrompt({
   const objects = useGameStore((s) => s.gameState?.objects);
   const selectedCardIds = useUiStore((s) => s.selectedCardIds);
   const addSelectedCard = useUiStore((s) => s.addSelectedCard);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
 
   if (!player || !objects) return null;
 
@@ -1622,8 +1622,7 @@ function MulliganBottomCardsPrompt({
                     ease: "easeOut",
                   }}
                   whileHover={{ scale: 1.06, y: -12 }}
-                  onMouseEnter={() => inspectObject(obj.id)}
-                  onMouseLeave={() => inspectObject(null)}
+                  {...hoverProps(obj.id)}
                 >
                   <CardImage
                     cardName={obj.name}
