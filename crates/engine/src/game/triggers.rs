@@ -113,6 +113,7 @@ fn collect_matching_triggers(
     timestamp: u32,
     zone_filter: Option<Zone>,
     batched_this_pass: &mut HashSet<(ObjectId, usize)>,
+    registered_this_event: &mut HashSet<(ObjectId, usize)>,
 ) -> Vec<MatchedTrigger> {
     let mut pending = Vec::new();
     let obj_id = source_obj.id;
@@ -140,6 +141,20 @@ fn collect_matching_triggers(
         // simultaneous events, not once per individual event. Skip if already
         // fired in this process_triggers pass.
         if trig_def.batched && batched_this_pass.contains(&(obj_id, trig_idx)) {
+            continue;
+        }
+        // CR 603.2 / CR 603.3: A single printed trigger definition fires at most
+        // once per eligible event. Multiple zone-scan paths (battlefield,
+        // leaves-battlefield last-known-information, and non-battlefield zones)
+        // may all visit the same `(obj_id, trig_idx)` pair within a single event —
+        // notably for Dies / leaves-battlefield triggers where the object is
+        // simultaneously findable via the "look back" path (CR 603.10a) and the
+        // graveyard scan (CR 113.6k). Per-event dedup ensures one registration
+        // per physical printed trigger per event. Intra-call `trigger_events`
+        // expansion (e.g., `matching_attack_events` for multi-attacker batches)
+        // still produces multiple PendingTriggers below because the set is only
+        // updated AFTER collection at the call site.
+        if registered_this_event.contains(&(obj_id, trig_idx)) {
             continue;
         }
         if let Some(matcher) = trigger_matcher(trig_def.mode.clone()) {
@@ -290,6 +305,12 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
     let mut batched_this_pass: HashSet<(ObjectId, usize)> = HashSet::new();
 
     for event in events {
+        // CR 603.2 / CR 603.3: Per-event dedup. A single printed trigger definition
+        // fires at most once per eligible event, even if multiple scan paths
+        // (battlefield, leaves-battlefield last-known-information, graveyard/exile/stack)
+        // all reach the same `(obj_id, trig_idx)` pair for this event. Cleared
+        // between events so each distinct event can still fire the trigger.
+        let mut registered_this_event: HashSet<(ObjectId, usize)> = HashSet::new();
         // CR 603.2g + CR 603.6a + CR 700.4: If a SuppressTriggers static matches the
         // subject of an ETB/Dies event, skip all trigger matching for that event —
         // per CR 603.2g, an event that "won't trigger anything" because the static
@@ -354,6 +375,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                         obj.entered_battlefield_turn.unwrap_or(0),
                         Some(Zone::Battlefield),
                         &mut batched_this_pass,
+                        &mut registered_this_event,
                     ),
                 )
             };
@@ -363,6 +385,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                 if matched.batched {
                     batched_this_pass.insert((obj_id, matched.trig_idx));
                 }
+                registered_this_event.insert((obj_id, matched.trig_idx));
                 pending.push(matched.pending);
             }
 
@@ -579,6 +602,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                         obj.entered_battlefield_turn.unwrap_or(0),
                         Some(Zone::Battlefield),
                         &mut batched_this_pass,
+                        &mut registered_this_event,
                     )
                 };
                 for matched in matched_triggers {
@@ -591,6 +615,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     if matched.batched {
                         batched_this_pass.insert((*moved_id, matched.trig_idx));
                     }
+                    registered_this_event.insert((*moved_id, matched.trig_idx));
                     pending.push(matched.pending);
                 }
             }
@@ -611,6 +636,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                         0,
                         Some(zone),
                         &mut batched_this_pass,
+                        &mut registered_this_event,
                     )
                 };
 
@@ -624,6 +650,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     if matched.batched {
                         batched_this_pass.insert((obj_id, matched.trig_idx));
                     }
+                    registered_this_event.insert((obj_id, matched.trig_idx));
                     pending.push(matched.pending);
                 }
             }
@@ -5682,5 +5709,399 @@ pub mod tests {
             None,
             Some(&event),
         ));
+    }
+}
+
+/// Regression tests for the foundational trigger double-fire defect
+/// (CR 603.2 / CR 603.3 per-event registration dedup). Every trigger
+/// category must register at most once per `(source_id, trig_idx, event)`
+/// tuple, even when multiple zone-scan paths visit the same object.
+#[cfg(test)]
+mod dedup_regression_tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::ability::{
+        AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter, TargetRef,
+        TriggerDefinition,
+    };
+    use crate::types::card_type::CoreType;
+    use crate::types::events::GameEvent;
+    use crate::types::game_state::{GameState, ZoneChangeRecord};
+    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::player::PlayerId;
+    use crate::types::zones::Zone;
+
+    /// Build a minimal `Draw 1` triggered ability that matches a given mode.
+    fn draw_one_trigger(mode: TriggerMode) -> TriggerDefinition {
+        TriggerDefinition::new(mode)
+            .valid_card(TargetFilter::SelfRef)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Database,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+            ))
+    }
+
+    fn setup_with_observer(mode: TriggerMode) -> (GameState, ObjectId) {
+        let mut state = GameState::new_two_player(42);
+        let observer = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Observer".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&observer).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.entered_battlefield_turn = Some(1);
+            // Self-ref-only valid_card would restrict to ETB of self; for observer
+            // triggers we want to match any qualifying event. Swap to TargetFilter::Any.
+            let mut trigger = draw_one_trigger(mode);
+            trigger.valid_card = Some(TargetFilter::Any);
+            obj.trigger_definitions.push(trigger);
+        }
+        (state, observer)
+    }
+
+    /// ETB observer trigger: one creature entering produces exactly one trigger.
+    /// Regression: Mischievous Mystic's ETB trigger used to double-register when
+    /// synthesis ran twice, producing two tokens from one ETB.
+    #[test]
+    fn etb_observer_fires_once_per_event() {
+        let (mut state, observer) = setup_with_observer(TriggerMode::ChangesZone);
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .trigger_definitions[0]
+            .destination = Some(Zone::Battlefield);
+
+        let new_etb = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Newcomer".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&new_etb)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::ZoneChanged {
+            object_id: new_etb,
+            from: Some(Zone::Hand),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord::test_minimal(
+                new_etb,
+                Some(Zone::Hand),
+                Zone::Battlefield,
+            )),
+        };
+
+        process_triggers(&mut state, &[event]);
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "ETB observer should register exactly one trigger per ETB event"
+        );
+    }
+
+    /// Attacks observer: a non-batched "whenever a creature attacks" trigger
+    /// registers once per AttackersDeclared event. Regression: Najeela-style
+    /// triggers registered multiply when zone scanners double-visited.
+    #[test]
+    fn attacks_observer_fires_once_per_event() {
+        let (mut state, observer) = setup_with_observer(TriggerMode::Attacks);
+        let attacker = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Attacker".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![attacker],
+            defending_player: PlayerId(1),
+            attacks: vec![(
+                attacker,
+                crate::game::combat::AttackTarget::Player(PlayerId(1)),
+            )],
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 1,
+            "Attack observer should register exactly one trigger per AttackersDeclared"
+        );
+    }
+
+    /// SpellCast observer: spell-cast triggers register once per SpellCast event.
+    #[test]
+    fn spell_cast_observer_fires_once_per_event() {
+        let (mut state, observer) = setup_with_observer(TriggerMode::SpellCast);
+        let spell = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(0),
+            "Spell".to_string(),
+            Zone::Stack,
+        );
+        state
+            .objects
+            .get_mut(&spell)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Instant);
+
+        let event = GameEvent::SpellCast {
+            card_id: CardId(4),
+            controller: PlayerId(0),
+            object_id: spell,
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 1,
+            "SpellCast observer should register exactly one trigger per SpellCast event"
+        );
+    }
+
+    /// DamageDealt observer: damage-event triggers register once per DamageDealt.
+    /// Regression: Mana Cannons damage fired 4-6× due to multi-path zone scans.
+    #[test]
+    fn damage_observer_fires_once_per_event() {
+        let (mut state, observer) = setup_with_observer(TriggerMode::DamageDone);
+        let source = create_object(
+            &mut state,
+            CardId(5),
+            PlayerId(0),
+            "Damage Source".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::DamageDealt {
+            source_id: source,
+            target: TargetRef::Player(PlayerId(1)),
+            amount: 3,
+            is_combat: false,
+            excess: 0,
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 1,
+            "DamageDone observer should register exactly one trigger per DamageDealt event"
+        );
+    }
+
+    /// Sacrifice observer: "whenever a permanent is sacrificed" fires once per
+    /// PermanentSacrificed event, not once per zone scan.
+    #[test]
+    fn sacrifice_observer_fires_once_per_event() {
+        let (mut state, observer) = setup_with_observer(TriggerMode::Sacrificed);
+        let victim = create_object(
+            &mut state,
+            CardId(6),
+            PlayerId(0),
+            "Victim".to_string(),
+            Zone::Graveyard,
+        );
+        state
+            .objects
+            .get_mut(&victim)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::PermanentSacrificed {
+            object_id: victim,
+            player_id: PlayerId(0),
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 1,
+            "Sacrifice observer should register exactly one trigger per PermanentSacrificed"
+        );
+    }
+
+    /// Landfall: "whenever a land enters the battlefield under your control"
+    /// fires once per land ETB. Regression: Icetill Explorer's landfall fired
+    /// multiple times when multi-zone scans visited the same trigger_def.
+    #[test]
+    fn landfall_fires_once_per_land_etb() {
+        let (mut state, observer) = setup_with_observer(TriggerMode::ChangesZone);
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .trigger_definitions[0]
+            .destination = Some(Zone::Battlefield);
+        // Narrow the valid_card to lands to mimic landfall's filter.
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .trigger_definitions[0]
+            .valid_card = Some(TargetFilter::Typed(
+            crate::types::ability::TypedFilter::land(),
+        ));
+
+        let land = create_object(
+            &mut state,
+            CardId(7),
+            PlayerId(0),
+            "Mountain".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&land)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+
+        let event = GameEvent::ZoneChanged {
+            object_id: land,
+            from: Some(Zone::Hand),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord {
+                name: "Mountain".to_string(),
+                core_types: vec![CoreType::Land],
+                subtypes: vec!["Mountain".to_string()],
+                ..ZoneChangeRecord::test_minimal(land, Some(Zone::Hand), Zone::Battlefield)
+            }),
+        };
+
+        process_triggers(&mut state, &[event]);
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "Landfall should register exactly one trigger per land ETB"
+        );
+    }
+
+    /// Panharmonicon-style trigger doubling must still produce exactly 2 stack
+    /// instances from 1 matching event — the per-event dedup applies to
+    /// *registration* of trigger definitions, not to the post-registration
+    /// `apply_trigger_doubling` cloning pass.
+    #[test]
+    fn panharmonicon_still_doubles_after_dedup() {
+        use crate::types::ability::ControllerRef;
+        use crate::types::statics::StaticMode;
+
+        let (mut state, _observer) = setup_with_observer(TriggerMode::ChangesZone);
+        // Scope the observer trigger to ETB.
+        // Find the first battlefield object (our observer) to seed.
+        let observer_id = *state.battlefield.first().unwrap();
+        state
+            .objects
+            .get_mut(&observer_id)
+            .unwrap()
+            .trigger_definitions[0]
+            .destination = Some(Zone::Battlefield);
+
+        // Put a Panharmonicon on the battlefield with its static.
+        let panh = create_object(
+            &mut state,
+            CardId(8),
+            PlayerId(0),
+            "Panharmonicon".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&panh).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.static_definitions.push(
+                crate::types::ability::StaticDefinition::new(StaticMode::Panharmonicon).affected(
+                    TargetFilter::Typed(
+                        crate::types::ability::TypedFilter::creature()
+                            .controller(ControllerRef::You),
+                    ),
+                ),
+            );
+        }
+
+        // A creature enters.
+        let new_etb = create_object(
+            &mut state,
+            CardId(9),
+            PlayerId(0),
+            "Entering Creature".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&new_etb)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::ZoneChanged {
+            object_id: new_etb,
+            from: Some(Zone::Hand),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord {
+                name: "Entering Creature".to_string(),
+                core_types: vec![CoreType::Creature],
+                ..ZoneChangeRecord::test_minimal(new_etb, Some(Zone::Hand), Zone::Battlefield)
+            }),
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer_id)
+            .count();
+        assert_eq!(
+            observer_triggers, 2,
+            "Panharmonicon must still double the observer's ETB trigger to 2 instances"
+        );
     }
 }

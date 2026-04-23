@@ -215,6 +215,18 @@ pub fn synthesize_mobilize(face: &mut CardFace) {
     use crate::types::ability::PtValue;
     use crate::types::triggers::TriggerMode;
 
+    // Idempotency: skip if a Mobilize attack trigger already exists.
+    let already_has_trigger = face.triggers.iter().any(|t| {
+        matches!(t.mode, TriggerMode::Attacks)
+            && matches!(
+                t.execute.as_deref().map(|a| &*a.effect),
+                Some(Effect::Token { name, .. }) if name == "Warrior"
+            )
+    });
+    if already_has_trigger {
+        return;
+    }
+
     for kw in &face.keywords {
         if let Keyword::Mobilize(qty) = kw {
             let token_effect = Effect::Token {
@@ -258,6 +270,20 @@ pub fn synthesize_job_select(face: &mut CardFace) {
         .iter()
         .any(|k| matches!(k, Keyword::JobSelect))
     {
+        return;
+    }
+
+    // Idempotency: skip if the Job select ETB Hero token trigger already exists.
+    let already_has_trigger = face.triggers.iter().any(|t| {
+        matches!(t.mode, TriggerMode::ChangesZone)
+            && t.destination == Some(Zone::Battlefield)
+            && matches!(t.valid_card, Some(TargetFilter::SelfRef))
+            && matches!(
+                t.execute.as_deref().map(|a| &*a.effect),
+                Some(Effect::Token { name, .. }) if name == "Hero"
+            )
+    });
+    if already_has_trigger {
         return;
     }
 
@@ -456,6 +482,19 @@ pub fn synthesize_case_solve(face: &mut CardFace) {
         return;
     }
     if face.solve_condition.is_none() {
+        return;
+    }
+
+    // Idempotency: skip if the Case auto-solve end-step trigger already exists.
+    let already_has_trigger = face.triggers.iter().any(|t| {
+        matches!(t.mode, TriggerMode::Phase)
+            && t.phase == Some(Phase::End)
+            && matches!(
+                t.execute.as_deref().map(|a| &*a.effect),
+                Some(Effect::SolveCase)
+            )
+    });
+    if already_has_trigger {
         return;
     }
 
@@ -739,6 +778,22 @@ pub fn synthesize_casualty(face: &mut CardFace) {
 
     // CR 702.153a: "When you cast this spell, if a casualty cost was paid, copy it.
     // If the spell has any targets, you may choose new targets for the copy."
+    // Idempotency: skip if the casualty copy-on-cast trigger already exists.
+    let already_has_trigger = face.triggers.iter().any(|t| {
+        matches!(t.mode, TriggerMode::SpellCast)
+            && matches!(t.valid_card, Some(TargetFilter::SelfRef))
+            && t.trigger_zones.contains(&Zone::Stack)
+            && matches!(
+                t.execute.as_deref().map(|a| &*a.effect),
+                Some(Effect::CopySpell {
+                    target: TargetFilter::SelfRef,
+                })
+            )
+    });
+    if already_has_trigger {
+        return;
+    }
+
     let copy_effect = AbilityDefinition::new(
         AbilityKind::Spell,
         Effect::CopySpell {
@@ -1602,10 +1657,10 @@ mod job_select_synthesis_tests {
         synthesize_job_select(&mut face);
         let count = face.triggers.len();
         synthesize_job_select(&mut face);
-        // Second call adds another trigger because the keyword is still present.
-        // This matches synthesize_mobilize behavior — idempotency comes from
-        // synthesize_all being called once per face.
-        assert_eq!(face.triggers.len(), count * 2);
+        // Repeat synthesis must not duplicate the ETB trigger. A
+        // non-idempotent synthesizer would push the same trigger multiple
+        // times and cause per-ETB-event doubling at runtime.
+        assert_eq!(face.triggers.len(), count);
     }
 
     #[test]
@@ -2741,5 +2796,63 @@ mod suspend_serialization_tests {
             back,
             StaticCondition::SourceControllerEquals { player } if player == PlayerId(1)
         ));
+    }
+}
+
+#[cfg(test)]
+mod idempotency_tests {
+    //! Regression tests for trigger double-fire defect: every synthesis function
+    //! that pushes a `TriggerDefinition` must be idempotent under repeated
+    //! invocation. Non-idempotent synthesis causes multiple identical
+    //! `TriggerDefinition` entries on the same card face, which in turn causes
+    //! the engine's per-event dedup (keyed on `(ObjectId, trig_idx)`) to fail
+    //! — distinct `trig_idx` values register separately.
+    use super::*;
+    use crate::types::ability::QuantityExpr;
+    use crate::types::card_type::CoreType;
+
+    #[test]
+    fn synthesize_mobilize_is_idempotent() {
+        let mut face = CardFace::default();
+        face.keywords
+            .push(Keyword::Mobilize(QuantityExpr::Fixed { value: 1 }));
+        synthesize_mobilize(&mut face);
+        synthesize_mobilize(&mut face);
+        assert_eq!(
+            face.triggers.len(),
+            1,
+            "mobilize trigger should only register once"
+        );
+    }
+
+    #[test]
+    fn synthesize_case_solve_is_idempotent() {
+        let mut face = CardFace::default();
+        face.card_type.subtypes.push("Case".to_string());
+        face.solve_condition = Some(crate::types::ability::SolveCondition::Text {
+            description: "test".to_string(),
+        });
+        synthesize_case_solve(&mut face);
+        synthesize_case_solve(&mut face);
+        assert_eq!(
+            face.triggers.len(),
+            1,
+            "case-solve trigger should only register once"
+        );
+    }
+
+    #[test]
+    fn synthesize_casualty_is_idempotent() {
+        let mut face = CardFace::default();
+        face.card_type.core_types.push(CoreType::Sorcery);
+        face.keywords.push(Keyword::Casualty(2));
+        synthesize_casualty(&mut face);
+        let first_count = face.triggers.len();
+        synthesize_casualty(&mut face);
+        assert_eq!(
+            face.triggers.len(),
+            first_count,
+            "casualty trigger should only register once"
+        );
     }
 }
