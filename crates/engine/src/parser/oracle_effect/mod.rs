@@ -10327,7 +10327,7 @@ mod tests {
     #[test]
     fn strip_temporal_suffix_your_next_end_step() {
         let (text, cond) = strip_temporal_suffix(
-            "return it to its owner's hand at the beginning of your next end step"
+            "return it to its owner's hand at the beginning of your next end step",
         );
         assert_eq!(text, "return it to its owner's hand");
         assert_eq!(

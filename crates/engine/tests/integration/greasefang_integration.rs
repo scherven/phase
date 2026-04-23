@@ -9,8 +9,8 @@
 use engine::game::combat::AttackTarget;
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::zones;
-use engine::types::actions::GameAction;
 use engine::types::ability::TargetRef;
+use engine::types::actions::GameAction;
 use engine::types::game_state::WaitingFor;
 use engine::types::keywords::Keyword;
 use engine::types::phase::Phase;
@@ -26,10 +26,7 @@ const GREASEFANG_ORACLE: &str =
 /// - DeclareAttackers: declare no attackers (Greasefang can attack but we skip)
 /// - DeclareBlockers: declare no blockers
 /// - TriggerTargetSelection / TargetSelection: stops so caller can handle it
-fn advance_to_phase(
-    runner: &mut engine::game::scenario::GameRunner,
-    target_phase: Phase,
-) {
+fn advance_to_phase(runner: &mut engine::game::scenario::GameRunner, target_phase: Phase) {
     for _ in 0..60 {
         if runner.state().phase == target_phase {
             break;
@@ -39,7 +36,9 @@ fn advance_to_phase(
                 let _ = runner.act(GameAction::DeclareAttackers { attacks: vec![] });
             }
             WaitingFor::DeclareBlockers { .. } => {
-                let _ = runner.act(GameAction::DeclareBlockers { assignments: vec![] });
+                let _ = runner.act(GameAction::DeclareBlockers {
+                    assignments: vec![],
+                });
             }
             // Stop and let the caller handle target selection
             WaitingFor::TriggerTargetSelection { .. } | WaitingFor::TargetSelection { .. } => {
@@ -74,7 +73,9 @@ fn flush_triggers(runner: &mut engine::game::scenario::GameRunner) {
                 let _ = runner.act(GameAction::DeclareAttackers { attacks: vec![] });
             }
             WaitingFor::DeclareBlockers { .. } => {
-                let _ = runner.act(GameAction::DeclareBlockers { assignments: vec![] });
+                let _ = runner.act(GameAction::DeclareBlockers {
+                    assignments: vec![],
+                });
             }
             _ => {
                 if runner.act(GameAction::PassPriority).is_err() {
@@ -108,14 +109,13 @@ fn greasefang_returns_vehicle_gains_haste_then_bounced_at_end_step() {
         .as_artifact()
         .with_subtypes(vec!["Vehicle"])
         .id();
-         let parhelion2_id = scenario
+    let parhelion2_id = scenario
         .add_creature(P0, "Parhelion II", 5, 5)
         .as_artifact()
         .with_subtypes(vec!["Vehicle"])
         .id();
 
     let mut runner = scenario.build();
-
 
     // ── Move Parhelion II to P0's graveyard ───────────────────────────────────
     {
@@ -125,7 +125,6 @@ fn greasefang_returns_vehicle_gains_haste_then_bounced_at_end_step() {
         state.objects.get_mut(&parhelion_id).unwrap().zone = Zone::Graveyard;
     }
 
-   
     // ── Move Parhelion II to P0's graveyard ───────────────────────────────────
     {
         let state = runner.state_mut();
@@ -133,7 +132,6 @@ fn greasefang_returns_vehicle_gains_haste_then_bounced_at_end_step() {
         zones::add_to_zone(state, parhelion2_id, Zone::Graveyard, P0);
         state.objects.get_mut(&parhelion2_id).unwrap().zone = Zone::Graveyard;
     }
-
 
     assert_eq!(
         runner.state().objects[&parhelion_id].zone,
@@ -148,9 +146,9 @@ fn greasefang_returns_vehicle_gains_haste_then_bounced_at_end_step() {
     let stack_empty = runner.state().stack.is_empty();
     assert!(
         stack_empty,
-        "type {:?}", runner.state().stack.first().unwrap().kind
+        "type {:?}",
+        runner.state().stack.first().unwrap().kind
     );
-
 
     // Engine should be asking for the graveyard Vehicle target.
     assert!(
