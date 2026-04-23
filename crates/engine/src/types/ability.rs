@@ -1588,6 +1588,11 @@ pub enum QuantityRef {
     /// Count of objects on the battlefield matching a filter.
     /// Used for "for each creature you control" and similar patterns.
     ObjectCount { filter: TargetFilter },
+    /// CR 201.2 + CR 603.4: Count of distinct names among objects matching a
+    /// filter. Used for "seven or more lands with different names" (Field of
+    /// the Dead) and similar distinct-name threshold predicates. Two objects
+    /// with the same name count once.
+    ObjectCountDistinctNames { filter: TargetFilter },
     /// Count of players matching a player-level filter.
     /// Used for "for each opponent who lost life this turn" and similar patterns.
     PlayerCount { filter: PlayerFilter },

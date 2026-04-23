@@ -521,6 +521,9 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::StartingLifeTotal => "starting life total".into(),
         QuantityRef::Speed => "speed".into(),
         QuantityRef::ObjectCount { filter } => format!("# of {}", fmt_target(filter)),
+        QuantityRef::ObjectCountDistinctNames { filter } => {
+            format!("# of distinctly-named {}", fmt_target(filter))
+        }
         QuantityRef::PlayerCount { filter } => format!("# of {}", fmt_player_filter(filter)),
         QuantityRef::CountersOnSelf { counter_type } => {
             format!("{counter_type} counters on self")
@@ -3926,6 +3929,7 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::StartingLifeTotal => ("StartingLifeTotal", Unhandled),
         QuantityRef::Speed => ("Speed", Handled),
         QuantityRef::ObjectCount { .. } => ("ObjectCount", Handled),
+        QuantityRef::ObjectCountDistinctNames { .. } => ("ObjectCountDistinctNames", Handled),
         QuantityRef::PlayerCount { .. } => ("PlayerCount", Handled),
         QuantityRef::CountersOnSelf { .. } => ("CountersOnSelf", Handled),
         QuantityRef::CountersOnTarget { .. } => ("CountersOnTarget", Handled),

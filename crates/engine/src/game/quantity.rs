@@ -319,6 +319,36 @@ fn resolve_ref(
                     .count(),
             )
         }
+        // CR 201.2 + CR 603.4: Count of distinct names among matching objects.
+        // Field of the Dead: "seven or more lands with different names". Two
+        // objects with the same printed name count once.
+        //
+        // CR 201.2a: Sameness is defined by printed name, so read `base_name`
+        // (not the layer-applied `name`) to match how CR defines object
+        // identity. Objects with no name do not share a name with any other
+        // object, including one another — they are each individually unique,
+        // so they are counted but not deduped.
+        QuantityRef::ObjectCountDistinctNames { filter } => {
+            let zone = filter
+                .extract_in_zone()
+                .unwrap_or(crate::types::zones::Zone::Battlefield);
+            let mut distinct_named: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut unnamed_count: usize = 0;
+            for id in crate::game::targeting::zone_object_ids(state, zone) {
+                if !matches_target_filter(state, id, filter, &filter_ctx) {
+                    continue;
+                }
+                if let Some(obj) = state.objects.get(&id) {
+                    if obj.base_name.is_empty() {
+                        unnamed_count += 1;
+                    } else {
+                        distinct_named.insert(obj.base_name.clone());
+                    }
+                }
+            }
+            usize_to_i32_saturating(distinct_named.len() + unnamed_count)
+        }
         QuantityRef::PlayerCount { filter } => {
             resolve_player_count(state, filter, controller, source_id)
         }
@@ -1125,6 +1155,52 @@ mod tests {
 
         // Other player (no commander of their own) still reports 0.
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(1), ObjectId(0)), 0);
+    }
+
+    /// CR 201.2 + CR 603.4: distinct-name count for Field of the Dead.
+    /// Two lands sharing a name count once; overall = # of unique names.
+    #[test]
+    fn resolve_quantity_object_count_distinct_names() {
+        let mut state = GameState::new_two_player(42);
+        for (name, count) in &[("Plains", 3), ("Island", 2), ("Field of the Dead", 1)] {
+            for _ in 0..*count {
+                let id = create_object(
+                    &mut state,
+                    CardId(100),
+                    PlayerId(0),
+                    (*name).to_string(),
+                    Zone::Battlefield,
+                );
+                state.objects.get_mut(&id).unwrap().card_types.core_types = vec![CoreType::Land];
+            }
+        }
+        // Plus one opponent Plains — must not count because filter is controller=You.
+        let opp_id = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(1),
+            "Plains".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&opp_id)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Land];
+
+        let filter = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: vec![],
+        });
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCountDistinctNames { filter },
+        };
+        // 3 distinct names controlled by P0: Plains, Island, Field of the Dead.
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(0)), 3);
+        // P1's POV: only the one opponent Plains would be theirs, so 1.
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(1), ObjectId(0)), 1);
     }
 
     #[test]
