@@ -12,8 +12,6 @@ use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::match_config::MatchType;
 
-const BASIC_LANDS: [&str; 5] = ["Plains", "Island", "Swamp", "Mountain", "Forest"];
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeckCompatibilityRequest {
     #[serde(default)]
@@ -840,9 +838,13 @@ fn copy_limit_violations(
         if *count <= max_copies {
             continue;
         }
-        if BASIC_LANDS
-            .iter()
-            .any(|basic| basic.eq_ignore_ascii_case(canonical_name))
+        // CR 100.2a + CR 205.3i: Basic lands are exempt from copy limits.
+        // "Basic" is a supertype (covering Plains/Island/Swamp/Mountain/Forest,
+        // Snow-Covered variants, Wastes, and any future basic), not a fixed
+        // name allowlist — trust the MTGJSON-populated supertype field.
+        if db
+            .get_face_by_name(canonical_name)
+            .is_some_and(|face| face.card_type.supertypes.contains(&Supertype::Basic))
         {
             continue;
         }
@@ -2309,5 +2311,169 @@ mod tests {
         assert!(result.is_err());
         let reasons = result.unwrap_err();
         assert!(reasons.iter().any(|r| r.contains("Singleton violations")));
+    }
+
+    /// CR 100.2a + CR 205.3i: Basic-lands exemption from singleton is driven
+    /// by the Basic *supertype*, not a fixed name allowlist. Snow-Covered
+    /// Plains and Wastes both carry the Basic supertype; Llanowar Elves does
+    /// not.
+    fn basic_supertype_test_db() -> String {
+        serde_json::json!({
+            "snow-covered plains": {
+                "name": "Snow-Covered Plains",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Basic", "Snow"],
+                    "core_types": ["Land"],
+                    "subtypes": ["Plains"]
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "plains": {
+                "name": "Plains",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Basic"],
+                    "core_types": ["Land"],
+                    "subtypes": ["Plains"]
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "wastes": {
+                "name": "Wastes",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Basic"],
+                    "core_types": ["Land"],
+                    "subtypes": []
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "llanowar elves": {
+                "name": "Llanowar Elves",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": [],
+                    "core_types": ["Creature"],
+                    "subtypes": ["Elf", "Druid"]
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "legal commander": {
+                "name": "Legal Commander",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Legendary"],
+                    "core_types": ["Creature"],
+                    "subtypes": []
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn commander_singleton_permits_snow_covered_basic_duplicates() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = expand("Snow-Covered Plains", 10);
+        main.extend(expand("Plains", 89));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            result.commander.compatible,
+            "Snow-Covered Plains must be treated as basic; reasons: {:?}",
+            result.commander.reasons
+        );
+    }
+
+    #[test]
+    fn commander_singleton_permits_wastes_duplicates() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = expand("Wastes", 10);
+        main.extend(expand("Plains", 89));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            result.commander.compatible,
+            "Wastes (Basic supertype) must be treated as basic; reasons: {:?}",
+            result.commander.reasons
+        );
+    }
+
+    #[test]
+    fn commander_singleton_rejects_non_basic_duplicates() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = expand("Llanowar Elves", 2);
+        main.extend(expand("Plains", 97));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            !result.commander.compatible,
+            "duplicate non-basic must still fail singleton"
+        );
+        assert!(result
+            .commander
+            .reasons
+            .iter()
+            .any(|r| r.contains("Llanowar Elves")));
+    }
+
+    #[test]
+    fn commander_singleton_permits_mixed_basic_variants() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = vec!["Plains".to_string(), "Snow-Covered Plains".to_string()];
+        main.extend(expand("Wastes", 97));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            result.commander.compatible,
+            "1x Plains + 1x Snow-Covered Plains must pass; reasons: {:?}",
+            result.commander.reasons
+        );
     }
 }
