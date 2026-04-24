@@ -1360,6 +1360,7 @@ mod tests {
             cards: vec![titan, land],
             count: 1,
             reveal: false,
+            up_to: false,
         };
 
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);

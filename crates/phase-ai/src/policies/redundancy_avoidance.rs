@@ -1102,6 +1102,7 @@ mod tests {
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 0 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         )));
         obj.abilities.push(ability);

@@ -410,6 +410,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 2 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         )
     }
@@ -578,6 +579,7 @@ mod tests {
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         ));
         let deck = vec![entry(face, 4)];

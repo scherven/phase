@@ -368,6 +368,7 @@ mod tests {
                 ability: Some(ResolvedAbility::new(
                     Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
+                        target: engine::types::ability::TargetFilter::Controller,
                     },
                     Vec::new(),
                     ObjectId(998),
@@ -633,6 +634,7 @@ mod tests {
                 count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
                 reveal: false,
                 target_player: None,
+                up_to: false,
             })],
         );
 
