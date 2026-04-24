@@ -15,7 +15,21 @@ export type DungeonId =
 
 // ── Game Format ─────────────────────────────────────────────────────────
 
-export type GameFormat = "Standard" | "Commander" | "Pioneer" | "Historic" | "Pauper" | "Brawl" | "HistoricBrawl" | "FreeForAll" | "TwoHeadedGiant";
+export type GameFormat =
+  | "Standard"
+  | "Commander"
+  | "Pioneer"
+  | "Modern"
+  | "Legacy"
+  | "Vintage"
+  | "Historic"
+  | "Pauper"
+  | "Brawl"
+  | "HistoricBrawl"
+  | "FreeForAll"
+  | "TwoHeadedGiant";
+
+export type FormatGroup = "Constructed" | "Commander" | "Multiplayer";
 
 export interface FormatConfig {
   format: GameFormat;
@@ -28,6 +42,21 @@ export interface FormatConfig {
   commander_damage_threshold: number | null;
   range_of_influence: number | null;
   team_based: boolean;
+}
+
+/**
+ * Authoritative per-format metadata produced by the engine's
+ * `get_format_registry` WASM export. Adding a format is a single engine-side
+ * edit; frontend components consume this list rather than maintaining parallel
+ * format tables.
+ */
+export interface FormatMetadata {
+  format: GameFormat;
+  label: string;
+  short_label: string;
+  description: string;
+  group: FormatGroup;
+  default_config: FormatConfig;
 }
 
 // ── Lobby ────────────────────────────────────────────────────────────────

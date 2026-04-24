@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 
-import type { FormatConfig, GameFormat, MatchType } from "../adapter/types";
+import type { FormatConfig, FormatGroup, GameFormat, MatchType } from "../adapter/types";
+import { FORMAT_REGISTRY } from "../data/formatRegistry";
 import { useAudioContext } from "../audio/useAudioContext";
 import { ScreenChrome } from "../components/chrome/ScreenChrome";
 import { AiOpponentConfig } from "../components/menu/AiOpponentConfig";
@@ -21,31 +22,15 @@ import { usePreferencesStore } from "../stores/preferencesStore";
 import { saveActiveGame, useGameStore } from "../stores/gameStore";
 import type { DeckCompatibilityResult } from "../services/deckCompatibility";
 
-// --- Format pill definitions ---
-
-type FormatGroup = "constructed" | "commander" | "multiplayer";
-
-interface FormatInfo {
-  format: GameFormat;
-  label: string;
-  group: FormatGroup;
-}
-
-const FORMATS: FormatInfo[] = [
-  { format: "Standard", label: "Standard", group: "constructed" },
-  { format: "Pioneer", label: "Pioneer", group: "constructed" },
-  { format: "Historic", label: "Historic", group: "constructed" },
-  { format: "Pauper", label: "Pauper", group: "constructed" },
-  { format: "Commander", label: "Commander", group: "commander" },
-  { format: "Brawl", label: "Brawl", group: "commander" },
-  { format: "HistoricBrawl", label: "Historic Brawl", group: "commander" },
-  { format: "FreeForAll", label: "Free-for-All", group: "multiplayer" },
-];
+// --- Format pill styling ---
+//
+// The list of formats itself comes from `FORMAT_REGISTRY` (engine-authored).
+// Only visual styling per group lives here.
 
 const GROUP_PILL_ACTIVE: Record<FormatGroup, string> = {
-  constructed: "border-indigo-300/30 bg-indigo-500/20 text-indigo-100",
-  commander: "border-amber-300/30 bg-amber-500/20 text-amber-100",
-  multiplayer: "border-emerald-300/30 bg-emerald-500/20 text-emerald-100",
+  Constructed: "border-indigo-300/30 bg-indigo-500/20 text-indigo-100",
+  Commander: "border-amber-300/30 bg-amber-500/20 text-amber-100",
+  Multiplayer: "border-emerald-300/30 bg-emerald-500/20 text-emerald-100",
 };
 
 const PILL_INACTIVE = "border-white/10 text-slate-400 hover:border-white/18 hover:text-white";
@@ -166,7 +151,7 @@ export function GameSetupPage() {
             Start a match.
           </h1>
           <div className="flex flex-wrap justify-center gap-2">
-            {FORMATS.map(({ format, label, group }) => (
+            {FORMAT_REGISTRY.map(({ format, label, group }) => (
               <button
                 key={format}
                 onClick={() => applyFormat(format)}

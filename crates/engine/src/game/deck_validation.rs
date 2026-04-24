@@ -594,7 +594,12 @@ fn evaluate_selected_format(
             }
             commander.compatible
         }
-        GameFormat::Pioneer | GameFormat::Historic | GameFormat::Pauper => {
+        GameFormat::Pioneer
+        | GameFormat::Modern
+        | GameFormat::Legacy
+        | GameFormat::Vintage
+        | GameFormat::Historic
+        | GameFormat::Pauper => {
             let check = evaluate_constructed(
                 db,
                 request,

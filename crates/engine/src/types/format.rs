@@ -2,12 +2,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::database::legality::LegalityFormat;
 
+/// Broad grouping used by the UI to visually cluster related formats
+/// (constructed, commander-style, multiplayer). Frontends may key color
+/// treatments off the group so they don't have to maintain a per-format
+/// styling table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FormatGroup {
+    Constructed,
+    Commander,
+    Multiplayer,
+}
+
+/// Authoritative metadata for a single user-selectable format. Produced by
+/// `GameFormat::registry()` and consumed by the frontend so that adding a new
+/// format requires touching the engine only — no mirrored maps on the client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormatMetadata {
+    pub format: GameFormat,
+    /// Full display label, e.g. "Historic Brawl".
+    pub label: &'static str,
+    /// Short three-letter code for compact badges, e.g. "HBR".
+    pub short_label: &'static str,
+    /// One-line human description suitable for a card or tooltip.
+    pub description: &'static str,
+    pub group: FormatGroup,
+    pub default_config: FormatConfig,
+}
+
 /// Supported game formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameFormat {
     Standard,
     Commander,
     Pioneer,
+    Modern,
+    Legacy,
+    Vintage,
     Historic,
     Pauper,
     Brawl,
@@ -56,6 +86,9 @@ impl GameFormat {
             GameFormat::Standard => Some(LegalityFormat::Standard),
             GameFormat::Commander => Some(LegalityFormat::Commander),
             GameFormat::Pioneer => Some(LegalityFormat::Pioneer),
+            GameFormat::Modern => Some(LegalityFormat::Modern),
+            GameFormat::Legacy => Some(LegalityFormat::Legacy),
+            GameFormat::Vintage => Some(LegalityFormat::Vintage),
             GameFormat::Historic => Some(LegalityFormat::Historic),
             GameFormat::Pauper => Some(LegalityFormat::Pauper),
             GameFormat::Brawl => Some(LegalityFormat::StandardBrawl),
@@ -73,6 +106,9 @@ impl GameFormat {
         match self {
             GameFormat::Standard
             | GameFormat::Pioneer
+            | GameFormat::Modern
+            | GameFormat::Legacy
+            | GameFormat::Vintage
             | GameFormat::Historic
             | GameFormat::Pauper => SideboardPolicy::Limited(15),
             GameFormat::Commander | GameFormat::Brawl | GameFormat::HistoricBrawl => {
@@ -82,12 +118,29 @@ impl GameFormat {
         }
     }
 
+    /// Whether this format grants a free first mulligan in duels (2-player
+    /// games). Combines CR 103.5c (which covers Brawl and all multiplayer
+    /// games) with the Commander Rules Committee's supplementary rule (which
+    /// extends free-first-mulligan to Commander and Historic Brawl duels).
+    ///
+    /// Multiplayer games (3+ seats) always get the free first mulligan per
+    /// CR 103.5c regardless of format; this predicate is the *duel* override.
+    pub fn grants_free_first_mulligan(self) -> bool {
+        matches!(
+            self,
+            GameFormat::Commander | GameFormat::Brawl | GameFormat::HistoricBrawl,
+        )
+    }
+
     /// Display label for validation error messages (e.g., "Not Pioneer legal").
     pub fn label(self) -> &'static str {
         match self {
             GameFormat::Standard => "Standard",
             GameFormat::Commander => "Commander",
             GameFormat::Pioneer => "Pioneer",
+            GameFormat::Modern => "Modern",
+            GameFormat::Legacy => "Legacy",
+            GameFormat::Vintage => "Vintage",
             GameFormat::Historic => "Historic",
             GameFormat::Pauper => "Pauper",
             GameFormat::Brawl => "Brawl",
@@ -95,6 +148,104 @@ impl GameFormat {
             GameFormat::FreeForAll => "Free-for-All",
             GameFormat::TwoHeadedGiant => "Two-Headed Giant",
         }
+    }
+
+    /// Authoritative list of user-selectable formats. The frontend consumes
+    /// this (via the `get_format_registry` WASM export) to render format
+    /// pickers, default configs, and badges. `TwoHeadedGiant` is intentionally
+    /// omitted — the enum variant exists but the engine does not yet support
+    /// teamed play, so it is not exposed to end users.
+    pub fn registry() -> Vec<FormatMetadata> {
+        vec![
+            FormatMetadata {
+                format: GameFormat::Standard,
+                label: "Standard",
+                short_label: "STD",
+                description: "Rotating card pool",
+                group: FormatGroup::Constructed,
+                default_config: FormatConfig::standard(),
+            },
+            FormatMetadata {
+                format: GameFormat::Pioneer,
+                label: "Pioneer",
+                short_label: "PIO",
+                description: "Non-rotating from 2012",
+                group: FormatGroup::Constructed,
+                default_config: FormatConfig::pioneer(),
+            },
+            FormatMetadata {
+                format: GameFormat::Modern,
+                label: "Modern",
+                short_label: "MOD",
+                description: "Non-rotating from Mirrodin onward",
+                group: FormatGroup::Constructed,
+                default_config: FormatConfig::modern(),
+            },
+            FormatMetadata {
+                format: GameFormat::Legacy,
+                label: "Legacy",
+                short_label: "LEG",
+                description: "Eternal format, all sets legal",
+                group: FormatGroup::Constructed,
+                default_config: FormatConfig::legacy(),
+            },
+            FormatMetadata {
+                format: GameFormat::Vintage,
+                label: "Vintage",
+                short_label: "VIN",
+                description: "Broadest pool, Power Nine restricted",
+                group: FormatGroup::Constructed,
+                default_config: FormatConfig::vintage(),
+            },
+            FormatMetadata {
+                format: GameFormat::Historic,
+                label: "Historic",
+                short_label: "HIS",
+                description: "Arena's eternal format",
+                group: FormatGroup::Constructed,
+                default_config: FormatConfig::historic(),
+            },
+            FormatMetadata {
+                format: GameFormat::Pauper,
+                label: "Pauper",
+                short_label: "PAU",
+                description: "Commons only",
+                group: FormatGroup::Constructed,
+                default_config: FormatConfig::pauper(),
+            },
+            FormatMetadata {
+                format: GameFormat::Commander,
+                label: "Commander",
+                short_label: "CMD",
+                description: "100-card singleton, 2\u{2013}4 players",
+                group: FormatGroup::Commander,
+                default_config: FormatConfig::commander(),
+            },
+            FormatMetadata {
+                format: GameFormat::Brawl,
+                label: "Brawl",
+                short_label: "BRL",
+                description: "60-card Standard singleton",
+                group: FormatGroup::Commander,
+                default_config: FormatConfig::brawl(),
+            },
+            FormatMetadata {
+                format: GameFormat::HistoricBrawl,
+                label: "Historic Brawl",
+                short_label: "HBR",
+                description: "60-card eternal singleton",
+                group: FormatGroup::Commander,
+                default_config: FormatConfig::historic_brawl(),
+            },
+            FormatMetadata {
+                format: GameFormat::FreeForAll,
+                label: "Free-for-All",
+                short_label: "FFA",
+                description: "3\u{2013}6 player battle royale",
+                group: FormatGroup::Multiplayer,
+                default_config: FormatConfig::free_for_all(),
+            },
+        ]
     }
 }
 
@@ -132,6 +283,32 @@ impl FormatConfig {
     pub fn pioneer() -> Self {
         FormatConfig {
             format: GameFormat::Pioneer,
+            ..Self::standard()
+        }
+    }
+
+    /// Modern: non-rotating constructed from Mirrodin (2003) onward.
+    pub fn modern() -> Self {
+        FormatConfig {
+            format: GameFormat::Modern,
+            ..Self::standard()
+        }
+    }
+
+    /// Legacy: non-rotating constructed spanning the full Magic card pool,
+    /// minus the Legacy banned list.
+    pub fn legacy() -> Self {
+        FormatConfig {
+            format: GameFormat::Legacy,
+            ..Self::standard()
+        }
+    }
+
+    /// Vintage: non-rotating constructed with the broadest legal pool,
+    /// restricted rather than fully banned for Power Nine and similar.
+    pub fn vintage() -> Self {
+        FormatConfig {
+            format: GameFormat::Vintage,
             ..Self::standard()
         }
     }
@@ -218,6 +395,9 @@ impl FormatConfig {
             GameFormat::Standard => Self::standard(),
             GameFormat::Commander => Self::commander(),
             GameFormat::Pioneer => Self::pioneer(),
+            GameFormat::Modern => Self::modern(),
+            GameFormat::Legacy => Self::legacy(),
+            GameFormat::Vintage => Self::vintage(),
             GameFormat::Historic => Self::historic(),
             GameFormat::Pauper => Self::pauper(),
             GameFormat::Brawl => Self::brawl(),

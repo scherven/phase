@@ -315,6 +315,14 @@ pub fn sideboard_policy_for_format(format: JsValue) -> Result<JsValue, JsValue> 
     Ok(to_js(&format.sideboard_policy()))
 }
 
+/// Return the authoritative list of user-selectable formats as a typed array.
+/// The frontend treats this as the single source of truth for rendering
+/// format pickers, badges, and default configs — no hand-maintained mirrors.
+#[wasm_bindgen(js_name = getFormatRegistry)]
+pub fn get_format_registry() -> JsValue {
+    to_js(&GameFormat::registry())
+}
+
 /// Evaluate deck compatibility and format legality using the loaded card database.
 /// Returns strict Standard/Commander checks, BO3 readiness, and selected-format compatibility.
 #[wasm_bindgen]
