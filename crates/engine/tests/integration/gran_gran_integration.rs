@@ -347,3 +347,84 @@ fn abandon_attachments_empty_hand_vetoes_draw() {
     );
     assert_eq!(state.players[0].hand.len(), 0);
 }
+
+// Stronger coverage: force the *interactive* DiscardChoice path (hand > count),
+// so the sub Draw is actually stashed as `pending_continuation` and drained
+// after `GameAction::SelectCards`. This pins the `optional_effect_performed`
+// context propagation across the `WaitingFor::DiscardChoice` boundary — the
+// architectural hotspot flagged in GH-87 V2 ("was-cost-paid evaluated against
+// wrong state snapshot").
+#[test]
+fn abandon_attachments_interactive_discard_drains_continuation_draw() {
+    use engine::types::ability::SpellContext;
+
+    let mut state = GameState::new_two_player(42);
+    let controller = PlayerId(0);
+    let source_id = ObjectId(100);
+
+    // Two cards in hand so DiscardChoice is interactive (hand > count).
+    let hand_a = create_object(&mut state, CardId(1), controller, "A".into(), Zone::Hand);
+    let _hand_b = create_object(&mut state, CardId(2), controller, "B".into(), Zone::Hand);
+    // Two cards in library so Draw(2) has fuel.
+    let lib_top = create_object(
+        &mut state,
+        CardId(3),
+        controller,
+        "L1".into(),
+        Zone::Library,
+    );
+    let lib_second = create_object(
+        &mut state,
+        CardId(4),
+        controller,
+        "L2".into(),
+        Zone::Library,
+    );
+
+    let mut chain = abandon_attachments_chain(source_id, controller);
+    chain.optional = false;
+    let ctx = SpellContext {
+        optional_effect_performed: true,
+        ..SpellContext::default()
+    };
+    chain.context = ctx.clone();
+    if let Some(sub) = chain.sub_ability.as_mut() {
+        sub.context = ctx;
+    }
+
+    let mut events = Vec::new();
+    resolve_ability_chain(&mut state, &chain, &mut events, 0).unwrap();
+
+    // Outer Discard MUST have paused on DiscardChoice (the stashed-continuation path).
+    assert!(
+        matches!(state.waiting_for, WaitingFor::DiscardChoice { .. }),
+        "expected interactive DiscardChoice, got {:?}",
+        state.waiting_for
+    );
+    // No draw yet — it's sitting in pending_continuation waiting for the player.
+    assert!(!state.players[0].hand.contains(&lib_top));
+
+    // Submit the discard.
+    apply_as_current(
+        &mut state,
+        GameAction::SelectCards {
+            cards: vec![hand_a],
+        },
+    )
+    .unwrap();
+
+    // After drain: discarded card in graveyard, IfYouDo draw fired.
+    assert!(state.players[0].graveyard.contains(&hand_a));
+    assert!(
+        state.players[0].hand.contains(&lib_top),
+        "IfYouDo Draw must fire after DiscardChoice drains"
+    );
+    assert!(
+        state.players[0].hand.contains(&lib_second),
+        "Both cards of Draw(2) must be drawn"
+    );
+    assert!(
+        !state.cost_payment_failed_flag,
+        "Success path must clear cost_payment_failed_flag"
+    );
+}
