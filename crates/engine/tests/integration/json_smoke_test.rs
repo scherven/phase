@@ -304,9 +304,7 @@ fn sagu_wildling_cast_from_hand_prompts_adventure_choice() {
     // the real client/public/card-data.json is expensive. `OnceLock` gives us
     // `&'static CardDatabase` without leaking a fresh allocation per invocation.
     static DB: OnceLock<CardDatabase> = OnceLock::new();
-    let db = DB.get_or_init(|| {
-        CardDatabase::from_export(&path).expect("export should load")
-    });
+    let db = DB.get_or_init(|| CardDatabase::from_export(&path).expect("export should load"));
 
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
