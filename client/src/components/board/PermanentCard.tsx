@@ -435,7 +435,6 @@ const ExileGhostCard = memo(function ExileGhostCard({ objectId, offset }: ExileG
     <div
       className="absolute z-0 cursor-default opacity-70"
       style={{ bottom: `-${offset}px`, left: `${offset}px` }}
-      data-card-hover
       {...hoverHandlers}
     >
       {/* Purple exile tint */}
