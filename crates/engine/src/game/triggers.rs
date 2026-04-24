@@ -1645,11 +1645,17 @@ pub(crate) fn check_trigger_condition(
                 .as_ref()
                 .is_some_and(|c| c.attackers.iter().any(|a| a.object_id == sid))
         }
-        // CR 702.49 + CR 702.190a + CR 603.4: "if its sneak/ninjutsu cost was paid this turn"
-        TriggerCondition::CastVariantPaid { variant } => source_id
-            .and_then(|id| state.objects.get(&id))
-            .map(|obj| obj.cast_variant_paid == Some((*variant, state.turn_number)))
-            .unwrap_or(false),
+        // CR 702.49 + CR 702.190a + CR 603.4 + CR 702.138b: "if its sneak/ninjutsu
+        // cost was paid this turn" / "unless it escaped". When `negated` is true,
+        // the match inverts so a missing or mismatched tag satisfies the condition
+        // (reanimated, hard-cast, or cast via some other variant all pass).
+        TriggerCondition::CastVariantPaid { variant, negated } => {
+            let matched = source_id
+                .and_then(|id| state.objects.get(&id))
+                .map(|obj| obj.cast_variant_paid == Some((*variant, state.turn_number)))
+                .unwrap_or(false);
+            matched ^ *negated
+        }
         // CR 601.2: True when the current turn's active player is an opponent.
         TriggerCondition::DuringOpponentsTurn => state.active_player != controller,
         // CR 700.4 + CR 120.1: True when the dying creature was dealt damage by the

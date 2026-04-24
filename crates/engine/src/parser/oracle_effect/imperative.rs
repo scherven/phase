@@ -12,7 +12,7 @@ use super::counter::{
 use super::mana::{try_parse_activate_only_condition, try_parse_add_mana_effect};
 use super::token::try_parse_token;
 use super::types::*;
-use super::{resolve_it_pronoun, ParseContext};
+use super::{is_bare_object_pronoun, resolve_it_pronoun, ParseContext};
 use crate::parser::oracle_nom::bridge::nom_on_lower;
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_static::{
@@ -497,7 +497,11 @@ fn parse_discard_card_filter(lower: &str) -> Option<TargetFilter> {
 /// NOTE: Shares verb prefixes with `try_parse_verb_and_target` in `mod.rs`.
 /// When adding a new targeted verb here, check if it also needs to be added there
 /// (for compound action splitting like "tap target creature and put a counter on it").
-pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<TargetedImperativeAst> {
+pub(super) fn parse_targeted_action_ast(
+    text: &str,
+    lower: &str,
+    ctx: &ParseContext,
+) -> Option<TargetedImperativeAst> {
     // CR 701.26a/b: Tap/untap all — mass variants must be checked before single-target
     if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
         value((), alt((tag("tap all "), tag("tap each ")))).parse(input)
@@ -550,8 +554,22 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         // subsumed the filter ("sacrifice half the permanents they control
         // of their choice"), so there is nothing left to classify. Avoids
         // emitting a `target-fallback` parse warning for a well-formed parse.
+        //
+        // CR 608.2k: When the remainder is a bare object pronoun ("it",
+        // "itself", "them", "him", "her") AND the parse context carries an
+        // explicit trigger subject, resolve the pronoun against that subject
+        // instead of defaulting to `ParentTarget`. On a self-ETB trigger
+        // ("When Phlage enters, sacrifice it unless it escaped") the subject
+        // is `SelfRef` and there is no outer targeted object, so "it" binds
+        // to the source permanent. For context-free parses (e.g., the
+        // populate anaphor chain "populate. … sacrifice it at the beginning
+        // of the next end step") the antecedent is set later by
+        // `rewrite_parent_target_to_last_created`, so we must preserve
+        // `ParentTarget` when no subject is provided.
         let target = if target_text.trim().is_empty() {
             TargetFilter::Any
+        } else if ctx.subject.is_some() && is_bare_object_pronoun(target_text.trim()) {
+            resolve_it_pronoun(ctx)
         } else {
             let (target, _rem) = parse_target(target_text);
             #[cfg(debug_assertions)]
@@ -2675,7 +2693,7 @@ pub(super) fn parse_imperative_family_ast(
         .parse(lower)
         .is_ok()
     {
-        if let Some(ast) = parse_targeted_action_ast(text, lower) {
+        if let Some(ast) = parse_targeted_action_ast(text, lower, ctx) {
             return Some(ImperativeFamilyAst::Structured(ImperativeAst::Targeted(
                 ast,
             )));
@@ -2718,10 +2736,10 @@ pub(super) fn parse_imperative_family_ast(
 
         // Targeted action verbs (CR 701)
         "tap" | "untap" | "sacrifice" | "discard" | "return" | "fight" => {
-            parse_targeted_action_ast(text, lower)
+            parse_targeted_action_ast(text, lower, ctx)
                 .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Targeted(ast)))
         }
-        "earthbend" | "airbend" => parse_targeted_action_ast(text, lower)
+        "earthbend" | "airbend" => parse_targeted_action_ast(text, lower, ctx)
             .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Targeted(ast))),
 
         // Search/creation verbs (CR 701.18, CR 111.2)
@@ -3146,7 +3164,7 @@ pub(super) fn parse_imperative_family_ast(
         // This reordering makes the disambiguation explicit.
         "gain" | "gains" => {
             if nom_primitives::scan_contains(lower, "control of") {
-                parse_targeted_action_ast(text, lower)
+                parse_targeted_action_ast(text, lower, ctx)
                     .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Targeted(ast)))
             } else if nom_primitives::scan_contains(lower, "life") {
                 parse_numeric_imperative_ast(text, lower)
@@ -4168,7 +4186,7 @@ mod tests {
     fn parse_earthbend_verb() {
         let text = "Earthbend 3 target land";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         assert!(result.is_some(), "Should parse 'earthbend' verb");
         let effect = lower_targeted_action_ast(result.unwrap());
         match effect {
@@ -4192,7 +4210,7 @@ mod tests {
     fn parse_mindslaver_control_next_turn() {
         let text = "You control target player during that player's next turn.";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         assert!(
             result.is_some(),
             "Should parse Mindslaver's 'you control ...' declarative"
@@ -4216,7 +4234,7 @@ mod tests {
         let text = "You control target player during that player's next turn. \
                     After that turn, that player takes an extra turn.";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         assert!(result.is_some());
         let effect = lower_targeted_action_ast(result.unwrap());
         match effect {
@@ -4238,7 +4256,7 @@ mod tests {
         // stripped form "gain control of Mindslaver Toolkit".
         let stripped = "gain control of Mindslaver Toolkit";
         let stripped_lower = stripped.to_lowercase();
-        let result = parse_targeted_action_ast(stripped, &stripped_lower);
+        let result = parse_targeted_action_ast(stripped, &stripped_lower, &ParseContext::default());
         assert!(result.is_some());
         let effect = lower_targeted_action_ast(result.unwrap());
         assert!(
@@ -4252,7 +4270,7 @@ mod tests {
     fn parse_airbend_verb() {
         let text = "Airbend target creature {2}";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         assert!(result.is_some(), "Should parse 'airbend' verb");
         let effect = lower_targeted_action_ast(result.unwrap());
         match effect {
@@ -4274,7 +4292,8 @@ mod tests {
     fn parse_airbend_up_to_one_other_target_creature_or_spell() {
         let text = "Airbend up to one other target creature or spell {2}";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower).expect("Should parse airbend");
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default())
+            .expect("Should parse airbend");
         let effect = lower_targeted_action_ast(result);
         match effect {
             Effect::GrantCastingPermission {
@@ -4316,7 +4335,7 @@ mod tests {
     fn parse_earthbend_default_pt() {
         let text = "Earthbend target land";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         assert!(result.is_some());
         let effect = lower_targeted_action_ast(result.unwrap());
         match effect {
@@ -4336,7 +4355,7 @@ mod tests {
         // Should default to "target land you control" per keyword definition.
         let text = "Earthbend 2.";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         assert!(
             result.is_some(),
             "Should parse 'earthbend' without explicit target"
@@ -4680,7 +4699,7 @@ mod tests {
     fn parse_discard_your_hand() {
         let text = "discard your hand";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         match result {
             Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
@@ -4701,7 +4720,7 @@ mod tests {
     fn parse_discard_their_hand() {
         let text = "discard their hand";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         match result {
             Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
@@ -4722,7 +4741,7 @@ mod tests {
     fn parse_discard_a_card_regression() {
         let text = "discard a card";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         match result {
             Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
@@ -4738,7 +4757,7 @@ mod tests {
     fn parse_discard_two_cards_regression() {
         let text = "discard two cards";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         match result {
             Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
@@ -4754,7 +4773,7 @@ mod tests {
     fn parse_discard_unless_creature() {
         let text = "discard two cards unless you discard a creature card";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         match result {
             Some(TargetedImperativeAst::Discard {
                 count,
@@ -4778,7 +4797,7 @@ mod tests {
     fn parse_discard_unless_pirate() {
         let text = "discard two cards unless you discard a Pirate card";
         let lower = text.to_lowercase();
-        let result = parse_targeted_action_ast(text, &lower);
+        let result = parse_targeted_action_ast(text, &lower, &ParseContext::default());
         match result {
             Some(TargetedImperativeAst::Discard {
                 count,

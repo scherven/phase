@@ -5655,8 +5655,6 @@ fn line_has_condition_text(lower: &str) -> Option<&'static str> {
             || lower.contains("unless that creature")
             // "unless they're mana abilities" — structural restriction qualifier
             || lower.contains("unless they're mana abilities")
-            // "unless it escaped" — cast-method condition (escape keyword)
-            || lower.contains("unless it escaped")
             // "unless {W} was spent" / "unless two or more colors of mana were spent" — casting conditions
             || (lower.contains("unless") && lower.contains("was spent"))
             || (lower.contains("unless") && lower.contains("were spent"))

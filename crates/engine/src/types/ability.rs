@@ -2425,6 +2425,11 @@ pub enum CastVariantPaid {
     /// keys off this marker so a Threaten-style control swap correctly
     /// terminates haste via `StaticCondition::SourceControllerEquals`.
     Suspend,
+    /// CR 702.138a + CR 702.138b: The spell that became this permanent was cast
+    /// from a graveyard via its escape alternative cost. Read by the "unless it
+    /// escaped" intervening-if on Phlage, Titan of Fire's Fury and any future
+    /// escape-gated ETB trigger.
+    Escape,
 }
 
 impl From<NinjutsuVariant> for CastVariantPaid {
@@ -5367,10 +5372,16 @@ pub enum TriggerCondition {
     /// CR 508.1: Used by ninjutsu ETB triggers (e.g., Thousand-Faced Shadow).
     SourceIsAttacking,
 
-    /// CR 702.49 + CR 702.190a + CR 603.4: "if its sneak/ninjutsu cost was paid this turn"
-    /// — true when the source permanent entered via the specified cast/activation variant
-    /// this turn.
-    CastVariantPaid { variant: CastVariantPaid },
+    /// CR 702.49 + CR 702.190a + CR 603.4 + CR 702.138b: "if its sneak/ninjutsu
+    /// cost was paid this turn" / "unless it escaped". True when the source
+    /// permanent entered via the specified cast/activation variant this turn.
+    /// When `negated` is true, the condition inverts — e.g. "sacrifice it unless
+    /// it escaped" gates the sacrifice on `cast_variant_paid != Some(Escape)`.
+    CastVariantPaid {
+        variant: CastVariantPaid,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        negated: bool,
+    },
 
     /// CR 601.2: "during each opponent's turn" — the trigger only fires when it is
     /// currently an opponent's turn. Used in conjunction with NthSpellThisTurn constraint.

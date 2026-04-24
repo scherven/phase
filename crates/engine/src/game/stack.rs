@@ -476,6 +476,21 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                 }
             }
 
+            // CR 702.138b: Escape-cast permanent is tagged so the "unless it
+            // escaped" intervening-if on Phlage, Titan of Fire's Fury (and any
+            // future escape-gated ETB trigger) can distinguish escape casts
+            // from hard-casts and reanimation. Per CR 702.138b: "A spell or
+            // permanent 'escaped' if that spell ... was cast from a graveyard
+            // with an escape ability."
+            if casting_variant == CastingVariant::Escape {
+                if let Some(obj) = state.objects.get_mut(&entry.id) {
+                    obj.cast_variant_paid = Some((
+                        crate::types::ability::CastVariantPaid::Escape,
+                        state.turn_number,
+                    ));
+                }
+            }
+
             // CR 702.62a: Suspend-cast permanent gets the `cast_variant_paid`
             // tag for symmetry with Evoke / Sneak (no synthesized trigger reads
             // it today, but it preserves the audit trail). Additionally, when

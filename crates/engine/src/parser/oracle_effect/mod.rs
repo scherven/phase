@@ -76,6 +76,21 @@ pub(crate) struct ParseContext {
     pub card_name: Option<String>,
 }
 
+/// CR 608.2k: True when `text` is a standalone object pronoun referring to
+/// the trigger/spell subject. Used by effect-target parsers that need to
+/// distinguish "verb + pronoun" (resolve against `ctx.subject` via
+/// `resolve_it_pronoun`) from "verb + target filter" (parse via
+/// `parse_target`, which defaults to `ParentTarget`).
+///
+/// Covers the full object-pronoun family: "it" / "itself", "him" / "himself",
+/// "her" / "herself", "them" / "themselves". Caller is responsible for trimming.
+pub(crate) fn is_bare_object_pronoun(text: &str) -> bool {
+    matches!(
+        text,
+        "it" | "itself" | "him" | "himself" | "her" | "herself" | "them" | "themselves"
+    )
+}
+
 /// CR 608.2k: Resolve bare pronoun ("it"/"itself"/"its") based on parser context.
 /// When a triggered ability's effect refers to an untargeted object previously
 /// referred to by the trigger condition, it still affects that object.

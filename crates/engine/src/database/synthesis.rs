@@ -971,6 +971,7 @@ pub fn synthesize_evoke(face: &mut CardFace) {
                 t.condition,
                 Some(TriggerCondition::CastVariantPaid {
                     variant: CastVariantPaid::Evoke,
+                    negated: false,
                 })
             )
             && matches!(
@@ -998,6 +999,7 @@ pub fn synthesize_evoke(face: &mut CardFace) {
         .valid_card(TargetFilter::SelfRef)
         .condition(TriggerCondition::CastVariantPaid {
             variant: CastVariantPaid::Evoke,
+            negated: false,
         })
         .execute(sac)
         .description(
@@ -2022,6 +2024,7 @@ mod evoke_synthesis_tests {
             trigger.condition,
             Some(TriggerCondition::CastVariantPaid {
                 variant: CastVariantPaid::Evoke,
+                negated: false,
             })
         ));
         assert!(matches!(
@@ -2048,6 +2051,7 @@ mod evoke_synthesis_tests {
                     t.condition,
                     Some(TriggerCondition::CastVariantPaid {
                         variant: CastVariantPaid::Evoke,
+                        ..
                     })
                 )
             })
@@ -2091,6 +2095,7 @@ mod evoke_runtime_tests {
 
         let condition = TriggerCondition::CastVariantPaid {
             variant: CastVariantPaid::Evoke,
+            negated: false,
         };
 
         // Untagged → false.
@@ -2130,6 +2135,78 @@ mod evoke_runtime_tests {
         assert!(!check_trigger_condition(
             &state,
             &condition,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
+    }
+
+    /// CR 702.138b + CR 603.4: Phlage, Titan of Fire's Fury — the negated
+    /// `CastVariantPaid { variant: Escape, negated: true }` must satisfy for
+    /// (a) untagged permanents (reanimation, flicker: per WotC ruling,
+    /// sacrifice fires), (b) permanents tagged with a different variant (no
+    /// cast-via-escape happened), and (c) stale escape tags. It must fail only
+    /// when the source is tagged `Escape` for the current turn.
+    #[test]
+    fn cast_variant_paid_escape_negated_fires_unless_escape_tagged() {
+        let mut state = GameState::new_two_player(0);
+        state.turn_number = 5;
+        let id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Phlage, Titan of Fire's Fury".to_string(),
+            Zone::Battlefield,
+        );
+
+        let negated = TriggerCondition::CastVariantPaid {
+            variant: CastVariantPaid::Escape,
+            negated: true,
+        };
+
+        // Untagged (reanimated or put onto battlefield without being cast) →
+        // "unless it escaped" is satisfied → trigger fires.
+        assert!(check_trigger_condition(
+            &state,
+            &negated,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
+
+        // Tagged with a non-Escape variant (hard-cast from hand leaves
+        // `cast_variant_paid = None`; this branch covers hypothetical other
+        // alt-costs like Evoke if composed) → still satisfies.
+        state.objects.get_mut(&id).unwrap().cast_variant_paid =
+            Some((CastVariantPaid::Evoke, state.turn_number));
+        assert!(check_trigger_condition(
+            &state,
+            &negated,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
+
+        // Tagged Escape for the CURRENT turn → "unless it escaped" fails →
+        // trigger does NOT fire.
+        state.objects.get_mut(&id).unwrap().cast_variant_paid =
+            Some((CastVariantPaid::Escape, state.turn_number));
+        assert!(!check_trigger_condition(
+            &state,
+            &negated,
+            PlayerId(0),
+            Some(id),
+            None
+        ));
+
+        // Tagged Escape for a STALE turn → tag is not the current turn, so
+        // the permanent is treated as not having escaped (per-turn freshness,
+        // CR 603.4) → sacrifice fires.
+        state.objects.get_mut(&id).unwrap().cast_variant_paid =
+            Some((CastVariantPaid::Escape, state.turn_number - 1));
+        assert!(check_trigger_condition(
+            &state,
+            &negated,
             PlayerId(0),
             Some(id),
             None

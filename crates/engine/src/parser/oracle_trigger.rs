@@ -1035,6 +1035,23 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         );
     }
 
+    // CR 603.4 + CR 702.138b: "unless it escaped" — the trigger fires unless
+    // the source permanent was cast from a graveyard with its escape ability.
+    // Phlage, Titan of Fire's Fury: "sacrifice it unless it escaped." The
+    // condition inverts `CastVariantPaid { variant: Escape }` so reanimation
+    // and hard-casts both satisfy the gate (per the WotC ruling: "causes you
+    // to sacrifice it if you didn't cast it, or if it was cast using any
+    // permission other than an escape ability").
+    if let Some(pos) = tp.find("unless it escaped") {
+        return (
+            strip_condition_clause(text, pos, "unless it escaped".len()),
+            Some(TriggerCondition::CastVariantPaid {
+                variant: CastVariantPaid::Escape,
+                negated: true,
+            }),
+        );
+    }
+
     // Simple pattern→condition extractions (no dynamic parsing or guards needed).
     if let Some(result) = try_extract_simple_condition(
         &tp,
@@ -1228,7 +1245,10 @@ fn try_extract_ninjutsu_condition(
             let end = kw_pos + keyword.len() + extra;
             return Some((
                 strip_condition_clause(text, pos, end - pos),
-                Some(TriggerCondition::CastVariantPaid { variant: *variant }),
+                Some(TriggerCondition::CastVariantPaid {
+                    variant: *variant,
+                    negated: false,
+                }),
             ));
         }
     }
@@ -8181,6 +8201,7 @@ mod tests {
             def.condition,
             Some(TriggerCondition::CastVariantPaid {
                 variant: CastVariantPaid::Sneak,
+                negated: false,
             })
         );
     }
@@ -8196,8 +8217,43 @@ mod tests {
             def.condition,
             Some(TriggerCondition::CastVariantPaid {
                 variant: CastVariantPaid::Ninjutsu,
+                negated: false,
             })
         );
+    }
+
+    // CR 702.138b + CR 603.4: Phlage, Titan of Fire's Fury — "sacrifice it
+    // unless it escaped" must (a) resolve "it" to SelfRef via pronoun context,
+    // not ParentTarget, and (b) attach a negated CastVariantPaid { Escape }
+    // intervening-if so the sacrifice fires on hard-casts and reanimation but
+    // not on escape casts.
+    #[test]
+    fn phlage_unless_it_escaped_attaches_negated_escape_condition() {
+        let def = parse_trigger_line(
+            "When ~ enters, sacrifice it unless it escaped.",
+            "Phlage, Titan of Fire's Fury",
+        );
+        assert_eq!(def.mode, TriggerMode::ChangesZone);
+        assert_eq!(def.destination, Some(Zone::Battlefield));
+        assert_eq!(def.valid_card, Some(TargetFilter::SelfRef));
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::CastVariantPaid {
+                variant: CastVariantPaid::Escape,
+                negated: true,
+            })
+        );
+        let execute = def.execute.as_deref().expect("execute ability");
+        match &*execute.effect {
+            Effect::Sacrifice { target, .. } => {
+                assert_eq!(
+                    *target,
+                    TargetFilter::SelfRef,
+                    "`sacrifice it` in an ETB-self trigger should resolve to SelfRef"
+                );
+            }
+            other => panic!("expected Sacrifice, got {other:?}"),
+        }
     }
 
     #[test]
