@@ -50,6 +50,8 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::CantSearchLibrary { .. }
             // CR 603.2g: SuppressTriggers carries `source_filter` + `events`.
             | StaticMode::SuppressTriggers { .. }
+            // CR 603.2d: DoubleTriggers carries the `TriggerCause` predicate.
+            | StaticMode::DoubleTriggers { .. }
     )
 }
 
@@ -5097,7 +5099,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             StaticMode::MayChooseNotToUntap => effective_lower.contains("may choose not to untap"),
             StaticMode::CantDraw { .. } => effective_lower.contains("can't draw"),
             StaticMode::PerTurnDrawLimit { .. } => effective_lower.contains("can't draw more than"),
-            StaticMode::Panharmonicon => {
+            StaticMode::DoubleTriggers { .. } => {
                 effective_lower.contains("triggers an additional time")
                     || effective_lower.contains("trigger an additional time")
             }

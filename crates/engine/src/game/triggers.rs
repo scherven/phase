@@ -15,7 +15,7 @@ use crate::types::keywords::Keyword;
 use crate::types::keywords::WardCost;
 use crate::types::phase::Phase;
 use crate::types::player::{Player, PlayerId};
-use crate::types::statics::StaticMode;
+use crate::types::statics::{StaticMode, TriggerCause};
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
@@ -1016,20 +1016,26 @@ pub fn push_pending_trigger_to_stack(
     stack::push_to_stack(state, entry, events);
 }
 
-/// CR 603.2d: Apply trigger doubling from Panharmonicon-style static abilities.
-/// Scans battlefield for permanents with `StaticMode::Panharmonicon` statics,
-/// then clones matching pending triggers an additional time.
+/// CR 603.2d: Apply trigger doubling from `StaticMode::DoubleTriggers`
+/// static abilities. Scans battlefield for permanents with a DoubleTriggers
+/// static, then clones matching pending triggers an additional time. The
+/// `TriggerCause` predicate restricts which spawning events qualify
+/// (Panharmonicon: ETB; Isshin: creature attacking; Any: unrestricted).
 fn apply_trigger_doubling(state: &GameState, pending: &mut Vec<PendingTrigger>) {
     // CR 702.26b + CR 604.1: `active_static_definitions` owns the gating so a
-    // phased-out Panharmonicon no longer doubles triggers.
-    let doublers: Vec<(PlayerId, ObjectId, Option<TargetFilter>)> = state
+    // phased-out doubler no longer doubles triggers.
+    let doublers: Vec<(PlayerId, ObjectId, TriggerCause, Option<TargetFilter>)> = state
         .battlefield
         .iter()
         .filter_map(|&obj_id| {
             let obj = state.objects.get(&obj_id)?;
-            let panharmonicon = super::functioning_abilities::active_static_definitions(state, obj)
-                .find(|sd| matches!(sd.mode, StaticMode::Panharmonicon))?;
-            Some((obj.controller, obj_id, panharmonicon.affected.clone()))
+            let doubler = super::functioning_abilities::active_static_definitions(state, obj)
+                .find(|sd| matches!(sd.mode, StaticMode::DoubleTriggers { .. }))?;
+            let cause = match &doubler.mode {
+                StaticMode::DoubleTriggers { cause } => cause.clone(),
+                _ => unreachable!("filter above guarantees DoubleTriggers"),
+            };
+            Some((obj.controller, obj_id, cause, doubler.affected.clone()))
         })
         .collect();
 
@@ -1038,14 +1044,18 @@ fn apply_trigger_doubling(state: &GameState, pending: &mut Vec<PendingTrigger>) 
     }
 
     let mut extra: Vec<PendingTrigger> = Vec::new();
-    for (doubler_controller, doubler_id, ref affected) in &doublers {
+    for (doubler_controller, doubler_id, cause, ref affected) in &doublers {
         for trigger in pending.iter() {
             // Controller match: trigger source must be controlled by the doubler's controller
             if trigger.controller != *doubler_controller {
                 continue;
             }
-            // Self-exclusion: don't double triggers from the Panharmonicon itself entering
+            // Self-exclusion: don't double triggers from the doubler itself entering
             if trigger.source_id == *doubler_id {
+                continue;
+            }
+            // CR 603.2d: Check the cause predicate against the spawning event.
+            if !trigger_cause_matches(cause, trigger.trigger_event.as_ref()) {
                 continue;
             }
             // CR 603.2d: If the doubler specifies an affected filter (e.g. "creature you
@@ -1064,6 +1074,60 @@ fn apply_trigger_doubling(state: &GameState, pending: &mut Vec<PendingTrigger>) 
         }
     }
     pending.extend(extra);
+}
+
+/// CR 603.2d: Predicate check — does a `TriggerCause` match the event that
+/// spawned a pending trigger? Called once per (doubler, pending-trigger) pair.
+///
+/// - `TriggerCause::Any` matches any event (even absent events — some state
+///   triggers carry `trigger_event = None`, and unrestricted doublers should
+///   still cover them).
+/// - `TriggerCause::EntersBattlefield { core_types }` matches `ZoneChanged`
+///   events moving to the battlefield whose object's core types intersect
+///   the predicate's `core_types`. An empty `core_types` list means "any
+///   permanent" (reserved for hypothetical cards that don't narrow by type).
+/// - `TriggerCause::CreatureAttacking` matches `AttackersDeclared` events.
+///   CR 508.1a: every object declared as an attacker must be a creature,
+///   so no further type check is required.
+fn trigger_cause_matches(cause: &TriggerCause, event: Option<&GameEvent>) -> bool {
+    match cause {
+        TriggerCause::Any => true,
+        TriggerCause::EntersBattlefield { core_types } => {
+            let Some(GameEvent::ZoneChanged {
+                to: Zone::Battlefield,
+                record,
+                ..
+            }) = event
+            else {
+                return false;
+            };
+            if core_types.is_empty() {
+                return true;
+            }
+            // CR 603.6a: The entering permanent's core types must include at
+            // least one of the predicate's listed types. Panharmonicon uses
+            // `[Artifact, Creature]` — either type qualifies.
+            record.core_types.iter().any(|ct| core_types.contains(ct))
+        }
+        TriggerCause::CreatureAttacking => {
+            matches!(event, Some(GameEvent::AttackersDeclared { .. }))
+        }
+        TriggerCause::CreatureDying => {
+            // CR 603.6c + CR 700.4: "Dies" means battlefield → graveyard. Use
+            // the pre-move snapshot in `record` because the object is no
+            // longer on the battlefield when the trigger fires.
+            let Some(GameEvent::ZoneChanged {
+                from: Some(Zone::Battlefield),
+                to: Zone::Graveyard,
+                record,
+                ..
+            }) = event
+            else {
+                return false;
+            };
+            record.core_types.contains(&CoreType::Creature)
+        }
+    }
 }
 
 /// CR 603.8: Check state triggers for all permanents on the battlefield.
@@ -6053,7 +6117,7 @@ mod dedup_regression_tests {
     #[test]
     fn panharmonicon_still_doubles_after_dedup() {
         use crate::types::ability::ControllerRef;
-        use crate::types::statics::StaticMode;
+        use crate::types::statics::{StaticMode, TriggerCause};
 
         let (mut state, _observer) = setup_with_observer(TriggerMode::ChangesZone);
         // Scope the observer trigger to ETB.
@@ -6078,12 +6142,14 @@ mod dedup_regression_tests {
             let obj = state.objects.get_mut(&panh).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
             obj.static_definitions.push(
-                crate::types::ability::StaticDefinition::new(StaticMode::Panharmonicon).affected(
-                    TargetFilter::Typed(
-                        crate::types::ability::TypedFilter::creature()
-                            .controller(ControllerRef::You),
-                    ),
-                ),
+                crate::types::ability::StaticDefinition::new(StaticMode::DoubleTriggers {
+                    cause: TriggerCause::EntersBattlefield {
+                        core_types: vec![CoreType::Artifact, CoreType::Creature],
+                    },
+                })
+                .affected(TargetFilter::Typed(
+                    crate::types::ability::TypedFilter::creature().controller(ControllerRef::You),
+                )),
             );
         }
 
@@ -6123,6 +6189,256 @@ mod dedup_regression_tests {
         assert_eq!(
             observer_triggers, 2,
             "Panharmonicon must still double the observer's ETB trigger to 2 instances"
+        );
+    }
+
+    /// Helper: install a `DoubleTriggers` static on a new battlefield object
+    /// with the supplied cause, controlled by PlayerId(0).
+    fn install_doubler(state: &mut GameState, cause: TriggerCause) -> ObjectId {
+        use crate::types::statics::StaticMode;
+        let id = create_object(
+            state,
+            CardId(100),
+            PlayerId(0),
+            "Doubler".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.static_definitions
+            .push(crate::types::ability::StaticDefinition::new(
+                StaticMode::DoubleTriggers { cause },
+            ));
+        id
+    }
+
+    /// CR 603.2d: Isshin (CreatureAttacking cause) doubles attack triggers
+    /// of a permanent the controller owns.
+    #[test]
+    fn isshin_doubles_attack_triggers() {
+        use crate::types::statics::TriggerCause;
+
+        let (mut state, observer) = setup_with_observer(TriggerMode::Attacks);
+        let _isshin = install_doubler(&mut state, TriggerCause::CreatureAttacking);
+
+        // Ensure observer is a creature so it can attack and its trigger is for ITS attack.
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![observer],
+            defending_player: PlayerId(1),
+            attacks: vec![(
+                observer,
+                crate::game::combat::AttackTarget::Player(PlayerId(1)),
+            )],
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 2,
+            "Isshin must double the observer's attack trigger to 2 instances"
+        );
+    }
+
+    /// CR 603.2d: Isshin does NOT double ETB triggers — the cause predicate
+    /// is `CreatureAttacking`, not `EntersBattlefield`.
+    #[test]
+    fn isshin_does_not_double_etb_triggers() {
+        use crate::types::statics::TriggerCause;
+
+        let (mut state, observer) = setup_with_observer(TriggerMode::ChangesZone);
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .trigger_definitions[0]
+            .destination = Some(Zone::Battlefield);
+        let _isshin = install_doubler(&mut state, TriggerCause::CreatureAttacking);
+
+        let new_etb = create_object(
+            &mut state,
+            CardId(9),
+            PlayerId(0),
+            "Entering Creature".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&new_etb)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::ZoneChanged {
+            object_id: new_etb,
+            from: Some(Zone::Hand),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord {
+                name: "Entering Creature".to_string(),
+                core_types: vec![CoreType::Creature],
+                ..ZoneChangeRecord::test_minimal(new_etb, Some(Zone::Hand), Zone::Battlefield)
+            }),
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 1,
+            "Isshin must NOT double ETB triggers — cause is CreatureAttacking"
+        );
+    }
+
+    /// CR 603.2d: Panharmonicon (EntersBattlefield cause) does NOT double
+    /// attack triggers — the cause predicate filters to ETB only.
+    #[test]
+    fn panharmonicon_does_not_double_attack_triggers() {
+        use crate::types::statics::TriggerCause;
+
+        let (mut state, observer) = setup_with_observer(TriggerMode::Attacks);
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let _panh = install_doubler(
+            &mut state,
+            TriggerCause::EntersBattlefield {
+                core_types: vec![CoreType::Artifact, CoreType::Creature],
+            },
+        );
+
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![observer],
+            defending_player: PlayerId(1),
+            attacks: vec![(
+                observer,
+                crate::game::combat::AttackTarget::Player(PlayerId(1)),
+            )],
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 1,
+            "Panharmonicon must NOT double attack triggers — cause is EntersBattlefield"
+        );
+    }
+
+    /// CR 603.2d: Isshin + Panharmonicon — only Isshin matches an attack
+    /// event, so the total is 2 (original + 1 from Isshin).
+    #[test]
+    fn isshin_and_panharmonicon_only_isshin_matches_attack_event() {
+        use crate::types::statics::TriggerCause;
+
+        let (mut state, observer) = setup_with_observer(TriggerMode::Attacks);
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let _isshin = install_doubler(&mut state, TriggerCause::CreatureAttacking);
+        let _panh = install_doubler(
+            &mut state,
+            TriggerCause::EntersBattlefield {
+                core_types: vec![CoreType::Artifact, CoreType::Creature],
+            },
+        );
+
+        let event = GameEvent::AttackersDeclared {
+            attacker_ids: vec![observer],
+            defending_player: PlayerId(1),
+            attacks: vec![(
+                observer,
+                crate::game::combat::AttackTarget::Player(PlayerId(1)),
+            )],
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 2,
+            "Only Isshin's cause matches the attack event — total should be 2 (original + 1 clone)"
+        );
+    }
+
+    /// CR 603.2d + CR 603.6c: Drivnod (CreatureDying cause) doubles a
+    /// dies-triggered ability of a permanent the controller owns.
+    #[test]
+    fn drivnod_doubles_dies_triggers() {
+        use crate::types::statics::TriggerCause;
+
+        let (mut state, observer) = setup_with_observer(TriggerMode::ChangesZone);
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .trigger_definitions[0]
+            .destination = Some(Zone::Graveyard);
+        let _drivnod = install_doubler(&mut state, TriggerCause::CreatureDying);
+
+        let dying = create_object(
+            &mut state,
+            CardId(20),
+            PlayerId(0),
+            "Dying Creature".to_string(),
+            Zone::Graveyard,
+        );
+        state
+            .objects
+            .get_mut(&dying)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let event = GameEvent::ZoneChanged {
+            object_id: dying,
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                name: "Dying Creature".to_string(),
+                core_types: vec![CoreType::Creature],
+                ..ZoneChangeRecord::test_minimal(dying, Some(Zone::Battlefield), Zone::Graveyard)
+            }),
+        };
+
+        process_triggers(&mut state, &[event]);
+        let observer_triggers = state
+            .stack
+            .iter()
+            .filter(|e| e.source_id == observer)
+            .count();
+        assert_eq!(
+            observer_triggers, 2,
+            "Drivnod must double the observer's dies trigger to 2 instances"
         );
     }
 }

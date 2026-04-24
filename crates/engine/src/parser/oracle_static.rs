@@ -38,7 +38,7 @@ use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
 use crate::types::statics::{
     ActivationExemption, CastFrequency, CastingProhibitionCondition, HandSizeModification,
-    ProhibitionScope, StaticMode,
+    ProhibitionScope, StaticMode, TriggerCause,
 };
 use crate::types::zones::Zone;
 
@@ -1668,14 +1668,54 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
         );
     }
 
-    // CR 603.9: Trigger doubling — "triggers an additional time"
-    // Panharmonicon: "If a permanent entering the battlefield causes a triggered ability
-    //   of a permanent you control to trigger, that ability triggers an additional time."
-    // Roaming Throne: "If a triggered ability of another creature you control of the chosen
-    //   type triggers, it triggers an additional time."
+    // CR 603.2d: Trigger doubling — "triggers an additional time".
+    //
+    // Cause classification by phrasing:
+    // - "attacking causes" — Isshin, Two Heavens as One (CreatureAttacking).
+    // - "entering" / "enters the battlefield" / "enters" — Panharmonicon-class
+    //   (EntersBattlefield). Panharmonicon itself names "artifact or creature
+    //   entering", so both CoreTypes qualify; narrower wordings ("creature
+    //   entering") collapse to [Creature] only.
+    // - Otherwise (e.g. "If a triggered ability ... triggers, it triggers an
+    //   additional time" — Roaming Throne, Strionic Resonator copies) use the
+    //   unrestricted `Any` cause; the doubler's `affected` filter narrows
+    //   which source's triggers qualify.
     if nom_primitives::scan_contains(tp.lower, "triggers an additional time") {
+        let cause = if nom_primitives::scan_contains(tp.lower, "attacking causes") {
+            TriggerCause::CreatureAttacking
+        } else if nom_primitives::scan_contains(tp.lower, "dying causes") {
+            TriggerCause::CreatureDying
+        } else if nom_primitives::scan_contains(tp.lower, "entering")
+            || nom_primitives::scan_contains(tp.lower, "enters the battlefield")
+        {
+            // CR 603.6a: The entering-permanent's type is named in the
+            // qualifier. "artifact or creature entering" = both; a bare
+            // "creature entering" or "permanent entering" narrows
+            // accordingly.
+            let mut core_types: Vec<CoreType> = Vec::new();
+            if nom_primitives::scan_contains(tp.lower, "artifact") {
+                core_types.push(CoreType::Artifact);
+            }
+            if nom_primitives::scan_contains(tp.lower, "creature") {
+                core_types.push(CoreType::Creature);
+            }
+            if nom_primitives::scan_contains(tp.lower, "enchantment") {
+                core_types.push(CoreType::Enchantment);
+            }
+            if nom_primitives::scan_contains(tp.lower, "land") {
+                core_types.push(CoreType::Land);
+            }
+            if nom_primitives::scan_contains(tp.lower, "planeswalker") {
+                core_types.push(CoreType::Planeswalker);
+            }
+            // Empty core_types (e.g. "a permanent entering") means any type.
+            TriggerCause::EntersBattlefield { core_types }
+        } else {
+            TriggerCause::Any
+        };
         return Some(
-            StaticDefinition::new(StaticMode::Panharmonicon).description(text.to_string()),
+            StaticDefinition::new(StaticMode::DoubleTriggers { cause })
+                .description(text.to_string()),
         );
     }
 
