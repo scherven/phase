@@ -1523,6 +1523,7 @@ mod tests {
             damage_step_index: None,
             pending_damage: Vec::new(),
             regular_damage_done: false,
+            ..Default::default()
         });
 
         state.waiting_for = WaitingFor::DeclareBlockers {

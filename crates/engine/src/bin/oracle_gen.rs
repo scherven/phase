@@ -905,11 +905,7 @@ mod tests {
 
     use super::*;
 
-    fn make_entry(
-        oracle_id: &str,
-        printings: &[&str],
-        layout: Option<&str>,
-    ) -> CardExportEntry {
+    fn make_entry(oracle_id: &str, printings: &[&str], layout: Option<&str>) -> CardExportEntry {
         CardExportEntry {
             face: CardFace {
                 scryfall_oracle_id: Some(oracle_id.to_string()),
