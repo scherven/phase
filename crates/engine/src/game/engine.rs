@@ -83,7 +83,7 @@ pub fn apply(
     state.last_effect_count = None;
     state.exiled_from_hand_this_resolution = 0;
     check_actor_authorization(state, actor, &action)?;
-    let mut result = apply_action(state, action)?;
+    let mut result = apply_action(state, actor, action)?;
     bump_state_revision(state);
     mark_public_state_all_dirty(state);
     sync_waiting_for(state, &result.waiting_for);
@@ -93,11 +93,19 @@ pub fn apply(
     Ok(result)
 }
 
-/// Engine-level authorization guard. Any action other than `Concede` must come
-/// from the `authorized_submitter` for the current `WaitingFor` (which already
-/// accounts for turn-decision-controller effects like Mindslaver). `Concede`
-/// self-authenticates via its own `player_id` field — but we still require it
-/// to match `actor` so a player cannot concede someone else on their behalf.
+/// Engine-level authorization guard. Any *game action* must come from the
+/// `authorized_submitter` for the current `WaitingFor` (which already accounts
+/// for turn-decision-controller effects like Mindslaver). Two exception classes:
+///
+/// - `Concede` self-authenticates via its own `player_id` field — but we still
+///   require it to match `actor` so a player cannot concede someone else on
+///   their behalf (CR 104.3a).
+/// - **Preference actions** (SetPhaseStops, SetAutoPass, CancelAutoPass) are
+///   per-player UI settings. They have no CR semantics, mutate only the
+///   submitter's own preference slot, and may legitimately fire at any time —
+///   e.g. the human toggles a phase stop while the AI holds priority. The
+///   downstream handlers route by `actor`, so any seat may set its own
+///   preferences regardless of `WaitingFor`.
 fn check_actor_authorization(
     state: &GameState,
     actor: PlayerId,
@@ -108,6 +116,12 @@ fn check_actor_authorization(
         if *player_id != actor {
             return Err(EngineError::WrongPlayer);
         }
+        return Ok(());
+    }
+    if matches!(
+        action,
+        GameAction::SetPhaseStops { .. } | GameAction::CancelAutoPass
+    ) {
         return Ok(());
     }
     if let Some(expected) = turn_control::authorized_submitter(state) {
@@ -450,7 +464,11 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
     }
 }
 
-fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResult, EngineError> {
+fn apply_action(
+    state: &mut GameState,
+    actor: PlayerId,
+    action: GameAction,
+) -> Result<ActionResult, EngineError> {
     // Clear stale revealed_cards from the previous action.
     // RevealTop reveals (e.g. Goblin Guide) are momentary — shown for one state update.
     // RevealHand reveals (e.g. Thoughtseize) persist through the RevealChoice interaction.
@@ -469,11 +487,12 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
     let mut events = Vec::new();
     let mut triggers_processed_inline = false;
 
-    // CancelAutoPass works from any WaitingFor state (player may cancel during interactive choices)
+    // CancelAutoPass works from any WaitingFor state (player may cancel during
+    // interactive choices). Routed by `actor` — previously used
+    // `authorized_submitter(state)`, which silently cancelled the wrong player's
+    // session when fired while an opponent held the prompt.
     if matches!(action, GameAction::CancelAutoPass) {
-        if let Some(player) = turn_control::authorized_submitter(state) {
-            state.auto_pass.remove(&player);
-        }
+        state.auto_pass.remove(&actor);
         return Ok(ActionResult {
             events: vec![],
             waiting_for: state.waiting_for.clone(),
@@ -484,13 +503,14 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
     // SetPhaseStops propagates the player's phase-stop preference. Pure preference
     // state — no game logic, no WaitingFor transition. Works from any state so
     // frontends can sync on preference changes regardless of the current prompt.
+    // Routed by `actor` so the human can update their own stops while the AI
+    // holds priority (the previous "authorized_submitter" lookup rejected this
+    // outright via the WrongPlayer guard, surfacing as an in-game dispatch error).
     if let GameAction::SetPhaseStops { stops } = &action {
-        if let Some(player) = turn_control::authorized_submitter(state) {
-            if stops.is_empty() {
-                state.phase_stops.remove(&player);
-            } else {
-                state.phase_stops.insert(player, stops.clone());
-            }
+        if stops.is_empty() {
+            state.phase_stops.remove(&actor);
+        } else {
+            state.phase_stops.insert(actor, stops.clone());
         }
         return Ok(ActionResult {
             events: vec![],
@@ -3784,6 +3804,65 @@ mod tests {
         // uses priority_player. So this is a protocol-level concern.
         let result = apply_as_current(&mut state, GameAction::PassPriority);
         assert!(result.is_ok());
+    }
+
+    // --- Preference actions (SetPhaseStops, CancelAutoPass) bypass actor gate ---
+
+    #[test]
+    fn set_phase_stops_from_non_priority_actor_succeeds() {
+        // Regression: the human (P0) updates phase stops while the AI (P1) holds
+        // priority. Previously this was rejected by check_actor_authorization with
+        // WrongPlayer; the dispatch surfaced "Engine error: Wrong player" to the
+        // user and the preference silently never landed.
+        let mut state = setup_game_at_main_phase();
+        state.priority_player = PlayerId(1);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+
+        let result = apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::SetPhaseStops {
+                stops: vec![Phase::End],
+            },
+        );
+
+        assert!(
+            result.is_ok(),
+            "expected SetPhaseStops to succeed, got {result:?}"
+        );
+        assert_eq!(
+            state.phase_stops.get(&PlayerId(0)),
+            Some(&vec![Phase::End]),
+            "expected actor (P0) preference to be written, not authorized submitter (P1)",
+        );
+        assert!(!state.phase_stops.contains_key(&PlayerId(1)));
+    }
+
+    #[test]
+    fn cancel_auto_pass_routes_by_actor() {
+        // Regression: P0 had an auto-pass session; P1 holds priority and submits
+        // CancelAutoPass on P0's behalf would previously cancel *P1's* session
+        // (handler used authorized_submitter, not actor). After the fix, the
+        // actor field decides which seat is mutated.
+        let mut state = setup_game_at_main_phase();
+        state.auto_pass.insert(
+            PlayerId(0),
+            crate::types::game_state::AutoPassMode::UntilEndOfTurn,
+        );
+        state.priority_player = PlayerId(1);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+
+        let result = apply(&mut state, PlayerId(0), GameAction::CancelAutoPass);
+
+        assert!(result.is_ok());
+        assert!(
+            !state.auto_pass.contains_key(&PlayerId(0)),
+            "P0's auto-pass should have been cancelled"
+        );
     }
 
     // --- GameAction::Concede (CR 104.3a + CR 800.4a) ---

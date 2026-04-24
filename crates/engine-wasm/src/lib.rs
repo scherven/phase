@@ -121,11 +121,64 @@ fn with_state<R>(f: impl FnOnce(&GameState) -> R) -> Result<R, JsValue> {
     })
 }
 
+thread_local! {
+    /// Last panic message + location, captured by our panic hook below.
+    /// JS reads this via `take_last_panic_message` after a WASM trap so the
+    /// "Engine connection lost" modal can show the real cause + offer a
+    /// pre-filled bug report instead of asking the user to reload blind.
+    static LAST_PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 /// Initialize panic hook for better error messages in WASM.
 /// Called automatically on first use — safe to call multiple times.
+///
+/// We install our own hook (composing with `console_error_panic_hook`'s
+/// console output) so panics are *both* logged to devtools and captured
+/// for later retrieval. With `panic = 'abort'`, the hook runs before the
+/// WASM trap, so a thread-local written here is readable from the next JS
+/// call into the module.
 #[wasm_bindgen(start)]
 pub fn init_panic_hook() {
-    console_error_panic_hook::set_once();
+    use std::sync::Once;
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            let payload = info.payload();
+            let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Box<dyn Any> panic payload".to_string()
+            };
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "<unknown location>".to_string());
+            let formatted = format!("panicked at {location}: {msg}");
+            // Capture FIRST so the message lands even if the console mirror
+            // re-panics (its formatter allocates; an OOM panic could trip it).
+            // `try_borrow_mut` keeps a re-entrant write from blowing up — at
+            // worst we lose the second panic's text, never the first.
+            LAST_PANIC.with(|cell| {
+                if let Ok(mut slot) = cell.try_borrow_mut() {
+                    *slot = Some(formatted);
+                }
+            });
+            // Mirror to the browser console with full backtrace + symbol names.
+            console_error_panic_hook::hook(info);
+        }));
+    });
+}
+
+/// Drain the last captured panic message (consuming it). Returns `null` when
+/// no panic has been observed since the last drain. JS calls this after a
+/// thrown `RuntimeError` to decide whether to surface the modal as a real
+/// engine crash (with the panic text + report link) or a transient
+/// state-loss (the legacy reload prompt).
+#[wasm_bindgen]
+pub fn take_last_panic_message() -> Option<String> {
+    LAST_PANIC.with(|cell| cell.borrow_mut().take())
 }
 
 /// Clear the game state without dropping the WASM instance or card database.

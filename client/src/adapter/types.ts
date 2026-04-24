@@ -961,12 +961,20 @@ export type AutoPassMode =
 export class AdapterError extends Error {
   readonly code: string;
   readonly recoverable: boolean;
+  /**
+   * Optional Rust panic message captured by `take_last_panic_message` after
+   * a WASM trap. Only set when `code === ENGINE_PANIC`. Carrying the panic
+   * here (rather than only via the message) lets the modal render the full
+   * diagnostic without the recovery layer needing to thread it back.
+   */
+  readonly panic?: string;
 
-  constructor(code: string, message: string, recoverable: boolean) {
+  constructor(code: string, message: string, recoverable: boolean, panic?: string) {
     super(message);
     this.name = "AdapterError";
     this.code = code;
     this.recoverable = recoverable;
+    this.panic = panic;
   }
 }
 
@@ -977,10 +985,21 @@ export const AdapterErrorCode = {
    * The engine had a game, then lost it. Distinct from NOT_INITIALIZED
    * (never had one). Triggered by the Rust sentinel `NOT_INITIALIZED: ...`
    * prefix — indicates the thread-local `GAME_STATE` is `None` mid-session
-   * (worker restart, PWA update desync, panic recovery). Recoverable via
-   * `adapter.restoreState(lastKnownGoodState)`.
+   * (worker restart, PWA update desync). Recoverable via
+   * `adapter.restoreState(lastKnownGoodState)` only when no panic preceded
+   * the loss; if a panic did precede it, classify as ENGINE_PANIC instead
+   * because retrying the same input will re-panic.
    */
   STATE_LOST: "STATE_LOST",
+  /**
+   * The engine panicked. State loss followed (the take/set thread-local
+   * pattern can't return state on a WASM trap), but unlike STATE_LOST this
+   * is NOT a transient situation — the same action against the same state
+   * will panic again. The adapter pulls `take_last_panic_message()` from
+   * the worker before classifying so the modal can show the real cause and
+   * offer a pre-filled bug report.
+   */
+  ENGINE_PANIC: "ENGINE_PANIC",
   WASM_ERROR: "WASM_ERROR",
   INVALID_ACTION: "INVALID_ACTION",
 } as const;

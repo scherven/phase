@@ -6,6 +6,7 @@
  */
 import init, {
   ping,
+  take_last_panic_message,
   initialize_game,
   submit_action,
   get_game_state,
@@ -66,6 +67,7 @@ type EngineRequest =
   | { type: "resetGame"; id: number }
   | { type: "setMultiplayerMode"; id: number; enabled: boolean }
   | { type: "ping"; id: number }
+  | { type: "takeLastPanic"; id: number }
   | { type: "applySeatMutation"; id: number; stateJson: string; mutationJson: string };
 
 type EngineResponse =
@@ -269,6 +271,16 @@ self.onmessage = async (e: MessageEvent<EngineRequest>) => {
 
       case "ping": {
         result(msg.id, ping());
+        break;
+      }
+
+      case "takeLastPanic": {
+        // Pulls + clears the panic captured by the Rust panic hook in
+        // engine-wasm/src/lib.rs. Called by the adapter after a STATE_LOST
+        // sentinel so we can distinguish a transient state-loss (no panic)
+        // from a real engine crash (panic captured) — the latter must NOT
+        // be retried because the same input will re-panic.
+        result(msg.id, take_last_panic_message() ?? null);
         break;
       }
 

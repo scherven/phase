@@ -32,17 +32,40 @@ function unwrapClientGameState(raw: unknown): GameState {
 /**
  * Classify an unknown error thrown by the engine worker or main-thread
  * fallback. If the Rust sentinel prefix is present, escalate to an
- * `AdapterError` with code `STATE_LOST` so the recovery layer in
- * `dispatch.ts` / `aiController.ts` can trigger rehydrate-and-retry.
- * All other errors pass through unchanged.
+ * `AdapterError` — STATE_LOST when the cell was simply emptied, or
+ * ENGINE_PANIC when the panic hook captured a message (which means the
+ * loss was caused by a Rust panic and retrying will re-panic).
+ *
+ * Async because the panic drain (`take_last_panic_message`) is a worker
+ * round-trip; the choice between STATE_LOST and ENGINE_PANIC depends on
+ * whether a panic was observed during this call.
  */
-function classifyEngineError(err: unknown): never {
+async function classifyEngineErrorAsync(
+  err: unknown,
+  takePanic: () => Promise<string | null>,
+): Promise<Error> {
+  // Returns (rather than throws) the error to surface so call sites can
+  // write `throw await classifyEngineErrorAsync(...)`. TypeScript doesn't
+  // always narrow control flow through an awaited `Promise<never>`, so
+  // making the throw explicit keeps the surrounding methods type-clean.
   const message = err instanceof Error ? err.message : String(err);
   if (isStateLostMessage(message)) {
-    throw new AdapterError(AdapterErrorCode.STATE_LOST, message, true);
+    let panic: string | null = null;
+    try {
+      // Drain BEFORE deciding — `take_last_panic_message` is consuming, so a
+      // panic that occurred during this call is observed exactly once.
+      panic = await takePanic();
+    } catch {
+      // takePanic itself failed (worker dead, etc.) — fall through to
+      // STATE_LOST. The recovery layer's existing rehydrate-then-retry
+      // path is the safe default when we can't prove a panic occurred.
+    }
+    if (panic) {
+      return new AdapterError(AdapterErrorCode.ENGINE_PANIC, message, false, panic);
+    }
+    return new AdapterError(AdapterErrorCode.STATE_LOST, message, true);
   }
-  if (err instanceof Error) throw err;
-  throw new Error(message);
+  return err instanceof Error ? err : new Error(message);
 }
 
 /**
@@ -121,13 +144,30 @@ export class WasmAdapter implements EngineAdapter {
     }
   }
 
+  /** Drain the captured panic, defaulting to `null` for the main-thread
+   *  fallback (no separate worker to query) or when the worker has died.
+   *
+   *  Bounded by a 250ms timer because a STATE_LOST sentinel can mean the
+   *  worker itself crashed/restarted — in which case the round-trip never
+   *  resolves and would hang every error path indefinitely. A live worker
+   *  responds in <10ms (the read is a synchronous thread-local take); the
+   *  timer only fires for dead workers, where treating the panic as
+   *  "uncaptured" correctly falls back to the legacy STATE_LOST flow.
+   */
+  private takePanic = (): Promise<string | null> => {
+    if (!this.engine) return Promise.resolve(null);
+    const drain = this.engine.takeLastPanic().catch(() => null);
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 250));
+    return Promise.race([drain, timeout]);
+  };
+
   async submitAction(action: GameAction, actor: PlayerId): Promise<SubmitResult> {
     this.assertInitialized();
     try {
       if (this.engine) return await this.engine.submitAction(actor, action);
       return await this.fallback!.submitAction(action, actor);
     } catch (err) {
-      classifyEngineError(err);
+      throw await classifyEngineErrorAsync(err, this.takePanic);
     }
   }
 
@@ -143,7 +183,7 @@ export class WasmAdapter implements EngineAdapter {
         : await this.fallback!.getState();
       return unwrapClientGameState(wrapped);
     } catch (err) {
-      classifyEngineError(err);
+      throw await classifyEngineErrorAsync(err, this.takePanic);
     }
   }
 
@@ -155,7 +195,7 @@ export class WasmAdapter implements EngineAdapter {
         : await this.fallback!.getFilteredState(viewerId);
       return unwrapClientGameState(wrapped);
     } catch (err) {
-      classifyEngineError(err);
+      throw await classifyEngineErrorAsync(err, this.takePanic);
     }
   }
 
@@ -165,7 +205,7 @@ export class WasmAdapter implements EngineAdapter {
       if (this.engine) return await this.engine.getLegalActions();
       return await this.fallback!.getLegalActions();
     } catch (err) {
-      classifyEngineError(err);
+      throw await classifyEngineErrorAsync(err, this.takePanic);
     }
   }
 
@@ -197,12 +237,14 @@ export class WasmAdapter implements EngineAdapter {
             );
           }
         } catch (err) {
-          // STATE_LOST must escalate immediately — falling through to the
-          // single-worker path would just hit the same sentinel and waste a
-          // round-trip. All other pool failures are recoverable via the
-          // single-worker fallback.
+          // STATE_LOST / ENGINE_PANIC must escalate immediately — falling
+          // through to the single-worker path would just hit the same sentinel
+          // (or panic) and waste a round-trip. The async classifier drains
+          // the panic from the engine worker so callers see ENGINE_PANIC
+          // when applicable. All other pool failures are recoverable via
+          // the single-worker fallback.
           if (err instanceof Error && isStateLostMessage(err.message)) {
-            classifyEngineError(err);
+            throw await classifyEngineErrorAsync(err, this.takePanic);
           }
         }
       }
@@ -213,7 +255,7 @@ export class WasmAdapter implements EngineAdapter {
       if (this.engine) return await this.engine.getAiAction(difficulty, playerId);
       return await this.fallback!.getAiAction(difficulty, playerId);
     } catch (err) {
-      classifyEngineError(err);
+      throw await classifyEngineErrorAsync(err, this.takePanic);
     }
   }
 

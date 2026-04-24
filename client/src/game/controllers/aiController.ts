@@ -4,7 +4,7 @@ import type { GameAction } from "../../adapter/types";
 import { AdapterError, AdapterErrorCode } from "../../adapter/types";
 import { debugLog } from "../debugLog";
 import { dispatchAction } from "../dispatch";
-import { attemptStateRehydrate, notifyEngineLost } from "../engineRecovery";
+import { attemptStateRehydrate, isEnginePanic, notifyEngineLost } from "../engineRecovery";
 import type { OpponentController } from "./types";
 
 /**
@@ -182,6 +182,14 @@ export function createAIController(config: AIControllerConfig): AIController {
         try {
           action = await actionPromise;
         } catch (err) {
+          // Engine panic: re-running the same AI search against the same
+          // (deterministic) state will re-panic. This is the path the
+          // user-reported "ai-getAction-retry" came from — short-circuit
+          // with the captured panic so the modal can show the real cause.
+          if (isEnginePanic(err)) {
+            notifyEngineLost("ai-getAction-panic", err.panic);
+            throw err;
+          }
           if (!isStateLost(err)) throw err;
           // Engine lost state between scheduleAction and the timeout firing.
           // Try to rehydrate from the store snapshot and recompute the AI
@@ -197,7 +205,11 @@ export function createAIController(config: AIControllerConfig): AIController {
           try {
             action = await adapter!.getAiAction(difficulty, playerId);
           } catch (retryErr) {
-            notifyEngineLost("ai-getAction-retry");
+            if (isEnginePanic(retryErr)) {
+              notifyEngineLost("ai-getAction-retry-panic", retryErr.panic);
+            } else {
+              notifyEngineLost("ai-getAction-retry");
+            }
             throw retryErr;
           }
         }

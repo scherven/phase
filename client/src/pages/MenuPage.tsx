@@ -107,7 +107,19 @@ export function MenuPage() {
     } else if (activeGame.mode === "p2p-join" && activeGame.p2pRoomCode) {
       navigate(`/game/${activeGame.id}?mode=p2p-join&code=${activeGame.p2pRoomCode}`);
     } else {
-      navigate(`/game/${activeGame.id}?mode=${activeGame.mode}&difficulty=${activeGame.difficulty}`);
+      // Resume URL must include `players` for multi-AI games. Without it,
+      // GameProvider's playerCount prop is undefined → gameLoopController
+      // defaults count to 2 → only 1 AI seat is spawned even when the saved
+      // state has 3+. We derive the count from the persisted aiSeats
+      // snapshot (one entry per AI opponent → +1 for the human seat). Older
+      // saves without aiSeats fall through to the 2-player default — same
+      // as before this fix.
+      const seatCount = activeGame.aiSeats?.length;
+      const playersParam =
+        seatCount && seatCount > 1 ? `&players=${seatCount + 1}` : "";
+      navigate(
+        `/game/${activeGame.id}?mode=${activeGame.mode}&difficulty=${activeGame.difficulty}${playersParam}`,
+      );
     }
   }, [activeGame, navigate]);
 
