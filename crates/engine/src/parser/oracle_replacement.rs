@@ -2675,7 +2675,33 @@ fn parse_damage_prevention_replacement(
         def = def.damage_source_filter(sf);
     }
 
+    // CR 615.5: A prevention effect may include an additional effect referring to
+    // the prevented amount ("Put a -1/-1 counter on ~ for each 1 damage prevented
+    // this way", "Create N tokens for each 1 damage prevented this way"). Parse
+    // the trailing sentence and attach it as the replacement's `execute` ability,
+    // which the runtime fires as a post-replacement follow-up after the shield
+    // consumes the damage. Class members: Phyrexian Hydra, Vigor, Stormwild
+    // Capridor, Hostility.
+    if let Some(followup) = extract_prevention_followup(original_text) {
+        def = def.execute(parse_effect_chain(&followup, AbilityKind::Spell));
+    }
+
     Some(def)
+}
+
+/// CR 615.5: Extract the trailing additional-effect sentence from a prevention
+/// replacement's Oracle text. Returns the slice after `"prevent that damage. "`,
+/// trimmed and ready for `parse_effect_chain`. Returns `None` when there is no
+/// follow-up (the common case: pure prevention).
+fn extract_prevention_followup(original_text: &str) -> Option<String> {
+    let lower = original_text.to_lowercase();
+    let idx = lower.find("prevent that damage. ")?;
+    let after = &original_text[idx + "prevent that damage. ".len()..];
+    let trimmed = after.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 /// CR 614.1a: Parse event substitution replacement effects.

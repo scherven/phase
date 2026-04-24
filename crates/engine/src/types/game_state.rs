@@ -2048,6 +2048,14 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_replacement_effect: Option<Box<crate::types::ability::AbilityDefinition>>,
 
+    /// CR 615.5: Source object of the replacement that stashed
+    /// `post_replacement_effect`. Used by prevention follow-ups (e.g. Phyrexian
+    /// Hydra) so the post-effect's `SelfRef`-targeted PutCounter resolves
+    /// against the shield's own object rather than the damaged target. Set
+    /// alongside `post_replacement_effect` and consumed at the same time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_replacement_source: Option<crate::types::identifiers::ObjectId>,
+
     /// Transient: post-resolution context for a permanent spell whose ETB replacement
     /// needs a player choice (NeedsChoice). Consumed by `handle_replacement_choice`
     /// after the zone change completes.
@@ -2585,6 +2593,7 @@ impl GameState {
             priority_pass_count: 0,
             pending_replacement: None,
             post_replacement_effect: None,
+            post_replacement_source: None,
             pending_spell_resolution: None,
             layers_dirty: true,
             next_timestamp: 1,

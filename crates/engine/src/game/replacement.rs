@@ -309,6 +309,15 @@ fn damage_done_applier(
                     target,
                     amount: prevented_amount,
                 });
+                // CR 615.5: Stash the prevented amount as the chain's last effect
+                // count so a post-replacement follow-up effect (e.g. Phyrexian
+                // Hydra's "Put a -1/-1 counter on ~ for each 1 damage prevented
+                // this way") can resolve `QuantityRef::EventContextAmount`
+                // against the prevented amount. The follow-up runs outside the
+                // trigger-resolution window, so `current_trigger_event` is None
+                // and `last_effect_count` is the documented fallback slot
+                // (see `quantity.rs` resolver).
+                state.last_effect_count = Some(prevented_amount as i32);
             }
 
             return result;
@@ -2088,6 +2097,14 @@ fn apply_single_replacement(
             };
             let post_effect = match (branch, &repl_def.mode) {
                 (ReplacementBranch::Execute, ReplacementMode::Mandatory) => {
+                    // CR 615.5: Damage prevention follow-ups (e.g. Phyrexian
+                    // Hydra's "Put a -1/-1 counter on ~ for each 1 damage
+                    // prevented this way") must always stash as a post-effect
+                    // — the `has_only_event_modifier` heuristic that classifies
+                    // self-targeted PutCounter as an ETB modifier does not
+                    // apply to Damage events, where there is no `etb_counters`
+                    // slot to absorb the counters into.
+                    let is_damage = matches!(proposed, ProposedEvent::Damage { .. });
                     repl_def
                         .execute
                         .as_deref()
@@ -2100,7 +2117,11 @@ fn apply_single_replacement(
                             // the whole def as fully absorbed and silently drop the
                             // chain, so we take the sub_ability explicitly here.
                             Effect::ChangeZone { .. } => def.sub_ability.clone(),
-                            _ if EventModifiers::has_only_event_modifier(Some(def)) => None,
+                            _ if !is_damage
+                                && EventModifiers::has_only_event_modifier(Some(def)) =>
+                            {
+                                None
+                            }
                             _ => Some(Box::new(def.clone())),
                         })
                 }
@@ -2152,6 +2173,7 @@ fn apply_single_replacement(
                 if let Some(post) = mandatory_post_effect {
                     if state.post_replacement_effect.is_none() {
                         state.post_replacement_effect = Some(post);
+                        state.post_replacement_source = Some(rid.source);
                     }
                 }
                 events.push(GameEvent::ReplacementApplied {
@@ -2161,6 +2183,19 @@ fn apply_single_replacement(
                 return Ok(new_event);
             }
             ApplyResult::Prevented => {
+                // CR 615.5: A prevention effect's additional effect (e.g.
+                // Phyrexian Hydra's "Put a -1/-1 counter on ~ for each 1 damage
+                // prevented this way") is stashed as a post-replacement effect
+                // and runs immediately after the prevention takes place. The
+                // prevention applier has already stamped `last_effect_count`
+                // with the prevented amount so `EventContextAmount` resolves
+                // correctly when the follow-up effect fires.
+                if let Some(post) = mandatory_post_effect {
+                    if state.post_replacement_effect.is_none() {
+                        state.post_replacement_effect = Some(post);
+                        state.post_replacement_source = Some(rid.source);
+                    }
+                }
                 events.push(GameEvent::ReplacementApplied {
                     source_id: rid.source,
                     event_type,
@@ -2316,6 +2351,9 @@ pub fn continue_replacement(
             Ok(new_event) => proposed = new_event,
             Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
             Err(ApplyResult::Modified(_)) => unreachable!(),
+        }
+        if post_effect.is_some() {
+            state.post_replacement_source = Some(rid.source);
         }
         state.post_replacement_effect = post_effect;
 

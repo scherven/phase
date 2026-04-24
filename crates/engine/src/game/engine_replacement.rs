@@ -285,6 +285,11 @@ pub(super) fn handle_replacement_choice(
             }
 
             if let Some(effect_def) = state.post_replacement_effect.take() {
+                // The ETB-replacement post-effect resolves against the
+                // zone-changing object, not the replacement source — drop the
+                // source slot so it doesn't leak into an unrelated later
+                // replacement.
+                state.post_replacement_source = None;
                 if let Some(next_waiting_for) = apply_post_replacement_effect(
                     state,
                     &effect_def,

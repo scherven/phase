@@ -351,6 +351,12 @@ pub(crate) fn extract_amount_from_event(event: &crate::types::events::GameEvent)
     use crate::types::events::GameEvent;
     match event {
         GameEvent::DamageDealt { amount, .. } => Some(*amount as i32),
+        // CR 615.5: Prevention effects' additional effects refer to the amount of
+        // damage that was prevented. Exposing the prevented amount here lets
+        // `EventContextAmount` resolve the "for each 1 damage prevented this way"
+        // class (Phyrexian Hydra, Vigor, Stormwild Capridor, Hostility) when the
+        // post-replacement follow-up resolves.
+        GameEvent::DamagePrevented { amount, .. } => Some(*amount as i32),
         GameEvent::LifeChanged { amount, .. } => Some(amount.abs()),
         GameEvent::CardsDrawn { count, .. } => Some(*count as i32),
         GameEvent::CounterAdded { count, .. } => Some(*count as i32),

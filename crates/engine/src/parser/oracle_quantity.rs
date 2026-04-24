@@ -547,6 +547,14 @@ pub(crate) fn parse_for_each_clause(clause: &str) -> Option<QuantityRef> {
         if try_parse_exiled_from_hand_this_way(&lower).is_some() {
             return Some(QuantityRef::ExiledFromHandThisResolution);
         }
+        // CR 615.5: "1 damage prevented this way" — the post-replacement
+        // follow-up references the prevented amount. The prevention applier
+        // emits `GameEvent::DamagePrevented` and stamps `last_effect_count`
+        // with the prevented amount; both feed `EventContextAmount`. Class:
+        // Phyrexian Hydra, Vigor, Stormwild Capridor, Hostility.
+        if lower == "1 damage prevented this way" || lower == "damage prevented this way" {
+            return Some(QuantityRef::EventContextAmount);
+        }
         return Some(QuantityRef::TrackedSetSize);
     }
 
