@@ -2790,6 +2790,7 @@ mod tests {
             count: QuantityExpr::Fixed { value: 2 },
             reveal: true,
             target_player: None,
+            up_to: false,
         };
         let json = serde_json::to_string(&search).unwrap();
         let restored: Effect = serde_json::from_str(&json).unwrap();

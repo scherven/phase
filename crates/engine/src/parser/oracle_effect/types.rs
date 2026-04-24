@@ -75,6 +75,8 @@ pub(super) struct SearchLibraryDetails {
     pub(super) reveal: bool,
     /// CR 701.23a: When set, search this player's library instead of controller's.
     pub(super) target_player: Option<TargetFilter>,
+    /// CR 107.1c + CR 701.23d: "any number of" / "up to N" allow 0..=count picks.
+    pub(super) up_to: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -516,6 +518,8 @@ pub(super) enum SearchCreationImperativeAst {
         reveal: bool,
         /// CR 701.23a: When set, search this player's library instead of controller's.
         target_player: Option<TargetFilter>,
+        /// CR 107.1c + CR 701.23d: "any number of" / "up to N" allow 0..=count picks.
+        up_to: bool,
     },
     Dig {
         count: QuantityExpr,

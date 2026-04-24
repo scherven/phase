@@ -895,6 +895,7 @@ fn search_basic_land(source_id: ObjectId, controller: PlayerId) -> ResolvedAbili
             count: fixed(1),
             reveal: true,
             target_player: None,
+            up_to: false,
         },
         source_id,
         controller,
@@ -1414,6 +1415,7 @@ mod tests {
                 Effect::SearchLibrary {
                     count: QuantityExpr::Fixed { value: 1 },
                     reveal: true,
+                    up_to: false,
                     ..
                 }
             ),

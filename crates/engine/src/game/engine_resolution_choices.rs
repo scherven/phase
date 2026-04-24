@@ -456,12 +456,20 @@ pub(super) fn handle_resolution_choice(
                 cards,
                 count,
                 reveal,
+                up_to,
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
-            if chosen.len() != count {
+            // CR 107.1c + CR 701.23d: "up to N" / "any number of" accept 0..=count picks.
+            let valid = if up_to {
+                chosen.len() <= count
+            } else {
+                chosen.len() == count
+            };
+            if !valid {
                 return Err(EngineError::InvalidAction(format!(
-                    "Must select exactly {} card(s), got {}",
+                    "Must select {}{} card(s), got {}",
+                    if up_to { "up to " } else { "exactly " },
                     count,
                     chosen.len()
                 )));

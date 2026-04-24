@@ -919,6 +919,7 @@ pub(super) fn parse_search_and_creation_ast(
             count: details.count,
             reveal: details.reveal,
             target_player: details.target_player,
+            up_to: details.up_to,
         });
     }
     // CR 701.16a + CR 701.20a: "look at the top N" (private) and "reveal the top N" (public)
@@ -1020,11 +1021,13 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             count,
             reveal,
             target_player,
+            up_to,
         } => Effect::SearchLibrary {
             filter,
             count,
             reveal,
             target_player,
+            up_to,
         },
         SearchCreationImperativeAst::Dig { count, reveal } => Effect::Dig {
             count,

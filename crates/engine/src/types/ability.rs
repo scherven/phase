@@ -3346,6 +3346,12 @@ pub enum Effect {
         /// Used by Bribery, Acquire, Praetor's Grasp, etc.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_player: Option<TargetFilter>,
+        /// CR 107.1c + CR 701.23d: When true, the searcher may find up to `count`
+        /// matching cards (including zero). When false, they must find exactly
+        /// `count` matching cards (or as many as possible if fewer exist). Set
+        /// by "any number of ..." and "up to N ..." Oracle phrasings.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up_to: bool,
     },
     RevealHand {
         #[serde(default = "default_target_filter_any")]

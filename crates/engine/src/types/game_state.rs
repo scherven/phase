@@ -881,6 +881,10 @@ pub enum WaitingFor {
         /// Whether the chosen cards should be revealed before the continuation resolves.
         #[serde(default)]
         reveal: bool,
+        /// CR 107.1c + CR 701.23d: When true, the searcher may select 0..=count
+        /// cards. When false, they must select exactly count cards.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up_to: bool,
     },
     /// CR 700.2: Player selects card(s) from a tracked set (e.g., exiled cards).
     /// Chosen/unchosen cards flow into sub-abilities via pending_continuation,

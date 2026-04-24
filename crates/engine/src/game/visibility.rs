@@ -154,6 +154,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         ref cards,
         count,
         reveal,
+        up_to,
     } = state.waiting_for
     {
         if !can_view_private_for_player(player) {
@@ -162,6 +163,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                 cards: cards.iter().map(|_| ObjectId(0)).collect(),
                 count,
                 reveal,
+                up_to,
             };
         }
     }
@@ -323,6 +325,7 @@ mod tests {
             cards: vec![card_id],
             count: 1,
             reveal: false,
+            up_to: false,
         };
 
         let filtered = filter_state_for_viewer(&state, PlayerId(0));
@@ -354,6 +357,7 @@ mod tests {
             cards: vec![card_id],
             count: 1,
             reveal: false,
+            up_to: false,
         };
 
         let filtered = filter_state_for_viewer(&state, PlayerId(2));
