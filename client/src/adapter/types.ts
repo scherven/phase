@@ -453,6 +453,8 @@ export interface CombatState {
   attackers: AttackerInfo[];
   blocker_assignments: Record<string, ObjectId[]>;
   blocker_to_attacker: Record<string, ObjectId[]>;
+  blockers_declared_by: PlayerId[];
+  pending_blocker_declaration_events: GameEvent[];
   damage_assignments: Record<string, DamageAssignment[]>;
   first_strike_done: boolean;
   damage_step_index: number | null;

@@ -991,8 +991,10 @@ pub fn auto_advance(state: &mut GameState, events: &mut Vec<GameEvent>) -> Waiti
                     // emits the interactive waiting state; whether to auto-submit empty
                     // blockers (because no legal blocks exist, or because the defender
                     // is in UntilEndOfTurn mode) is decided by `run_auto_pass_loop`.
-                    let defending = super::players::next_player(state, state.active_player);
-                    let valid_block_targets = super::combat::get_valid_block_targets(state);
+                    let defending = combat::next_defending_player_to_declare_blockers(state)
+                        .unwrap_or_else(|| super::players::next_player(state, state.active_player));
+                    let valid_block_targets =
+                        super::combat::get_valid_block_targets_for_player(state, defending);
                     let valid_blocker_ids: Vec<_> = valid_block_targets.keys().copied().collect();
                     return WaitingFor::DeclareBlockers {
                         player: defending,
@@ -1076,6 +1078,172 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         state.turn_number = 1;
         state
+    }
+
+    #[test]
+    fn declare_blockers_prompts_actual_defending_player_in_multiplayer() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::free_for_all(), 4, 42);
+        state.active_player = PlayerId(0);
+        state.phase = Phase::DeclareBlockers;
+        state.combat = Some(combat::CombatState {
+            attackers: vec![combat::AttackerInfo::new(
+                ObjectId(1),
+                combat::AttackTarget::Player(PlayerId(2)),
+                PlayerId(2),
+            )],
+            ..Default::default()
+        });
+
+        let waiting = auto_advance(&mut state, &mut Vec::new());
+
+        assert!(matches!(
+            waiting,
+            WaitingFor::DeclareBlockers {
+                player: PlayerId(2),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn multiplayer_defending_players_declare_blockers_separately_in_turn_order() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::free_for_all(), 4, 42);
+        state.active_player = PlayerId(0);
+        state.phase = Phase::DeclareBlockers;
+
+        let attacker_to_p2 = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Attacker to P2".to_string(),
+            Zone::Battlefield,
+        );
+        let attacker_to_p3 = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Attacker to P3".to_string(),
+            Zone::Battlefield,
+        );
+        let blocker_p2 = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(2),
+            "P2 Blocker".to_string(),
+            Zone::Battlefield,
+        );
+        let blocker_p3 = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(3),
+            "P3 Blocker".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [attacker_to_p2, attacker_to_p3, blocker_p2, blocker_p3] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+        }
+
+        state.combat = Some(combat::CombatState {
+            attackers: vec![
+                combat::AttackerInfo::new(
+                    attacker_to_p2,
+                    combat::AttackTarget::Player(PlayerId(2)),
+                    PlayerId(2),
+                ),
+                combat::AttackerInfo::new(
+                    attacker_to_p3,
+                    combat::AttackTarget::Player(PlayerId(3)),
+                    PlayerId(3),
+                ),
+            ],
+            ..Default::default()
+        });
+
+        let waiting = auto_advance(&mut state, &mut Vec::new());
+        assert!(matches!(
+            waiting,
+            WaitingFor::DeclareBlockers {
+                player: PlayerId(2),
+                ..
+            }
+        ));
+        if let WaitingFor::DeclareBlockers {
+            valid_blocker_ids,
+            valid_block_targets,
+            ..
+        } = &waiting
+        {
+            assert_eq!(valid_blocker_ids, &vec![blocker_p2]);
+            assert_eq!(
+                valid_block_targets.get(&blocker_p2),
+                Some(&vec![attacker_to_p2])
+            );
+        }
+        state.waiting_for = waiting;
+
+        let result = crate::game::engine::apply(
+            &mut state,
+            PlayerId(2),
+            crate::types::actions::GameAction::DeclareBlockers {
+                assignments: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            state
+                .combat
+                .as_ref()
+                .unwrap()
+                .pending_blocker_declaration_events
+                .len(),
+            1
+        );
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::DeclareBlockers {
+                player: PlayerId(3),
+                ..
+            }
+        ));
+        if let WaitingFor::DeclareBlockers {
+            valid_blocker_ids,
+            valid_block_targets,
+            ..
+        } = &result.waiting_for
+        {
+            assert_eq!(valid_blocker_ids, &vec![blocker_p3]);
+            assert_eq!(
+                valid_block_targets.get(&blocker_p3),
+                Some(&vec![attacker_to_p3])
+            );
+        }
+
+        let result = crate::game::engine::apply(
+            &mut state,
+            PlayerId(3),
+            crate::types::actions::GameAction::DeclareBlockers {
+                assignments: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(state
+            .combat
+            .as_ref()
+            .unwrap()
+            .pending_blocker_declaration_events
+            .is_empty());
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::Priority {
+                player: PlayerId(0)
+            }
+        ));
     }
 
     #[test]

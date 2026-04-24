@@ -448,7 +448,7 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                 && (valid_blocker_ids.is_empty() || end_of_turn_active(state, *player)) =>
             {
                 let mut events = Vec::new();
-                match engine_combat::handle_empty_blockers(state, &mut events) {
+                match engine_combat::handle_empty_blockers(state, *player, &mut events) {
                     Ok(wf) => {
                         sync_waiting_for(state, &wf);
                         result.events.extend(events);
@@ -1585,9 +1585,12 @@ fn apply_action(
             triggers_processed_inline = true;
             engine_combat::handle_declare_attackers(state, *player, &attacks, &mut events)?
         }
-        (WaitingFor::DeclareBlockers { .. }, GameAction::DeclareBlockers { assignments }) => {
+        (
+            WaitingFor::DeclareBlockers { player, .. },
+            GameAction::DeclareBlockers { assignments },
+        ) => {
             triggers_processed_inline = true;
-            engine_combat::handle_declare_blockers(state, &assignments, &mut events)?
+            engine_combat::handle_declare_blockers(state, *player, &assignments, &mut events)?
         }
         (WaitingFor::ReplacementChoice { .. }, GameAction::ChooseReplacement { index }) => {
             engine_replacement::handle_replacement_choice(state, index, &mut events)?

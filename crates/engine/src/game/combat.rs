@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,13 @@ pub struct CombatState {
     pub blocker_assignments: HashMap<ObjectId, Vec<ObjectId>>,
     /// blocker_id -> attacker_ids (reverse lookup; Vec supports multi-blocking via ExtraBlockers)
     pub blocker_to_attacker: HashMap<ObjectId, Vec<ObjectId>>,
+    /// Defending players who have declared blockers this step.
+    #[serde(default)]
+    pub blockers_declared_by: Vec<PlayerId>,
+    /// Blocker declaration events waiting for CR 509.2a trigger processing after
+    /// every defending player has declared blockers.
+    #[serde(default)]
+    pub pending_blocker_declaration_events: Vec<GameEvent>,
     pub damage_assignments: HashMap<ObjectId, Vec<DamageAssignment>>,
     pub first_strike_done: bool,
     /// Index into attacker list for resumable damage assignment iteration.
@@ -63,6 +70,8 @@ impl PartialEq for CombatState {
         self.attackers == other.attackers
             && self.blocker_assignments == other.blocker_assignments
             && self.blocker_to_attacker == other.blocker_to_attacker
+            && self.blockers_declared_by == other.blockers_declared_by
+            && self.pending_blocker_declaration_events == other.pending_blocker_declaration_events
             && self.first_strike_done == other.first_strike_done
     }
 }
@@ -313,6 +322,17 @@ pub fn validate_blockers(
     state: &GameState,
     assignments: &[(ObjectId, ObjectId)],
 ) -> Result<(), String> {
+    let defending_player = next_defending_player_to_declare_blockers(state)
+        .unwrap_or_else(|| players::next_player(state, state.active_player));
+    validate_blockers_for_player(state, defending_player, assignments)
+}
+
+/// Validate one defending player's blocker declaration per CR 509.1 and CR 802.4.
+pub fn validate_blockers_for_player(
+    state: &GameState,
+    player: PlayerId,
+    assignments: &[(ObjectId, ObjectId)],
+) -> Result<(), String> {
     // Detect duplicate (blocker, attacker) pairs — the Vec-based blocker_to_attacker
     // no longer prevents this implicitly like the old HashMap<ObjectId, ObjectId> did.
     {
@@ -349,21 +369,22 @@ pub fn validate_blockers(
             return Err(format!("{:?} is phased out", blocker_id));
         }
 
-        // CR 509.1a: Only untapped creatures controlled by the defending player may block.
-        if blocker.controller == state.active_player {
+        // CR 509.1a + CR 802.4a: Only untapped creatures controlled by this
+        // defending player may block in this declaration.
+        if blocker.controller != player {
             return Err(format!(
-                "{:?} is not controlled by defending player",
-                blocker_id
+                "{:?} is not controlled by defending player {:?}",
+                blocker_id, player
             ));
         }
 
-        // In multiplayer, blocker must be blocking an attacker that is attacking
-        // the blocker's controller
+        // CR 802.4a: In multiplayer, blocker must block a creature attacking
+        // this player, a planeswalker they control, or a battle they protect.
         if let Some(combat) = &state.combat {
             if let Some(attacker_info) =
                 combat.attackers.iter().find(|a| a.object_id == attacker_id)
             {
-                if attacker_info.defending_player != blocker.controller {
+                if attacker_info.defending_player != player {
                     return Err(format!(
                         "{:?} cannot block {:?} (not attacking this player)",
                         blocker_id, attacker_id
@@ -621,6 +642,9 @@ pub fn validate_blockers(
             .collect();
 
         for attacker_info in &combat.attackers {
+            if attacker_info.defending_player != player {
+                continue;
+            }
             let attacker_id = attacker_info.object_id;
             let attacker = match state.objects.get(&attacker_id) {
                 Some(obj) => obj,
@@ -643,7 +667,6 @@ pub fn validate_blockers(
 
             // Check if any unassigned defending creature could legally block this attacker.
             // If so, the assignment is invalid because that creature should have been assigned.
-            let defending_player = attacker_info.defending_player;
             let has_available_blocker = state.battlefield.iter().any(|id| {
                 if assigned_blockers.contains(id) {
                     return false;
@@ -651,7 +674,7 @@ pub fn validate_blockers(
                 let Some(obj) = state.objects.get(id) else {
                     return false;
                 };
-                obj.controller == defending_player
+                obj.controller == player
                     && obj.card_types.core_types.contains(&CoreType::Creature)
                     && !obj.tapped
                     && can_block_pair(state, *id, attacker_id)
@@ -665,21 +688,15 @@ pub fn validate_blockers(
             }
         }
 
-        // CR 509.1c: Check MustBlock — creatures that must block if able.
+        // CR 509.1c + CR 802.4b: Check MustBlock only for this defending
+        // player's declaration.
         // If a defending creature has MustBlock and isn't assigned as a blocker,
         // verify it couldn't legally block any attacker.
-        // Collect all defending players from combat state (multiplayer-safe).
-        let defending_players: std::collections::HashSet<PlayerId> = combat
-            .attackers
-            .iter()
-            .map(|a| a.defending_player)
-            .collect();
-
         for &obj_id in &state.battlefield {
             let Some(obj) = state.objects.get(&obj_id) else {
                 continue;
             };
-            if !defending_players.contains(&obj.controller) {
+            if obj.controller != player {
                 continue;
             }
             if !obj.card_types.core_types.contains(&CoreType::Creature) {
@@ -1258,7 +1275,19 @@ pub fn declare_blockers(
     assignments: &[(ObjectId, ObjectId)],
     events: &mut Vec<GameEvent>,
 ) -> Result<(), String> {
-    validate_blockers(state, assignments)?;
+    let defending_player = next_defending_player_to_declare_blockers(state)
+        .unwrap_or_else(|| players::next_player(state, state.active_player));
+    declare_blockers_for_player(state, defending_player, assignments, events)
+}
+
+/// Declare one defending player's blockers.
+pub fn declare_blockers_for_player(
+    state: &mut GameState,
+    player: PlayerId,
+    assignments: &[(ObjectId, ObjectId)],
+    events: &mut Vec<GameEvent>,
+) -> Result<(), String> {
+    validate_blockers_for_player(state, player, assignments)?;
 
     let combat = state
         .combat
@@ -1289,15 +1318,22 @@ pub fn declare_blockers(
             info.blocked = true;
         }
     }
+    if !combat.blockers_declared_by.contains(&player) {
+        combat.blockers_declared_by.push(player);
+    }
 
     // CR 509.1a: Record blocker object IDs for per-turn tracking.
     state
         .creatures_blocked_this_turn
         .extend(assignments.iter().map(|(blocker_id, _)| *blocker_id));
 
-    events.push(GameEvent::BlockersDeclared {
+    let event = GameEvent::BlockersDeclared {
         assignments: assignments.to_vec(),
-    });
+    };
+    combat
+        .pending_blocker_declaration_events
+        .push(event.clone());
+    events.push(event);
 
     Ok(())
 }
@@ -1613,6 +1649,62 @@ pub fn get_valid_block_targets(state: &GameState) -> HashMap<ObjectId, Vec<Objec
         }
     }
     result
+}
+
+/// For one defending player, compute which of their blockers can legally block which attackers.
+pub fn get_valid_block_targets_for_player(
+    state: &GameState,
+    player: PlayerId,
+) -> HashMap<ObjectId, Vec<ObjectId>> {
+    get_valid_block_targets(state)
+        .into_iter()
+        .filter(|(blocker_id, _)| {
+            state
+                .objects
+                .get(blocker_id)
+                .is_some_and(|blocker| blocker.controller == player)
+        })
+        .collect()
+}
+
+/// Return players who are actually defending this combat, in APNAP order.
+pub fn defending_players_in_turn_order(state: &GameState) -> Vec<PlayerId> {
+    let defending_players: HashSet<PlayerId> = state
+        .combat
+        .as_ref()
+        .map(|combat| {
+            combat
+                .attackers
+                .iter()
+                .map(|a| a.defending_player)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    players::apnap_order(state)
+        .into_iter()
+        .filter(|player| *player != state.active_player && defending_players.contains(player))
+        .collect()
+}
+
+/// Return the first player who is actually defending this combat, in APNAP order.
+pub fn first_defending_player_in_turn_order(state: &GameState) -> Option<PlayerId> {
+    defending_players_in_turn_order(state).into_iter().next()
+}
+
+/// Return the next defending player who still needs to declare blockers.
+pub fn next_defending_player_to_declare_blockers(state: &GameState) -> Option<PlayerId> {
+    let declared: HashSet<PlayerId> = state
+        .combat
+        .as_ref()?
+        .blockers_declared_by
+        .iter()
+        .copied()
+        .collect();
+
+    defending_players_in_turn_order(state)
+        .into_iter()
+        .find(|player| !declared.contains(player))
 }
 
 /// Return the IDs of all creatures that could legally be assigned as blockers.

@@ -591,7 +591,6 @@ fn pump_taps_blocker_penalty(ctx: &PolicyContext<'_>) -> f64 {
     // that could otherwise block.
     // CR 302.6: Creatures with summoning sickness cannot activate tap abilities.
     let shortfall = remaining_cost - untapped_land_count;
-    let turn = ctx.state.turn_number;
     let creature_mana_source_count = ctx
         .state
         .battlefield
@@ -602,7 +601,7 @@ fn pump_taps_blocker_penalty(ctx: &PolicyContext<'_>) -> f64 {
                     && !obj.tapped
                     && obj.card_types.core_types.contains(&CoreType::Creature)
                     && !obj.card_types.core_types.contains(&CoreType::Land)
-                    && !combat::has_summoning_sickness(obj, turn)
+                    && !combat::has_summoning_sickness(obj)
                     && obj.abilities.iter().any(mana_abilities::is_mana_ability)
             })
         })

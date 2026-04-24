@@ -66,22 +66,26 @@ pub(super) fn handle_declare_attackers(
 
 pub(super) fn handle_declare_blockers(
     state: &mut GameState,
+    player: PlayerId,
     assignments: &[(ObjectId, ObjectId)],
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    for (blocker_id, _) in assignments {
+        let blocker = state.objects.get(blocker_id).ok_or_else(|| {
+            EngineError::InvalidAction(format!("Blocker {:?} not found", blocker_id))
+        })?;
+        if blocker.controller != player {
+            return Err(EngineError::WrongPlayer);
+        }
+    }
+
     // CR 509.1c + CR 509.1d: Enumerate UnlessPay block-tax static abilities before
     // finalizing the blocker declaration. Defending player pays or declines the
     // locked-in total; on decline, taxed blockers are dropped from the assignment
     // list (CR 509.1c: "that player is not required to pay that cost").
     if let Some((total_cost, per_creature)) = super::combat::compute_block_tax(state, assignments) {
-        let defending_player = state
-            .combat
-            .as_ref()
-            .and_then(|c| c.attackers.first())
-            .map(|info| info.defending_player)
-            .unwrap_or_else(|| super::players::next_player(state, state.active_player));
         return Ok(WaitingFor::CombatTaxPayment {
-            player: defending_player,
+            player,
             context: CombatTaxContext::Blocking,
             total_cost,
             per_creature,
@@ -90,18 +94,10 @@ pub(super) fn handle_declare_blockers(
             },
         });
     }
-    super::combat::declare_blockers(state, assignments, events)
+    super::combat::declare_blockers_for_player(state, player, assignments, events)
         .map_err(EngineError::InvalidAction)?;
 
-    triggers::process_triggers(state, events);
-    if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
-        return Ok(waiting_for);
-    }
-
-    priority::reset_priority(state);
-    Ok(WaitingFor::Priority {
-        player: state.active_player,
-    })
+    next_blocker_or_finish_declaration(state, events)
 }
 
 /// CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d: Resume a combat declaration after
@@ -146,7 +142,7 @@ pub(super) fn handle_pay_combat_tax(
                 return resume_declare_attackers(state, &attacks, events);
             }
             CombatTaxPending::Block { assignments } => {
-                return resume_declare_blockers(state, &assignments, events);
+                return resume_declare_blockers(state, player, &assignments, events);
             }
         }
     }
@@ -176,7 +172,7 @@ pub(super) fn handle_pay_combat_tax(
                 dropped: taxed.iter().copied().collect(),
             });
             let _ = context; // suppresses unused in this branch; kept for symmetry
-            resume_declare_blockers(state, &filtered, events)
+            resume_declare_blockers(state, player, &filtered, events)
         }
     }
 }
@@ -205,24 +201,17 @@ fn resume_declare_attackers(
 
 fn resume_declare_blockers(
     state: &mut GameState,
+    player: PlayerId,
     assignments: &[(ObjectId, ObjectId)],
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     if assignments.is_empty() {
-        return handle_empty_blockers(state, events);
+        return handle_empty_blockers(state, player, events);
     }
-    super::combat::declare_blockers(state, assignments, events)
+    super::combat::declare_blockers_for_player(state, player, assignments, events)
         .map_err(EngineError::InvalidAction)?;
 
-    triggers::process_triggers(state, events);
-    if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
-        return Ok(waiting_for);
-    }
-
-    priority::reset_priority(state);
-    Ok(WaitingFor::Priority {
-        player: state.active_player,
-    })
+    next_blocker_or_finish_declaration(state, events)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -461,11 +450,38 @@ pub(super) fn handle_empty_attackers(
 
 pub(super) fn handle_empty_blockers(
     state: &mut GameState,
+    player: PlayerId,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    super::combat::declare_blockers(state, &[], events).map_err(EngineError::InvalidAction)?;
+    super::combat::declare_blockers_for_player(state, player, &[], events)
+        .map_err(EngineError::InvalidAction)?;
 
-    triggers::process_triggers(state, events);
+    next_blocker_or_finish_declaration(state, events)
+}
+
+fn next_blocker_or_finish_declaration(
+    state: &mut GameState,
+    _events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if let Some(player) = super::combat::next_defending_player_to_declare_blockers(state) {
+        let valid_block_targets = super::combat::get_valid_block_targets_for_player(state, player);
+        let valid_blocker_ids: Vec<_> = valid_block_targets.keys().copied().collect();
+        return Ok(WaitingFor::DeclareBlockers {
+            player,
+            valid_blocker_ids,
+            valid_block_targets,
+        });
+    }
+
+    // CR 509.2a + CR 802.4: After each defending player has declared blockers
+    // in APNAP order, put blocker-declaration triggers on the stack before the
+    // active player receives priority.
+    let blocker_events = state
+        .combat
+        .as_mut()
+        .map(|combat| std::mem::take(&mut combat.pending_blocker_declaration_events))
+        .unwrap_or_default();
+    triggers::process_triggers(state, &blocker_events);
     if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
         return Ok(waiting_for);
     }
