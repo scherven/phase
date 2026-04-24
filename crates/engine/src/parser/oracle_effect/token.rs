@@ -133,16 +133,24 @@ pub(crate) fn parse_token_description(text: &str) -> Option<TokenDescription> {
     };
 
     // CR 508.4 + CR 506.3a: Strip inline "that's tapped and attacking" /
-    // "that is tapped and attacking" / "thats tapped and attacking" suffix
-    // (all three apostrophe variants Oracle normalizes to). This is the
-    // single-clause form; the trailing "It enters tapped and attacking"
-    // sentence form is patched via `ContinuationAst::EntersTappedAttacking`.
+    // "that is tapped and attacking" / "thats tapped and attacking" /
+    // "that are tapped and attacking" suffix (singular apostrophe variants
+    // Oracle normalizes to, plus the plural form for "create N tokens ...").
+    // This is the single-clause form; the trailing "It enters tapped and
+    // attacking" sentence form is patched via
+    // `ContinuationAst::EntersTappedAttacking`.
     let lower_trimmed = text.to_lowercase();
     // Single combinator for the whole clause: relative-pronoun variants
     // factored into one `alt`, shared tail appears once, `eof` anchors the
     // match at the string's end.
     let tapped_attacking_clause = |i| -> OracleResult<'_, ()> {
-        let (i, _) = alt((tag(" that's"), tag(" that is"), tag(" thats"))).parse(i)?;
+        let (i, _) = alt((
+            tag(" that's"),
+            tag(" that is"),
+            tag(" thats"),
+            tag(" that are"),
+        ))
+        .parse(i)?;
         let (i, _) = tag(" tapped and attacking").parse(i)?;
         let (i, _) = nom::combinator::eof(i)?;
         Ok((i, ()))
@@ -797,6 +805,34 @@ mod tests {
     fn extract_static_empty_when_no_quoted_ability() {
         let statics = extract_token_static_abilities("with flying and haste");
         assert!(statics.is_empty());
+    }
+
+    #[test]
+    fn plural_that_are_tapped_and_attacking_suffix_strips() {
+        // CR 508.4 + CR 506.3a: "create two 1/1 white Cat creature tokens that
+        // are tapped and attacking" (Leonin Warleader) should set both
+        // `tapped` and `enters_attacking` on each token.
+        let effect = try_parse_token(
+            &"create two 1/1 white cat creature tokens that are tapped and attacking"
+                .to_lowercase(),
+            "create two 1/1 white Cat creature tokens that are tapped and attacking",
+        );
+        match effect {
+            Some(Effect::Token {
+                tapped,
+                enters_attacking,
+                count,
+                ..
+            }) => {
+                assert!(tapped, "plural 'that are' clause must set tapped=true");
+                assert!(
+                    enters_attacking,
+                    "plural 'that are' clause must set enters_attacking=true"
+                );
+                assert!(matches!(count, QuantityExpr::Fixed { value: 2 }));
+            }
+            other => panic!("Expected Token effect, got {:?}", other),
+        }
     }
 
     #[test]
