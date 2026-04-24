@@ -2068,7 +2068,7 @@ pub mod tests {
     use crate::game::zones::create_object;
     use crate::types::ability::{
         AbilityDefinition, AbilityKind, Comparator, ControllerRef, Effect, FilterProp,
-        GainLifePlayer, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition,
+        GainLifePlayer, MultiTargetSpec, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition,
         TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter,
     };
     use crate::types::card_type::CoreType;
@@ -2851,6 +2851,249 @@ pub mod tests {
         let pending = state.pending_trigger.as_ref().unwrap();
         assert_eq!(pending.source_id, trigger_creature);
         assert_eq!(pending.controller, PlayerId(0));
+    }
+
+    /// CR 115.1b + CR 609: Pit of Offerings — "exile up to three target cards from graveyards."
+    /// The trigger carries `multi_target: { min: 0, max: 3 }` on its ChangeZone effect.
+    /// `build_target_slots` must surface THREE optional slots so target selection prompts
+    /// the player for 0–3 targets (not exactly 1).
+    #[test]
+    fn pit_of_offerings_multi_target_surfaces_three_slots() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        // Populate graveyards with three cards (legal "card in a graveyard" targets).
+        let gy1 = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "GY Card 1".to_string(),
+            Zone::Graveyard,
+        );
+        let gy2 = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "GY Card 2".to_string(),
+            Zone::Graveyard,
+        );
+        let gy3 = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(1),
+            "GY Card 3".to_string(),
+            Zone::Graveyard,
+        );
+
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Pit of Offerings".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.entered_battlefield_turn = Some(1);
+            let mut execute = AbilityDefinition::new(
+                AbilityKind::Database,
+                Effect::ChangeZone {
+                    origin: None,
+                    destination: Zone::Exile,
+                    target: TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![crate::types::ability::TypeFilter::Card],
+                        controller: None,
+                        properties: vec![FilterProp::InZone {
+                            zone: Zone::Graveyard,
+                        }],
+                    }),
+                    owner_library: false,
+                    enter_transformed: false,
+                    under_your_control: false,
+                    enter_tapped: false,
+                    enters_attacking: false,
+                    up_to: false,
+                },
+            );
+            execute.multi_target = Some(MultiTargetSpec {
+                min: 0,
+                max: Some(3),
+            });
+            obj.trigger_definitions.push(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .execute(execute)
+                    .valid_card(TargetFilter::SelfRef)
+                    .destination(Zone::Battlefield),
+            );
+        }
+
+        let events = vec![zone_changed_event(
+            source,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Land],
+            Vec::new(),
+        )];
+
+        process_triggers(&mut state, &events);
+
+        // Trigger should be pending (not auto-resolved to 1 target).
+        assert!(state.pending_trigger.is_some(), "pending_trigger set");
+        let pending = state.pending_trigger.as_ref().unwrap();
+
+        // The crux: build_target_slots must surface THREE slots when multi_target.max == 3,
+        // not one. Each slot's legal_targets is the full candidate set (gy1, gy2, gy3).
+        let slots = super::super::ability_utils::build_target_slots(&state, &pending.ability)
+            .expect("slot build");
+        assert_eq!(
+            slots.len(),
+            3,
+            "multi_target.max = 3 must produce 3 target slots, got {}",
+            slots.len()
+        );
+        for slot in &slots {
+            assert!(slot.optional, "min = 0 → every slot is optional");
+            assert_eq!(
+                slot.legal_targets.len(),
+                3,
+                "each slot lists all three graveyard cards"
+            );
+        }
+        // Silence unused-var warnings for the graveyard object IDs.
+        let _ = (gy1, gy2, gy3);
+    }
+
+    /// CR 115.1b + CR 609: Exercise end-to-end ChooseTarget flow for Pit of Offerings.
+    /// After firing the ETB trigger, the engine must accept three sequential ChooseTarget
+    /// actions, then resolve by exiling all three selected cards.
+    #[test]
+    fn pit_of_offerings_multi_target_full_flow_exiles_three_cards() {
+        use crate::types::ability::TargetRef;
+        use crate::types::actions::GameAction;
+        use crate::types::phase::Phase;
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.phase = Phase::PreCombatMain;
+        state.turn_number = 2;
+        state.waiting_for = crate::types::game_state::WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        let gy1 = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "GY1".to_string(),
+            Zone::Graveyard,
+        );
+        let gy2 = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "GY2".to_string(),
+            Zone::Graveyard,
+        );
+        let gy3 = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(1),
+            "GY3".to_string(),
+            Zone::Graveyard,
+        );
+
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Pit of Offerings".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.entered_battlefield_turn = Some(2);
+            let mut execute = AbilityDefinition::new(
+                AbilityKind::Database,
+                Effect::ChangeZone {
+                    origin: None,
+                    destination: Zone::Exile,
+                    target: TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![crate::types::ability::TypeFilter::Card],
+                        controller: None,
+                        properties: vec![FilterProp::InZone {
+                            zone: Zone::Graveyard,
+                        }],
+                    }),
+                    owner_library: false,
+                    enter_transformed: false,
+                    under_your_control: false,
+                    enter_tapped: false,
+                    enters_attacking: false,
+                    up_to: false,
+                },
+            );
+            execute.multi_target = Some(MultiTargetSpec {
+                min: 0,
+                max: Some(3),
+            });
+            obj.trigger_definitions.push(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .execute(execute)
+                    .valid_card(TargetFilter::SelfRef)
+                    .destination(Zone::Battlefield),
+            );
+        }
+
+        // Fire the ETB trigger.
+        let events = vec![zone_changed_event(
+            source,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Land],
+            Vec::new(),
+        )];
+        process_triggers(&mut state, &events);
+
+        // Advance pending trigger → TriggerTargetSelection.
+        let wf = crate::game::engine::begin_pending_trigger_target_selection(&mut state)
+            .expect("begin selection")
+            .expect("selection needed");
+        state.waiting_for = wf;
+
+        // Three ChooseTarget actions, one per slot.
+        for target_id in [gy1, gy2, gy3] {
+            let result = crate::game::engine::apply(
+                &mut state,
+                PlayerId(0),
+                GameAction::ChooseTarget {
+                    target: Some(TargetRef::Object(target_id)),
+                },
+            )
+            .expect("ChooseTarget should succeed");
+            let _ = result;
+        }
+
+        // Resolve the stack by passing priority.
+        let mut safety_bound = 20;
+        while !state.stack.is_empty() && safety_bound > 0 {
+            let actor = state.priority_player;
+            crate::game::engine::apply(&mut state, actor, GameAction::PassPriority)
+                .expect("pass priority");
+            safety_bound -= 1;
+        }
+
+        // All three graveyard cards must now be in exile.
+        for target_id in [gy1, gy2, gy3] {
+            assert_eq!(
+                state.objects.get(&target_id).unwrap().zone,
+                Zone::Exile,
+                "object {:?} should be in exile after resolve",
+                target_id
+            );
+        }
     }
 
     #[test]
@@ -6580,6 +6823,109 @@ mod dedup_regression_tests {
         assert!(
             check_trigger_condition(&state, &condition, controller, None, None),
             "opponent-discard must satisfy 'an opponent discarded a card this turn'"
+        );
+    }
+
+    /// CR 603.4 + CR 109.3: Valakut-style "if you control at least five other
+    /// Mountains" must exclude the triggering (newly-entered) Mountain from the
+    /// count. With exactly 5 Mountains on the battlefield where one of them is
+    /// the trigger object, the condition is *not* met (only 4 "other" Mountains).
+    /// With 6 Mountains (5 others + triggering), the condition *is* met.
+    #[test]
+    fn intervening_if_other_than_trigger_object_excludes_triggering_mountain() {
+        use crate::types::ability::{
+            Comparator, ControllerRef, FilterProp, QuantityExpr, QuantityRef, TargetFilter,
+            TriggerCondition, TypeFilter, TypedFilter,
+        };
+
+        // Helper: create a Mountain on the battlefield under `player`.
+        fn make_mountain(state: &mut GameState, player: PlayerId, n: usize) -> ObjectId {
+            let id = create_object(
+                state,
+                CardId(0),
+                player,
+                format!("Mountain {n}"),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.card_types.subtypes.push("Mountain".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            id
+        }
+
+        let mut state = GameState::new_two_player(42);
+        let controller = PlayerId(0);
+
+        // Valakut source (not a Mountain subtype).
+        let valakut_id = create_object(
+            &mut state,
+            CardId(1),
+            controller,
+            "Valakut".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&valakut_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.base_card_types = obj.card_types.clone();
+        }
+        // 4 pre-existing Mountains.
+        for n in 0..4 {
+            make_mountain(&mut state, controller, n);
+        }
+        // The triggering (newly-entered) Mountain — 5th Mountain total.
+        let trigger_id = make_mountain(&mut state, controller, 100);
+
+        let condition = TriggerCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCount {
+                    filter: TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![TypeFilter::Subtype("Mountain".to_string())],
+                        controller: Some(ControllerRef::You),
+                        properties: vec![FilterProp::OtherThanTriggerObject],
+                    }),
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 5 },
+        };
+
+        let event = GameEvent::ZoneChanged {
+            object_id: trigger_id,
+            from: Some(Zone::Library),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord::test_minimal(
+                trigger_id,
+                Some(Zone::Library),
+                Zone::Battlefield,
+            )),
+        };
+
+        // 4 other Mountains + 1 triggering = 5 total. Excluding the triggering
+        // Mountain leaves 4, which is NOT ≥ 5 — the trigger condition must fail.
+        assert!(
+            !check_trigger_condition(
+                &state,
+                &condition,
+                controller,
+                Some(valakut_id),
+                Some(&event)
+            ),
+            "with only 4 other Mountains, the condition must fail"
+        );
+
+        // Add a 5th non-triggering Mountain → 5 others + 1 triggering = 6 total.
+        make_mountain(&mut state, controller, 200);
+        assert!(
+            check_trigger_condition(
+                &state,
+                &condition,
+                controller,
+                Some(valakut_id),
+                Some(&event)
+            ),
+            "with 5 other Mountains, the condition must pass"
         );
     }
 }
