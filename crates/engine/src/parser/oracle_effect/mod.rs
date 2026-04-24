@@ -1844,6 +1844,17 @@ fn try_parse_have_redirection(text: &str, ctx: &ParseContext) -> Option<ParsedEf
         .parse(lower.as_str())
         .ok()?;
 
+    // CR 603.2 + CR 113.3a + CR 111.10: "have its controller <predicate>" —
+    // rebinds the acting player of the redirected sub-effect from the ability
+    // controller (default per CR 113.3a) to the triggering source's controller.
+    // "Its" refers to the triggering object (e.g., for Najeela, the attacking
+    // Warrior). At resolution, the redirected effect's player-scoped filter
+    // auto-resolves via `TargetFilter::TriggeringSource` (see
+    // `extract_event_context_filter` + `resolve_token_owner`).
+    if let Some(clause) = try_parse_have_its_controller(text, after_have, ctx) {
+        return Some(clause);
+    }
+
     // Guard: don't intercept if what follows "have" is not a recognizable subject reference.
     // Subject references start with: "target", "it", "that", "each", "all", "them",
     // "another target", "this", "~", "enchanted", "equipped".
@@ -1883,6 +1894,61 @@ fn try_parse_have_redirection(text: &str, ctx: &ParseContext) -> Option<ParsedEf
     }
 
     None
+}
+
+/// CR 603.2 + CR 111.10: Parse "have its controller <predicate>" — controller
+/// rebinding for token creation (and other player-scoped sub-effects) on a
+/// triggered ability. Najeela, the Blade-Blossom is the canonical case:
+/// "Whenever a Warrior attacks, you may have its controller create a 1/1
+/// white Warrior creature token that's tapped and attacking."
+///
+/// At resolution, `Effect::Token.owner` = `TargetFilter::TriggeringSource`
+/// causes `extract_event_context_filter` to populate `ability.targets` with
+/// the attacker's ObjectRef, and `resolve_token_owner`'s fallback arm reads
+/// the controller from that object — yielding the Warrior's controller,
+/// exactly as CR 111.10 requires.
+fn try_parse_have_its_controller(
+    original: &str,
+    after_have_lower: &str,
+    ctx: &ParseContext,
+) -> Option<ParsedEffectClause> {
+    // Nom dispatch: must match "its controller " exactly.
+    let (rest_lower, _) = tag::<_, _, VerboseError<&str>>("its controller ")
+        .parse(after_have_lower)
+        .ok()?;
+
+    // Recover the original-case remainder using the canonical `len - rest.len()`
+    // offset idiom. `after_have_lower` starts at the same offset in both slices
+    // (case-insensitive prefix "have " has no case-varying chars), so the offset
+    // into `original` is `original.len() - rest_lower.len()`.
+    let offset = original.len().checked_sub(rest_lower.len())?;
+    let redirected_text = original[offset..].trim();
+
+    // Parse the sub-effect through the full effect pipeline.
+    let clause = parse_effect_clause(redirected_text, ctx);
+    if matches!(clause.effect, Effect::Unimplemented { .. }) {
+        return None;
+    }
+
+    // Rebind the acting player of player-scoped sub-effects to the triggering
+    // source's controller. Token creation is the scope for this ticket; other
+    // rebinding sites can be added here as needed.
+    let rebound = rebind_controller_to_triggering_source(clause);
+    Some(rebound)
+}
+
+/// Rebind the player-facing filter of a parsed effect clause to
+/// `TargetFilter::TriggeringSource` so token owners (and similar "acting
+/// player" fields) resolve to the controller of the triggering object at
+/// runtime. Only effects whose player-scope field is currently the default
+/// `Controller` are touched — an explicit target/filter is preserved.
+fn rebind_controller_to_triggering_source(mut clause: ParsedEffectClause) -> ParsedEffectClause {
+    if let Effect::Token { ref mut owner, .. } = clause.effect {
+        if matches!(owner, TargetFilter::Controller) {
+            *owner = TargetFilter::TriggeringSource;
+        }
+    }
+    clause
 }
 
 /// Parse "it's still a/an [type]" and "that's still a/an [type]" type-retention clauses.
@@ -13243,6 +13309,63 @@ mod tests {
             !matches!(e, Effect::Unimplemented { .. }),
             "have fight should not be Unimplemented: {e:?}"
         );
+    }
+
+    // CR 603.2 + CR 111.10: Najeela, the Blade-Blossom — "have its controller
+    // create a ... token ..." rebinds token.owner to TriggeringSource so at
+    // runtime the token is put onto the battlefield under the attacking
+    // Warrior's controller, not Najeela's controller.
+    #[test]
+    fn have_its_controller_create_token_rebinds_owner_to_triggering_source() {
+        let e = parse_effect(
+            "have its controller create a 1/1 white Warrior creature token that's tapped and attacking",
+        );
+        match e {
+            Effect::Token {
+                ref owner,
+                tapped,
+                enters_attacking,
+                ref types,
+                ref colors,
+                ..
+            } => {
+                assert_eq!(
+                    owner,
+                    &TargetFilter::TriggeringSource,
+                    "expected owner rebound to TriggeringSource, got {owner:?}"
+                );
+                assert!(tapped, "token should enter tapped");
+                assert!(enters_attacking, "token should enter attacking");
+                assert!(types.contains(&"Creature".to_string()));
+                assert!(types.contains(&"Warrior".to_string()));
+                assert_eq!(colors, &vec![ManaColor::White]);
+            }
+            other => panic!("expected Effect::Token, got {other:?}"),
+        }
+    }
+
+    // CR 508.4 + CR 506.3a: The inline "that's tapped and attacking" clause
+    // inside a token description phrase must set BOTH `tapped` and
+    // `enters_attacking`. Previously the suffix was silently dropped for
+    // ~10 cards (Captain's Claws, Battle Cry Goblin, General Kreat,
+    // Indulge, etc.), producing rules-incorrect tokens.
+    #[test]
+    fn token_thats_tapped_and_attacking_suffix_sets_flags() {
+        let e = parse_effect("create a 1/1 red Goblin creature token that's tapped and attacking");
+        match e {
+            Effect::Token {
+                tapped,
+                enters_attacking,
+                ..
+            } => {
+                assert!(tapped, "expected tapped=true from inline suffix");
+                assert!(
+                    enters_attacking,
+                    "expected enters_attacking=true from inline suffix"
+                );
+            }
+            other => panic!("expected Effect::Token, got {other:?}"),
+        }
     }
 
     // --- Restriction clause extensions ---

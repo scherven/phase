@@ -56,6 +56,12 @@ pub(crate) struct TokenDescription {
     pub(crate) count: QuantityExpr,
     pub(crate) attach_to: Option<TargetFilter>,
     pub(crate) static_abilities: Vec<StaticDefinition>,
+    /// CR 508.4: Inline "that's tapped and attacking" clause inside the token
+    /// description phrase (e.g., "a 1/1 Goblin creature token that's tapped
+    /// and attacking"). Distinct from a trailing "It enters tapped and
+    /// attacking" continuation sentence, which is patched onto the preceding
+    /// `Effect::Token` by the sequence-level continuation handler.
+    pub(crate) enters_attacking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -993,6 +993,7 @@ pub(super) fn parse_search_and_creation_ast(
                 count,
                 attach_to,
                 static_abilities,
+                enters_attacking,
                 ..
             }) => Some(SearchCreationImperativeAst::Token {
                 token: Box::new(TokenDescription {
@@ -1006,6 +1007,7 @@ pub(super) fn parse_search_and_creation_ast(
                     count,
                     attach_to,
                     static_abilities,
+                    enters_attacking,
                 }),
             }),
             _ => None,
@@ -1059,7 +1061,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             count: token.count,
             owner: TargetFilter::Controller,
             attach_to: token.attach_to,
-            enters_attacking: false,
+            enters_attacking: token.enters_attacking,
             supertypes: vec![],
             static_abilities: token.static_abilities,
             enter_with_counters: vec![],
