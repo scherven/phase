@@ -239,6 +239,8 @@ fn finalize_loyalty_activation(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -290,7 +292,7 @@ mod tests {
         obj.loyalty = Some(loyalty);
         obj.counters
             .insert(crate::types::counter::CounterType::Loyalty, loyalty);
-        obj.abilities = abilities;
+        obj.abilities = Arc::new(abilities);
         obj.entered_battlefield_turn = Some(state.turn_number);
         id
     }

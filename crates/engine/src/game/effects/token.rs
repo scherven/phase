@@ -1012,7 +1012,7 @@ pub(super) fn inject_predefined_token_abilities(
     }
     if !abilities_to_add.is_empty() {
         if let Some(obj) = state.objects.get_mut(&obj_id) {
-            obj.abilities.extend(abilities_to_add.clone());
+            Arc::make_mut(&mut obj.abilities).extend(abilities_to_add.clone());
             Arc::make_mut(&mut obj.base_abilities).extend(abilities_to_add);
         }
     }

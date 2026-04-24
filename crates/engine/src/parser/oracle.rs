@@ -2697,7 +2697,7 @@ mod tests {
             ab.sub_ability.as_deref().and_then(find_draw)
         }
         let mut draw_target = None;
-        for ab in &r.abilities {
+        for ab in r.abilities.iter() {
             if let Some(t) = find_draw(ab) {
                 draw_target = Some(t);
                 break;
@@ -2741,7 +2741,7 @@ mod tests {
         // Find a Token effect whose owner is `Player` (mode 4). Mode 1 also
         // creates a token but its owner is `Controller`, so we keep searching.
         let mut owner_target = None;
-        for ab in &r.abilities {
+        for ab in r.abilities.iter() {
             // Walk the entire chain, collecting any Player-owner Token we see.
             let mut cur: Option<&crate::types::ability::AbilityDefinition> = Some(ab);
             while let Some(node) = cur {
@@ -3317,7 +3317,7 @@ mod tests {
         );
         assert_eq!(r.abilities.len(), 4);
         // All should be activated with loyalty costs
-        for ab in &r.abilities {
+        for ab in r.abilities.iter() {
             assert_eq!(ab.kind, AbilityKind::Activated);
         }
     }
@@ -7088,7 +7088,7 @@ mod tests {
         let r = parse(text, "Petrified Hamlet", &[], &["Land"], &[]);
 
         // No Unimplemented anywhere.
-        for a in &r.abilities {
+        for a in r.abilities.iter() {
             assert!(
                 !matches!(*a.effect, Effect::Unimplemented { .. }),
                 "ability Unimplemented: {:?}",

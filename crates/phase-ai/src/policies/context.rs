@@ -173,6 +173,8 @@ fn collect_definition_effects(ability: &AbilityDefinition) -> Vec<&Effect> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::ai_support::{ActionMetadata, TacticalClass};
     use engine::game::zones::create_object;
@@ -329,7 +331,7 @@ mod tests {
             "Test Spell".to_string(),
             Zone::Hand,
         );
-        state.objects.get_mut(&spell_id).unwrap().abilities = vec![ability];
+        state.objects.get_mut(&spell_id).unwrap().abilities = Arc::new(vec![ability]);
 
         let decision = AiDecisionContext {
             waiting_for: WaitingFor::Priority {
@@ -380,7 +382,7 @@ mod tests {
             .card_types
             .core_types
             .push(engine::types::card_type::CoreType::Creature);
-        object.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut object.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },

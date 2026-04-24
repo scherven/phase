@@ -257,7 +257,7 @@ mod tests {
             core_types: vec![CoreType::Sorcery],
             subtypes: Vec::new(),
         };
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
         oid
     }
 
@@ -283,7 +283,7 @@ mod tests {
             core_types: vec![CoreType::Sorcery],
             subtypes: Vec::new(),
         };
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
         oid
     }
 

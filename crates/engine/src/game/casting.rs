@@ -4452,7 +4452,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::DealDamage {
                     amount: QuantityExpr::Fixed { value: 3 },
@@ -4480,14 +4480,14 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Instant);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Scry {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Controller,
             },
         ));
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
@@ -4519,14 +4519,14 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Sorcery);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Controller,
             },
         ));
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Destroy {
                 target: TargetFilter::Typed(TypedFilter::creature()),
@@ -4552,7 +4552,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 2 },
@@ -4578,7 +4578,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Creature);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Unimplemented {
                     name: "Creature".to_string(),
@@ -4603,7 +4603,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -4618,7 +4618,7 @@ mod tests {
             )
             .cost(crate::types::ability::AbilityCost::Tap),
         );
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -4653,7 +4653,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -4667,7 +4667,7 @@ mod tests {
             )
             .cost(AbilityCost::Tap),
         );
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -4703,7 +4703,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Artifact);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::DealDamage {
@@ -4755,7 +4755,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -4859,7 +4859,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -4932,7 +4932,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::DealDamage {
                     amount: QuantityExpr::Ref {
@@ -5022,7 +5022,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -5076,7 +5076,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -5201,7 +5201,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&source).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Draw {
@@ -5297,7 +5297,7 @@ mod tests {
             let obj = state.objects.get_mut(&blood).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
             obj.card_types.subtypes.push("Blood".to_string());
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Draw {
@@ -5384,7 +5384,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&source).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Draw {
@@ -5551,7 +5551,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -5615,7 +5615,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -5667,7 +5667,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -5976,7 +5976,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 2 },
@@ -6099,7 +6099,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&source).unwrap();
         obj.card_types.core_types.push(CoreType::Artifact);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Draw {
@@ -6135,7 +6135,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&source).unwrap();
             obj.card_types.core_types.push(CoreType::Creature);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Untap {
@@ -6195,7 +6195,7 @@ mod tests {
         let obj = state.objects.get_mut(&source).unwrap();
         obj.card_types.core_types.push(CoreType::Artifact);
         obj.tapped = true;
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value: 1 },
@@ -6264,7 +6264,7 @@ mod tests {
         {
             let spell = state.objects.get_mut(&spell_id).unwrap();
             spell.card_types.core_types.push(CoreType::Instant);
-            spell.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut spell.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
@@ -6312,7 +6312,7 @@ mod tests {
         {
             let spell = state.objects.get_mut(&spell_id).unwrap();
             spell.card_types.core_types.push(CoreType::Instant);
-            spell.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut spell.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
@@ -6349,7 +6349,7 @@ mod tests {
         {
             let spell = state.objects.get_mut(&spell_id).unwrap();
             spell.card_types.core_types.push(CoreType::Creature);
-            spell.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut spell.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Unimplemented {
                     name: "PermanentCreature".to_string(),
@@ -6607,7 +6607,7 @@ mod tests {
                 shards: vec![],
                 generic: 2,
             };
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
@@ -7072,7 +7072,7 @@ mod tests {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
             // Mode 0: Deal 2 damage to any target
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::DealDamage {
                     amount: QuantityExpr::Fixed { value: 2 },
@@ -7081,7 +7081,7 @@ mod tests {
                 },
             ));
             // Mode 1: Draw a card
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
@@ -7089,7 +7089,7 @@ mod tests {
                 },
             ));
             // Mode 2: Gain 3 life
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::GainLife {
                     amount: QuantityExpr::Fixed { value: 3 },
@@ -8152,7 +8152,7 @@ mod tests {
         // Add a Forest to the battlefield (produces {G})
         let forest = add_basic_land(&mut state, CardId(100), "Forest", "Forest");
         let obj = state.objects.get_mut(&forest).unwrap();
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -8240,7 +8240,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&counterspell).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Counter {
                     target: TargetFilter::Typed(crate::types::ability::TypedFilter::card()),
@@ -8320,7 +8320,7 @@ mod tests {
             obj.card_types.core_types.push(CoreType::Creature);
             obj.card_types.subtypes.push("Elf".to_string());
             obj.entered_battlefield_turn = Some(1); // entered last turn → no summoning sickness
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -8426,7 +8426,7 @@ mod tests {
             obj.card_types.core_types.push(CoreType::Creature);
             obj.card_types.subtypes.push("Elf".to_string());
             obj.entered_battlefield_turn = Some(1);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -8562,7 +8562,7 @@ mod tests {
             let obj = state.objects.get_mut(&drum).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
             obj.mana_cost = ManaCost::generic(1);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Unimplemented {
                     name: "Artifact".to_string(),
@@ -8605,7 +8605,7 @@ mod tests {
             obj.card_types.subtypes.push("Bird".to_string());
             obj.keywords.push(Keyword::Flying);
             obj.mana_cost = ManaCost::generic(1);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Unimplemented {
                     name: "Creature".to_string(),
@@ -8642,7 +8642,7 @@ mod tests {
             obj.card_types.subtypes.push("Bird".to_string());
             obj.keywords.push(Keyword::Flying);
             obj.mana_cost = ManaCost::generic(1);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Unimplemented {
                     name: "Creature".to_string(),
@@ -8729,7 +8729,7 @@ mod tests {
                 target: crate::types::ability::TargetFilter::Controller,
             },
         );
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
         obj_id
     }
@@ -8821,7 +8821,7 @@ mod tests {
                 target: crate::types::ability::TargetFilter::Controller,
             },
         );
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
 
         let prepared = prepare_spell_cast(&state, PlayerId(0), obj_id).unwrap();
@@ -9378,7 +9378,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 2 },
@@ -9469,7 +9469,7 @@ mod tests {
                 shards: vec![ManaCostShard::Blue],
                 generic: 1,
             };
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
@@ -9537,7 +9537,7 @@ mod tests {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
             };
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::DealDamage {
                     amount: QuantityExpr::Fixed { value: 3 },
@@ -9620,7 +9620,7 @@ mod tests {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
             };
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::DealDamage {
                     amount: QuantityExpr::Fixed { value: 3 },
@@ -9688,7 +9688,7 @@ mod tests {
         obj.card_types.core_types.push(CoreType::Artifact);
         obj.card_types.core_types.push(CoreType::Creature);
         obj.entered_battlefield_turn = Some(0);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             crate::types::ability::AbilityDefinition::new(
                 crate::types::ability::AbilityKind::Activated,
                 crate::types::ability::Effect::Draw {
@@ -9816,7 +9816,7 @@ mod tests {
                     source_filter: TargetFilter::SelfRef,
                     exemption: ActivationExemption::None,
                 }));
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 crate::types::ability::AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Draw {
@@ -9934,8 +9934,8 @@ mod tests {
             let obj = state.objects.get_mut(&elves).unwrap();
             obj.card_types.core_types.push(CoreType::Creature);
             obj.entered_battlefield_turn = Some(0);
-            obj.abilities.push(make_tap_for_green_mana_ability());
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(make_tap_for_green_mana_ability());
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Draw {
@@ -10004,7 +10004,7 @@ mod tests {
         let obj = state.objects.get_mut(&id).unwrap();
         obj.card_types.core_types.push(CoreType::Enchantment);
         obj.entered_battlefield_turn = Some(0);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             crate::types::ability::AbilityDefinition::new(
                 crate::types::ability::AbilityKind::Activated,
                 crate::types::ability::Effect::Draw {
@@ -10077,7 +10077,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Instant);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
@@ -10961,7 +10961,7 @@ mod tests {
             obj.card_types.core_types.push(CoreType::Creature);
             obj.entered_battlefield_turn = Some(entered_turn);
             obj.summoning_sick = entered_turn >= current_turn;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Draw {
@@ -11031,7 +11031,7 @@ mod tests {
                 let obj = state.objects.get_mut(&top).unwrap();
                 obj.card_types.core_types.push(CoreType::Artifact);
                 obj.entered_battlefield_turn = Some(turn);
-                obj.abilities.push(
+                Arc::make_mut(&mut obj.abilities).push(
                     AbilityDefinition::new(
                         AbilityKind::Activated,
                         Effect::Draw {
@@ -11068,7 +11068,7 @@ mod tests {
                 obj.card_types.core_types.push(CoreType::Creature);
                 obj.entered_battlefield_turn = Some(turn);
                 obj.summoning_sick = true;
-                obj.abilities.push(
+                Arc::make_mut(&mut obj.abilities).push(
                     AbilityDefinition::new(
                         AbilityKind::Activated,
                         Effect::Draw {
@@ -11105,7 +11105,7 @@ mod tests {
                 obj.summoning_sick = true;
                 // Already tapped so Untap cost is payable mechanically.
                 obj.tapped = true;
-                obj.abilities.push(
+                Arc::make_mut(&mut obj.abilities).push(
                     AbilityDefinition::new(
                         AbilityKind::Activated,
                         Effect::Draw {

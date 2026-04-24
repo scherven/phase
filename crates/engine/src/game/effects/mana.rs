@@ -373,6 +373,8 @@ fn mana_color_to_type(color: &ManaColor) -> ManaType {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::types::ability::QuantityExpr;
     use crate::types::identifiers::ObjectId;
@@ -686,7 +688,7 @@ mod tests {
         let obj = state.objects.get_mut(&mountain).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
         obj.card_types.subtypes.push("Mountain".to_string());
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -757,7 +759,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&opp_orchard).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {

@@ -359,7 +359,7 @@ mod tests {
             subtypes: Vec::new(),
         };
         obj.mana_cost = ManaCost::generic(1);
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
         oid
     }
 

@@ -182,6 +182,8 @@ fn score_aggressive_close(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -222,7 +224,7 @@ mod tests {
         obj.card_types.core_types.push(CoreType::Creature);
         obj.power = Some(1);
         obj.toughness = Some(3);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 0 },
@@ -282,7 +284,7 @@ mod tests {
         obj.card_types.core_types.push(CoreType::Creature);
         obj.power = Some(2);
         obj.toughness = Some(2);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 0 },

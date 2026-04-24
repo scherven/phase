@@ -190,6 +190,8 @@ fn visible_hand_card_value(object: &engine::game::game_object::GameObject) -> f6
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -215,19 +217,16 @@ mod tests {
             "Duress".to_string(),
             Zone::Hand,
         );
-        state
-            .objects
-            .get_mut(&discard)
-            .unwrap()
-            .abilities
-            .push(AbilityDefinition::new(
+        Arc::make_mut(&mut state.objects.get_mut(&discard).unwrap().abilities).push(
+            AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::RevealHand {
                     target: TargetFilter::Any,
                     card_filter: TargetFilter::Any,
                     count: None,
                 },
-            ));
+            ),
+        );
 
         let candidate = CandidateAction {
             action: GameAction::CastSpell {
@@ -273,7 +272,7 @@ mod tests {
             "Duress".to_string(),
             Zone::Hand,
         );
-        state.objects.get_mut(&duress).unwrap().abilities.push(
+        Arc::make_mut(&mut state.objects.get_mut(&duress).unwrap().abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::RevealHand {

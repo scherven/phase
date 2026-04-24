@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
@@ -255,7 +256,7 @@ fn hide_card(state: &mut GameState, obj_id: ObjectId) {
     if let Some(obj) = state.objects.get_mut(&obj_id) {
         obj.face_down = true;
         obj.name = "Hidden Card".to_string();
-        obj.abilities.clear();
+        Arc::make_mut(&mut obj.abilities).clear();
         obj.keywords.clear();
         obj.base_keywords.clear();
         obj.power = None;

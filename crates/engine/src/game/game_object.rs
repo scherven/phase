@@ -140,7 +140,10 @@ pub struct GameObject {
     pub card_types: CardType,
     pub mana_cost: ManaCost,
     pub keywords: Vec<Keyword>,
-    pub abilities: Vec<AbilityDefinition>,
+    /// Live abilities after layer evaluation. Wrapped in `Arc<Vec<_>>` so
+    /// `GameState::clone()` shares the ability list across cloned states
+    /// (AI search); mutations go through `Arc::make_mut` for copy-on-write.
+    pub abilities: Arc<Vec<AbilityDefinition>>,
     pub trigger_definitions: Definitions<TriggerDefinition>,
     pub replacement_definitions: Definitions<ReplacementDefinition>,
     pub static_definitions: Definitions<StaticDefinition>,
@@ -469,7 +472,8 @@ impl GameObject {
             self.base_keywords = self.keywords.clone();
         }
         if self.base_abilities.is_empty() && !self.abilities.is_empty() {
-            self.base_abilities = Arc::new(self.abilities.clone());
+            // Both sides are `Arc<Vec<_>>` — refcount-only clone.
+            self.base_abilities = Arc::clone(&self.abilities);
         }
         if self.base_trigger_definitions.is_empty() && !self.trigger_definitions.is_empty() {
             self.base_trigger_definitions =
@@ -515,7 +519,7 @@ impl GameObject {
             card_types: CardType::default(),
             mana_cost: ManaCost::default(),
             keywords: Vec::new(),
-            abilities: Vec::new(),
+            abilities: Arc::new(Vec::new()),
             trigger_definitions: Definitions::default(),
             replacement_definitions: Definitions::default(),
             static_definitions: Definitions::default(),

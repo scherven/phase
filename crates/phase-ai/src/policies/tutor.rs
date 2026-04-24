@@ -353,6 +353,8 @@ fn is_push_object(object: &GameObject) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -422,12 +424,8 @@ mod tests {
             "Tutor".to_string(),
             Zone::Hand,
         );
-        state
-            .objects
-            .get_mut(&tutor)
-            .unwrap()
-            .abilities
-            .push(AbilityDefinition::new(
+        Arc::make_mut(&mut state.objects.get_mut(&tutor).unwrap().abilities).push(
+            AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::SearchLibrary {
                     filter: TargetFilter::Any,
@@ -436,7 +434,8 @@ mod tests {
                     target_player: None,
                     up_to: false,
                 },
-            ));
+            ),
+        );
 
         let candidate = CandidateAction {
             action: GameAction::CastSpell {
@@ -552,18 +551,15 @@ mod tests {
             object.power = Some(6);
             object.toughness = Some(6);
         }
-        state
-            .objects
-            .get_mut(&removal)
-            .unwrap()
-            .abilities
-            .push(AbilityDefinition::new(
+        Arc::make_mut(&mut state.objects.get_mut(&removal).unwrap().abilities).push(
+            AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Destroy {
                     target: TargetFilter::Any,
                     cant_regenerate: false,
                 },
-            ));
+            ),
+        );
 
         let duplicate_score = score_search_choice_selection(&state, PlayerId(0), &[first, second]);
         let mixed_score = score_search_choice_selection(&state, PlayerId(0), &[first, removal]);

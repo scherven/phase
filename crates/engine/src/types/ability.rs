@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -6204,10 +6205,12 @@ pub struct CopiableValues {
     pub toughness: Option<i32>,
     pub loyalty: Option<u32>,
     pub keywords: Vec<Keyword>,
-    pub abilities: Vec<AbilityDefinition>,
-    pub trigger_definitions: Vec<TriggerDefinition>,
-    pub replacement_definitions: Vec<ReplacementDefinition>,
-    pub static_definitions: Vec<StaticDefinition>,
+    /// Ability-set fields are `Arc<Vec<_>>` so copy-effect propagation from
+    /// source to target uses refcount sharing rather than deep clones.
+    pub abilities: Arc<Vec<AbilityDefinition>>,
+    pub trigger_definitions: Arc<Vec<TriggerDefinition>>,
+    pub replacement_definitions: Arc<Vec<ReplacementDefinition>>,
+    pub static_definitions: Arc<Vec<StaticDefinition>>,
 }
 
 /// What modification a continuous effect applies to an object.

@@ -184,6 +184,8 @@ fn creature_stat_bonus(obj: &engine::game::game_object::GameObject) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::zones::create_object;
     use engine::types::ability::{
@@ -224,7 +226,7 @@ mod tests {
         let obj = state.objects.get_mut(&id).unwrap();
         obj.card_types.core_types.push(core_type);
         obj.mana_cost = ManaCost::zero();
-        obj.abilities = abilities;
+        obj.abilities = Arc::new(abilities);
         card_id
     }
 

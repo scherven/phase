@@ -2308,6 +2308,8 @@ mod scavenge_synthesis_tests {
 
 #[cfg(test)]
 mod scavenge_runtime_tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::casting::{can_activate_ability_now, handle_activate_ability};
     use crate::game::zones::create_object;
@@ -2341,11 +2343,7 @@ mod scavenge_runtime_tests {
         let mut face = CardFace::default();
         face.keywords.push(Keyword::Scavenge(scavenge_cost));
         synthesize_scavenge(&mut face);
-        state
-            .objects
-            .get_mut(&source)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&source).unwrap().abilities)
             .extend(face.abilities);
 
         let target = create_object(
@@ -3454,7 +3452,7 @@ mod sorcery_speed_invariant_tests {
 
         for (name, build) in cases {
             let face = build();
-            for def in &face.abilities {
+            for def in face.abilities.iter() {
                 assert_sorcery_invariant(def, name);
             }
         }

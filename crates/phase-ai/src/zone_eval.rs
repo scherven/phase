@@ -154,6 +154,8 @@ pub(crate) fn available_mana(state: &GameState, player: PlayerId) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::zones::create_object;
     use engine::types::identifiers::CardId;
@@ -282,7 +284,7 @@ mod tests {
             },
         );
         mana_ability.cost = Some(AbilityCost::Tap);
-        dork_obj.abilities.push(mana_ability);
+        Arc::make_mut(&mut dork_obj.abilities).push(mana_ability);
 
         // Should count both: 1 land + 1 mana dork = 2
         let mana = available_mana(&state, PlayerId(0));

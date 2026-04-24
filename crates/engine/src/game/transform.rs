@@ -94,14 +94,14 @@ mod tests {
         obj.base_card_types = obj.card_types.clone();
         obj.keywords = vec![Keyword::Vigilance];
         obj.base_keywords = vec![Keyword::Vigilance];
-        obj.abilities = vec![crate::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![crate::types::ability::AbilityDefinition::new(
             crate::types::ability::AbilityKind::Spell,
             crate::types::ability::Effect::Unimplemented {
                 name: "FrontAbility".to_string(),
                 description: None,
             },
-        )];
-        obj.base_abilities = Arc::new(obj.abilities.clone());
+        )]);
+        obj.base_abilities = Arc::clone(&obj.abilities);
         obj.color = vec![ManaColor::Green];
         obj.base_color = vec![ManaColor::Green];
 

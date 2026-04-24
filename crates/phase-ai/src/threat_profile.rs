@@ -122,7 +122,7 @@ pub fn classify_card_face(card: &CardFace) -> ThreatProbabilities {
     let mut probs = ThreatProbabilities::default();
     let is_instant = card.card_type.core_types.contains(&CoreType::Instant);
 
-    for ability in &card.abilities {
+    for ability in card.abilities.iter() {
         classify_ability(&mut probs, ability, is_instant);
     }
     probs

@@ -79,7 +79,7 @@ pub fn play_face_down(
     obj.base_card_types = obj.card_types.clone();
     obj.keywords = Vec::new();
     obj.base_keywords = Vec::new();
-    obj.abilities = Vec::new();
+    obj.abilities = Arc::new(Vec::new());
     obj.base_abilities = Arc::new(Vec::new());
     obj.trigger_definitions = crate::types::definitions::Definitions::default();
     obj.base_trigger_definitions = Arc::new(Vec::new());
@@ -212,7 +212,7 @@ pub fn manifest_card(
     obj.base_card_types = obj.card_types.clone();
     obj.keywords = Vec::new();
     obj.base_keywords = Vec::new();
-    obj.abilities = Vec::new();
+    obj.abilities = Arc::new(Vec::new());
     obj.base_abilities = Arc::new(Vec::new());
     obj.trigger_definitions = crate::types::definitions::Definitions::default();
     obj.base_trigger_definitions = Arc::new(Vec::new());
@@ -300,13 +300,13 @@ mod tests {
             }),
             Keyword::Trample,
         ];
-        obj.abilities = vec![AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![AbilityDefinition::new(
             crate::types::ability::AbilityKind::Activated,
             crate::types::ability::Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: crate::types::ability::TargetFilter::Controller,
             },
-        )];
+        )]);
         obj.color = vec![ManaColor::Green];
         id
     }

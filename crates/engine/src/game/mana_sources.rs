@@ -518,7 +518,7 @@ pub(crate) fn opponent_land_color_options(
             continue;
         }
         // Scan each mana ability, skipping OpponentLandColors to prevent recursion.
-        for ability in &obj.abilities {
+        for ability in obj.abilities.iter() {
             if ability.kind != AbilityKind::Activated
                 || !super::mana_abilities::is_mana_ability(ability)
             {
@@ -600,6 +600,8 @@ pub fn mana_type_to_color(mana_type: ManaType) -> Option<ManaColor> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{AbilityDefinition, AbilityKind, ManaContribution, QuantityExpr};
@@ -642,8 +644,8 @@ mod tests {
         );
         let obj = state.objects.get_mut(&verge).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(verge_ability(unconditional_color));
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(verge_ability(unconditional_color));
+        Arc::make_mut(&mut obj.abilities).push(
             verge_ability(conditional_color).activation_restrictions(vec![
                 ActivationRestriction::RequiresCondition {
                     condition: crate::parser::oracle_condition::parse_restriction_condition(
@@ -798,7 +800,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&elf).unwrap();
         obj.card_types.core_types.push(CoreType::Creature);
-        obj.abilities.push(verge_ability(ManaColor::Green));
+        Arc::make_mut(&mut obj.abilities).push(verge_ability(ManaColor::Green));
         // No summoning sickness: entered on a previous turn
         obj.entered_battlefield_turn = Some(0);
         state.turn_number = 2;
@@ -824,7 +826,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&elf).unwrap();
         obj.card_types.core_types.push(CoreType::Creature);
-        obj.abilities.push(verge_ability(ManaColor::Green));
+        Arc::make_mut(&mut obj.abilities).push(verge_ability(ManaColor::Green));
         obj.entered_battlefield_turn = Some(1);
         obj.summoning_sick = true;
         state.turn_number = 1; // Same turn — summoning sickness
@@ -881,7 +883,7 @@ mod tests {
             ],
         });
         let obj = state.objects.get_mut(&treasure).unwrap();
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
 
         let options = activatable_mana_options(&state, treasure, PlayerId(0));
         assert!(!options.is_empty(), "Treasure should have mana options");
@@ -913,7 +915,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&town).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {

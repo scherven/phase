@@ -181,7 +181,7 @@ mod tests {
                     toughness: None,
                     loyalty: None,
                     keywords: vec![],
-                    abilities: vec![],
+                    abilities: Default::default(),
                     trigger_definitions: Default::default(),
                     replacement_definitions: Default::default(),
                     static_definitions: Default::default(),

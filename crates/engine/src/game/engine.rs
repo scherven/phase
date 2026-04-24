@@ -3749,6 +3749,8 @@ pub(super) fn check_exile_returns(state: &mut GameState, events: &mut Vec<GameEv
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -4668,7 +4670,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&dual_id).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4683,7 +4685,7 @@ mod tests {
                 )
                 .cost(crate::types::ability::AbilityCost::Tap),
             );
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4726,7 +4728,7 @@ mod tests {
             let obj = state.objects.get_mut(&dual_id).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
             obj.has_mana_ability = true;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4741,7 +4743,7 @@ mod tests {
                 )
                 .cost(crate::types::ability::AbilityCost::Tap),
             );
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4805,7 +4807,7 @@ mod tests {
             let obj = state.objects.get_mut(&dual_id).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
             obj.has_mana_ability = true;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4944,7 +4946,7 @@ mod tests {
             obj.card_types.core_types.push(CoreType::Land);
             obj.card_types.subtypes.push("Forest".to_string());
             obj.has_mana_ability = true;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Eff::Mana {
@@ -5174,7 +5176,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(make_draw_ability(2));
+            Arc::make_mut(&mut obj.abilities).push(make_draw_ability(2));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Blue],
                 generic: 2,
@@ -5235,7 +5237,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(make_draw_ability(2));
+            Arc::make_mut(&mut obj.abilities).push(make_draw_ability(2));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Blue],
                 generic: 2,
@@ -5327,7 +5329,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5437,7 +5439,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5500,7 +5502,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5599,7 +5601,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&counter_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Counter {
                     target: TargetFilter::Typed(TypedFilter::card()),
@@ -5682,7 +5684,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&growth_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Pump {
                     power: crate::types::ability::PtValue::Fixed(3),
@@ -5753,7 +5755,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5818,7 +5820,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Creature);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -5910,7 +5912,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Creature);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -5967,7 +5969,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&drum).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -6633,7 +6635,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&spell_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(make_draw_ability(2));
+            Arc::make_mut(&mut obj.abilities).push(make_draw_ability(2));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Blue, ManaCostShard::Blue],
                 generic: 1,

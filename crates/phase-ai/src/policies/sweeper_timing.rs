@@ -181,7 +181,7 @@ mod tests {
             core_types: vec![CoreType::Sorcery],
             subtypes: Vec::new(),
         };
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::DestroyAll {
                 target: TargetFilter::Any,
@@ -224,7 +224,7 @@ mod tests {
             core_types: vec![CoreType::Sorcery],
             subtypes: Vec::new(),
         };
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: engine::types::ability::QuantityExpr::Fixed { value: 2 },

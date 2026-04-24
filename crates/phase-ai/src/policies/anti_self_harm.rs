@@ -705,6 +705,8 @@ fn extract_damage_amount(effects: &[&Effect]) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -1242,13 +1244,13 @@ mod tests {
         obj2.card_types.supertypes.push(Supertype::Legendary);
         obj2.power = Some(2);
         obj2.toughness = Some(1);
-        obj2.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj2.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::Draw {
                 count: engine::types::ability::QuantityExpr::Fixed { value: 0 },
                 target: engine::types::ability::TargetFilter::Controller,
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -1302,13 +1304,13 @@ mod tests {
         obj.card_types.supertypes.push(Supertype::Legendary);
         obj.power = Some(2);
         obj.toughness = Some(1);
-        obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::Draw {
                 count: engine::types::ability::QuantityExpr::Fixed { value: 0 },
                 target: engine::types::ability::TargetFilter::Controller,
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -1360,7 +1362,7 @@ mod tests {
             Zone::Hand,
         );
         let obj = state.objects.get_mut(&spell_id).unwrap();
-        obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::Pump {
                 power: PtValue::Fixed(3),
@@ -1369,7 +1371,7 @@ mod tests {
                     TypeFilter::Creature,
                 )),
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -1419,7 +1421,7 @@ mod tests {
             Zone::Hand,
         );
         let obj = state.objects.get_mut(&spell_id).unwrap();
-        obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::Bounce {
                 target: TargetFilter::Typed(
@@ -1428,7 +1430,7 @@ mod tests {
                 ),
                 destination: None,
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -1478,7 +1480,7 @@ mod tests {
             Zone::Hand,
         );
         let obj = state.objects.get_mut(&spell_id).unwrap();
-        obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::Bounce {
                 target: TargetFilter::Typed(
@@ -1487,7 +1489,7 @@ mod tests {
                 ),
                 destination: None,
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -1540,7 +1542,7 @@ mod tests {
             Zone::Hand,
         );
         let obj = state.objects.get_mut(&spell_id).unwrap();
-        obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::Pump {
                 power: PtValue::Fixed(3),
@@ -1549,7 +1551,7 @@ mod tests {
                     TypeFilter::Creature,
                 )),
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -1602,7 +1604,7 @@ mod tests {
             Zone::Hand,
         );
         let obj = state.objects.get_mut(&spell_id).unwrap();
-        obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::Destroy {
                 target: TargetFilter::Typed(engine::types::ability::TypedFilter::new(
@@ -1610,7 +1612,7 @@ mod tests {
                 )),
                 cant_regenerate: false,
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -1663,14 +1665,14 @@ mod tests {
             Zone::Hand,
         );
         let obj = state.objects.get_mut(&spell_id).unwrap();
-        obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             engine::types::ability::AbilityKind::Spell,
             Effect::DealDamage {
                 amount: engine::types::ability::QuantityExpr::Fixed { value: 3 },
                 target: TargetFilter::Any,
                 damage_source: None,
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -2036,7 +2038,7 @@ mod tests {
             },
         );
         mana_ability.cost = Some(AbilityCost::Tap);
-        dork_obj.abilities.push(mana_ability);
+        Arc::make_mut(&mut dork_obj.abilities).push(mana_ability);
 
         // Also add an opponent creature so the "no opponent creatures" penalty doesn't fire
         add_creature(&mut state, PlayerId(1), "Goblin", 2, 2);
@@ -2055,14 +2057,14 @@ mod tests {
             shards: vec![engine::types::mana::ManaCostShard::Green],
             generic: 0,
         };
-        spell_obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        spell_obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Pump {
                 power: PtValue::Fixed(3),
                 toughness: PtValue::Fixed(3),
                 target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {
@@ -2126,7 +2128,7 @@ mod tests {
             },
         );
         mana_ability.cost = Some(AbilityCost::Tap);
-        dork_obj.abilities.push(mana_ability);
+        Arc::make_mut(&mut dork_obj.abilities).push(mana_ability);
 
         // Add an untapped land (enough to pay for Giant Growth)
         let land_id = create_object(
@@ -2155,14 +2157,14 @@ mod tests {
             shards: vec![engine::types::mana::ManaCostShard::Green],
             generic: 0,
         };
-        spell_obj.abilities = vec![engine::types::ability::AbilityDefinition::new(
+        spell_obj.abilities = Arc::new(vec![engine::types::ability::AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Pump {
                 power: PtValue::Fixed(3),
                 toughness: PtValue::Fixed(3),
                 target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
             },
-        )];
+        )]);
 
         let config = AiConfig::default();
         let decision = AiDecisionContext {

@@ -374,6 +374,8 @@ pub(crate) fn is_mass_damage_or_shrink(effect: &Effect) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::game_object::GameObject;
     use engine::types::ability::{AbilityDefinition, AbilityKind, QuantityExpr, TargetFilter};
@@ -476,7 +478,7 @@ mod tests {
                 target: engine::types::ability::TargetFilter::Controller,
             },
         );
-        object.abilities.push(draw.clone());
+        Arc::make_mut(&mut object.abilities).push(draw.clone());
         let mut trigger_draw = draw.clone();
         trigger_draw.kind = AbilityKind::Spell;
         object.trigger_definitions.push(
@@ -498,14 +500,14 @@ mod tests {
     #[test]
     fn excludes_non_spell_primary_abilities() {
         let mut object = make_object();
-        object.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut object.abilities).push(AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: engine::types::ability::TargetFilter::Controller,
             },
         ));
-        object.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut object.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value: 2 },
@@ -546,7 +548,7 @@ mod tests {
                 target: engine::types::ability::TargetFilter::Controller,
             },
         )));
-        object.abilities.push(draw);
+        Arc::make_mut(&mut object.abilities).push(draw);
         object.trigger_definitions.push(
             TriggerDefinition::new(TriggerMode::ChangesZone)
                 .valid_card(TargetFilter::SelfRef)

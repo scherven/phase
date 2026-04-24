@@ -117,14 +117,15 @@ pub fn resolve(
             token.loyalty = values.loyalty;
             token.base_keywords = values.keywords.clone();
             token.keywords = values.keywords.clone();
-            token.base_abilities = Arc::new(values.abilities.clone());
-            token.abilities = values.abilities.clone();
-            token.base_trigger_definitions = Arc::new(values.trigger_definitions.clone());
-            token.trigger_definitions = values.trigger_definitions.clone().into();
-            token.base_replacement_definitions = Arc::new(values.replacement_definitions.clone());
-            token.replacement_definitions = values.replacement_definitions.clone().into();
-            token.base_static_definitions = Arc::new(values.static_definitions.clone());
-            token.static_definitions = values.static_definitions.clone().into();
+            // All four ability sets are Arc-shared — refcount bumps, no deep copy.
+            token.base_abilities = Arc::clone(&values.abilities);
+            token.abilities = Arc::clone(&values.abilities);
+            token.base_trigger_definitions = Arc::clone(&values.trigger_definitions);
+            token.trigger_definitions = Arc::clone(&values.trigger_definitions).into();
+            token.base_replacement_definitions = Arc::clone(&values.replacement_definitions);
+            token.replacement_definitions = Arc::clone(&values.replacement_definitions).into();
+            token.base_static_definitions = Arc::clone(&values.static_definitions);
+            token.static_definitions = Arc::clone(&values.static_definitions).into();
             token.base_characteristics_initialized = true;
             // CR 400.7 + CR 302.6: Single authority for ETB state. Haste
             // granted below via `extra_keywords` (Twinflame, etc.) is folded

@@ -133,6 +133,8 @@ impl MulliganPolicy for TokensWideKeepablesMulligan {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::features::tokens_wide::TokensWideFeature;
     use crate::features::DeckFeatures;
@@ -219,7 +221,7 @@ mod tests {
                     subtypes: Vec::new(),
                 };
                 obj.mana_cost = ManaCost::generic(3);
-                obj.abilities.push(ability);
+                Arc::make_mut(&mut obj.abilities).push(ability);
                 oid
             }
             Card::GloriousAnthem => {

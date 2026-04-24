@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::game::arithmetic::saturating_pt_add;
 use crate::game::devotion::count_devotion;
 use crate::game::filter::{matches_target_filter, FilterContext};
@@ -449,14 +451,15 @@ pub fn evaluate_layers(state: &mut GameState) {
             obj.mana_cost = obj.base_mana_cost.clone();
             obj.keywords = obj.base_keywords.clone();
             // CR 613.1: Reset live ability fields to the printed-card baseline.
-            // Commit 1 of Arc-share migration: `base_*` is `Arc<Vec<T>>` so we deref
-            // then deep-clone to satisfy the still-`Vec<T>` live fields. Commit 2
-            // migrates `obj.abilities` to `Arc<Vec<_>>` and the `Definitions<T>`
-            // wrappers to accept `Arc<Vec<T>>`, removing this deep clone.
-            obj.abilities = (*obj.base_abilities).clone();
-            obj.trigger_definitions = (*obj.base_trigger_definitions).clone().into();
-            obj.replacement_definitions = (*obj.base_replacement_definitions).clone().into();
-            obj.static_definitions = (*obj.base_static_definitions).clone().into();
+            // Post Commit 2 of Arc-share migration: both sides are `Arc<Vec<T>>`
+            // (via `Definitions<T>`-holds-`Arc`), so this reset is a refcount
+            // bump — no deep copy of ability data per layer pass per permanent.
+            // Subsequent layer effects that mutate `obj.abilities` / definitions
+            // trigger copy-on-write via `Arc::make_mut`.
+            obj.abilities = Arc::clone(&obj.base_abilities);
+            obj.trigger_definitions = Arc::clone(&obj.base_trigger_definitions).into();
+            obj.replacement_definitions = Arc::clone(&obj.base_replacement_definitions).into();
+            obj.static_definitions = Arc::clone(&obj.base_static_definitions).into();
             obj.color = obj.base_color.clone();
             // CR 613.1b: Reset controller to owner; Layer 2 re-applies control-changing effects.
             obj.controller = obj.owner;
@@ -1116,7 +1119,7 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                     .retain(|k| std::mem::discriminant(k) != std::mem::discriminant(keyword));
             }
             ContinuousModification::RemoveAllAbilities => {
-                obj.abilities.clear();
+                Arc::make_mut(&mut obj.abilities).clear();
                 obj.trigger_definitions.clear();
                 obj.replacement_definitions.clear();
                 obj.static_definitions.clear();
@@ -1239,7 +1242,7 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
             // stack. Structural equality dedup keeps the grant idempotent.
             ContinuousModification::GrantAbility { definition } => {
                 if !obj.abilities.iter().any(|a| a == definition.as_ref()) {
-                    obj.abilities.push(*definition.clone());
+                    Arc::make_mut(&mut obj.abilities).push(*definition.clone());
                 }
             }
             // CR 604.1: Push granted trigger to trigger_definitions so
@@ -1293,7 +1296,7 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                 obj.card_types
                     .subtypes
                     .push(land_type.as_subtype_str().to_string());
-                obj.abilities.clear();
+                Arc::make_mut(&mut obj.abilities).clear();
                 obj.trigger_definitions.clear();
                 obj.replacement_definitions.clear();
                 obj.static_definitions.clear();
@@ -1343,7 +1346,7 @@ fn inject_basic_mana_ability_for_subtype(
         return;
     }
 
-    obj.abilities.push(
+    Arc::make_mut(&mut obj.abilities).push(
         AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::Mana {
@@ -3361,7 +3364,7 @@ mod tests {
                     player: GainLifePlayer::Controller,
                 },
             ));
-            obj.abilities = (*obj.base_abilities).clone();
+            obj.abilities = Arc::new((*obj.base_abilities).clone());
         }
 
         // Source: enchantment with SetBasicLandType static
@@ -4056,7 +4059,7 @@ mod tests {
         )
         .cost(AbilityCost::Tap);
         obj.base_abilities = Arc::new(vec![ability.clone()]);
-        obj.abilities = vec![ability];
+        obj.abilities = Arc::new(vec![ability]);
         land
     }
 

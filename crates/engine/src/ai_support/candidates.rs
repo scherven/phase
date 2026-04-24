@@ -2596,6 +2596,8 @@ fn combinations_usize(items: &[usize], k: usize) -> Vec<Vec<usize>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -2797,7 +2799,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&verge).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -2812,7 +2814,7 @@ mod tests {
                 )
                 .cost(AbilityCost::Tap),
             );
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -2960,7 +2962,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&source).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Draw {

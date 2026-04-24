@@ -1073,7 +1073,7 @@ fn miracle_first_draw_surfaces_reveal_prompt() {
                 target: TargetFilter::Controller,
             },
         );
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
     }
     // Tap a mana source so {W} is in pool.
@@ -1244,7 +1244,7 @@ fn miracle_accept_casts_for_miracle_cost() {
                 target: TargetFilter::Controller,
             },
         );
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
     }
     let card_id = runner.state().objects[&miracle_obj].card_id;
@@ -1384,7 +1384,7 @@ fn miracle_sorcery_casts_during_draw_step() {
                 target: TargetFilter::Controller,
             },
         );
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
     }
     let card_id = runner.state().objects[&miracle_obj].card_id;

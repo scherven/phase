@@ -1356,6 +1356,8 @@ fn resume_waiting_for(player: PlayerId, resume: ManaAbilityResume) -> WaitingFor
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -1840,12 +1842,7 @@ mod tests {
                 },
             ],
         });
-        state
-            .objects
-            .get_mut(&led)
-            .unwrap()
-            .abilities
-            .push(ability.clone());
+        Arc::make_mut(&mut state.objects.get_mut(&led).unwrap().abilities).push(ability.clone());
 
         let mut events = Vec::new();
         let waiting = activate_mana_ability(
@@ -1950,7 +1947,7 @@ mod tests {
                 .core_types
                 .push(crate::types::card_type::CoreType::Land);
             obj.has_mana_ability = true;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -1999,7 +1996,7 @@ mod tests {
             obj.card_types
                 .core_types
                 .push(crate::types::card_type::CoreType::Land);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -2080,7 +2077,7 @@ mod tests {
             .card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        state.objects.get_mut(&pit).unwrap().abilities.push(
+        Arc::make_mut(&mut state.objects.get_mut(&pit).unwrap().abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2158,7 +2155,7 @@ mod tests {
             .card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        state.objects.get_mut(&pit).unwrap().abilities.push(
+        Arc::make_mut(&mut state.objects.get_mut(&pit).unwrap().abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2239,7 +2236,7 @@ mod tests {
             .card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        state.objects.get_mut(&pit).unwrap().abilities.push(
+        Arc::make_mut(&mut state.objects.get_mut(&pit).unwrap().abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Ef::Mana {
@@ -2535,7 +2532,7 @@ mod tests {
             color_options: vec![ManaColor::Red, ManaColor::Green],
             contribution: ManaContribution::Base,
         });
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         state.turn_number = 3;
 
         let mut events = Vec::new();
@@ -2583,7 +2580,7 @@ mod tests {
             color_options: vec![ManaColor::Red, ManaColor::Green],
             contribution: ManaContribution::Base,
         });
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
 
         let pending = PendingManaAbility {
             player: PlayerId(0),
@@ -2692,7 +2689,7 @@ mod tests {
             color_options: vec![ManaColor::Red, ManaColor::Green],
             contribution: ManaContribution::Base,
         });
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         state.turn_number = 3;
 
         let mut events = Vec::new();
@@ -2805,7 +2802,7 @@ mod tests {
             .core_types
             .push(crate::types::card_type::CoreType::Land);
         let ability = sunken_ruins_colored_ability();
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         // Seed the pool with one {U} so the `{U/B}` sub-cost has a single
         // unambiguous plan — this test focuses on the output Combination
         // prompt, not the input mana-payment prompt.
@@ -2862,7 +2859,7 @@ mod tests {
         obj.card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        obj.abilities.push(sunken_ruins_colored_ability());
+        Arc::make_mut(&mut obj.abilities).push(sunken_ruins_colored_ability());
 
         let pending = PendingManaAbility {
             player: PlayerId(0),
@@ -2914,7 +2911,7 @@ mod tests {
             .core_types
             .push(crate::types::card_type::CoreType::Land);
         let ability = sunken_ruins_colored_ability();
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         // Seed one {B} so the {U/B} sub-cost is unambiguously payable; the
         // auto-tap path then short-circuits both mana-payment and
         // combination-choice prompts.
@@ -2958,7 +2955,7 @@ mod tests {
         obj.card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        obj.abilities.push(sunken_ruins_colored_ability());
+        Arc::make_mut(&mut obj.abilities).push(sunken_ruins_colored_ability());
 
         let pending = PendingManaAbility {
             player: PlayerId(0),
@@ -3006,7 +3003,7 @@ mod tests {
         obj.card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         (ruins, ability)
     }
 
@@ -3438,7 +3435,7 @@ mod tests {
         )
         .cost(AbilityCost::Tap);
         ability.sub_ability = Some(Box::new(sub));
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
         land
     }
 

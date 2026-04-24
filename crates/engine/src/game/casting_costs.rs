@@ -2612,6 +2612,8 @@ pub fn extract_x_mana_cost(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -2654,7 +2656,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&town).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2668,7 +2670,7 @@ mod tests {
             )
             .cost(AbilityCost::Tap),
         );
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2712,7 +2714,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&land).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2727,7 +2729,7 @@ mod tests {
             .cost(AbilityCost::Tap),
         );
         // Only the combinations ability is what we exercise in auto-tap tests.
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3129,13 +3131,13 @@ mod tests {
 
         // Give source an ability so push_activated_ability_to_stack can record activation
         state.objects.get_mut(&source).unwrap().abilities =
-            vec![crate::types::ability::AbilityDefinition::new(
+            Arc::new(vec![crate::types::ability::AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Scry {
                     count: QuantityExpr::Fixed { value: 1 },
                     target: crate::types::ability::TargetFilter::Controller,
                 },
-            )];
+            )]);
 
         let pending = make_pending(source);
         let legal = vec![creature_a, creature_b];
@@ -3593,7 +3595,7 @@ mod tests {
         let spider_obj = state.objects.get_mut(&spider).unwrap();
         spider_obj.card_types.core_types.push(CoreType::Creature);
         spider_obj.entered_battlefield_turn = Some(1);
-        spider_obj.abilities.push(
+        Arc::make_mut(&mut spider_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3619,7 +3621,7 @@ mod tests {
         );
         let hushwood_obj = state.objects.get_mut(&hushwood).unwrap();
         hushwood_obj.card_types.core_types.push(CoreType::Land);
-        hushwood_obj.abilities.push(
+        Arc::make_mut(&mut hushwood_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3634,7 +3636,7 @@ mod tests {
             )
             .cost(AbilityCost::Tap),
         );
-        hushwood_obj.abilities.push(
+        Arc::make_mut(&mut hushwood_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3659,7 +3661,7 @@ mod tests {
         );
         let air_obj = state.objects.get_mut(&air_temple).unwrap();
         air_obj.card_types.core_types.push(CoreType::Land);
-        air_obj.abilities.push(
+        Arc::make_mut(&mut air_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {

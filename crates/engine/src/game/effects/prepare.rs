@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetRef};
 use crate::types::card::LayoutKind;
 use crate::types::events::GameEvent;
@@ -276,7 +278,7 @@ pub fn cast_prepared_copy(
     copy_obj.card_types = back.card_types.clone();
     copy_obj.mana_cost = back.mana_cost.clone();
     copy_obj.keywords = back.keywords.clone();
-    copy_obj.abilities = back.abilities.clone();
+    copy_obj.abilities = Arc::new(back.abilities.clone());
     copy_obj.color = back.color.clone();
     copy_obj.printed_ref = back.printed_ref.clone();
     copy_obj.controller = controller;

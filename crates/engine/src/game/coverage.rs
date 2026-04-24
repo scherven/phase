@@ -1813,7 +1813,7 @@ pub fn build_parse_details(
     }
 
     // Activated/spell abilities
-    for def in &face.abilities {
+    for def in face.abilities.iter() {
         items.push(build_ability_item(def));
     }
 
@@ -2248,7 +2248,7 @@ pub fn unimplemented_mechanics(obj: &GameObject) -> Vec<String> {
     }
 
     // 2. Check abilities against known effect types
-    for def in &obj.abilities {
+    for def in obj.abilities.iter() {
         if let Effect::Unimplemented { name, .. } = &*def.effect {
             missing.push(format!("Effect: {name}"));
         }
@@ -2829,7 +2829,7 @@ fn collect_valid_subtypes(card_db: &CardDatabase) -> HashSet<String> {
 /// replacements' execute/decline bodies. The visitor is invoked for each
 /// modification so callers can inspect or validate the payload.
 fn visit_face_modifications(face: &CardFace, visit: &mut impl FnMut(&ContinuousModification)) {
-    for ability in &face.abilities {
+    for ability in face.abilities.iter() {
         visit_ability_modifications(ability, visit);
     }
     for stat in &face.static_abilities {
@@ -3558,7 +3558,7 @@ fn is_card_supported(
     static_registry: &HashMap<StaticMode, StaticAbilityHandler>,
 ) -> bool {
     // Check abilities
-    for def in &face.abilities {
+    for def in face.abilities.iter() {
         if !is_ability_supported(def) {
             return false;
         }
@@ -3696,7 +3696,7 @@ impl StructuralFeature {
 /// via exhaustive matches on the source enum, so adding a new variant is a
 /// compile error until it is explicitly classified.
 fn extract_card_features(face: &CardFace, features: &mut HashMap<String, FeatureSupport>) {
-    for def in &face.abilities {
+    for def in face.abilities.iter() {
         extract_ability_features(def, features);
     }
     for trig in &face.triggers {
@@ -4834,7 +4834,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             push_ability_tree(else_ab, out);
         }
     }
-    for a in &face.abilities {
+    for a in face.abilities.iter() {
         push_ability_tree(a, &mut elements);
     }
     for t in &face.triggers {
@@ -4960,7 +4960,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                 }
             }
             // Collect from ability-level modals (activated/triggered modal abilities)
-            for a in &face.abilities {
+            for a in face.abilities.iter() {
                 if let Some(ref modal) = a.modal {
                     for (i, desc) in modal.mode_descriptions.iter().enumerate() {
                         if desc_matches(desc) {
@@ -6602,6 +6602,8 @@ pub fn format_semantic_audit_markdown(summary: &SemanticAuditSummary) -> String 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::database::legality::{legalities_to_export_map, LegalityStatus};
     use crate::types::ability::{AbilityKind, Effect, ReplacementCondition, TargetFilter};
@@ -6701,29 +6703,27 @@ mod tests {
     #[test]
     fn object_with_registered_ability_has_no_unimplemented() {
         let mut obj = make_obj();
-        obj.abilities
-            .push(crate::types::ability::AbilityDefinition::new(
-                AbilityKind::Spell,
-                Effect::DealDamage {
-                    amount: QuantityExpr::Fixed { value: 3 },
-                    target: TargetFilter::Any,
-                    damage_source: None,
-                },
-            ));
+        Arc::make_mut(&mut obj.abilities).push(crate::types::ability::AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+        ));
         assert!(unimplemented_mechanics(&obj).is_empty());
     }
 
     #[test]
     fn object_with_unregistered_ability_has_unimplemented() {
         let mut obj = make_obj();
-        obj.abilities
-            .push(crate::types::ability::AbilityDefinition::new(
-                AbilityKind::Spell,
-                Effect::Unimplemented {
-                    name: "Fateseal".to_string(),
-                    description: None,
-                },
-            ));
+        Arc::make_mut(&mut obj.abilities).push(crate::types::ability::AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Unimplemented {
+                name: "Fateseal".to_string(),
+                description: None,
+            },
+        ));
         assert!(!unimplemented_mechanics(&obj).is_empty());
     }
 

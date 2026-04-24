@@ -373,7 +373,7 @@ impl GameScenario {
             },
         )
         .cost(crate::types::ability::AbilityCost::Tap);
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
         id
     }
@@ -419,7 +419,7 @@ impl GameScenario {
                 damage_source: None,
             },
         );
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
         id
     }
@@ -655,14 +655,14 @@ impl<'a> CardBuilder<'a> {
     pub fn with_ability(&mut self, effect: Effect) -> &mut Self {
         let ability = AbilityDefinition::new(AbilityKind::Spell, effect);
         let obj = self.obj();
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
         self
     }
 
     pub fn with_ability_definition(&mut self, ability: AbilityDefinition) -> &mut Self {
         let obj = self.obj();
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(ability);
         self
     }

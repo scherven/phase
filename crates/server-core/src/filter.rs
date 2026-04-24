@@ -10,6 +10,8 @@ pub fn filter_state_for_player(state: &GameState, viewer: PlayerId) -> GameState
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::deck_loading::DeckEntry;
     use engine::game::zones::create_object;
@@ -35,14 +37,14 @@ mod tests {
             "Lightning Bolt".to_string(),
             Zone::Hand,
         );
-        state.objects.get_mut(&id0).unwrap().abilities = vec![AbilityDefinition::new(
+        state.objects.get_mut(&id0).unwrap().abilities = Arc::new(vec![AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value: 3 },
                 target: TargetFilter::Any,
                 damage_source: None,
             },
-        )];
+        )]);
 
         // Add cards to player 1's hand
         let id1 = create_object(
@@ -52,14 +54,14 @@ mod tests {
             "Counterspell".to_string(),
             Zone::Hand,
         );
-        state.objects.get_mut(&id1).unwrap().abilities = vec![AbilityDefinition::new(
+        state.objects.get_mut(&id1).unwrap().abilities = Arc::new(vec![AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Counter {
                 target: TargetFilter::Any,
                 source_static: None,
                 unless_payment: None,
             },
-        )];
+        )]);
 
         // Add cards to libraries
         create_object(

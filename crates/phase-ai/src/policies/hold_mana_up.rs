@@ -269,7 +269,7 @@ mod tests {
             subtypes: Vec::new(),
         };
         obj.mana_cost = ManaCost::generic(mana_value);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Counter {
                 target: engine::types::ability::TargetFilter::Any,
@@ -295,7 +295,7 @@ mod tests {
             subtypes: Vec::new(),
         };
         obj.mana_cost = ManaCost::generic(mana_value);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 2 },

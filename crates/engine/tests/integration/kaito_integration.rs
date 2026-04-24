@@ -147,7 +147,7 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
             },
         )
         .cost(AbilityCost::Loyalty { amount: 1 });
-        obj.abilities.push(emblem_ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(emblem_ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(emblem_ability);
 
         // 0 loyalty: Surveil 2, then draw for each opponent who lost life
@@ -171,7 +171,7 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
         )
         .cost(AbilityCost::Loyalty { amount: 0 })
         .sub_ability(draw_sub);
-        obj.abilities.push(surveil_ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(surveil_ability.clone());
         Arc::make_mut(&mut obj.base_abilities).push(surveil_ability);
 
         obj.mana_cost = ManaCost::Cost {

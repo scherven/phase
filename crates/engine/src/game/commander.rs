@@ -233,6 +233,8 @@ pub fn validate_commander_deck(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::deck_loading::DeckEntry;
     use crate::game::zones::create_object;
@@ -746,7 +748,7 @@ mod tests {
                 shards: vec![ManaCostShard::Red],
                 generic: 2,
             };
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Unimplemented {
                     name: "Commander".to_string(),

@@ -650,6 +650,8 @@ fn animate_keyword_redundancy(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::cast_facts::cast_facts_for_action;
     use crate::config::AiConfig;
@@ -695,7 +697,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Creature);
-        obj.abilities
+        Arc::make_mut(&mut obj.abilities)
             .push(AbilityDefinition::new(AbilityKind::Activated, effect));
         obj_id
     }
@@ -1105,7 +1107,7 @@ mod tests {
                 target: engine::types::ability::TargetFilter::Controller,
             },
         )));
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
 
         let config = AiConfig::default();
         let ai_ctx = AiContext::empty(&config.weights);

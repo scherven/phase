@@ -402,11 +402,7 @@ mod tests {
             "Hardened Gen".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&gen_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&gen_id).unwrap().abilities)
             .push(make_generator_ability());
         // Add a creature target on board.
         let _creature = add_creature(&mut state, 2, Zone::Battlefield);
@@ -444,11 +440,7 @@ mod tests {
             "Lonely Gen".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&gen_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&gen_id).unwrap().abilities)
             .push(make_generator_ability());
         // No creatures on board.
 
@@ -487,11 +479,7 @@ mod tests {
             "Proliferator".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&gen_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&gen_id).unwrap().abilities)
             .push(make_proliferate_ability());
         // Add a creature with a counter.
         let creature_id = add_creature(&mut state, 2, Zone::Battlefield);
@@ -535,11 +523,7 @@ mod tests {
             "Proliferator".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&gen_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&gen_id).unwrap().abilities)
             .push(make_proliferate_ability());
         // No permanents with counters.
 
@@ -618,12 +602,7 @@ mod tests {
                 target: engine::types::ability::TargetFilter::Controller,
             },
         );
-        state
-            .objects
-            .get_mut(&draw_id)
-            .unwrap()
-            .abilities
-            .push(draw_ability);
+        Arc::make_mut(&mut state.objects.get_mut(&draw_id).unwrap().abilities).push(draw_ability);
 
         let candidate = activate_candidate(draw_id, 0);
         let decision = decision();

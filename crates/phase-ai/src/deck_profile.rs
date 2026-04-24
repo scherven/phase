@@ -77,19 +77,19 @@ impl DeckProfile {
                 creatures += count;
             }
 
-            for ability in &card.abilities {
+            for ability in card.abilities.iter() {
                 if is_removal_effect(&ability.effect) {
                     removal += count;
                     break;
                 }
             }
-            for ability in &card.abilities {
+            for ability in card.abilities.iter() {
                 if is_draw_effect(&ability.effect) {
                     draw += count;
                     break;
                 }
             }
-            for ability in &card.abilities {
+            for ability in card.abilities.iter() {
                 if is_ramp_effect(&ability.effect) {
                     ramp += count;
                     break;

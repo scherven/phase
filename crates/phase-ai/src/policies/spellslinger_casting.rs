@@ -305,8 +305,7 @@ mod tests {
     ) -> ObjectId {
         let oid = add_instant(state, card_idx, mv);
         let obj = state.objects.get_mut(&oid).unwrap();
-        obj.abilities
-            .push(AbilityDefinition::new(AbilityKind::Spell, effect));
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(AbilityKind::Spell, effect));
         oid
     }
 
@@ -498,7 +497,7 @@ mod tests {
             subtypes: Vec::new(),
         };
         obj.mana_cost = ManaCost::generic(5); // not low-curve
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::CopySpell {
                 target: TargetFilter::Any,

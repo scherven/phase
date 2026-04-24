@@ -149,7 +149,7 @@ fn build_state_with_fetchland() -> (GameState, ObjectId) {
         let obj = state.objects.get_mut(&fetch).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
         obj.base_card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(make_fetch_ability());
+        Arc::make_mut(&mut obj.abilities).push(make_fetch_ability());
     }
     (state, fetch)
 }

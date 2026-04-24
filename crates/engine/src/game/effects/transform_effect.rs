@@ -74,13 +74,13 @@ mod tests {
         };
         obj.keywords = vec![Keyword::Vigilance];
         obj.base_keywords = vec![Keyword::Vigilance];
-        obj.abilities = vec![AbilityDefinition::new(
+        obj.abilities = Arc::new(vec![AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Transform {
                 target: TargetFilter::SelfRef,
             },
-        )];
-        obj.base_abilities = Arc::new(obj.abilities.clone());
+        )]);
+        obj.base_abilities = Arc::clone(&obj.abilities);
         obj.color = vec![ManaColor::Green];
         obj.base_color = vec![ManaColor::Green];
         obj.back_face = Some(crate::game::game_object::BackFaceData {

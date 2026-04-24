@@ -592,6 +592,8 @@ fn activatable_mana_ability_actions(state: &GameState) -> Vec<GameAction> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         candidate_actions, cheap_reject_candidate, legal_actions, legal_actions_full,
         validated_candidate_actions,
@@ -732,7 +734,7 @@ mod tests {
             let obj = state.objects.get_mut(&land).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
             // Mana ability (index 0)
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -748,7 +750,7 @@ mod tests {
                 .cost(AbilityCost::Tap),
             );
             // Non-mana ability (index 1)
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::BecomeCopy {
                     target: TargetFilter::Any,
