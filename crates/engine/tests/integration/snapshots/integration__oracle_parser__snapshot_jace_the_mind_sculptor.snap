@@ -1,6 +1,5 @@
 ---
 source: crates/engine/tests/integration/oracle_parser.rs
-assertion_line: 92
 expression: result
 ---
 {
@@ -27,7 +26,7 @@ expression: result
         "amount": 2
       },
       "sub_ability": {
-        "kind": "Activated",
+        "kind": "Spell",
         "effect": {
           "type": "PutAtLibraryPosition",
           "target": {
@@ -82,7 +81,7 @@ expression: result
         "amount": 0
       },
       "sub_ability": {
-        "kind": "Activated",
+        "kind": "Spell",
         "effect": {
           "type": "PutAtLibraryPosition",
           "target": {
@@ -186,7 +185,7 @@ expression: result
         "amount": -12
       },
       "sub_ability": {
-        "kind": "Activated",
+        "kind": "Spell",
         "effect": {
           "type": "ChangeZoneAll",
           "origin": "Hand",

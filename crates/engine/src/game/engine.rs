@@ -605,13 +605,7 @@ fn apply_action(
             {
                 return Err(EngineError::NotYourPriority);
             }
-            let wf = handle_tap_land_for_mana(state, object_id, &mut events)?;
-            state
-                .lands_tapped_for_mana
-                .entry(state.priority_player)
-                .or_default()
-                .push(object_id);
-            wf
+            handle_tap_land_for_mana(state, object_id, &mut events)?
         }
         (WaitingFor::Priority { player }, GameAction::UntapLandForMana { object_id }) => {
             if state.priority_player
@@ -672,9 +666,12 @@ fn apply_action(
                     crate::types::game_state::ManaAbilityResume::Priority,
                     None,
                 )?;
-                // Track land mana taps for undo (UntapLandForMana), matching
-                // the TapLandForMana path so dual lands are undoable too.
-                if is_land {
+                // CR 605.3b: Track land mana taps for undo (UntapLandForMana),
+                // matching the TapLandForMana path so dual lands are undoable
+                // too. Gating on `mana_ability_is_undoable` ensures painlands
+                // and pay-life sources — whose inline continuation commits
+                // irreversible state — are excluded from the UI-level undo.
+                if is_land && mana_sources::mana_ability_is_undoable(&ability_def) {
                     state
                         .lands_tapped_for_mana
                         .entry(state.priority_player)
@@ -2847,6 +2844,16 @@ pub(super) fn handle_tap_land_for_mana(
 
     if let Some(ability_def) = ability_to_resolve {
         mana_abilities::resolve_mana_ability(state, object_id, player, &ability_def, events, None)?;
+        // CR 605.3b: Only record for `UntapLandForMana` when the activation is
+        // fully reversible — painlands / pay-life sources commit irreversible
+        // state during inline resolution and must not be eligible for undo.
+        if mana_option.undoable {
+            state
+                .lands_tapped_for_mana
+                .entry(player)
+                .or_default()
+                .push(object_id);
+        }
     } else {
         // Legacy fallback for subtype-only lands.
         let obj = state.objects.get_mut(&object_id).unwrap();
@@ -2863,6 +2870,11 @@ pub(super) fn handle_tap_land_for_mana(
             true,
             events,
         );
+        state
+            .lands_tapped_for_mana
+            .entry(player)
+            .or_default()
+            .push(object_id);
     }
 
     Ok(WaitingFor::Priority { player })
@@ -3762,6 +3774,8 @@ mod tests {
         }
         def
     }
+
+    use crate::game::test_fixtures::brushland_colored_ability;
 
     fn setup_game_at_main_phase() -> GameState {
         let mut state = new_game(42);
@@ -4820,6 +4834,67 @@ mod tests {
                 .mana_pool
                 .count_color(crate::types::mana::ManaType::Black),
             0
+        );
+    }
+
+    #[test]
+    fn controller_harming_mana_land_is_not_undoable_after_manual_activation() {
+        let mut state = setup_game_at_main_phase();
+
+        let brushland = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Brushland".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&brushland).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.has_mana_ability = true;
+            obj.abilities.push(brushland_colored_ability());
+        }
+
+        let first = apply_as_current(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: brushland,
+                ability_index: 0,
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(first.waiting_for, WaitingFor::ChooseManaColor { .. }),
+            "expected ChooseManaColor after activating Brushland, got {:?}",
+            first.waiting_for
+        );
+
+        let second = apply_as_current(
+            &mut state,
+            GameAction::ChooseManaColor {
+                choice: crate::types::game_state::ManaChoice::SingleColor(
+                    crate::types::mana::ManaType::Green,
+                ),
+            },
+        )
+        .unwrap();
+        assert!(matches!(second.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.objects[&brushland].tapped);
+        assert_eq!(state.players[0].life, 19);
+        assert!(state
+            .lands_tapped_for_mana
+            .get(&PlayerId(0))
+            .is_none_or(|ids| !ids.contains(&brushland)));
+
+        let undo = apply_as_current(
+            &mut state,
+            GameAction::UntapLandForMana {
+                object_id: brushland,
+            },
+        );
+        assert!(
+            undo.is_err(),
+            "controller-harming mana activations should not be undoable"
         );
     }
 

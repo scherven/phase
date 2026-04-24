@@ -1,3 +1,21 @@
+//! Mana source analysis for auto-pay and AI candidate generation.
+//!
+//! `ManaSourceOption` describes a single activatable mana path, annotated
+//! with two penalty axes used for prioritization:
+//!
+//! - `harms_controller` — activating this ability can damage or drain its
+//!   controller (pain lands, pay-life mana abilities). This is a CR-derived
+//!   property: a `PayLife` cost is always controller-harming, and a
+//!   continuation-chain effect (`DealDamage`/`LoseLife` targeting
+//!   `Controller`) harms the activator by CR 605.1a + CR 605.3b (the
+//!   continuation resolves inline as part of the activator's mana ability).
+//! - `undoable` — a UX convenience outside the CR: does `UntapLandForMana`
+//!   fully reverse activation? True only when the cost is tap-only and the
+//!   resolution chain contains nothing but `Effect::Mana`. The atomicity of
+//!   CR 605.3b resolution is what justifies this: once any irreversible
+//!   side-effect (damage, sacrifice, life loss) fires, the activation has
+//!   committed permanent game state and cannot be "rewound" from the UI.
+
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaProduction, TargetFilter,
 };
@@ -27,9 +45,15 @@ pub struct ManaSourceOption {
     /// True for Treasure-style costs (`Composite { Tap, Sacrifice }`).
     /// Used by auto-tap to deprioritize sacrifice sources as last resort.
     pub requires_sacrifice: bool,
-    /// True for costs like `{T}, Pay 1 life`.
-    /// Used by auto-tap to prefer equivalent sources that do not spend life.
-    pub requires_life_payment: bool,
+    /// True when activating this mana ability can damage its controller or
+    /// make them lose life — from a `PayLife` cost component, or from a
+    /// resolution-time sub-effect (e.g., pain lands dealing 1 damage to the
+    /// controller). Used by auto-pay to prefer equivalent sources that don't
+    /// harm the user.
+    pub harms_controller: bool,
+    /// True iff manual `UntapLandForMana` can fully reverse this activation:
+    /// tap-only cost and no non-mana side effects in the resolution graph.
+    pub undoable: bool,
     /// CR 605.3b + CR 106.1a: Complete pre-chosen multi-mana sequence for
     /// `ManaProduction::ChoiceAmongCombinations` sources (Shadowmoor/Eventide
     /// filter lands). `None` for all other sources. When `Some`, a single
@@ -67,7 +91,7 @@ fn cost_requires_sacrifice(cost: &Option<AbilityCost>) -> bool {
     }
 }
 
-fn cost_requires_life_payment(cost: &Option<AbilityCost>) -> bool {
+fn cost_has_life_payment(cost: &Option<AbilityCost>) -> bool {
     match cost {
         Some(AbilityCost::PayLife { .. }) => true,
         Some(AbilityCost::Composite { costs }) => costs
@@ -75,6 +99,77 @@ fn cost_requires_life_payment(cost: &Option<AbilityCost>) -> bool {
             .any(|c| matches!(c, AbilityCost::PayLife { .. })),
         _ => false,
     }
+}
+
+/// CR 605.3b: Resolution is atomic. A chain with any cost beyond `{T}`
+/// commits irreversible state (life loss, sacrifice, discard), so "reversible"
+/// here means strictly tap-only.
+fn cost_is_reversible_tap_only(cost: &Option<AbilityCost>) -> bool {
+    match cost {
+        Some(AbilityCost::Tap) => true,
+        // A `Composite` cost with zero components is malformed from our
+        // parser's perspective — treat it as non-reversible so we don't
+        // claim a cost we don't understand is safely undoable.
+        Some(AbilityCost::Composite { costs }) => {
+            !costs.is_empty() && costs.iter().all(|c| matches!(c, AbilityCost::Tap))
+        }
+        _ => false,
+    }
+}
+
+/// CR 605.3b: A mana ability's continuation effects resolve inline as part
+/// of the same resolution. A `DealDamage` / `LoseLife` effect scoped to
+/// `Controller` therefore hits the activator atomically.
+fn effect_harms_controller(effect: &Effect) -> bool {
+    match effect {
+        Effect::DealDamage { target, .. } => matches!(target, TargetFilter::Controller),
+        Effect::LoseLife { target, .. } => {
+            target.is_none() || matches!(target.as_ref(), Some(TargetFilter::Controller))
+        }
+        _ => false,
+    }
+}
+
+/// Recursive walk over a mana ability's continuation graph.
+///
+/// Note: currently only visits `sub_ability` and `else_ability` branches.
+/// Modal / `repeat_for` branches are out of scope for this helper — if the
+/// parser ever emits them as children of a mana ability, this function must
+/// be extended (and a `debug_assert!` at the call site would help catch it).
+fn chain_harms_controller(ability: &AbilityDefinition) -> bool {
+    effect_harms_controller(&ability.effect)
+        || ability
+            .sub_ability
+            .as_deref()
+            .is_some_and(chain_harms_controller)
+        || ability
+            .else_ability
+            .as_deref()
+            .is_some_and(chain_harms_controller)
+}
+
+fn chain_is_all_mana(ability: &AbilityDefinition) -> bool {
+    matches!(*ability.effect, Effect::Mana { .. })
+        && ability.sub_ability.as_deref().is_none_or(chain_is_all_mana)
+        && ability
+            .else_ability
+            .as_deref()
+            .is_none_or(chain_is_all_mana)
+}
+
+/// CR 605.3b: Returns `true` when activating this mana ability commits
+/// irreversible controller-damaging state during resolution — whether from
+/// a `PayLife` cost component or from a damage/life-loss continuation.
+pub(crate) fn mana_ability_harms_controller(ability: &AbilityDefinition) -> bool {
+    cost_has_life_payment(&ability.cost) || chain_harms_controller(ability)
+}
+
+/// CR 605.3b: Returns `true` only when the activation can be fully rewound
+/// by `UntapLandForMana` — i.e., cost is pure tap and the resolution chain
+/// is pure mana production. Any side-effect (damage, life loss, sacrifice)
+/// violates atomicity and disqualifies the source from UI-level undo.
+pub(crate) fn mana_ability_is_undoable(ability: &AbilityDefinition) -> bool {
+    cost_is_reversible_tap_only(&ability.cost) && chain_is_all_mana(ability)
 }
 
 /// Return all currently activatable tap-mana options for a land.
@@ -173,7 +268,8 @@ fn land_mana_options(
                 ability_index: None,
                 mana_type,
                 requires_sacrifice: false,
-                requires_life_payment: false,
+                harms_controller: false,
+                undoable: true,
                 atomic_combination: None,
             });
         }
@@ -215,14 +311,16 @@ fn scan_mana_abilities(
         }
 
         let sacrifice = cost_requires_sacrifice(&ability.cost);
-        let life_payment = cost_requires_life_payment(&ability.cost);
+        let harms_controller = mana_ability_harms_controller(ability);
+        let undoable = mana_ability_is_undoable(ability);
         for row in emit_source_rows(state, controller, object_id, ability_index, ability) {
             let option = ManaSourceOption {
                 object_id,
                 ability_index: Some(ability_index),
                 mana_type: row.mana_type,
                 requires_sacrifice: sacrifice,
-                requires_life_payment: life_payment,
+                harms_controller,
+                undoable,
                 atomic_combination: row.atomic_combination,
             };
             if !options.contains(&option) {
@@ -523,6 +621,8 @@ mod tests {
         .cost(AbilityCost::Tap)
     }
 
+    use crate::game::test_fixtures::brushland_colored_ability;
+
     fn add_verge_land(
         state: &mut GameState,
         controller: PlayerId,
@@ -707,7 +807,8 @@ mod tests {
         assert_eq!(options.len(), 1);
         assert_eq!(options[0].mana_type, ManaType::Green);
         assert!(!options[0].requires_sacrifice);
-        assert!(!options[0].requires_life_payment);
+        assert!(!options[0].harms_controller);
+        assert!(options[0].undoable);
     }
 
     #[test]
@@ -788,15 +889,19 @@ mod tests {
             "all Treasure options should require sacrifice"
         );
         assert!(
-            options.iter().all(|o| !o.requires_life_payment),
-            "Treasure options should not require life payment"
+            options.iter().all(|o| !o.harms_controller),
+            "Treasure should not be treated as a controller-harming source"
+        );
+        assert!(
+            options.iter().all(|o| !o.undoable),
+            "Treasure activations are irreversible because they sacrifice the source"
         );
         // Should have 5 color options
         assert_eq!(options.len(), 5);
     }
 
     #[test]
-    fn life_payment_mana_source_marks_life_cost() {
+    fn life_payment_mana_source_marks_controller_harm() {
         let mut state = GameState::new_two_player(42);
         let town = create_object(
             &mut state,
@@ -837,12 +942,99 @@ mod tests {
             "Starting Town should expose mana options"
         );
         assert!(
-            options.iter().all(|o| o.requires_life_payment),
-            "all colored Starting Town options should be marked as life-payment options"
-        );
-        assert!(
             options.iter().all(|o| !o.requires_sacrifice),
             "Starting Town should not be treated as a sacrifice source"
+        );
+        assert!(
+            options.iter().all(|o| o.harms_controller),
+            "pay-life mana sources should be flagged as controller-harming"
+        );
+        assert!(
+            options.iter().all(|o| !o.undoable),
+            "pay-life mana sources should not be undoable"
+        );
+    }
+
+    #[test]
+    fn pain_land_option_marks_controller_harm_and_non_undoable() {
+        let mut state = GameState::new_two_player(42);
+        let brushland = create_object(
+            &mut state,
+            CardId(304),
+            PlayerId(0),
+            "Brushland".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&brushland).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.abilities.push(brushland_colored_ability());
+
+        let options = activatable_land_mana_options(&state, brushland, PlayerId(0));
+        assert_eq!(
+            options.len(),
+            2,
+            "Brushland should expose green and white rows"
+        );
+        assert!(
+            options.iter().all(|o| o.harms_controller),
+            "pain-land colored rows should be marked as controller-harming"
+        );
+        assert!(
+            options.iter().all(|o| !o.undoable),
+            "pain-land activations with damage continuations are not pure-mana undoable"
+        );
+    }
+
+    /// Covers the `Effect::LoseLife` arm of `effect_harms_controller`:
+    /// a mana ability whose continuation drains the controller's life
+    /// (rather than dealing damage) must still flag `harms_controller`.
+    #[test]
+    fn lose_life_mana_source_marks_controller_harm() {
+        use crate::types::ability::Effect as AbilityEffect;
+
+        let mut state = GameState::new_two_player(42);
+        let land = create_object(
+            &mut state,
+            CardId(305),
+            PlayerId(0),
+            "Hypothetical Drain Land".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&land).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                AbilityEffect::Mana {
+                    produced: ManaProduction::AnyOneColor {
+                        count: QuantityExpr::Fixed { value: 1 },
+                        color_options: vec![ManaColor::Black, ManaColor::Red],
+                        contribution: ManaContribution::Base,
+                    },
+                    restrictions: vec![],
+                    grants: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap)
+            .sub_ability(AbilityDefinition::new(
+                AbilityKind::Spell,
+                AbilityEffect::LoseLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    target: Some(crate::types::ability::TargetFilter::Controller),
+                },
+            )),
+        );
+
+        let options = activatable_land_mana_options(&state, land, PlayerId(0));
+        assert!(!options.is_empty());
+        assert!(
+            options.iter().all(|o| o.harms_controller),
+            "LoseLife(Controller) sub-effect should flag the source as controller-harming"
+        );
+        assert!(
+            options.iter().all(|o| !o.undoable),
+            "life-loss continuations are not pure-mana undoable"
         );
     }
 }

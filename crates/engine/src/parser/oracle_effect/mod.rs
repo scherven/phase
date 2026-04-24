@@ -5939,6 +5939,13 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
                     }
                 }
             }
+            // A node attached as a `sub_ability` is a resolution continuation
+            // of its parent, not an independently activatable ability.
+            // Normalize its kind to `Spell` (the "resolves alongside parent"
+            // kind) before linking. This matches the convention used by
+            // dedicated clause builders that construct sub-abilities directly
+            // (e.g., `try_parse_pump_with_damage_sub` at line 3220).
+            chain.kind = AbilityKind::Spell;
             if prev.sub_ability.is_some() {
                 // Walk to the deepest sub_ability and append there
                 let mut cursor = &mut prev;
