@@ -7957,6 +7957,368 @@ mod exile_return_tests {
         assert_eq!(state.exile_links.len(), 1);
         assert_eq!(state.exile_links[0].exiled_id, other_exiled);
     }
+
+    /// CR 400.7 + CR 610.3a: End-to-end — when the source permanent of an
+    /// `UntilHostLeavesPlay` exile leaves the battlefield through the real
+    /// reducer pipeline (move_to_zone → post-action pipeline), the exiled
+    /// card must return to its previous zone. Regression test for White
+    /// Auracite / Oblivion Ring / Banishing Light class.
+    #[test]
+    fn exile_return_end_to_end_through_pipeline() {
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        // Source permanent (e.g., White Auracite) on P0's battlefield
+        let source_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "White Auracite".to_string(),
+            Zone::Battlefield,
+        );
+
+        // Opponent's enchantment on battlefield, then exiled by the source
+        let exiled_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Opponent Enchantment".to_string(),
+            Zone::Exile,
+        );
+
+        // Register the UntilSourceLeaves link as if the trigger had resolved
+        state.exile_links.push(ExileLink {
+            exiled_id,
+            source_id,
+            kind: ExileLinkKind::UntilSourceLeaves {
+                return_zone: Zone::Battlefield,
+            },
+        });
+
+        // Destroy the source via move_to_zone, then run the post-action pipeline
+        // (mirrors what happens when an SBA or destroy effect runs during apply).
+        let mut events: Vec<GameEvent> = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, source_id, Zone::Graveyard, &mut events);
+
+        let default_wf = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        crate::game::engine_priority::run_post_action_pipeline(
+            &mut state,
+            &mut events,
+            &default_wf,
+            true,
+        )
+        .unwrap();
+
+        // Exiled card must have returned to battlefield
+        assert!(
+            state.battlefield.contains(&exiled_id),
+            "Exiled card should return to battlefield when source leaves; battlefield={:?}, exile={:?}",
+            state.battlefield,
+            state.exile,
+        );
+        assert!(!state.exile.contains(&exiled_id));
+        assert!(
+            state.exile_links.is_empty(),
+            "ExileLink should be consumed after return"
+        );
+    }
+
+    /// CR 400.7 + CR 610.3a: End-to-end through full apply path — cast a
+    /// Destroy spell targeting the source, resolve it, verify the exiled
+    /// card returns. Regression test for the White Auracite user report.
+    #[test]
+    fn exile_return_after_destroy_resolution_via_apply() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect, TargetFilter};
+
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(1);
+        state.priority_player = PlayerId(1);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+
+        // P0 controls White Auracite (source)
+        let source_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "White Auracite".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Artifact);
+
+        // The opponent's enchantment that WA exiled
+        let exiled_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Opponent Enchantment".to_string(),
+            Zone::Exile,
+        );
+
+        // Link: UntilSourceLeaves → Battlefield
+        state.exile_links.push(ExileLink {
+            exiled_id,
+            source_id,
+            kind: ExileLinkKind::UntilSourceLeaves {
+                return_zone: Zone::Battlefield,
+            },
+        });
+
+        // P1 casts a Destroy ability targeting WA: push ResolvedAbility with
+        // Effect::Destroy onto the stack and resolve it via resolve_top.
+        let _ = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Destroy {
+                target: TargetFilter::Any,
+                cant_regenerate: false,
+            },
+        );
+        let destroy_ability = crate::types::ability::ResolvedAbility::new(
+            Effect::Destroy {
+                target: TargetFilter::Any,
+                cant_regenerate: false,
+            },
+            vec![crate::types::ability::TargetRef::Object(source_id)],
+            ObjectId(999),
+            PlayerId(1),
+        )
+        .kind(AbilityKind::Spell);
+
+        let spell_obj = create_object(
+            &mut state,
+            CardId(99),
+            PlayerId(1),
+            "Disenchant".to_string(),
+            Zone::Stack,
+        );
+
+        state.stack.push_back(crate::types::game_state::StackEntry {
+            id: spell_obj,
+            source_id: spell_obj,
+            controller: PlayerId(1),
+            kind: crate::types::game_state::StackEntryKind::Spell {
+                ability: Some(destroy_ability),
+                card_id: CardId(99),
+                casting_variant: crate::types::game_state::CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+
+        // Resolve the top stack entry
+        let mut events = Vec::new();
+        crate::game::stack::resolve_top(&mut state, &mut events);
+
+        // Run the post-action pipeline exactly as apply() would
+        let default_wf = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+        crate::game::engine_priority::run_post_action_pipeline(
+            &mut state,
+            &mut events,
+            &default_wf,
+            false,
+        )
+        .unwrap();
+
+        // White Auracite should be destroyed
+        assert!(
+            state.players[0].graveyard.contains(&source_id),
+            "White Auracite should be in graveyard"
+        );
+        // Exiled enchantment should have returned to battlefield
+        assert!(
+            state.battlefield.contains(&exiled_id),
+            "Exiled enchantment should return to battlefield; battlefield={:?}, exile={:?}",
+            state.battlefield,
+            state.exile,
+        );
+        assert!(!state.exile.contains(&exiled_id));
+        assert!(state.exile_links.is_empty());
+    }
+
+    /// CR 400.7 + CR 610.3a + CR 611.2: Full integration test using the real
+    /// parsed Oracle text for White Auracite. Exercises the complete pipeline:
+    /// parser → trigger.execute (with Duration::UntilHostLeavesPlay) →
+    /// build_resolved_from_def → stack resolution → execute_zone_move
+    /// (which must register the ExileLink) → destroy source → post-action
+    /// pipeline → check_exile_returns → return to battlefield.
+    ///
+    /// Regression test for the L4-18 user report: White Auracite's exiled
+    /// enchantment was not returning when White Auracite itself was destroyed.
+    #[test]
+    fn white_auracite_real_oracle_text_returns_exiled_card() {
+        use crate::game::ability_utils::build_resolved_from_def;
+        use crate::game::scenario::{GameScenario, P0, P1};
+        use crate::types::ability::TargetRef;
+        use crate::types::card_type::CoreType;
+        use crate::types::game_state::StackEntry;
+
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+
+        // White Auracite on P0's battlefield, with its real parsed triggers.
+        let wa_id = scenario
+            .add_creature(P0, "White Auracite", 0, 0)
+            .as_artifact()
+            .from_oracle_text(
+                "When this artifact enters, exile target nonland permanent an opponent \
+                 controls until this artifact leaves the battlefield.\n{T}: Add {W}.",
+            )
+            .id();
+
+        // Opponent's enchantment on battlefield (the one WA will exile).
+        let ench_id = scenario
+            .add_creature(P1, "Opponent Enchantment", 0, 0)
+            .as_enchantment()
+            .id();
+
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        // Sanity-check the parser: WA must have an ETB trigger whose execute
+        // ability carries Duration::UntilHostLeavesPlay on a ChangeZone to
+        // Exile. If this fails, the parser regressed, not the engine.
+        let wa = state.objects.get(&wa_id).expect("WA on battlefield");
+        let etb_trigger = wa
+            .trigger_definitions
+            .iter_all()
+            .find(|t| {
+                matches!(t.mode, crate::types::TriggerMode::ChangesZone)
+                    && t.destination == Some(Zone::Battlefield)
+            })
+            .expect("WA must have an ETB (ChangesZone to Battlefield) trigger");
+        let execute_def = etb_trigger.execute.as_deref().expect("trigger.execute");
+        assert_eq!(
+            execute_def.duration,
+            Some(crate::types::ability::Duration::UntilHostLeavesPlay),
+            "parser regression: WA's exile trigger must carry UntilHostLeavesPlay"
+        );
+        assert!(
+            matches!(
+                &*execute_def.effect,
+                crate::types::ability::Effect::ChangeZone {
+                    destination: Zone::Exile,
+                    ..
+                }
+            ),
+            "parser regression: WA's trigger effect must be ChangeZone→Exile"
+        );
+
+        // Build a ResolvedAbility from the real parsed execute and pre-populate
+        // its target with the opponent's enchantment. This bypasses the target
+        // selection UX but exercises every downstream code path (ability
+        // duration threading, execute_zone_move, exile link creation,
+        // check_exile_returns). The parser / targeting is tested separately.
+        let mut resolved = build_resolved_from_def(execute_def, wa_id, PlayerId(0));
+        resolved.targets = vec![TargetRef::Object(ench_id)];
+
+        // Push a TriggeredAbility stack entry that mirrors what
+        // push_pending_trigger_to_stack would create.
+        let stack_id = ObjectId(9_000_000);
+        state.stack.push_back(StackEntry {
+            id: stack_id,
+            source_id: wa_id,
+            controller: PlayerId(0),
+            kind: crate::types::game_state::StackEntryKind::TriggeredAbility {
+                source_id: wa_id,
+                ability: Box::new(resolved),
+                description: Some("When WA enters...".to_string()),
+                condition: None,
+                trigger_event: None,
+            },
+        });
+
+        // Resolve the trigger: WA's target enchantment moves to exile and the
+        // ExileLink for UntilSourceLeaves must be created.
+        let mut events = Vec::new();
+        crate::game::stack::resolve_top(state, &mut events);
+
+        assert!(
+            state.exile.contains(&ench_id),
+            "opponent enchantment must be in exile after trigger resolves"
+        );
+        let has_link = state.exile_links.iter().any(|link| {
+            link.exiled_id == ench_id
+                && link.source_id == wa_id
+                && matches!(
+                    link.kind,
+                    crate::types::game_state::ExileLinkKind::UntilSourceLeaves {
+                        return_zone: Zone::Battlefield
+                    }
+                )
+        });
+        assert!(
+            has_link,
+            "execute_zone_move must register an UntilSourceLeaves link; exile_links={:?}",
+            state.exile_links
+        );
+
+        // Now destroy White Auracite via move_to_zone and run the full
+        // post-action pipeline exactly as apply() would.
+        let mut events: Vec<GameEvent> = Vec::new();
+        crate::game::zones::move_to_zone(state, wa_id, Zone::Graveyard, &mut events);
+
+        let default_wf = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        crate::game::engine_priority::run_post_action_pipeline(
+            state,
+            &mut events,
+            &default_wf,
+            false,
+        )
+        .unwrap();
+
+        // Confirm WA is in graveyard and the exiled enchantment has returned.
+        assert!(
+            state.players[0].graveyard.contains(&wa_id),
+            "White Auracite should be in graveyard"
+        );
+        // The returned enchantment must be on the battlefield under its owner's
+        // control (CR 400.7a).
+        assert!(
+            state.battlefield.contains(&ench_id),
+            "exiled enchantment should return to battlefield; battlefield={:?}, exile={:?}",
+            state.battlefield,
+            state.exile,
+        );
+        assert!(!state.exile.contains(&ench_id));
+        assert!(
+            state.exile_links.is_empty(),
+            "ExileLink should be consumed after return; remaining={:?}",
+            state.exile_links
+        );
+        let returned = state.objects.get(&ench_id).unwrap();
+        assert!(
+            returned
+                .card_types
+                .core_types
+                .contains(&CoreType::Enchantment),
+            "returned object must still be an enchantment"
+        );
+    }
 }
 
 #[cfg(test)]
