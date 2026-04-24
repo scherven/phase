@@ -970,7 +970,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&brushland).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(brushland_colored_ability());
+        Arc::make_mut(&mut obj.abilities).push(brushland_colored_ability());
 
         let options = activatable_land_mana_options(&state, brushland, PlayerId(0));
         assert_eq!(
@@ -1005,7 +1005,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&land).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 AbilityEffect::Mana {

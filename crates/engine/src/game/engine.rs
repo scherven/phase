@@ -4871,7 +4871,7 @@ mod tests {
             let obj = state.objects.get_mut(&brushland).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
             obj.has_mana_ability = true;
-            obj.abilities.push(brushland_colored_ability());
+            Arc::make_mut(&mut obj.abilities).push(brushland_colored_ability());
         }
 
         let first = apply_as_current(

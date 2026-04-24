@@ -2637,7 +2637,7 @@ mod tests {
             obj.card_types
                 .core_types
                 .push(crate::types::card_type::CoreType::Land);
-            obj.abilities.push(brushland_colored_ability());
+            Arc::make_mut(&mut obj.abilities).push(brushland_colored_ability());
 
             let pending = PendingManaAbility {
                 player: PlayerId(0),
@@ -2727,7 +2727,7 @@ mod tests {
             .core_types
             .push(crate::types::card_type::CoreType::Land);
         let ability = brushland_colored_ability();
-        obj.abilities.push(ability.clone());
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
 
         let mut events = Vec::new();
         let result = activate_mana_ability(
@@ -3292,7 +3292,7 @@ mod tests {
         obj.card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        obj.abilities.push(brushland_colored_ability());
+        Arc::make_mut(&mut obj.abilities).push(brushland_colored_ability());
 
         let pending = PendingManaAbility {
             player: PlayerId(1),
@@ -3346,7 +3346,7 @@ mod tests {
         obj.card_types
             .core_types
             .push(crate::types::card_type::CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {

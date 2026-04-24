@@ -4375,7 +4375,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&land).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -4403,7 +4403,7 @@ mod tests {
             },
         )
         .cost(AbilityCost::Tap);
-        obj.abilities.push(if controller_harm {
+        Arc::make_mut(&mut obj.abilities).push(if controller_harm {
             colored.sub_ability(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::DealDamage {
@@ -4427,7 +4427,7 @@ mod tests {
         let obj_id = create_object(state, card_id, PlayerId(0), name.to_string(), Zone::Hand);
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Instant);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
@@ -11288,7 +11288,7 @@ mod tests {
                 shards: vec![ManaCostShard::Black],
                 generic: 1,
             };
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Destroy {
                     target: TargetFilter::Typed(TypedFilter {
