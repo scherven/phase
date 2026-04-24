@@ -120,32 +120,36 @@ printf "  Current  supported: %d (net %+d)\n" "$cur_supported" "$net"
 printf "  Total cards:        %d\n" "$cur_total"
 echo
 
+# Cap line counts inside `jq` (via array slice) rather than piping through
+# `head`. With `set -o pipefail` a truncating `head` causes SIGPIPE on the
+# upstream `jq`, which `pipefail` then surfaces as a script failure even
+# when every bucket was within expected bounds.
 printf "REGRESSED (engine) — %d cards — engine handler lost for a previously-supported card:\n" "$engine_count"
-jq -r '.[] | select(.bucket=="engine_regress") | "  \(.name)  [\(.new_engine | join(", "))]"' \
-    "$tmpdir/flips.json" | head -30
+jq -r '[.[] | select(.bucket=="engine_regress")][:30][] | "  \(.name)  [\(.new_engine | join(", "))]"' \
+    "$tmpdir/flips.json"
 if [[ "$engine_count" -gt 30 ]]; then
     echo "  ... $((engine_count - 30)) more"
 fi
 echo
 
 printf "REGRESSED (parser honesty) — %d cards — newly flagged by ParseWarning only (accuracy win):\n" "$parser_count"
-jq -r '.[] | select(.bucket=="parser_regress") | "  \(.name)  [\(.new_parser | join(", "))]"' \
-    "$tmpdir/flips.json" | head -10
+jq -r '[.[] | select(.bucket=="parser_regress")][:10][] | "  \(.name)  [\(.new_parser | join(", "))]"' \
+    "$tmpdir/flips.json"
 if [[ "$parser_count" -gt 10 ]]; then
     echo "  ... $((parser_count - 10)) more"
 fi
 echo
 
 printf "ORACLE CHANGED — %d cards flipped true->false with edited oracle_text (MTGJSON rewording, not an engine regression):\n" "$oracle_count"
-jq -r '.[] | select(.bucket=="oracle_changed") | "  \(.name)  [\(.new_handlers | join(", "))]"' \
-    "$tmpdir/flips.json" | head -10
+jq -r '[.[] | select(.bucket=="oracle_changed")][:10][] | "  \(.name)  [\(.new_handlers | join(", "))]"' \
+    "$tmpdir/flips.json"
 if [[ "$oracle_count" -gt 10 ]]; then
     echo "  ... $((oracle_count - 10)) more"
 fi
 echo
 
 printf "GAINED — %d cards newly supported:\n" "$gained_count"
-jq -r '.[] | select(.bucket=="gained") | "  \(.name)"' "$tmpdir/flips.json" | head -10
+jq -r '[.[] | select(.bucket=="gained")][:10][] | "  \(.name)"' "$tmpdir/flips.json"
 if [[ "$gained_count" -gt 10 ]]; then
     echo "  ... $((gained_count - 10)) more"
 fi
