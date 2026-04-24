@@ -7953,10 +7953,12 @@ pub(crate) fn normalize_verb_token(token: &str) -> String {
         // Vowel-y verbs (play→plays) take regular -s and fall through. Result is
         // checked against `PREDICATE_VERBS`; false positives like "series→sery"
         // are silent (no allowlist hit, no behavior change).
-        _ if token.ends_with("ies") && token.len() > 3 => { // allow-noncombinator: verb-morphology suffix check on pre-tokenized word (PATTERNS.md §9)
+        // allow-noncombinator: verb-morphology suffix check on pre-tokenized word (PATTERNS.md §9)
+        _ if token.ends_with("ies") && token.len() > 3 => {
             format!("{}y", &token[..token.len() - 3])
         }
-        _ if token.ends_with('s') && !token.ends_with("ss") => token[..token.len() - 1].to_string(), // allow-noncombinator: verb-morphology suffix check on pre-tokenized word
+        // allow-noncombinator: verb-morphology suffix check on pre-tokenized word
+        _ if token.ends_with('s') && !token.ends_with("ss") => token[..token.len() - 1].to_string(),
         _ => token.to_string(),
     }
 }
