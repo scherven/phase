@@ -37,9 +37,9 @@ pub fn initialize_game(
         // Omen, MDFC, Transform, Meld, Prepare) won't have `back_face`
         // populated on Tauri desktop until an `AppState::card_db` is wired
         // and threaded through. `load_and_hydrate_decks` emits a `warn!`
-        // so the gap is visible in logs rather than silent. TODO: load
-        // card-data.json into a `CardDatabase` at app startup and pass it
-        // here to unlock dual-faced cards on desktop.
+        // so the gap is visible in logs rather than silent.
+        // TODO(#102): load card-data.json into a `CardDatabase` at app
+        // startup and pass it here to unlock dual-faced cards on desktop.
         load_and_hydrate_decks(&mut game, &payload, None);
     }
 
