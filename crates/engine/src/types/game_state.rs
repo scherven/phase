@@ -1709,6 +1709,11 @@ impl WaitingFor {
 }
 
 /// What the frontend requests for auto-pass (no internal state).
+///
+/// Phase stops that should interrupt `UntilEndOfTurn` are a separate per-player
+/// preference on `GameState::phase_stops`, managed via `GameAction::SetPhaseStops`.
+/// Keeping them out of the request preserves a single source of truth and lets
+/// the preference change mid-session without requiring a new auto-pass request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AutoPassRequest {
@@ -1723,7 +1728,9 @@ pub enum AutoPassMode {
     /// Auto-pass while stack is non-empty. Clears when stack empties or grows
     /// beyond `initial_stack_len` (the stack size when the flag was set).
     UntilStackEmpty { initial_stack_len: usize },
-    /// Auto-pass through all priority/combat stops until the flagged player's turn starts.
+    /// Auto-pass through priority/combat stops until the flagged player's next
+    /// turn starts. Interrupted by opponent stack activity (MTGA-style) or when
+    /// the current phase matches the player's entry in `GameState::phase_stops`.
     UntilEndOfTurn,
 }
 
@@ -2086,6 +2093,15 @@ pub struct GameState {
     /// Per-player auto-pass flags. When set, the engine auto-passes for this player.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub auto_pass: HashMap<PlayerId, AutoPassMode>,
+
+    /// Per-player phase-stop preferences. While a player's `UntilEndOfTurn`
+    /// auto-pass session is active, the engine will interrupt auto-pass whenever
+    /// the current phase appears in that player's list. Also consulted when
+    /// deciding whether to auto-submit empty blockers during Declare Blockers,
+    /// so users can pause the step to activate instants / Ninjutsu even when
+    /// no legal blockers exist.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub phase_stops: HashMap<PlayerId, Vec<Phase>>,
 
     /// CR 605.3: Lands manually tapped for mana via TapLandForMana this priority window.
     /// Per-player map enables multiplayer correctness (e.g., UnlessPayment opponent tapping).
@@ -2509,6 +2525,7 @@ impl GameState {
             commander_damage: Vec::new(),
             priority_passes: BTreeSet::new(),
             auto_pass: HashMap::new(),
+            phase_stops: HashMap::new(),
             lands_tapped_for_mana: HashMap::new(),
             match_config: MatchConfig::default(),
             match_phase: MatchPhase::InGame,
@@ -2674,6 +2691,7 @@ impl PartialEq for GameState {
             && self.commander_damage == other.commander_damage
             && self.priority_passes == other.priority_passes
             && self.auto_pass == other.auto_pass
+            && self.phase_stops == other.phase_stops
             && self.lands_tapped_for_mana == other.lands_tapped_for_mana
             && self.match_config == other.match_config
             && self.match_phase == other.match_phase

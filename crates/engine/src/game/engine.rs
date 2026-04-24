@@ -151,6 +151,202 @@ pub(super) fn resume_pending_continuation_if_priority(
     Ok(())
 }
 
+/// Decision emitted by the auto-pass loop's per-iteration check.
+enum AutoPassDecision {
+    /// No active auto-pass — leave the loop and let the frontend take over.
+    Exit,
+    /// Auto-pass completed or was interrupted (opponent action, phase stop,
+    /// stack terminator). Clear the flag and exit.
+    Finish,
+    /// Continue passing priority for this iteration.
+    Pass,
+}
+
+/// Classify what the auto-pass loop should do for `player` at the current
+/// priority window.
+///
+/// Interrupts (MTGA-style): `UntilStackEmpty` bails when the stack empties or
+/// grows beyond the baseline (trigger or opponent spell); `UntilEndOfTurn`
+/// bails when an opponent-controlled object is on top of the stack or when the
+/// current phase is in the user-supplied `phase_stops` list.
+fn priority_auto_pass_decision(state: &GameState, player: PlayerId) -> AutoPassDecision {
+    let Some(mode) = state.auto_pass.get(&player) else {
+        return AutoPassDecision::Exit;
+    };
+    match mode {
+        AutoPassMode::UntilStackEmpty { initial_stack_len } => {
+            if state.stack.is_empty() || state.stack.len() > *initial_stack_len {
+                AutoPassDecision::Finish
+            } else {
+                AutoPassDecision::Pass
+            }
+        }
+        AutoPassMode::UntilEndOfTurn => {
+            let opponent_on_stack = state
+                .stack
+                .last()
+                .is_some_and(|top| top.controller != player);
+            if opponent_on_stack || phase_stop_hit(state, player) {
+                AutoPassDecision::Finish
+            } else {
+                AutoPassDecision::Pass
+            }
+        }
+    }
+}
+
+/// True when `player` has an active `UntilEndOfTurn` auto-pass session.
+fn end_of_turn_active(state: &GameState, player: PlayerId) -> bool {
+    matches!(
+        state.auto_pass.get(&player),
+        Some(AutoPassMode::UntilEndOfTurn)
+    )
+}
+
+/// True when the current phase appears in `player`'s configured phase-stop list.
+/// Consulted at every engine-driven auto-pass site so the user's preference is
+/// respected whether or not an auto-pass session is active (e.g. suppresses
+/// the empty-blockers auto-submit when the defender wants a Ninjutsu window).
+fn phase_stop_hit(state: &GameState, player: PlayerId) -> bool {
+    state
+        .phase_stops
+        .get(&player)
+        .is_some_and(|stops| stops.contains(&state.phase))
+}
+
+#[cfg(test)]
+mod auto_pass_decision_tests {
+    use super::*;
+    use crate::types::identifiers::ObjectId;
+
+    fn stack_entry(controller: PlayerId) -> StackEntry {
+        StackEntry {
+            id: ObjectId(0),
+            source_id: ObjectId(0),
+            controller,
+            kind: StackEntryKind::KeywordAction {
+                action: KeywordAction::Equip {
+                    equipment_id: ObjectId(0),
+                    target_creature_id: ObjectId(0),
+                },
+            },
+        }
+    }
+
+    fn is_pass(d: &AutoPassDecision) -> bool {
+        matches!(d, AutoPassDecision::Pass)
+    }
+
+    fn is_finish(d: &AutoPassDecision) -> bool {
+        matches!(d, AutoPassDecision::Finish)
+    }
+
+    #[test]
+    fn exit_when_no_auto_pass_set() {
+        let state = GameState::default();
+        assert!(matches!(
+            priority_auto_pass_decision(&state, PlayerId(0)),
+            AutoPassDecision::Exit
+        ));
+    }
+
+    #[test]
+    fn until_end_of_turn_passes_through_empty_stack_without_phase_stop() {
+        let mut state = GameState {
+            phase: Phase::PostCombatMain,
+            ..GameState::default()
+        };
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        assert!(is_pass(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn until_end_of_turn_finishes_on_opponent_stack_activity() {
+        // Opponent spell/trigger on top must interrupt auto-pass so the player
+        // always gets a chance to respond.
+        let mut state = GameState::default();
+        state.stack.push(stack_entry(PlayerId(1)));
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        assert!(is_finish(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn until_end_of_turn_passes_through_own_stack_activity() {
+        // MTGA-style: resolve your own spells without pausing.
+        let mut state = GameState::default();
+        state.stack.push(stack_entry(PlayerId(0)));
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        assert!(is_pass(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn until_end_of_turn_finishes_at_configured_phase_stop() {
+        // User-flagged phase stop halts auto-pass even when the stack is empty
+        // and no opponent action has interrupted.
+        let mut state = GameState {
+            phase: Phase::DeclareBlockers,
+            ..GameState::default()
+        };
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        state
+            .phase_stops
+            .insert(PlayerId(0), vec![Phase::DeclareBlockers]);
+        assert!(is_finish(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn phase_stop_hit_reads_per_player_preferences() {
+        let mut state = GameState {
+            phase: Phase::DeclareBlockers,
+            ..GameState::default()
+        };
+        // No entry for the player → no stop.
+        assert!(!phase_stop_hit(&state, PlayerId(0)));
+
+        // Unrelated phase in the list → no stop.
+        state.phase_stops.insert(PlayerId(0), vec![Phase::Upkeep]);
+        assert!(!phase_stop_hit(&state, PlayerId(0)));
+
+        // Current phase in the list → stop.
+        state
+            .phase_stops
+            .insert(PlayerId(0), vec![Phase::Upkeep, Phase::DeclareBlockers]);
+        assert!(phase_stop_hit(&state, PlayerId(0)));
+
+        // Per-player: player 1's stops don't bleed into player 0.
+        state.phase_stops.remove(&PlayerId(0));
+        state
+            .phase_stops
+            .insert(PlayerId(1), vec![Phase::DeclareBlockers]);
+        assert!(!phase_stop_hit(&state, PlayerId(0)));
+        assert!(phase_stop_hit(&state, PlayerId(1)));
+    }
+
+    #[test]
+    fn phase_stop_hit_is_independent_of_auto_pass_mode() {
+        // Phase stops apply even without an active auto-pass session —
+        // this is what closes the "no legal blockers auto-submitted
+        // regardless of preference" gap.
+        let mut state = GameState {
+            phase: Phase::DeclareBlockers,
+            ..GameState::default()
+        };
+        state
+            .phase_stops
+            .insert(PlayerId(0), vec![Phase::DeclareBlockers]);
+        assert!(phase_stop_hit(&state, PlayerId(0)));
+        assert!(!end_of_turn_active(&state, PlayerId(0)));
+    }
+}
+
 /// Auto-pass loop: when a player has an auto-pass flag and receives priority,
 /// automatically pass for them until the goal condition is met or interrupted.
 fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
@@ -160,26 +356,14 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
         match &result.waiting_for {
             WaitingFor::Priority { player } => {
                 let player = *player;
-                let Some(&mode) = state.auto_pass.get(&player) else {
-                    break;
-                };
-
-                match mode {
-                    AutoPassMode::UntilStackEmpty { initial_stack_len } => {
-                        // Goal achieved: stack is empty
-                        if state.stack.is_empty() {
-                            state.auto_pass.remove(&player);
-                            break;
-                        }
-                        // Interrupt: stack grew beyond the baseline (trigger or opponent spell)
-                        if state.stack.len() > initial_stack_len {
-                            state.auto_pass.remove(&player);
-                            break;
-                        }
+                let decision = priority_auto_pass_decision(state, player);
+                match decision {
+                    AutoPassDecision::Exit => break,
+                    AutoPassDecision::Finish => {
+                        state.auto_pass.remove(&player);
+                        break;
                     }
-                    AutoPassMode::UntilEndOfTurn => {
-                        // UntilEndOfTurn passes through everything at priority
-                    }
+                    AutoPassDecision::Pass => {}
                 }
 
                 // Pass priority internally
@@ -202,10 +386,10 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                         sync_waiting_for(state, &wf);
 
                         // Check for stack growth after pipeline (triggers may have fired)
-                        if let Some(&AutoPassMode::UntilStackEmpty { initial_stack_len }) =
+                        if let Some(AutoPassMode::UntilStackEmpty { initial_stack_len }) =
                             state.auto_pass.get(&player)
                         {
-                            if state.stack.len() > initial_stack_len {
+                            if state.stack.len() > *initial_stack_len {
                                 state.auto_pass.remove(&player);
                             }
                         }
@@ -217,12 +401,10 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                 }
             }
 
-            // UntilEndOfTurn: auto-submit empty attackers
+            // UntilEndOfTurn: auto-submit empty attackers unless the user flagged
+            // this phase as a stop.
             WaitingFor::DeclareAttackers { player, .. }
-                if state
-                    .auto_pass
-                    .get(player)
-                    .is_some_and(|m| matches!(m, AutoPassMode::UntilEndOfTurn)) =>
+                if end_of_turn_active(state, *player) && !phase_stop_hit(state, *player) =>
             {
                 let mut events = Vec::new();
                 match engine_combat::handle_empty_attackers(state, &mut events) {
@@ -241,15 +423,15 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
             //       still runs, and CR 117.1c requires the active player to receive
             //       priority during the step (instants and Ninjutsu-family activations
             //       per CR 702.49 — notably Sneak, which is restricted to this step).
+            // A phase stop on Declare Blockers overrides both paths regardless of
+            // whether an auto-pass session is active: if the player explicitly asked
+            // to pause here, honor it.
             WaitingFor::DeclareBlockers {
                 player,
                 valid_blocker_ids,
                 ..
-            } if valid_blocker_ids.is_empty()
-                || state
-                    .auto_pass
-                    .get(player)
-                    .is_some_and(|m| matches!(m, AutoPassMode::UntilEndOfTurn)) =>
+            } if !phase_stop_hit(state, *player)
+                && (valid_blocker_ids.is_empty() || end_of_turn_active(state, *player)) =>
             {
                 let mut events = Vec::new();
                 match engine_combat::handle_empty_blockers(state, &mut events) {
@@ -291,6 +473,24 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
     if matches!(action, GameAction::CancelAutoPass) {
         if let Some(player) = turn_control::authorized_submitter(state) {
             state.auto_pass.remove(&player);
+        }
+        return Ok(ActionResult {
+            events: vec![],
+            waiting_for: state.waiting_for.clone(),
+            log_entries: vec![],
+        });
+    }
+
+    // SetPhaseStops propagates the player's phase-stop preference. Pure preference
+    // state — no game logic, no WaitingFor transition. Works from any state so
+    // frontends can sync on preference changes regardless of the current prompt.
+    if let GameAction::SetPhaseStops { stops } = &action {
+        if let Some(player) = turn_control::authorized_submitter(state) {
+            if stops.is_empty() {
+                state.phase_stops.remove(&player);
+            } else {
+                state.phase_stops.insert(player, stops.clone());
+            }
         }
         return Ok(ActionResult {
             events: vec![],
@@ -1924,7 +2124,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             WaitingFor::Priority { player: *player }
         }
         (WaitingFor::Priority { player }, GameAction::SetAutoPass { mode }) => {
-            // Convert request to stored mode, capturing engine state as needed
+            // Convert request to stored mode, capturing engine state as needed.
             let stored_mode = match mode {
                 AutoPassRequest::UntilStackEmpty => AutoPassMode::UntilStackEmpty {
                     initial_stack_len: state.stack.len(),

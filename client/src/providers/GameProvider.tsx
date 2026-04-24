@@ -16,6 +16,7 @@ import { AI_DECK_RANDOM, usePreferencesStore } from "../stores/preferencesStore"
 import type { AiArchetypeFilter } from "../stores/preferencesStore";
 import { createGameLoopController } from "../game/controllers/gameLoopController";
 import { dispatchAction, processRemoteUpdate } from "../game/dispatch";
+import { usePhaseStopsSync } from "../hooks/usePhaseStopsSync";
 import { hostRoom, joinRoom } from "../network/connection";
 import type { BrokerClient } from "../services/brokerClient";
 import { loadP2PSession } from "../services/p2pSession";
@@ -244,6 +245,10 @@ export function GameProvider({
   onResumeReset,
   children,
 }: GameProviderProps) {
+  // Sync the persistent phaseStops preference into engine-owned state so the
+  // engine remains the single authority for auto-pass / empty-blocker decisions.
+  usePhaseStopsSync();
+
   // Refs for callback props — these are notifications that should never
   // cause the game setup effect to re-run.
   const onWsEventRef = useRef(onWsEvent);

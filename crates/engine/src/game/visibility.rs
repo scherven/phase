@@ -223,6 +223,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     }
 
     filtered.auto_pass.retain(|pid, _| *pid == viewer);
+    filtered.phase_stops.retain(|pid, _| *pid == viewer);
     filtered
         .lands_tapped_for_mana
         .retain(|pid, _| *pid == viewer);

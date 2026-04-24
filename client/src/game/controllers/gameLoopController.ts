@@ -1,6 +1,5 @@
 import { getPlayerId } from "../../hooks/usePlayerId";
 import { useGameStore } from "../../stores/gameStore";
-import { usePreferencesStore } from "../../stores/preferencesStore";
 import { useUiStore } from "../../stores/uiStore";
 import { shouldAutoPass } from "../autoPass";
 import { dispatchAction } from "../dispatch";
@@ -38,12 +37,11 @@ export function createGameLoopController(config: GameLoopConfig): GameLoopContro
     if (!("data" in waitingFor) || waitingFor.data.player !== getPlayerId()) return;
 
     const { fullControl } = useUiStore.getState();
-    const { phaseStops } = usePreferencesStore.getState();
 
     if (!gameState) return;
 
     const { autoPassRecommended } = useGameStore.getState();
-    if (shouldAutoPass(gameState, waitingFor, phaseStops, fullControl, autoPassRecommended)) {
+    if (shouldAutoPass(gameState, waitingFor, fullControl, autoPassRecommended)) {
       scheduleAutoPass();
     }
   }

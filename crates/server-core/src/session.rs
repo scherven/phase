@@ -656,6 +656,29 @@ impl SessionManager {
             ));
         }
 
+        // SetPhaseStops: preference propagation keyed to the authenticated player,
+        // not whoever currently holds priority. Mirrors CancelAutoPass — the engine's
+        // own handler would key by `authorized_submitter`, which is the priority
+        // holder in multiplayer, so we must intercept here to write to the correct
+        // player's entry.
+        if let GameAction::SetPhaseStops { stops } = &action {
+            if stops.is_empty() {
+                session.state.phase_stops.remove(&player);
+            } else {
+                session.state.phase_stops.insert(player, stops.clone());
+            }
+            let (new_legal_actions, spell_costs) = engine_legal_actions_with_costs(&session.state);
+            let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
+            return Ok((
+                session.state.clone(),
+                vec![],
+                new_legal_actions,
+                vec![],
+                auto_pass,
+                spell_costs,
+            ));
+        }
+
         // Validate it's this player's turn to act
         let current_actor = acting_player(&session.state);
         match current_actor {

@@ -725,8 +725,9 @@ export type GameAction =
   | { type: "DiscoverChoice"; data: { choice: CastChoice } }
   | { type: "CascadeChoice"; data: { choice: CastChoice } }
   | { type: "ChooseTopOrBottom"; data: { top: boolean } }
-  | { type: "SetAutoPass"; data: { mode: { type: "UntilStackEmpty" } | { type: "UntilEndOfTurn"; phase_stops: Phase[] } } }
+  | { type: "SetAutoPass"; data: { mode: { type: "UntilStackEmpty" } | { type: "UntilEndOfTurn" } } }
   | { type: "CancelAutoPass" }
+  | { type: "SetPhaseStops"; data: { stops: Phase[] } }
   | { type: "AssignCombatDamage"; data: { assignments: [ObjectId, number][]; trample_damage: number; controller_damage: number } }
   | { type: "DistributeAmong"; data: { distribution: [TargetRef, number][] } }
   | { type: "RetargetSpell"; data: { new_targets: TargetRef[] } }
@@ -906,6 +907,7 @@ export interface GameState {
   restrictions?: GameRestriction[];
   command_zone?: ObjectId[];
   auto_pass?: Record<number, AutoPassMode>;
+  phase_stops?: Record<number, Phase[]>;
   lands_tapped_for_mana?: Record<number, number[]>;
   scheduled_turn_controls?: Array<{
     target_player: PlayerId;
@@ -916,7 +918,7 @@ export interface GameState {
 
 export type AutoPassMode =
   | { type: "UntilStackEmpty"; initial_stack_len: number }
-  | { type: "UntilEndOfTurn"; phase_stops: Phase[] };
+  | { type: "UntilEndOfTurn" };
 
 // ── Adapter Interface ────────────────────────────────────────────────────
 
