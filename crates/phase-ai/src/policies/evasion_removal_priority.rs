@@ -130,28 +130,21 @@ fn velocity_score(
     // simulation cost serially.
     let session = &ctx.context.session;
     let horizon = ProjectionHorizon::OpponentBeginCombat;
-    let projection = match session.cached_projection(
-        ctx.state,
-        ctx.ai_player,
-        target.controller,
-        horizon,
-    ) {
-        Some(cached) => cached,
-        None => {
-            if !ctx.can_afford_projection() {
-                return 0.0;
+    let projection =
+        match session.cached_projection(ctx.state, ctx.ai_player, target.controller, horizon) {
+            Some(cached) => cached,
+            None => {
+                if !ctx.can_afford_projection() {
+                    return 0.0;
+                }
+                let Ok(fresh) =
+                    session.get_or_project(ctx.state, ctx.ai_player, target.controller, horizon)
+                else {
+                    return 0.0;
+                };
+                fresh
             }
-            let Ok(fresh) = session.get_or_project(
-                ctx.state,
-                ctx.ai_player,
-                target.controller,
-                horizon,
-            ) else {
-                return 0.0;
-            };
-            fresh
-        }
-    };
+        };
 
     let samples = crate::projection::threat_velocity(ctx.state, &projection, target.controller);
 

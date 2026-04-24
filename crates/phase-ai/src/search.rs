@@ -448,12 +448,8 @@ fn build_ai_context(state: &GameState, player: PlayerId, config: &AiConfig) -> A
     // `analyze_for_player` keys the session's synergy/features/plan maps under
     // the actual AI player up-front, so no `Arc::make_mut` + HashMap rekey is
     // needed when the AI isn't in seat 0.
-    let mut ctx = AiContext::analyze_for_player(
-        deck,
-        &config.weights,
-        &config.archetype_multipliers,
-        player,
-    );
+    let mut ctx =
+        AiContext::analyze_for_player(deck, &config.weights, &config.archetype_multipliers, player);
     // Populate opponent features so archetype lookups hit the cache instead
     // of re-running `DeckProfile::analyze` per search call.
     let session = std::sync::Arc::make_mut(&mut ctx.session);
@@ -541,7 +537,11 @@ pub(crate) fn deterministic_choice(
             .get(player)
             .unwrap_or(&default_features);
         let plan = ctx.session.plan.get(player).unwrap_or(&default_plan);
-        let hand: Vec<_> = state.players[player.0 as usize].hand.iter().copied().collect();
+        let hand: Vec<_> = state.players[player.0 as usize]
+            .hand
+            .iter()
+            .copied()
+            .collect();
         let turn_order = crate::policies::mulligan::turn_order_for(state, *player);
         let decision = crate::policies::mulligan::MulliganRegistry::default().evaluate_hand(
             &hand,
