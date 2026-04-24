@@ -13,3 +13,4 @@ mod kaito_integration;
 mod madame_null_integration;
 mod oracle_parser;
 mod rules;
+mod ureni_attack_trigger;
