@@ -224,6 +224,7 @@ mod tests {
                 ability: engine::types::ability::ResolvedAbility::new(
                     engine::types::ability::Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
+                        target: engine::types::ability::TargetFilter::Controller,
                     },
                     Vec::new(),
                     token,
@@ -261,6 +262,7 @@ mod tests {
                 ability: Some(engine::types::ability::ResolvedAbility::new(
                     engine::types::ability::Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
+                        target: engine::types::ability::TargetFilter::Controller,
                     },
                     Vec::new(),
                     spell,

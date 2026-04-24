@@ -96,6 +96,7 @@ pub fn resolve(
         player: ability.controller,
         cards: eligible,
         filter: card_filter,
+        optional: false,
     };
 
     events.push(GameEvent::EffectResolved {

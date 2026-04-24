@@ -238,6 +238,7 @@ mod tests {
             ResolvedAbility::new(
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
                 vec![],
                 ObjectId(100),
@@ -271,6 +272,7 @@ mod tests {
                     count: QuantityExpr::Fixed { value: 1 },
                     reveal: true,
                     target_player: None,
+                    up_to: false,
                 },
                 vec![],
                 source_id,
@@ -407,6 +409,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 1 },
                 reveal: true,
                 target_player: None,
+                up_to: false,
             },
             vec![],
             ObjectId(100),

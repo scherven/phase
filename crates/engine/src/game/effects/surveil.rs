@@ -4,20 +4,36 @@ use crate::types::events::{GameEvent, PlayerActionKind};
 use crate::types::game_state::{GameState, WaitingFor};
 
 /// CR 701.25a: Surveil N — look at top N, put any number into graveyard, rest on top in any order.
+///
+/// CR 601.2c + CR 115.1: When the parsed `Effect::Surveil { target }` is a
+/// player-target filter (e.g. `TargetFilter::Player` from "Target opponent
+/// surveils 2"), the surveiling player is whichever `TargetRef::Player` was
+/// chosen during spell announcement. `ResolvedAbility::target_player()`
+/// extracts that choice and falls back to `ability.controller` when the
+/// target is a context-ref (Controller, SelfRef, etc.) — preserving the
+/// historical "controller surveils" behavior for plain "surveil N" /
+/// "you surveil" patterns.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let surveil_num: usize = match &ability.effect {
-        Effect::Surveil { count } => resolve_quantity_with_targets(state, count, ability) as usize,
-        _ => 1,
+    let (surveil_num, surveil_player): (usize, _) = match &ability.effect {
+        Effect::Surveil { count, target } => (
+            resolve_quantity_with_targets(state, count, ability) as usize,
+            if target.is_context_ref() {
+                ability.controller
+            } else {
+                ability.target_player()
+            },
+        ),
+        _ => (1, ability.controller),
     };
 
     let player = state
         .players
         .iter()
-        .find(|p| p.id == ability.controller)
+        .find(|p| p.id == surveil_player)
         .ok_or(EffectError::PlayerNotFound)?;
 
     let count = surveil_num.min(player.library.len());
@@ -31,14 +47,14 @@ pub fn resolve(
     }
 
     events.push(GameEvent::PlayerPerformedAction {
-        player_id: ability.controller,
+        player_id: surveil_player,
         action: PlayerActionKind::Surveil,
     });
 
     let cards: Vec<_> = player.library[..count].to_vec();
 
     state.waiting_for = WaitingFor::SurveilChoice {
-        player: ability.controller,
+        player: surveil_player,
         cards,
     };
 
@@ -62,6 +78,7 @@ mod tests {
         ResolvedAbility::new(
             Effect::Surveil {
                 count: crate::types::ability::QuantityExpr::Fixed { value: surveil_num },
+                target: crate::types::ability::TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),

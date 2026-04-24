@@ -20,9 +20,22 @@ interface StackEntryProps {
   cardSize: { width: number; height: number };
   style?: CSSProperties;
   onHoverChange?: (hovered: boolean) => void;
+  /**
+   * Pacing multiplier for the stagger delay, sourced from the engine's
+   * StackPressure (see utils/stackPressure.ts). 1.0 = Normal, 0 = Instant
+   * (mount animation skipped). Defaults to 1.0 so callers that haven't
+   * plumbed pressure keep the prior behavior.
+   */
+  pacingMultiplier?: number;
+  /**
+   * Engine-authored coalesce count (from `stack_display_groups`). When > 1,
+   * renders a ×N badge on the representative card. Defaults to 1 so callers
+   * that don't proxy group data keep the prior per-entry rendering.
+   */
+  groupCount?: number;
 }
 
-export function StackEntry({ entry, index, isTop, isPending, cardSize, style, onHoverChange }: StackEntryProps) {
+export function StackEntry({ entry, index, isTop, isPending, cardSize, style, onHoverChange, pacingMultiplier = 1, groupCount = 1 }: StackEntryProps) {
   const playerId = usePlayerId();
   const objects = useGameStore((s) => s.gameState?.objects);
   const waitingFor = useGameStore((s) => s.gameState?.waiting_for);
@@ -79,7 +92,10 @@ export function StackEntry({ entry, index, isTop, isPending, cardSize, style, on
       initial={{ opacity: 0, x: 30, scale: 0.9 }}
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, x: 30, scale: 0.9 }}
-      transition={{ delay: index * 0.03 }}
+      transition={{
+        delay: index * 0.03 * pacingMultiplier,
+        duration: pacingMultiplier === 0 ? 0 : undefined,
+      }}
       style={style}
       data-stack-entry={entry.id}
       data-card-hover
@@ -117,6 +133,13 @@ export function StackEntry({ entry, index, isTop, isPending, cardSize, style, on
           <ManaCostPips cost={sourceObj.mana_cost} size="sm" className="absolute right-[5%] top-[2.5%]" />
         )}
       </div>
+
+      {/* Badge: ×N coalesce count for engine-grouped mass triggers. */}
+      {groupCount > 1 && (
+        <span className="absolute -left-2 -top-2 rounded-full bg-purple-600 px-2 py-0.5 text-[11px] font-bold text-white shadow-md">
+          ×{groupCount}
+        </span>
+      )}
 
       {/* Badge: "Casting..." for pending spells, "Next" for top of stack */}
       {isPending ? (

@@ -38,7 +38,7 @@ use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
 use crate::types::statics::{
     ActivationExemption, CastFrequency, CastingProhibitionCondition, HandSizeModification,
-    ProhibitionScope, StaticMode,
+    ProhibitionScope, StaticMode, TriggerCause,
 };
 use crate::types::zones::Zone;
 
@@ -246,6 +246,7 @@ enum RuleStaticPredicate {
     MustBlock,
     BlockOnlyCreaturesWithFlying,
     Shroud,
+    Hexproof,
     MayLookAtTopOfLibrary,
     LoseAllAbilities,
     NoMaximumHandSize,
@@ -444,6 +445,49 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
                 .affected(TargetFilter::SelfRef)
                 .description(text.to_string()),
         );
+    }
+
+    // --- "Untap all <type> you control during each other player's untap step." ---
+    // CR 502.3 + CR 113.6: Seedborn Muse class — continuous static granting a
+    // second untap pass during each OTHER player's untap step. The parser lowers
+    // this to `StaticMode::UntapsDuringEachOtherPlayersUntapStep` with the
+    // `affected` filter carrying the permanent class to untap (typically
+    // "permanents you control"). Runtime integration lives in
+    // `turns::execute_untap`, which scans the battlefield for this variant
+    // after the active player's normal untap step.
+    if let Some(rest) = nom_tag_tp(&tp, "untap all ") {
+        // The subject is the thing being untapped (e.g. "permanents you
+        // control", "creatures you control"). Delegate to `parse_type_phrase`
+        // which handles the full range of type + controller phrases.
+        let (filter, remainder) = parse_type_phrase(rest.original);
+        let remainder_lower = remainder.to_lowercase();
+        // Accept "during each other player's untap step" with straight and curly apostrophes.
+        let tail = remainder_lower.trim().trim_end_matches('.');
+        let during_ok = nom_on_lower(tail, tail, |i| {
+            value(
+                (),
+                alt((
+                    tag("during each other player's untap step"),
+                    tag("during each other player\u{2019}s untap step"),
+                )),
+            )
+            .parse(i)
+        })
+        .is_some();
+        // Require the subject filter to be controlled by "you" — rules text
+        // variations outside this ("each player's permanents") would not be
+        // Seedborn semantics and fall through.
+        let controller_is_you = matches!(
+            &filter,
+            TargetFilter::Typed(tf) if tf.controller == Some(ControllerRef::You)
+        );
+        if during_ok && controller_is_you {
+            return Some(
+                StaticDefinition::new(StaticMode::UntapsDuringEachOtherPlayersUntapStep)
+                    .affected(filter)
+                    .description(text.to_string()),
+            );
+        }
     }
 
     // --- "Play with the top card of your library revealed" ---
@@ -1624,14 +1668,54 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
         );
     }
 
-    // CR 603.9: Trigger doubling — "triggers an additional time"
-    // Panharmonicon: "If a permanent entering the battlefield causes a triggered ability
-    //   of a permanent you control to trigger, that ability triggers an additional time."
-    // Roaming Throne: "If a triggered ability of another creature you control of the chosen
-    //   type triggers, it triggers an additional time."
+    // CR 603.2d: Trigger doubling — "triggers an additional time".
+    //
+    // Cause classification by phrasing:
+    // - "attacking causes" — Isshin, Two Heavens as One (CreatureAttacking).
+    // - "entering" / "enters the battlefield" / "enters" — Panharmonicon-class
+    //   (EntersBattlefield). Panharmonicon itself names "artifact or creature
+    //   entering", so both CoreTypes qualify; narrower wordings ("creature
+    //   entering") collapse to [Creature] only.
+    // - Otherwise (e.g. "If a triggered ability ... triggers, it triggers an
+    //   additional time" — Roaming Throne, Strionic Resonator copies) use the
+    //   unrestricted `Any` cause; the doubler's `affected` filter narrows
+    //   which source's triggers qualify.
     if nom_primitives::scan_contains(tp.lower, "triggers an additional time") {
+        let cause = if nom_primitives::scan_contains(tp.lower, "attacking causes") {
+            TriggerCause::CreatureAttacking
+        } else if nom_primitives::scan_contains(tp.lower, "dying causes") {
+            TriggerCause::CreatureDying
+        } else if nom_primitives::scan_contains(tp.lower, "entering")
+            || nom_primitives::scan_contains(tp.lower, "enters the battlefield")
+        {
+            // CR 603.6a: The entering-permanent's type is named in the
+            // qualifier. "artifact or creature entering" = both; a bare
+            // "creature entering" or "permanent entering" narrows
+            // accordingly.
+            let mut core_types: Vec<CoreType> = Vec::new();
+            if nom_primitives::scan_contains(tp.lower, "artifact") {
+                core_types.push(CoreType::Artifact);
+            }
+            if nom_primitives::scan_contains(tp.lower, "creature") {
+                core_types.push(CoreType::Creature);
+            }
+            if nom_primitives::scan_contains(tp.lower, "enchantment") {
+                core_types.push(CoreType::Enchantment);
+            }
+            if nom_primitives::scan_contains(tp.lower, "land") {
+                core_types.push(CoreType::Land);
+            }
+            if nom_primitives::scan_contains(tp.lower, "planeswalker") {
+                core_types.push(CoreType::Planeswalker);
+            }
+            // Empty core_types (e.g. "a permanent entering") means any type.
+            TriggerCause::EntersBattlefield { core_types }
+        } else {
+            TriggerCause::Any
+        };
         return Some(
-            StaticDefinition::new(StaticMode::Panharmonicon).description(text.to_string()),
+            StaticDefinition::new(StaticMode::DoubleTriggers { cause })
+                .description(text.to_string()),
         );
     }
 
@@ -3287,9 +3371,12 @@ fn parse_continuous_subject_filter(subject: &str) -> Option<TargetFilter> {
     let lower = trimmed.to_lowercase();
     let tp = TextPair::new(trimmed, &lower);
 
-    // Strip "Each " prefix — "Each creature you control" is semantically identical to
-    // "Creatures you control" for filter purposes.
-    if let Some(rest_tp) = nom_tag_tp(&tp, "each ") {
+    // Strip "Each " / "All " quantifier prefixes — "Each creature you control" and
+    // "All Sliver creatures" are semantically identical to the bare type phrase for
+    // filter purposes (CR 205.3 / CR 700.1). Without this, "All Sliver creatures"
+    // flows into parse_type_phrase which treats "All Sliver" as a verbatim subtype
+    // string and matches zero real creatures.
+    if let Some(rest_tp) = nom_tag_tp(&tp, "each ").or_else(|| nom_tag_tp(&tp, "all ")) {
         return parse_continuous_subject_filter(rest_tp.original.trim());
     }
 
@@ -3546,6 +3633,8 @@ fn strip_rule_static_subject<'a>(text: &'a str, lower: &str) -> Option<(TargetFi
         " can block only creatures with flying",
         " has shroud",
         " have shroud",
+        " has hexproof",
+        " have hexproof",
         " has no maximum hand size",
         " have no maximum hand size",
         " may play an additional land",
@@ -3677,6 +3766,16 @@ fn parse_rule_static_predicate(text: &str) -> Option<RuleStaticPredicate> {
         return Some(RuleStaticPredicate::Shroud);
     }
 
+    // CR 702.11: Hexproof — player-scope hexproof ("You have hexproof.") mirrors
+    // the shroud predicate wiring so the static is represented as a player-level
+    // rule modification rather than a bogus AddKeyword on empty-typed objects.
+    if matches!(
+        tp.lower,
+        "has hexproof" | "has hexproof." | "have hexproof" | "have hexproof."
+    ) {
+        return Some(RuleStaticPredicate::Hexproof);
+    }
+
     if nom_tag_tp(&tp, "may look at the top card of your library").is_some() {
         return Some(RuleStaticPredicate::MayLookAtTopOfLibrary);
     }
@@ -3732,6 +3831,9 @@ fn lower_rule_static(
                 .description(description.to_string())
         }
         RuleStaticPredicate::Shroud => StaticDefinition::new(StaticMode::Shroud)
+            .affected(affected)
+            .description(description.to_string()),
+        RuleStaticPredicate::Hexproof => StaticDefinition::new(StaticMode::Hexproof)
             .affected(affected)
             .description(description.to_string()),
         RuleStaticPredicate::MayLookAtTopOfLibrary => {
@@ -6211,12 +6313,28 @@ fn first_qualified_spell_condition(filter: &TargetFilter) -> StaticCondition {
     }
 }
 
+/// CR 117.7 + CR 601.2f: Detect a self-spell cost-modification subject.
+/// Matches the leading "this spell ", "this card ", or "~ " prefix used when
+/// a spell reduces/raises its own cast cost (e.g., Tolarian Terror:
+/// "This spell costs {1} less to cast for each instant and sorcery card in
+/// your graveyard."). Callers use this to flag self-reference so the static
+/// is emitted with `affected = SelfRef` and `active_zones = [Hand, Stack]`
+/// instead of the default battlefield scope.
+fn parse_self_spell_cost_subject(lower: &str) -> Option<()> {
+    nom_on_lower(lower, lower, |i| {
+        value((), alt((tag("this spell "), tag("this card "), tag("~ ")))).parse(i)
+    })
+    .map(|_| ())
+}
+
 /// CR 601.2f: Parse cost modification statics from Oracle text.
 /// Handles all four sub-patterns:
 /// 1. Type-filtered: "Creature spells you cast cost {1} less to cast"
 /// 2. Color-filtered: "White spells your opponents cast cost {1} more to cast"
 /// 3. Global taxing: "Noncreature spells cost {1} more to cast" (Thalia)
 /// 4. Broad: "Spells you cast cost {1} less to cast"
+/// 5. Self-spell: "This spell costs {N} less to cast for each ..." (Tolarian Terror)
+///    — emitted with `affected = SelfRef`, `active_zones = [Hand, Stack]`.
 ///
 /// Dynamic "for each" counts are extracted when present.
 fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefinition> {
@@ -6227,6 +6345,14 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
     if !is_raise && !is_reduce {
         return None;
     }
+
+    // CR 601.2f + CR 117.7: Detect self-spell cost reduction ("this spell costs {N} less ...").
+    // Distinct from battlefield cost modification (e.g., "creature spells you cast cost {1} less")
+    // because the static must apply to the card while it is in hand (or on the stack during
+    // casting), not once it has entered the battlefield. The caller wires this into
+    // `active_zones = [Hand, Stack]` with `affected = SelfRef` so the casting-time scanner
+    // finds it on the spell being cast.
+    let is_self_spell = parse_self_spell_cost_subject(lower).is_some();
 
     let amount_is_variable_x = nom_primitives::scan_contains(lower, "{x}");
 
@@ -6442,23 +6568,38 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
     // Build the affected filter for the static definition.
     // This controls which objects are "affected" — for cost modification statics,
     // this is the source permanent's controller scope (used by the registry).
-    let affected = match controller {
-        Some(ControllerRef::You) => {
-            TargetFilter::Typed(TypedFilter::card().controller(ControllerRef::You))
+    // CR 117.7: Self-spell cost reduction ("This spell costs {N} less ...") uses
+    // SelfRef so the casting-time self-cost scanner matches it on the spell itself.
+    let affected = if is_self_spell {
+        TargetFilter::SelfRef
+    } else {
+        match controller {
+            Some(ControllerRef::You) => {
+                TargetFilter::Typed(TypedFilter::card().controller(ControllerRef::You))
+            }
+            Some(ControllerRef::Opponent) => {
+                TargetFilter::Typed(TypedFilter::card().controller(ControllerRef::Opponent))
+            }
+            // CR 109.4: TargetPlayer has no defined semantics here (cost-modification
+            // static scoping). Fall back to an untyped filter; the parser should not
+            // emit this variant for cost statics.
+            Some(ControllerRef::TargetPlayer) => TargetFilter::Typed(TypedFilter::card()),
+            None => TargetFilter::Typed(TypedFilter::card()),
         }
-        Some(ControllerRef::Opponent) => {
-            TargetFilter::Typed(TypedFilter::card().controller(ControllerRef::Opponent))
-        }
-        // CR 109.4: TargetPlayer has no defined semantics here (cost-modification
-        // static scoping). Fall back to an untyped filter; the parser should not
-        // emit this variant for cost statics.
-        Some(ControllerRef::TargetPlayer) => TargetFilter::Typed(TypedFilter::card()),
-        None => TargetFilter::Typed(TypedFilter::card()),
     };
 
     let mut definition = StaticDefinition::new(mode)
         .affected(affected)
         .description(text.to_string());
+
+    // CR 117.7 + CR 601.2f: A self-spell cost reduction must apply while the
+    // card is in hand (pre-cast affordability checks) and on the stack (final
+    // cost determination during casting). Without opting in via `active_zones`,
+    // layer collection would ignore the static outside the battlefield, and
+    // the card would never reduce its own cost.
+    if is_self_spell {
+        definition.active_zones = vec![Zone::Hand, Zone::Stack];
+    }
     if let Some(filter) = first_qualified_spell_filter.as_ref() {
         definition.condition = Some(first_qualified_spell_condition(filter));
     }
@@ -7047,6 +7188,28 @@ mod tests {
         } else {
             panic!("Expected Typed filter, got {:?}", def.affected);
         }
+    }
+
+    /// CR 117.7 + CR 601.2f: "This spell costs {N} less ..." must parse into a
+    /// self-scoped static — affected = SelfRef, active_zones = [Hand, Stack] —
+    /// so the cast-time scanner finds it on the spell itself (not on the
+    /// battlefield). Regression guard for Tolarian Terror class.
+    #[test]
+    fn static_this_spell_cost_less_self_scoped_in_hand_and_stack() {
+        let def = parse_static_line(
+            "This spell costs {1} less to cast for each instant and sorcery card in your graveyard.",
+        )
+        .unwrap();
+        assert!(matches!(
+            def.mode,
+            StaticMode::ReduceCost {
+                amount: ManaCost::Cost { generic: 1, .. },
+                dynamic_count: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(def.affected, Some(TargetFilter::SelfRef)));
+        assert_eq!(def.active_zones, vec![Zone::Hand, Zone::Stack]);
     }
 
     #[test]
@@ -8028,6 +8191,23 @@ mod tests {
     fn static_you_have_shroud() {
         let def = parse_static_line("You have shroud.").unwrap();
         assert_eq!(def.mode, StaticMode::Shroud);
+        assert_eq!(
+            def.affected,
+            Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::You),
+            ))
+        );
+    }
+
+    /// CR 702.11: "You have hexproof." (Crystal Barricade) must produce a
+    /// player-scope `StaticMode::Hexproof`, not a bogus
+    /// `ContinuousModification::AddKeyword(Hexproof)` on an empty-typed
+    /// controller-scoped filter (which would wrongly grant hexproof to every
+    /// permanent you control instead of to the player).
+    #[test]
+    fn static_you_have_hexproof() {
+        let def = parse_static_line("You have hexproof.").unwrap();
+        assert_eq!(def.mode, StaticMode::Hexproof);
         assert_eq!(
             def.affected,
             Some(TargetFilter::Typed(

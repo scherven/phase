@@ -8,7 +8,7 @@ use crate::types::game_state::{
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::Keyword;
-use crate::types::mana::{ManaCost, ManaCostShard, ManaType};
+use crate::types::mana::{ManaCost, ManaCostShard, ManaType, PaymentContext};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
@@ -1802,12 +1802,13 @@ pub(super) fn auto_tap_mana_sources(
     let spell_meta =
         deprioritize_source.and_then(|sid| super::casting::build_spell_meta(state, player, sid));
     let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
+    let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
     let residual = state
         .players
         .iter()
         .find(|p| p.id == player)
         .map(|p| {
-            mana_payment::reduce_cost_by_pool(&p.mana_pool, cost, spell_meta.as_ref(), any_color)
+            mana_payment::reduce_cost_by_pool(&p.mana_pool, cost, spell_ctx.as_ref(), any_color)
         })
         .unwrap_or_else(|| cost.clone());
 
@@ -2524,6 +2525,7 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
     auto_tap_mana_sources(state, player, cost, events, Some(source_id));
 
     let spell_meta = super::casting::build_spell_meta(state, player, source_id);
+    let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
     let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
     let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
 
@@ -2532,7 +2534,7 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
         mana_payment::compute_phyrexian_shards(
             &player_data.mana_pool,
             cost,
-            spell_meta.as_ref(),
+            spell_ctx.as_ref(),
             any_color,
             max_life,
         )
@@ -2624,6 +2626,7 @@ mod tests {
             ability: ResolvedAbility::new(
                 Effect::Scry {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: crate::types::ability::TargetFilter::Controller,
                 },
                 Vec::new(),
                 source_id,
@@ -3128,6 +3131,7 @@ mod tests {
                 AbilityKind::Activated,
                 Effect::Scry {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: crate::types::ability::TargetFilter::Controller,
                 },
             )];
 

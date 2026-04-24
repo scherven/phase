@@ -404,9 +404,112 @@ pub fn execute_untap(state: &mut GameState, events: &mut Vec<GameEvent>) {
         }
     }
 
+    // CR 502.3 + CR 113.6: Seedborn-Muse-class statics grant a second untap
+    // pass during each OTHER player's untap step. Scan the battlefield for
+    // `StaticMode::UntapsDuringEachOtherPlayersUntapStep` sources whose
+    // controller is NOT the active player; that controller untaps all of
+    // their permanents matching the static's `affected` filter.
+    //
+    // This runs AFTER the active player's normal untap and BEFORE the
+    // "until controller's next untap step" prune, so it does not interfere
+    // with either. Untapping already-untapped permanents is a no-op, so
+    // multiple Seedborn-like sources (e.g. copy effects) compose safely.
+    // Phased-out sources are excluded by `active_static_definitions`.
+    //
+    // Note: "doesn't untap during your controller's untap step" restrictions
+    // (Frozen Shade, Tidewater Minion) do NOT apply here — this is "another
+    // player's untap step", not the permanent's controller's. This is
+    // consistent with CR 502.3.
+    execute_seedborn_statics(state, events, active);
+
     // CR 502.3: Prune "until controller's next untap step" effects AFTER the untap
     // step has been processed, so the permanent skips exactly one untap.
     super::layers::prune_controller_untap_step_effects(state, active);
+}
+
+/// CR 502.3 + CR 113.6: Second-pass untap for `UntapsDuringEachOtherPlayersUntapStep`
+/// statics (Seedborn Muse class). Runs during the active player's untap step,
+/// after the normal active-player untap. Each matching source whose controller
+/// != `active_player` triggers an untap of that controller's permanents
+/// matching the static's `affected` filter.
+fn execute_seedborn_statics(state: &mut GameState, events: &mut Vec<GameEvent>, active: PlayerId) {
+    use crate::game::filter::{matches_target_filter, FilterContext};
+    use crate::types::ability::TargetFilter;
+
+    // Collect (source_id, source_controller, affected_filter) tuples up-front
+    // so we don't borrow `state` mutably while iterating statics.
+    let seedborn_pulls: Vec<(ObjectId, PlayerId, TargetFilter)> =
+        super::functioning_abilities::battlefield_active_statics(state)
+            .filter(|(_, def)| {
+                matches!(def.mode, StaticMode::UntapsDuringEachOtherPlayersUntapStep)
+            })
+            .filter(|(obj, _)| obj.controller != active)
+            .filter_map(|(obj, def)| {
+                def.affected
+                    .as_ref()
+                    .map(|f| (obj.id, obj.controller, f.clone()))
+            })
+            .collect();
+
+    if seedborn_pulls.is_empty() {
+        return;
+    }
+
+    for (source_id, source_controller, filter) in seedborn_pulls {
+        let ctx = FilterContext::from_source_with_controller(source_id, source_controller);
+        // Snapshot IDs so the mutation loop doesn't alias the battlefield iteration.
+        let to_untap: Vec<ObjectId> = state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|obj| obj.controller == source_controller && obj.tapped)
+            })
+            .filter(|id| matches_target_filter(state, *id, &filter, &ctx))
+            .collect();
+
+        for id in to_untap {
+            // CR 502.3: Untapping is idempotent; already-untapped permanents
+            // (e.g. from an earlier Seedborn pass) are filtered out above.
+            // Route through the replacement pipeline so "doesn't untap"
+            // effects still apply when they are in scope (rare — most such
+            // effects scope to "your controller's untap step", which does
+            // not cover this pass).
+            let proposed = ProposedEvent::Untap {
+                object_id: id,
+                applied: HashSet::new(),
+            };
+            match replacement::replace_event(state, proposed, events) {
+                ReplacementResult::Execute(event) => {
+                    if let ProposedEvent::Untap { object_id, .. } = event {
+                        if let Some(obj) = state.objects.get_mut(&object_id) {
+                            // CR 122.1g: Stun-counter removal takes precedence
+                            // over the untap, matching the main untap pass.
+                            if let Some(entry) = obj.counters.get_mut(&CounterType::Stun) {
+                                *entry -= 1;
+                                if *entry == 0 {
+                                    obj.counters.remove(&CounterType::Stun);
+                                }
+                                events.push(GameEvent::CounterRemoved {
+                                    object_id,
+                                    counter_type: CounterType::Stun,
+                                    count: 1,
+                                });
+                            } else {
+                                obj.tapped = false;
+                                events.push(GameEvent::PermanentUntapped { object_id });
+                            }
+                        }
+                    }
+                }
+                ReplacementResult::Prevented => {}
+                ReplacementResult::NeedsChoice(_) => {}
+            }
+        }
+    }
 }
 
 /// CR 504.1: During the draw step, the active player draws a card.
@@ -1095,6 +1198,137 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, GameEvent::PermanentUntapped { object_id } if *object_id == id)));
+    }
+
+    /// CR 502.3 + CR 113.6: Seedborn Muse class — its controller untaps
+    /// permanents during each OTHER player's untap step.
+    fn install_seedborn_static(state: &mut GameState, source_id: ObjectId) {
+        use crate::types::ability::{ControllerRef, StaticDefinition, TargetFilter, TypedFilter};
+        let def = StaticDefinition::new(StaticMode::UntapsDuringEachOtherPlayersUntapStep)
+            .affected(TargetFilter::Typed(
+                TypedFilter::permanent().controller(ControllerRef::You),
+            ));
+        let obj = state.objects.get_mut(&source_id).unwrap();
+        obj.static_definitions.push(def.clone());
+        obj.base_static_definitions.push(def);
+    }
+
+    /// Mark the object as a creature so `TypeFilter::Permanent` matches.
+    fn mark_as_creature(state: &mut GameState, id: ObjectId) {
+        use crate::types::card_type::CoreType;
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+    }
+
+    #[test]
+    fn seedborn_untaps_controllers_permanents_on_opponents_untap_step() {
+        let mut state = setup();
+        state.active_player = PlayerId(1); // Opponent's untap step.
+
+        let seedborn = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Seedborn Muse".to_string(),
+            Zone::Battlefield,
+        );
+        install_seedborn_static(&mut state, seedborn);
+
+        let mine_a = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        let mine_b = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        mark_as_creature(&mut state, seedborn);
+        mark_as_creature(&mut state, mine_a);
+        mark_as_creature(&mut state, mine_b);
+        state.objects.get_mut(&mine_a).unwrap().tapped = true;
+        state.objects.get_mut(&mine_b).unwrap().tapped = true;
+        state.objects.get_mut(&seedborn).unwrap().tapped = true;
+
+        let mut events = Vec::new();
+        execute_untap(&mut state, &mut events);
+
+        // Seedborn's controller's permanents untapped during opponent's step.
+        assert!(!state.objects[&mine_a].tapped);
+        assert!(!state.objects[&mine_b].tapped);
+        assert!(!state.objects[&seedborn].tapped);
+    }
+
+    #[test]
+    fn seedborn_does_not_fire_on_controllers_own_untap_step() {
+        let mut state = setup();
+        state.active_player = PlayerId(0); // Seedborn's controller is active.
+
+        let seedborn = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Seedborn Muse".to_string(),
+            Zone::Battlefield,
+        );
+        install_seedborn_static(&mut state, seedborn);
+
+        // A tapped opponent permanent must NOT untap — Seedborn only affects
+        // its own controller's permanents, and this pass only runs when the
+        // active player is NOT Seedborn's controller (it isn't this test).
+        let opp_perm = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&opp_perm).unwrap().tapped = true;
+
+        let mut events = Vec::new();
+        execute_untap(&mut state, &mut events);
+
+        assert!(state.objects[&opp_perm].tapped);
+    }
+
+    #[test]
+    fn seedborn_phased_out_does_not_fire() {
+        let mut state = setup();
+        state.active_player = PlayerId(1);
+
+        let seedborn = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Seedborn Muse".to_string(),
+            Zone::Battlefield,
+        );
+        install_seedborn_static(&mut state, seedborn);
+        // CR 702.26c: Phased-out permanents don't function.
+        use crate::game::game_object::{PhaseOutCause, PhaseStatus};
+        state.objects.get_mut(&seedborn).unwrap().phase_status = PhaseStatus::PhasedOut {
+            cause: PhaseOutCause::Directly,
+        };
+
+        let mine = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&mine).unwrap().tapped = true;
+
+        let mut events = Vec::new();
+        execute_untap(&mut state, &mut events);
+
+        // Seedborn is phased out, so the second-pass should NOT fire.
+        assert!(state.objects[&mine].tapped);
     }
 
     #[test]

@@ -463,24 +463,51 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             }
         }
         WaitingFor::SurveilChoice { player, cards } => select_cards_variants(*player, cards, None),
-        WaitingFor::RevealChoice { player, cards, .. } => {
-            select_cards_variants(*player, cards, Some(1))
+        WaitingFor::RevealChoice {
+            player,
+            cards,
+            optional,
+            ..
+        } => {
+            // CR 701.20a: Normal reveal forces exactly one pick. Optional reveal
+            // (e.g., reveal-lands) additionally permits an empty selection to
+            // signal "I decline to reveal" — the source's decline branch fires.
+            let mut variants = select_cards_variants(*player, cards, Some(1));
+            if *optional {
+                variants.push(candidate(
+                    GameAction::SelectCards { cards: vec![] },
+                    TacticalClass::Selection,
+                    Some(*player),
+                ));
+            }
+            variants
         }
         WaitingFor::SearchChoice {
             player,
             cards,
             count,
+            up_to,
             ..
-        } => combinations(cards, *count)
-            .into_iter()
-            .map(|combo| {
-                candidate(
-                    GameAction::SelectCards { cards: combo },
-                    TacticalClass::Selection,
-                    Some(*player),
-                )
-            })
-            .collect(),
+        } => {
+            // CR 107.1c + CR 701.23d: "any number of" / "up to N" searches enumerate
+            // combination sizes 0..=count; exact-count searches enumerate only `count`.
+            let sizes: Vec<usize> = if *up_to {
+                (0..=*count).collect()
+            } else {
+                vec![*count]
+            };
+            sizes
+                .into_iter()
+                .flat_map(|size| combinations(cards, size))
+                .map(|combo| {
+                    candidate(
+                        GameAction::SelectCards { cards: combo },
+                        TacticalClass::Selection,
+                        Some(*player),
+                    )
+                })
+                .collect()
+        }
         // CR 700.2: Choose card(s) from a tracked set (exiled/revealed cards).
         WaitingFor::ChooseFromZoneChoice {
             player,
@@ -2904,6 +2931,7 @@ mod tests {
                     AbilityKind::Activated,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
                     },
                 )
                 .activation_restrictions(vec![ActivationRestriction::OnlyOnceEachTurn]),

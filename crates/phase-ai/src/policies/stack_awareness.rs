@@ -207,6 +207,7 @@ pub(crate) fn assess_spell_impact(state: &GameState, entry: &StackEntry) -> f64 
                     Effect::Counter { .. } => 1.5,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value },
+                        ..
                     } => *value as f64 * 1.5,
                     Effect::DealDamage { .. } => 1.0,
                     Effect::SearchLibrary { .. } => 1.0,

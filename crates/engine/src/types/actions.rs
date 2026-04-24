@@ -265,6 +265,13 @@ pub enum GameAction {
     },
     /// Cancel any active auto-pass for the acting player.
     CancelAutoPass,
+    /// Replace the acting player's phase-stop preference list. Phase stops
+    /// interrupt an `UntilEndOfTurn` auto-pass session and prevent the engine
+    /// from auto-submitting empty blocker declarations during the named phases.
+    /// Legal in any WaitingFor state — pure preference propagation.
+    SetPhaseStops {
+        stops: Vec<super::phase::Phase>,
+    },
     /// CR 510.1c/d: Assign damage from an attacker to its blockers (and optionally
     /// the defending player/PW with trample, plus PW controller with trample-over-PW).
     AssignCombatDamage {
@@ -454,6 +461,7 @@ impl GameAction {
             | GameAction::ChooseBattleProtector { .. }
             | GameAction::SetAutoPass { .. }
             | GameAction::CancelAutoPass
+            | GameAction::SetPhaseStops { .. }
             | GameAction::AssignCombatDamage { .. }
             | GameAction::DistributeAmong { .. }
             | GameAction::RetargetSpell { .. }

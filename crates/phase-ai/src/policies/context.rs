@@ -216,6 +216,7 @@ mod tests {
         let sub = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
             Vec::new(),
             ObjectId(1),
@@ -290,6 +291,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         )));
         let spell_id = create_object(
@@ -354,6 +356,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         ));
         object.trigger_definitions.push(

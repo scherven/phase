@@ -223,7 +223,11 @@ pub struct ZoneChangeRecord {
     pub mana_value: u32,
     pub controller: PlayerId,
     pub owner: PlayerId,
-    pub from_zone: Zone,
+    /// CR 603.6a + CR 111.1: `None` when the object was created directly in the
+    /// destination zone without existing in a prior zone (e.g. token creation
+    /// on the battlefield, emblem creation in the command zone). For normal
+    /// zone moves this carries the origin zone.
+    pub from_zone: Option<Zone>,
     pub to_zone: Zone,
     /// CR 603.10a + CR 603.6e: Snapshot of attachments on the object at the moment
     /// of the zone change. Required by look-back triggers of the form
@@ -276,7 +280,7 @@ impl ZoneChangeRecord {
     ///
     /// Production code must use `GameObject::snapshot_for_zone_change` — the
     /// authoritative constructor that copies from a live object.
-    pub fn test_minimal(object_id: ObjectId, from: Zone, to: Zone) -> Self {
+    pub fn test_minimal(object_id: ObjectId, from: Option<Zone>, to: Zone) -> Self {
         Self {
             object_id,
             name: String::new(),
@@ -859,6 +863,13 @@ pub enum WaitingFor {
         cards: Vec<ObjectId>,
         #[serde(default = "super::ability::default_target_filter_any")]
         filter: TargetFilter,
+        /// CR 701.20a: When true, the prompt offers a "decline" option (empty
+        /// `SelectCards` payload). Used by "you may reveal" patterns (reveal-lands
+        /// like Port Town and Gilt-Leaf Palace) where a player can choose to skip
+        /// the reveal. The decline branch is stashed on the effect source and
+        /// resolved via `pending_continuation` when the empty pick arrives.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
     },
     /// Player is choosing card(s) from a filtered library search.
     SearchChoice {
@@ -870,6 +881,10 @@ pub enum WaitingFor {
         /// Whether the chosen cards should be revealed before the continuation resolves.
         #[serde(default)]
         reveal: bool,
+        /// CR 107.1c + CR 701.23d: When true, the searcher may select 0..=count
+        /// cards. When false, they must select exactly count cards.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up_to: bool,
     },
     /// CR 700.2: Player selects card(s) from a tracked set (e.g., exiled cards).
     /// Chosen/unchosen cards flow into sub-abilities via pending_continuation,
@@ -1698,6 +1713,11 @@ impl WaitingFor {
 }
 
 /// What the frontend requests for auto-pass (no internal state).
+///
+/// Phase stops that should interrupt `UntilEndOfTurn` are a separate per-player
+/// preference on `GameState::phase_stops`, managed via `GameAction::SetPhaseStops`.
+/// Keeping them out of the request preserves a single source of truth and lets
+/// the preference change mid-session without requiring a new auto-pass request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AutoPassRequest {
@@ -1712,7 +1732,9 @@ pub enum AutoPassMode {
     /// Auto-pass while stack is non-empty. Clears when stack empties or grows
     /// beyond `initial_stack_len` (the stack size when the flag was set).
     UntilStackEmpty { initial_stack_len: usize },
-    /// Auto-pass through all priority/combat stops until the flagged player's turn starts.
+    /// Auto-pass through priority/combat stops until the flagged player's next
+    /// turn starts. Interrupted by opponent stack activity (MTGA-style) or when
+    /// the current phase matches the player's entry in `GameState::phase_stops`.
     UntilEndOfTurn,
 }
 
@@ -1849,6 +1871,13 @@ pub enum CastingVariant {
     /// transient continuous "has haste" effect that lasts as long as the
     /// resolution-time controller still controls the permanent.
     Suspend,
+    /// CR 702.170d: Cast from exile via the Plot "cast without paying its mana
+    /// cost" permission during the owner's main phase on a turn after the card
+    /// was plotted. Detected at cast preparation when the exile-zone source has
+    /// a `CastingPermission::Plotted { turn_plotted }` and the current turn is
+    /// strictly greater than `turn_plotted`. Zeroes the mana cost and routes
+    /// through the normal cast pipeline; no special resolution-time behavior.
+    Plot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2068,6 +2097,15 @@ pub struct GameState {
     /// Per-player auto-pass flags. When set, the engine auto-passes for this player.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub auto_pass: HashMap<PlayerId, AutoPassMode>,
+
+    /// Per-player phase-stop preferences. While a player's `UntilEndOfTurn`
+    /// auto-pass session is active, the engine will interrupt auto-pass whenever
+    /// the current phase appears in that player's list. Also consulted when
+    /// deciding whether to auto-submit empty blockers during Declare Blockers,
+    /// so users can pause the step to activate instants / Ninjutsu even when
+    /// no legal blockers exist.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub phase_stops: HashMap<PlayerId, Vec<Phase>>,
 
     /// CR 605.3: Lands manually tapped for mana via TapLandForMana this priority window.
     /// Per-player map enables multiplayer correctness (e.g., UnlessPayment opponent tapping).
@@ -2491,6 +2529,7 @@ impl GameState {
             commander_damage: Vec::new(),
             priority_passes: BTreeSet::new(),
             auto_pass: HashMap::new(),
+            phase_stops: HashMap::new(),
             lands_tapped_for_mana: HashMap::new(),
             match_config: MatchConfig::default(),
             match_phase: MatchPhase::InGame,
@@ -2656,6 +2695,7 @@ impl PartialEq for GameState {
             && self.commander_damage == other.commander_damage
             && self.priority_passes == other.priority_passes
             && self.auto_pass == other.auto_pass
+            && self.phase_stops == other.phase_stops
             && self.lands_tapped_for_mana == other.lands_tapped_for_mana
             && self.match_config == other.match_config
             && self.match_phase == other.match_phase
@@ -3251,6 +3291,7 @@ mod tests {
             ability: ResolvedAbility::new(
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
                 vec![],
                 ObjectId(5),
@@ -3288,6 +3329,7 @@ mod tests {
             ability: ResolvedAbility::new(
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
                 vec![],
                 ObjectId(5),
