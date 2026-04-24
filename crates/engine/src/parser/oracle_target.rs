@@ -380,6 +380,11 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         "the exiled permanent",
         "the exiled creature",
         "both creatures",
+        // CR 603.7: "both cards" referring to two objects produced by prior
+        // sibling steps in the same resolution (e.g., Sword of Hearth and
+        // Home: exiled creature + searched basic land → "Put both cards onto
+        // the battlefield under your control").
+        "both cards",
     ];
     for phrase in TRACKED_SET_PHRASES {
         if let Ok((rest, _)) =
@@ -3524,6 +3529,23 @@ mod tests {
     #[test]
     fn the_rest_produces_tracked_set() {
         let (f, rest) = parse_target("the rest");
+        assert_eq!(
+            f,
+            TargetFilter::TrackedSet {
+                id: TrackedSetId(0)
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn both_cards_produces_tracked_set() {
+        // CR 603.7: Sword of Hearth and Home — "exile up to one target
+        // creature you own, then search your library for a basic land card.
+        // Put both cards onto the battlefield under your control." "both
+        // cards" anaphorically refers to the exiled creature + the searched
+        // land, both published into the chain-scoped tracked set.
+        let (f, rest) = parse_target("both cards");
         assert_eq!(
             f,
             TargetFilter::TrackedSet {
