@@ -1396,7 +1396,9 @@ mod tests {
         state.active_player = PlayerId(0);
         state.priority_player = PlayerId(0);
         state.phase = Phase::End;
-        state.waiting_for = WaitingFor::Priority { player: PlayerId(0) };
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
 
         for i in 0..9 {
             create_object(
@@ -1424,7 +1426,11 @@ mod tests {
             .expect("p1 pass priority on End");
 
         match &r2.waiting_for {
-            WaitingFor::DiscardToHandSize { player, count, cards } => {
+            WaitingFor::DiscardToHandSize {
+                player,
+                count,
+                cards,
+            } => {
                 assert_eq!(*player, PlayerId(0));
                 assert_eq!(*count, 2);
                 assert_eq!(cards.len(), 9);

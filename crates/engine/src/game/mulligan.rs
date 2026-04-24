@@ -1,4 +1,3 @@
-
 use crate::game::effects::resolve_effect;
 use crate::types::ability::{AbilityKind, ResolvedAbility, TargetRef};
 use crate::types::events::GameEvent;

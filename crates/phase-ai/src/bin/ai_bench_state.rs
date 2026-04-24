@@ -75,13 +75,19 @@ fn main() {
     println!("objects:          {}", state.objects.len());
     println!("battlefield:      {}", state.battlefield.len());
     println!("stack:            {}", state.stack.len());
-    println!("waiting_for:      {:?}", std::mem::discriminant(&state.waiting_for));
+    println!(
+        "waiting_for:      {:?}",
+        std::mem::discriminant(&state.waiting_for)
+    );
     println!();
 
     let ai_player = state.active_player;
     let config = create_config_for_players(difficulty, Platform::Native, state.players.len() as u8);
 
-    println!("=== AI choose_action (difficulty={:?}, iters={}) ===", difficulty, iters);
+    println!(
+        "=== AI choose_action (difficulty={:?}, iters={}) ===",
+        difficulty, iters
+    );
     println!(
         "search.enabled={} max_depth={} max_nodes={} time_budget_ms={:?}",
         config.search.enabled,
@@ -97,7 +103,12 @@ fn main() {
         let dt = t.elapsed();
         total += dt;
         match action {
-            Some(a) => println!("iter {}: {:?}  action={:?}", i, dt, std::mem::discriminant(&a)),
+            Some(a) => println!(
+                "iter {}: {:?}  action={:?}",
+                i,
+                dt,
+                std::mem::discriminant(&a)
+            ),
             None => println!("iter {}: {:?}  action=None", i, dt),
         }
     }

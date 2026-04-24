@@ -4185,7 +4185,10 @@ mod tests {
     #[test]
     fn only_if_quantity_applies_when_condition_is_true() {
         let mut state = GameState::new_two_player(42);
-        let h = &mut state.players[0].hand; if h.len() > 1 { h.truncate(1); }
+        let h = &mut state.players[0].hand;
+        if h.len() > 1 {
+            h.truncate(1);
+        }
         let cond = ReplacementCondition::OnlyIfQuantity {
             lhs: QuantityExpr::Ref {
                 qty: crate::types::ability::QuantityRef::HandSize,
@@ -4231,7 +4234,10 @@ mod tests {
                 },
             ));
         let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
-        let h = &mut state.players[0].hand; if h.len() > 1 { h.truncate(1); }
+        let h = &mut state.players[0].hand;
+        if h.len() > 1 {
+            h.truncate(1);
+        }
 
         let proposed = ProposedEvent::Draw {
             player_id: PlayerId(1),
