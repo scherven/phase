@@ -11,7 +11,7 @@ use crate::types::mana::{ManaCost, ManaPool, ManaType};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
-use super::effects::mana::resolve_mana_types;
+use super::effects::mana::{resolve_mana_types, resolve_restrictions};
 use super::engine::EngineError;
 use super::filter::{matches_target_filter, FilterContext};
 use super::life_costs::{self, PayLifeCostResult};
@@ -198,23 +198,45 @@ fn produce_mana_from_ability(
     events: &mut Vec<GameEvent>,
     color_override: Option<ProductionOverride>,
 ) {
-    let produced_mana = match &*ability_def.effect {
-        Effect::Mana { produced, .. } => match color_override {
-            // `Combination` is pre-chosen — skip `resolve_mana_types` entirely
-            // so the exact sequence lands in the pool (CR 605.3b).
-            Some(ProductionOverride::Combination(types)) => types,
-            Some(ProductionOverride::SingleColor(color)) => {
-                let resolved = resolve_mana_types(produced, state, player, source_id);
-                vec![color; resolved.len()]
-            }
-            None => resolve_mana_types(produced, state, player, source_id),
-        },
-        _ => Vec::new(),
+    // CR 106.6: Resolve spend-restriction templates, grants, and expiry so they
+    // attach to each produced `ManaUnit`. Dropping these here is the bug that
+    // made Flamebraider's Elemental-only mana behave as unrestricted mana.
+    let (produced_mana, restrictions, grants, expiry) = match &*ability_def.effect {
+        Effect::Mana {
+            produced,
+            restrictions,
+            grants,
+            expiry,
+        } => {
+            let mana = match color_override {
+                // `Combination` is pre-chosen — skip `resolve_mana_types` entirely
+                // so the exact sequence lands in the pool (CR 605.3b).
+                Some(ProductionOverride::Combination(types)) => types,
+                Some(ProductionOverride::SingleColor(color)) => {
+                    let resolved = resolve_mana_types(produced, state, player, source_id);
+                    vec![color; resolved.len()]
+                }
+                None => resolve_mana_types(produced, state, player, source_id),
+            };
+            let concrete = resolve_restrictions(restrictions, state, source_id);
+            (mana, concrete, grants.clone(), *expiry)
+        }
+        _ => (Vec::new(), Vec::new(), Vec::new(), None),
     };
 
     let tapped = mana_sources::has_tap_component(&ability_def.cost);
     for mana_type in produced_mana {
-        mana_payment::produce_mana(state, source_id, mana_type, player, tapped, events);
+        mana_payment::produce_mana_with_attributes(
+            state,
+            source_id,
+            mana_type,
+            player,
+            tapped,
+            &restrictions,
+            &grants,
+            expiry,
+            events,
+        );
     }
 
     // CR 605.3b + CR 605.1a: A mana ability with a non-mana clause in its
@@ -631,21 +653,43 @@ fn resolve_mana_ability_with_selected_choices(
         ));
     }
 
-    let produced_mana = match &*ability_def.effect {
-        Effect::Mana { produced, .. } => match color_override {
-            Some(ProductionOverride::Combination(types)) => types,
-            Some(ProductionOverride::SingleColor(color)) => {
-                let resolved = resolve_mana_types(produced, &*state, player, source_id);
-                vec![color; resolved.len()]
-            }
-            None => resolve_mana_types(produced, &*state, player, source_id),
-        },
-        _ => Vec::new(),
+    // CR 106.6: Thread restrictions, grants, and expiry through the
+    // selected-choices path too — otherwise color-picked or hybrid-paid mana
+    // abilities would still emit unrestricted mana.
+    let (produced_mana, restrictions, grants, expiry) = match &*ability_def.effect {
+        Effect::Mana {
+            produced,
+            restrictions,
+            grants,
+            expiry,
+        } => {
+            let mana = match color_override {
+                Some(ProductionOverride::Combination(types)) => types,
+                Some(ProductionOverride::SingleColor(color)) => {
+                    let resolved = resolve_mana_types(produced, &*state, player, source_id);
+                    vec![color; resolved.len()]
+                }
+                None => resolve_mana_types(produced, &*state, player, source_id),
+            };
+            let concrete = resolve_restrictions(restrictions, &*state, source_id);
+            (mana, concrete, grants.clone(), *expiry)
+        }
+        _ => (Vec::new(), Vec::new(), Vec::new(), None),
     };
 
     let tapped = mana_sources::has_tap_component(&ability_def.cost);
     for mana_type in produced_mana {
-        mana_payment::produce_mana(state, source_id, mana_type, player, tapped, events);
+        mana_payment::produce_mana_with_attributes(
+            state,
+            source_id,
+            mana_type,
+            player,
+            tapped,
+            &restrictions,
+            &grants,
+            expiry,
+            events,
+        );
     }
 
     // CR 605.3b + CR 605.1a: Resolve the sub-ability chain inline (painlands'
@@ -1385,6 +1429,93 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, GameEvent::ManaAdded { .. })));
+    }
+
+    // CR 106.6: A mana ability that attaches a spend restriction (Flamebraider:
+    // "Spend this mana only to cast Elemental spells or activate abilities of
+    // Elemental sources") must thread that restriction onto every produced
+    // `ManaUnit`. Previously `produce_mana_from_ability` destructured
+    // `Effect::Mana { produced, .. }` and discarded `restrictions`, so the
+    // mana landed in the pool unrestricted.
+    #[test]
+    fn resolve_mana_ability_attaches_spend_restrictions() {
+        use crate::types::ability::ManaSpendRestriction;
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(7),
+            PlayerId(0),
+            "Flamebraider".to_string(),
+            Zone::Battlefield,
+        );
+
+        let def = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::AnyCombination {
+                    count: QuantityExpr::Fixed { value: 2 },
+                    color_options: vec![
+                        ManaColor::White,
+                        ManaColor::Blue,
+                        ManaColor::Black,
+                        ManaColor::Red,
+                        ManaColor::Green,
+                    ],
+                },
+                restrictions: vec![ManaSpendRestriction::SpellTypeOrAbilityActivation(
+                    "Elemental".to_string(),
+                )],
+                grants: vec![],
+                expiry: None,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        let mut events = Vec::new();
+        resolve_mana_ability(&mut state, obj_id, PlayerId(0), &def, &mut events, None).unwrap();
+
+        let pool = &state.players[0].mana_pool;
+        assert_eq!(pool.total(), 2);
+        // Every produced unit must carry the Elemental restriction.
+        for unit in &pool.mana {
+            assert_eq!(
+                unit.restrictions,
+                vec![
+                    crate::types::mana::ManaRestriction::OnlyForTypeSpellsOrAbilities(
+                        "Elemental".to_string()
+                    )
+                ],
+                "Flamebraider mana must carry Elemental restriction"
+            );
+        }
+
+        // Spending for a non-Elemental creature must fail.
+        use crate::types::mana::SpellMeta;
+        let goblin_spell = SpellMeta {
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Goblin".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+        };
+        let mut pool_clone = pool.clone();
+        let first_color = pool_clone.mana[0].color;
+        assert!(
+            pool_clone.spend_for(first_color, &goblin_spell).is_none(),
+            "Flamebraider mana must not be spendable on non-Elemental spells"
+        );
+
+        // Spending for an Elemental creature succeeds.
+        let elemental_spell = SpellMeta {
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Elemental".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+        };
+        assert!(
+            pool_clone
+                .spend_for(first_color, &elemental_spell)
+                .is_some(),
+            "Flamebraider mana must be spendable on Elemental spells"
+        );
     }
 
     #[test]

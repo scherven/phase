@@ -107,10 +107,15 @@ impl ManaRestriction {
                     .any(|s| s.eq_ignore_ascii_case(required_subtype));
                 is_creature && has_subtype
             }
-            // CR 106.6: The spell-casting half of the OR — allows if the spell has the type.
+            // CR 106.6: The spell-casting half of the OR — allows if the spell has the
+            // required type, consulting both core card types (Creature, Instant, ...)
+            // and subtypes (Elemental, Goblin, ...). Flamebraider's "Elemental" names
+            // a creature subtype; "Artifact" would name a core type. The check treats
+            // both buckets uniformly because Oracle text doesn't distinguish the two.
             ManaRestriction::OnlyForTypeSpellsOrAbilities(required_type) => meta
                 .types
                 .iter()
+                .chain(meta.subtypes.iter())
                 .any(|t| t.eq_ignore_ascii_case(required_type)),
             // Activation-only mana cannot be used to cast spells.
             ManaRestriction::OnlyForActivation => false,
@@ -131,18 +136,21 @@ impl ManaRestriction {
     }
 
     /// Returns `true` if this restriction permits spending mana to activate an ability
-    /// on a permanent whose types include `source_types`.
+    /// on a permanent whose core types include `source_types` and subtypes include
+    /// `source_subtypes`.
     /// CR 106.6: Used for "or activate abilities of creatures" restrictions.
-    pub fn allows_activation(&self, source_types: &[String]) -> bool {
+    pub fn allows_activation(&self, source_types: &[String], source_subtypes: &[String]) -> bool {
         match self {
             // Spell-only restrictions don't permit ability activation.
             ManaRestriction::OnlyForSpellType(_)
             | ManaRestriction::OnlyForCreatureType(_)
             | ManaRestriction::OnlyForSpellWithKeywordKind(_)
             | ManaRestriction::OnlyForSpellWithKeywordKindFromZone(_, _) => false,
-            // CR 106.6: The ability-activation half of the OR.
+            // CR 106.6: The ability-activation half of the OR. "Elemental sources"
+            // includes objects with creature type Elemental — consult subtypes too.
             ManaRestriction::OnlyForTypeSpellsOrAbilities(required_type) => source_types
                 .iter()
+                .chain(source_subtypes.iter())
                 .any(|t| t.eq_ignore_ascii_case(required_type)),
             // Activation-only mana always allows ability activation.
             ManaRestriction::OnlyForActivation => true,
@@ -1012,6 +1020,62 @@ mod tests {
         };
         assert!(pool.spend_for(ManaType::Green, &goblin_spell).is_none());
         assert_eq!(pool.total(), 1, "Restricted mana should remain in pool");
+    }
+
+    // CR 106.6: "Spend this mana only to cast Elemental spells or activate abilities
+    // of Elemental sources" — "Elemental" names a creature subtype. The restriction
+    // must match against both core types and subtypes on `SpellMeta`.
+    #[test]
+    fn restriction_type_or_ability_allows_subtype_creature_spell() {
+        let restriction = ManaRestriction::OnlyForTypeSpellsOrAbilities("Elemental".to_string());
+        let elemental_creature = SpellMeta {
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Elemental".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+        };
+        let tribal_elemental_instant = SpellMeta {
+            types: vec!["Tribal".to_string(), "Instant".to_string()],
+            subtypes: vec!["Elemental".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+        };
+        let goblin_creature = SpellMeta {
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Goblin".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+        };
+        let plain_instant = SpellMeta {
+            types: vec!["Instant".to_string()],
+            subtypes: vec![],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+        };
+        assert!(restriction.allows_spell(&elemental_creature));
+        assert!(restriction.allows_spell(&tribal_elemental_instant));
+        assert!(!restriction.allows_spell(&goblin_creature));
+        assert!(!restriction.allows_spell(&plain_instant));
+    }
+
+    // CR 106.6: The ability-activation half of the OR. An Elemental permanent is a
+    // source whose subtypes include "Elemental"; activation must be permitted.
+    #[test]
+    fn restriction_type_or_ability_allows_subtype_activation() {
+        let restriction = ManaRestriction::OnlyForTypeSpellsOrAbilities("Elemental".to_string());
+        let elemental_creature_types = vec!["Creature".to_string()];
+        let elemental_subtypes = vec!["Elemental".to_string(), "Shaman".to_string()];
+        assert!(restriction.allows_activation(&elemental_creature_types, &elemental_subtypes));
+
+        let goblin_subtypes = vec!["Goblin".to_string()];
+        assert!(!restriction.allows_activation(&elemental_creature_types, &goblin_subtypes));
+
+        // Core-type match also satisfies the check (e.g., "Artifact sources").
+        let artifact_restriction =
+            ManaRestriction::OnlyForTypeSpellsOrAbilities("Artifact".to_string());
+        let artifact_types = vec!["Artifact".to_string()];
+        let no_subtypes: Vec<String> = vec![];
+        assert!(artifact_restriction.allows_activation(&artifact_types, &no_subtypes));
     }
 
     #[test]

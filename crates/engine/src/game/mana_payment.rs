@@ -3,7 +3,10 @@ use thiserror::Error;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, ShardChoice};
 use crate::types::identifiers::ObjectId;
-use crate::types::mana::{ManaCost, ManaCostShard, ManaPool, ManaType, ManaUnit, SpellMeta};
+use crate::types::mana::{
+    ManaCost, ManaCostShard, ManaExpiry, ManaPool, ManaRestriction, ManaSpellGrant, ManaType,
+    ManaUnit, SpellMeta,
+};
 use crate::types::player::PlayerId;
 
 /// Color demand array indexed by WUBRG (White=0, Blue=1, Black=2, Red=3, Green=4).
@@ -106,6 +109,39 @@ pub fn produce_mana(
     tapped_for_mana: bool,
     events: &mut Vec<GameEvent>,
 ) {
+    produce_mana_with_attributes(
+        state,
+        source_id,
+        mana_type,
+        player_id,
+        tapped_for_mana,
+        &[],
+        &[],
+        None,
+        events,
+    );
+}
+
+/// Produce mana and add it to a player's mana pool, carrying spend restrictions,
+/// spell grants, and expiry semantics (CR 106.6 + CR 106.4).
+///
+/// CR 106.6: Some spells or abilities that produce mana restrict how that mana
+/// can be spent (e.g., Flamebraider: "Spend this mana only to cast Elemental
+/// spells or activate abilities of Elemental sources."). Restrictions attach to
+/// each produced `ManaUnit` so the spend-mana payment gate can reject illegal
+/// uses via `ManaRestriction::allows_spell` / `allows_activation`.
+#[allow(clippy::too_many_arguments)]
+pub fn produce_mana_with_attributes(
+    state: &mut GameState,
+    source_id: ObjectId,
+    mana_type: ManaType,
+    player_id: PlayerId,
+    tapped_for_mana: bool,
+    restrictions: &[ManaRestriction],
+    grants: &[ManaSpellGrant],
+    expiry: Option<ManaExpiry>,
+    events: &mut Vec<GameEvent>,
+) {
     use crate::game::replacement::{self, ReplacementResult};
     use crate::types::proposed_event::ProposedEvent;
 
@@ -127,9 +163,9 @@ pub fn produce_mana(
         color: final_mana_type,
         source_id,
         snow: false,
-        restrictions: Vec::new(),
-        grants: Vec::new(),
-        expiry: None,
+        restrictions: restrictions.to_vec(),
+        grants: grants.to_vec(),
+        expiry,
     };
 
     let player = state

@@ -85,7 +85,7 @@ pub fn resolve(
 
 /// Resolve parse-time restriction templates into concrete `ManaRestriction` values.
 /// CR 106.6: Some spells or abilities that produce mana restrict how that mana can be spent.
-fn resolve_restrictions(
+pub(crate) fn resolve_restrictions(
     templates: &[ManaSpendRestriction],
     state: &GameState,
     source_id: crate::types::identifiers::ObjectId,
