@@ -4358,6 +4358,86 @@ pub mod tests {
         ));
     }
 
+    // === CR 603.6a + CR 611.2b: "When ~ enters untapped/tapped" ETB gating ===
+    //
+    // Gingerbread Cabin class ("When this land enters untapped, create a Food
+    // token.") relies on `SourceIsTapped { negated: true }` evaluating the
+    // post-replacement-pipeline tapped state of the source at trigger-check
+    // time. The parser already attaches the condition; these tests guard the
+    // runtime evaluator so an ETB tapped via the "enters tapped unless ..."
+    // replacement suppresses the Food trigger, and an ETB untapped fires it.
+
+    #[test]
+    fn source_enters_untapped_fires_when_object_untapped() {
+        let mut state = setup();
+        let src = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Gingerbread Cabin".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&src).unwrap().tapped = false;
+
+        let cond = TriggerCondition::SourceIsTapped { negated: true };
+        assert!(check_trigger_condition(
+            &state,
+            &cond,
+            PlayerId(0),
+            Some(src),
+            None,
+        ));
+    }
+
+    #[test]
+    fn source_enters_untapped_suppressed_when_object_tapped() {
+        // Simulates the "enters tapped unless you control three or more other
+        // Forests" replacement resolving to tapped — the Food trigger must NOT
+        // fire.
+        let mut state = setup();
+        let src = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Gingerbread Cabin".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&src).unwrap().tapped = true;
+
+        let cond = TriggerCondition::SourceIsTapped { negated: true };
+        assert!(!check_trigger_condition(
+            &state,
+            &cond,
+            PlayerId(0),
+            Some(src),
+            None,
+        ));
+    }
+
+    #[test]
+    fn source_enters_tapped_fires_when_object_tapped() {
+        // Amulet of Vigor class: "enters tapped" rider fires only for tapped
+        // ETBs.
+        let mut state = setup();
+        let src = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Amulet of Vigor".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&src).unwrap().tapped = true;
+
+        let cond = TriggerCondition::SourceIsTapped { negated: false };
+        assert!(check_trigger_condition(
+            &state,
+            &cond,
+            PlayerId(0),
+            Some(src),
+            None,
+        ));
+    }
+
     // === CR 603.10a: Leaves-the-battlefield trigger LKI tests ===
 
     #[test]
