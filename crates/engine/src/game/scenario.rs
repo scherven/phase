@@ -5,6 +5,7 @@
 //! Zero filesystem dependencies -- all cards are constructed inline.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::database::synthesis::synthesize_all;
 use crate::game::engine::{apply_as_current, EngineError};
@@ -373,7 +374,7 @@ impl GameScenario {
         )
         .cost(crate::types::ability::AbilityCost::Tap);
         obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         id
     }
 
@@ -419,7 +420,7 @@ impl GameScenario {
             },
         );
         obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         id
     }
 
@@ -655,14 +656,14 @@ impl<'a> CardBuilder<'a> {
         let ability = AbilityDefinition::new(AbilityKind::Spell, effect);
         let obj = self.obj();
         obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         self
     }
 
     pub fn with_ability_definition(&mut self, ability: AbilityDefinition) -> &mut Self {
         let obj = self.obj();
         obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         self
     }
 
@@ -671,14 +672,14 @@ impl<'a> CardBuilder<'a> {
         let static_def = StaticDefinition::new(mode);
         let obj = self.obj();
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
         self
     }
 
     pub fn with_static_definition(&mut self, static_def: StaticDefinition) -> &mut Self {
         let obj = self.obj();
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
         self
     }
 
@@ -690,7 +691,7 @@ impl<'a> CardBuilder<'a> {
         let static_def = StaticDefinition::continuous().modifications(modifications);
         let obj = self.obj();
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
         self
     }
 
@@ -699,7 +700,7 @@ impl<'a> CardBuilder<'a> {
         let trigger = TriggerDefinition::new(mode);
         let obj = self.obj();
         obj.trigger_definitions.push(trigger.clone());
-        obj.base_trigger_definitions.push(trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(trigger);
         self
     }
 
@@ -707,7 +708,7 @@ impl<'a> CardBuilder<'a> {
     pub fn with_trigger_definition(&mut self, trigger: TriggerDefinition) -> &mut Self {
         let obj = self.obj();
         obj.trigger_definitions.push(trigger.clone());
-        obj.base_trigger_definitions.push(trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(trigger);
         self
     }
 
@@ -718,14 +719,14 @@ impl<'a> CardBuilder<'a> {
         let replacement = ReplacementDefinition::new(event);
         let obj = self.obj();
         obj.replacement_definitions.push(replacement.clone());
-        obj.base_replacement_definitions.push(replacement);
+        Arc::make_mut(&mut obj.base_replacement_definitions).push(replacement);
         self
     }
 
     pub fn with_replacement_definition(&mut self, def: ReplacementDefinition) -> &mut Self {
         let obj = self.obj();
         obj.replacement_definitions.push(def.clone());
-        obj.base_replacement_definitions.push(def);
+        Arc::make_mut(&mut obj.base_replacement_definitions).push(def);
         self
     }
 

@@ -1070,6 +1070,7 @@ mod tests {
     use crate::game::zones::create_object;
     use crate::types::identifiers::CardId;
     use crate::types::player::PlayerId;
+    use std::sync::Arc;
 
     fn setup() -> GameState {
         let mut state = GameState::new_two_player(42);
@@ -1219,7 +1220,7 @@ mod tests {
             ));
         let obj = state.objects.get_mut(&source_id).unwrap();
         obj.static_definitions.push(def.clone());
-        obj.base_static_definitions.push(def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(def);
     }
 
     /// Mark the object as a creature so `TypeFilter::Permanent` matches.

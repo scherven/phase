@@ -4,6 +4,7 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::CardId;
 use crate::types::zones::Zone;
+use std::sync::Arc;
 
 /// CR 114.1: Create an emblem in the command zone with the given static abilities.
 /// Emblems are not permanents — they cannot be destroyed, exiled, bounced, or sacrificed.
@@ -29,7 +30,7 @@ pub fn resolve(
     // CR 114.5: An emblem is neither a card nor a permanent. Emblem isn't a card type.
     obj.is_emblem = true;
     obj.static_definitions = statics.clone().into();
-    obj.base_static_definitions = statics.clone();
+    obj.base_static_definitions = Arc::new(statics.clone());
 
     state.layers_dirty = true;
     events.push(GameEvent::EffectResolved {

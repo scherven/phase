@@ -4,6 +4,7 @@ use crate::types::card::{CardFace, CardLayout, LayoutKind, PrintedCardRef};
 use crate::types::counter::CounterType;
 use crate::types::game_state::GameState;
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
+use std::sync::Arc;
 
 use super::game_object::{BackFaceData, GameObject};
 use super::public_state::{
@@ -66,10 +67,10 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
     obj.base_card_types = card_face.card_type.clone();
     obj.base_mana_cost = card_face.mana_cost.clone();
     obj.base_keywords = keywords;
-    obj.base_abilities = card_face.abilities.clone();
-    obj.base_trigger_definitions = card_face.triggers.clone();
-    obj.base_replacement_definitions = card_face.replacements.clone();
-    obj.base_static_definitions = card_face.static_abilities.clone();
+    obj.base_abilities = Arc::new(card_face.abilities.clone());
+    obj.base_trigger_definitions = Arc::new(card_face.triggers.clone());
+    obj.base_replacement_definitions = Arc::new(card_face.replacements.clone());
+    obj.base_static_definitions = Arc::new(card_face.static_abilities.clone());
     obj.base_color = color;
     obj.base_characteristics_initialized = true;
     obj.printed_ref = printed_ref_from_face(card_face);
@@ -156,14 +157,18 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData) 
     obj.base_card_types = back_face.card_types;
     obj.base_mana_cost = back_face.mana_cost.clone();
     obj.base_keywords = back_face.keywords;
-    obj.base_abilities = back_face.abilities;
-    obj.base_trigger_definitions = back_face.trigger_definitions.iter_all().cloned().collect();
-    obj.base_replacement_definitions = back_face
-        .replacement_definitions
-        .iter_all()
-        .cloned()
-        .collect();
-    obj.base_static_definitions = back_face.static_definitions.iter_all().cloned().collect();
+    obj.base_abilities = Arc::new(back_face.abilities);
+    obj.base_trigger_definitions =
+        Arc::new(back_face.trigger_definitions.iter_all().cloned().collect());
+    obj.base_replacement_definitions = Arc::new(
+        back_face
+            .replacement_definitions
+            .iter_all()
+            .cloned()
+            .collect(),
+    );
+    obj.base_static_definitions =
+        Arc::new(back_face.static_definitions.iter_all().cloned().collect());
     obj.base_color = back_face.color;
     obj.base_characteristics_initialized = true;
     obj.printed_ref = back_face.printed_ref;
@@ -210,10 +215,13 @@ pub fn intrinsic_copiable_values(obj: &GameObject) -> CopiableValues {
         toughness: obj.base_toughness,
         loyalty: obj.base_loyalty,
         keywords: obj.base_keywords.clone(),
-        abilities: obj.base_abilities.clone(),
-        trigger_definitions: obj.base_trigger_definitions.clone(),
-        replacement_definitions: obj.base_replacement_definitions.clone(),
-        static_definitions: obj.base_static_definitions.clone(),
+        // Deep-clone the Arc-backed baselines into CopiableValues's `Vec<T>`
+        // fields. CopiableValues is consumed by token-copy/become-copy, where
+        // the receiving object expects owned Vec baselines.
+        abilities: (*obj.base_abilities).clone(),
+        trigger_definitions: (*obj.base_trigger_definitions).clone(),
+        replacement_definitions: (*obj.base_replacement_definitions).clone(),
+        static_definitions: (*obj.base_static_definitions).clone(),
     }
 }
 
@@ -245,7 +253,8 @@ pub fn snapshot_object_face(obj: &GameObject) -> BackFaceData {
         abilities: obj.abilities.clone(),
         trigger_definitions: obj.trigger_definitions.clone(),
         replacement_definitions: obj.replacement_definitions.clone(),
-        static_definitions: obj.base_static_definitions.clone().into(),
+        // Snapshot: deref the Arc to satisfy `Definitions::from(Vec<T>)`.
+        static_definitions: (*obj.base_static_definitions).clone().into(),
         color: obj.color.clone(),
         printed_ref: obj.printed_ref.clone(),
         modal: obj.modal.clone(),

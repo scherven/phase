@@ -8,6 +8,7 @@ use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
+use std::sync::Arc;
 
 use super::engine::EngineError;
 use super::printed_cards::{apply_back_face_to_object, snapshot_object_face};
@@ -79,13 +80,13 @@ pub fn play_face_down(
     obj.keywords = Vec::new();
     obj.base_keywords = Vec::new();
     obj.abilities = Vec::new();
-    obj.base_abilities = Vec::new();
+    obj.base_abilities = Arc::new(Vec::new());
     obj.trigger_definitions = crate::types::definitions::Definitions::default();
-    obj.base_trigger_definitions = Vec::new();
+    obj.base_trigger_definitions = Arc::new(Vec::new());
     obj.replacement_definitions = crate::types::definitions::Definitions::default();
-    obj.base_replacement_definitions = Vec::new();
+    obj.base_replacement_definitions = Arc::new(Vec::new());
     obj.static_definitions = crate::types::definitions::Definitions::default();
-    obj.base_static_definitions = Vec::new();
+    obj.base_static_definitions = Arc::new(Vec::new());
     obj.color = Vec::new();
     obj.base_color = Vec::new();
 
@@ -212,13 +213,13 @@ pub fn manifest_card(
     obj.keywords = Vec::new();
     obj.base_keywords = Vec::new();
     obj.abilities = Vec::new();
-    obj.base_abilities = Vec::new();
+    obj.base_abilities = Arc::new(Vec::new());
     obj.trigger_definitions = crate::types::definitions::Definitions::default();
-    obj.base_trigger_definitions = Vec::new();
+    obj.base_trigger_definitions = Arc::new(Vec::new());
     obj.replacement_definitions = crate::types::definitions::Definitions::default();
-    obj.base_replacement_definitions = Vec::new();
+    obj.base_replacement_definitions = Arc::new(Vec::new());
     obj.static_definitions = crate::types::definitions::Definitions::default();
-    obj.base_static_definitions = Vec::new();
+    obj.base_static_definitions = Arc::new(Vec::new());
     obj.color = Vec::new();
     obj.base_color = Vec::new();
     obj.back_face = Some(original);

@@ -8,6 +8,7 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::zones::Zone;
+use std::sync::Arc;
 
 /// CR 707.2 / CR 707.5: Create a token that's a copy of a permanent.
 /// Copies copiable characteristics from the target to a newly created token.
@@ -116,13 +117,13 @@ pub fn resolve(
             token.loyalty = values.loyalty;
             token.base_keywords = values.keywords.clone();
             token.keywords = values.keywords.clone();
-            token.base_abilities = values.abilities.clone();
+            token.base_abilities = Arc::new(values.abilities.clone());
             token.abilities = values.abilities.clone();
-            token.base_trigger_definitions = values.trigger_definitions.clone();
+            token.base_trigger_definitions = Arc::new(values.trigger_definitions.clone());
             token.trigger_definitions = values.trigger_definitions.clone().into();
-            token.base_replacement_definitions = values.replacement_definitions.clone();
+            token.base_replacement_definitions = Arc::new(values.replacement_definitions.clone());
             token.replacement_definitions = values.replacement_definitions.clone().into();
-            token.base_static_definitions = values.static_definitions.clone();
+            token.base_static_definitions = Arc::new(values.static_definitions.clone());
             token.static_definitions = values.static_definitions.clone().into();
             token.base_characteristics_initialized = true;
             // CR 400.7 + CR 302.6: Single authority for ETB state. Haste

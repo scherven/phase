@@ -448,10 +448,15 @@ pub fn evaluate_layers(state: &mut GameState) {
             obj.card_types = obj.base_card_types.clone();
             obj.mana_cost = obj.base_mana_cost.clone();
             obj.keywords = obj.base_keywords.clone();
-            obj.abilities = obj.base_abilities.clone();
-            obj.trigger_definitions = obj.base_trigger_definitions.clone().into();
-            obj.replacement_definitions = obj.base_replacement_definitions.clone().into();
-            obj.static_definitions = obj.base_static_definitions.clone().into();
+            // CR 613.1: Reset live ability fields to the printed-card baseline.
+            // Commit 1 of Arc-share migration: `base_*` is `Arc<Vec<T>>` so we deref
+            // then deep-clone to satisfy the still-`Vec<T>` live fields. Commit 2
+            // migrates `obj.abilities` to `Arc<Vec<_>>` and the `Definitions<T>`
+            // wrappers to accept `Arc<Vec<T>>`, removing this deep clone.
+            obj.abilities = (*obj.base_abilities).clone();
+            obj.trigger_definitions = (*obj.base_trigger_definitions).clone().into();
+            obj.replacement_definitions = (*obj.base_replacement_definitions).clone().into();
+            obj.static_definitions = (*obj.base_static_definitions).clone().into();
             obj.color = obj.base_color.clone();
             // CR 613.1b: Reset controller to owner; Layer 2 re-applies control-changing effects.
             obj.controller = obj.owner;
@@ -1414,6 +1419,7 @@ mod tests {
     use crate::types::statics::StaticMode;
     use crate::types::triggers::TriggerMode;
     use crate::types::zones::Zone;
+    use std::sync::Arc;
 
     fn setup() -> GameState {
         GameState::new_two_player(42)
@@ -1474,9 +1480,9 @@ mod tests {
             ]);
         {
             let obj = state.objects.get_mut(&id).unwrap();
-            obj.base_static_definitions.push(boost_a.clone());
+            Arc::make_mut(&mut obj.base_static_definitions).push(boost_a.clone());
             obj.static_definitions.push(boost_a);
-            obj.base_static_definitions.push(boost_b.clone());
+            Arc::make_mut(&mut obj.base_static_definitions).push(boost_b.clone());
             obj.static_definitions.push(boost_b);
         }
 
@@ -1527,7 +1533,7 @@ mod tests {
             .modifications(vec![ContinuousModification::AssignDamageAsThoughUnblocked]);
         {
             let obj = state.objects.get_mut(&id).unwrap();
-            obj.base_static_definitions.push(static_def.clone());
+            Arc::make_mut(&mut obj.base_static_definitions).push(static_def.clone());
             obj.static_definitions.push(static_def);
         }
 
@@ -1536,7 +1542,7 @@ mod tests {
 
         {
             let obj = state.objects.get_mut(&id).unwrap();
-            obj.base_static_definitions.clear();
+            Arc::make_mut(&mut obj.base_static_definitions).clear();
             obj.static_definitions.clear();
         }
 
@@ -3348,14 +3354,14 @@ mod tests {
             let obj = state.objects.get_mut(&land_id).unwrap();
             obj.card_types.subtypes.push("Desert".to_string());
             obj.base_card_types = obj.card_types.clone();
-            obj.base_abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.base_abilities).push(AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::GainLife {
                     amount: QuantityExpr::Fixed { value: 1 },
                     player: GainLifePlayer::Controller,
                 },
             ));
-            obj.abilities = obj.base_abilities.clone();
+            obj.abilities = (*obj.base_abilities).clone();
         }
 
         // Source: enchantment with SetBasicLandType static
@@ -3612,7 +3618,7 @@ mod tests {
             src.card_types.core_types.push(CoreType::Creature);
             src.base_card_types = src.card_types.clone();
             src.static_definitions.push(grant_static.clone());
-            src.base_static_definitions = vec![grant_static];
+            src.base_static_definitions = Arc::new(vec![grant_static]);
         }
 
         // Put an instant in the same player's hand.
@@ -4049,7 +4055,7 @@ mod tests {
             },
         )
         .cost(AbilityCost::Tap);
-        obj.base_abilities = vec![ability.clone()];
+        obj.base_abilities = Arc::new(vec![ability.clone()]);
         obj.abilities = vec![ability];
         land
     }

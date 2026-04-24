@@ -23,6 +23,7 @@ use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -127,7 +128,7 @@ fn setup_bonecrusher_adventure(runner: &mut GameRunner, obj_id: ObjectId) {
 
     let trigger = bonecrusher_trigger();
     obj.trigger_definitions.push(trigger.clone());
-    obj.base_trigger_definitions.push(trigger);
+    Arc::make_mut(&mut obj.base_trigger_definitions).push(trigger);
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +373,7 @@ fn bonecrusher_becomes_target_trigger() {
         let state = runner.state_mut();
         let obj = state.objects.get_mut(&giant_id).unwrap();
         obj.trigger_definitions.push(trigger.clone());
-        obj.base_trigger_definitions.push(trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(trigger);
     }
 
     let bolt_card_id = runner.state().objects[&bolt_id].card_id;

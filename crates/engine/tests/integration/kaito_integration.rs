@@ -26,6 +26,7 @@ use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::statics::StaticMode;
 use engine::types::zones::Zone;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,7 +137,7 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
         // Add compound animation static
         let animation = kaito_animation_static();
         obj.static_definitions.push(animation.clone());
-        obj.base_static_definitions.push(animation);
+        Arc::make_mut(&mut obj.base_static_definitions).push(animation);
 
         // +1 loyalty: CreateEmblem
         let emblem_ability = AbilityDefinition::new(
@@ -147,7 +148,7 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
         )
         .cost(AbilityCost::Loyalty { amount: 1 });
         obj.abilities.push(emblem_ability.clone());
-        obj.base_abilities.push(emblem_ability);
+        Arc::make_mut(&mut obj.base_abilities).push(emblem_ability);
 
         // 0 loyalty: Surveil 2, then draw for each opponent who lost life
         let draw_sub = AbilityDefinition::new(
@@ -171,7 +172,7 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
         .cost(AbilityCost::Loyalty { amount: 0 })
         .sub_ability(draw_sub);
         obj.abilities.push(surveil_ability.clone());
-        obj.base_abilities.push(surveil_ability);
+        Arc::make_mut(&mut obj.base_abilities).push(surveil_ability);
 
         obj.mana_cost = ManaCost::Cost {
             shards: vec![ManaCostShard::Blue, ManaCostShard::Black],

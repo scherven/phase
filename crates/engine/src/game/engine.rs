@@ -8323,6 +8323,8 @@ mod exile_return_tests {
 
 #[cfg(test)]
 mod phase_trigger_regression_tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::combat::AttackTarget;
     use crate::game::zones::create_object;
@@ -8996,7 +8998,8 @@ mod phase_trigger_regression_tests {
                         },
                     )),
             );
-            obj.base_trigger_definitions = obj.trigger_definitions.iter_all().cloned().collect();
+            obj.base_trigger_definitions =
+                Arc::new(obj.trigger_definitions.iter_all().cloned().collect());
         }
 
         // Leyline of Hope analog: "If you would gain life, gain that much + 1 instead"
@@ -9022,7 +9025,7 @@ mod phase_trigger_regression_tests {
                 ),
             );
             obj.base_replacement_definitions =
-                obj.replacement_definitions.iter_all().cloned().collect();
+                Arc::new(obj.replacement_definitions.iter_all().cloned().collect());
         }
 
         // Declare bat as attacker
@@ -9762,13 +9765,13 @@ mod phase_trigger_regression_tests {
                 subtypes: vec!["Phyrexian".to_string(), "Praetor".to_string()],
             };
             obj.base_keywords = vec![crate::types::keywords::Keyword::Vigilance];
-            obj.base_abilities = vec![crate::types::ability::AbilityDefinition::new(
+            obj.base_abilities = Arc::new(vec![crate::types::ability::AbilityDefinition::new(
                 crate::types::ability::AbilityKind::Activated,
                 Effect::Draw {
                     count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::Controller,
                 },
-            )];
+            )]);
         }
 
         // Superior Spider-Man freshly on battlefield under PlayerId(0)'s control.

@@ -4313,6 +4313,7 @@ mod tests {
     use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
     use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
     use crate::types::phase::Phase;
+    use std::sync::Arc;
 
     fn setup_game_at_main_phase() -> GameState {
         let mut state = GameState::new_two_player(42);
@@ -8729,7 +8730,7 @@ mod tests {
             },
         );
         obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         obj_id
     }
 
@@ -8821,7 +8822,7 @@ mod tests {
             },
         );
         obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
 
         let prepared = prepare_spell_cast(&state, PlayerId(0), obj_id).unwrap();
         assert_eq!(
@@ -8921,7 +8922,8 @@ mod tests {
                     },
                 ]),
         );
-        source.base_static_definitions = source.static_definitions.iter_all().cloned().collect();
+        source.base_static_definitions =
+            Arc::new(source.static_definitions.iter_all().cloned().collect());
 
         let available = spell_objects_available_to_cast(&state, PlayerId(0));
         assert!(available.contains(&obj_id));
@@ -8965,7 +8967,7 @@ mod tests {
         source.card_types.core_types.push(CoreType::Enchantment);
         source.base_card_types = source.card_types.clone();
         source.static_definitions = parsed.statics.clone().into();
-        source.base_static_definitions = parsed.statics;
+        source.base_static_definitions = Arc::new(parsed.statics);
 
         for idx in 0..3 {
             let filler_id = create_object(
@@ -9028,7 +9030,7 @@ mod tests {
         source.card_types.core_types.push(CoreType::Enchantment);
         source.base_card_types = source.card_types.clone();
         source.static_definitions = parsed.statics.clone().into();
-        source.base_static_definitions = parsed.statics;
+        source.base_static_definitions = Arc::new(parsed.statics);
 
         for idx in 0..3 {
             let filler_id = create_object(
@@ -9191,7 +9193,8 @@ mod tests {
                     },
                 ]),
         );
-        obj.base_static_definitions = obj.static_definitions.iter_all().cloned().collect();
+        obj.base_static_definitions =
+            Arc::new(obj.static_definitions.iter_all().cloned().collect());
         state.players[1].poison_counters = 3;
 
         let available = spell_objects_available_to_cast(&state, PlayerId(0));
@@ -9512,7 +9515,8 @@ mod tests {
                 parse_static_line("Noncreature spells cost {1} more to cast.")
                     .expect("Thalia RaiseCost should parse"),
             );
-            obj.base_static_definitions = obj.static_definitions.iter_all().cloned().collect();
+            obj.base_static_definitions =
+                Arc::new(obj.static_definitions.iter_all().cloned().collect());
         }
 
         // One Mountain for player 0 — enough for {R} but not {1}{R}
@@ -9593,7 +9597,8 @@ mod tests {
                 parse_static_line("Noncreature spells cost {1} more to cast.")
                     .expect("Thalia RaiseCost should parse"),
             );
-            obj.base_static_definitions = obj.static_definitions.iter_all().cloned().collect();
+            obj.base_static_definitions =
+                Arc::new(obj.static_definitions.iter_all().cloned().collect());
         }
 
         // Two Mountains — enough for {1}{R}

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -163,19 +164,24 @@ pub struct GameObject {
     #[serde(default)]
     pub base_mana_cost: ManaCost,
     pub base_keywords: Vec<Keyword>,
-    pub base_abilities: Vec<AbilityDefinition>,
+    /// CR 613.1: Printed baseline abilities. Wrapped in `Arc<Vec<_>>` so
+    /// `GameState::clone()` (called constantly by the AI search) shares
+    /// the printed-card slice instead of deep-cloning it per search node.
+    /// Writes use `Arc::make_mut` for copy-on-write semantics.
+    pub base_abilities: Arc<Vec<AbilityDefinition>>,
     /// CR 613.1: Printed baselines captured at `GameObject` construction —
     /// the values on the card (or defined by the effect that created this
     /// object) before any continuous effects apply. They are rebuilt, not
     /// runtime-mutated, so they intentionally use plain `Vec<T>` rather
     /// than the `Definitions<T>` wrapper that gates live reads.
-    pub base_trigger_definitions: Vec<TriggerDefinition>,
+    /// Wrapped in `Arc` for structural sharing across cloned `GameState`s.
+    pub base_trigger_definitions: Arc<Vec<TriggerDefinition>>,
     /// CR 613.1: printed-card baseline for replacement definitions. See
     /// `base_trigger_definitions`.
-    pub base_replacement_definitions: Vec<ReplacementDefinition>,
+    pub base_replacement_definitions: Arc<Vec<ReplacementDefinition>>,
     /// CR 613.1: printed-card baseline for static definitions. See
     /// `base_trigger_definitions`.
-    pub base_static_definitions: Vec<StaticDefinition>,
+    pub base_static_definitions: Arc<Vec<StaticDefinition>>,
     pub base_color: Vec<ManaColor>,
     #[serde(default)]
     pub base_characteristics_initialized: bool,
@@ -463,18 +469,20 @@ impl GameObject {
             self.base_keywords = self.keywords.clone();
         }
         if self.base_abilities.is_empty() && !self.abilities.is_empty() {
-            self.base_abilities = self.abilities.clone();
+            self.base_abilities = Arc::new(self.abilities.clone());
         }
         if self.base_trigger_definitions.is_empty() && !self.trigger_definitions.is_empty() {
-            self.base_trigger_definitions = self.trigger_definitions.iter_all().cloned().collect();
+            self.base_trigger_definitions =
+                Arc::new(self.trigger_definitions.iter_all().cloned().collect());
         }
         if self.base_replacement_definitions.is_empty() && !self.replacement_definitions.is_empty()
         {
             self.base_replacement_definitions =
-                self.replacement_definitions.iter_all().cloned().collect();
+                Arc::new(self.replacement_definitions.iter_all().cloned().collect());
         }
         if self.base_static_definitions.is_empty() && !self.static_definitions.is_empty() {
-            self.base_static_definitions = self.static_definitions.iter_all().cloned().collect();
+            self.base_static_definitions =
+                Arc::new(self.static_definitions.iter_all().cloned().collect());
         }
         if self.base_color.is_empty() && !self.color.is_empty() {
             self.base_color = self.color.clone();
@@ -522,7 +530,7 @@ impl GameObject {
             base_card_types: CardType::default(),
             base_mana_cost: ManaCost::default(),
             base_keywords: Vec::new(),
-            base_abilities: Vec::new(),
+            base_abilities: Arc::new(Vec::new()),
             base_trigger_definitions: Default::default(),
             base_replacement_definitions: Default::default(),
             base_static_definitions: Default::default(),

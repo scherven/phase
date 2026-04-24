@@ -68,6 +68,8 @@ pub fn resolve(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::layers::{compute_current_copiable_values, evaluate_layers};
     use crate::game::printed_cards::intrinsic_copiable_values;
@@ -840,13 +842,14 @@ mod tests {
 
         let mut state = GameState::new_two_player(42);
         let target = create_creature(&mut state, 1, PlayerId(0), "Flyer", 2, 2);
-        state.objects.get_mut(&target).unwrap().base_abilities = vec![AbilityDefinition::new(
-            AbilityKind::Activated,
-            Effect::Draw {
-                count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
-                target: TargetFilter::Controller,
-            },
-        )];
+        state.objects.get_mut(&target).unwrap().base_abilities =
+            Arc::new(vec![AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Draw {
+                    count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            )]);
 
         // Source has no abilities
         let source = create_creature(&mut state, 2, PlayerId(0), "Vanilla", 1, 1);

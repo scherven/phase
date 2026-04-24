@@ -10,7 +10,7 @@ version = "0.1.17"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 tracing = "0.1"
 
 [workspace.metadata.release]

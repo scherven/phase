@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::types::ability::{
     EffectError, EffectKind, ResolvedAbility, StaticDefinition, TargetFilter, TargetRef,
 };
@@ -51,7 +53,7 @@ pub fn resolve(
                 .iter()
                 .any(|s| s.mode == StaticMode::CantBlock)
             {
-                obj.base_static_definitions
+                Arc::make_mut(&mut obj.base_static_definitions)
                     .push(StaticDefinition::new(StaticMode::CantBlock));
             }
 
@@ -177,8 +179,7 @@ mod tests {
         let obj = state.objects.get_mut(&id).unwrap();
         obj.is_suspected = false;
         obj.base_keywords.retain(|k| !matches!(k, Keyword::Menace));
-        obj.base_static_definitions
-            .retain(|s| s.mode != StaticMode::CantBlock);
+        Arc::make_mut(&mut obj.base_static_definitions).retain(|s| s.mode != StaticMode::CantBlock);
         // Also clear computed statics so layer recalc starts clean.
         // (The layer system's conditional reset only fires when base_static_definitions is non-empty.)
         obj.static_definitions

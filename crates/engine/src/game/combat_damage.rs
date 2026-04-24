@@ -715,6 +715,7 @@ mod tests {
     use crate::types::player::PlayerId;
     use crate::types::triggers::TriggerMode;
     use crate::types::zones::Zone;
+    use std::sync::Arc;
 
     fn setup() -> GameState {
         let mut state = GameState::new_two_player(42);
@@ -1499,7 +1500,7 @@ mod tests {
                 ContinuousModification::AddToughness { value: 2 },
             ]);
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
 
         setup_combat(
             &mut state,

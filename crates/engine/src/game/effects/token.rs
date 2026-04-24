@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use crate::game::quantity::{resolve_quantity, resolve_quantity_with_targets};
 use crate::game::replacement::{self, ReplacementResult};
@@ -1012,7 +1013,7 @@ pub(super) fn inject_predefined_token_abilities(
     if !abilities_to_add.is_empty() {
         if let Some(obj) = state.objects.get_mut(&obj_id) {
             obj.abilities.extend(abilities_to_add.clone());
-            obj.base_abilities.extend(abilities_to_add);
+            Arc::make_mut(&mut obj.base_abilities).extend(abilities_to_add);
         }
     }
 }
