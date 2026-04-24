@@ -89,6 +89,7 @@ import { GameProvider } from "../providers/GameProvider.tsx";
 import { useCanActForWaitingState, usePerspectivePlayerId, usePlayerId } from "../hooks/usePlayerId.ts";
 import { abilityChoiceLabel, additionalCostChoices } from "../viewmodel/costLabel.ts";
 import { gameButtonClass } from "../components/ui/buttonStyles.ts";
+import { cardImageLookup } from "../services/cardImageLookup.ts";
 
 type ZoneRailStyle = CSSProperties & {
   "--card-w": string;
@@ -678,10 +679,15 @@ function GamePageContent({
     !isDragging && inspectedObjectId != null && objects
       ? (objects[inspectedObjectId] ?? null)
       : null;
+  // Scryfall lookups must use the front-face name (scryfall-data.json indexes
+  // only front faces). When a permanent has transformed, the engine swaps
+  // obj.name to the back-face name — cardImageLookup recovers the front name
+  // from obj.back_face. See services/cardImageLookup.ts (issue #90).
+  const inspectedLookup = inspectedObj ? cardImageLookup(inspectedObj) : null;
   const inspectedCardName = inspectedObj
     ? inspectedFaceIndex === 1 && inspectedObj.back_face
       ? inspectedObj.back_face.name
-      : inspectedObj.name
+      : inspectedLookup?.name ?? inspectedObj.name
     : null;
   // The "other" face: when viewing front, this is back_face; when viewing back, this is the front
   const inspectedOtherFaceName = inspectedObj?.back_face

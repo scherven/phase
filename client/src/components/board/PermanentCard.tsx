@@ -3,6 +3,7 @@ import { memo, useCallback, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type { GameAction } from "../../adapter/types.ts";
+import { cardImageLookup } from "../../services/cardImageLookup.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { dispatchAction } from "../../game/dispatch.ts";
 import { ArtCropCard } from "../card/ArtCropCard.tsx";
@@ -117,6 +118,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
     obj.card_types.subtypes,
     obj.available_mana_colors,
   );
+  const { name: imgName, faceIndex: imgFace } = cardImageLookup(obj);
   const hasSummoningSickness = obj.has_summoning_sickness ?? false;
 
   const ptDisplay = computePTDisplay(obj);
@@ -339,7 +341,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
       ) : (
         <>
           <div className={`relative z-10 rounded-lg overflow-hidden ${glowClass}`}>
-            <CardImage cardName={obj.name} size="small" unimplementedMechanics={obj.unimplemented_mechanics} colors={displayColors} isToken={obj.card_id === 0} tokenFilters={obj.card_id === 0 ? { power: obj.power, toughness: obj.toughness, colors: obj.color } : undefined} />
+            <CardImage cardName={imgName} faceIndex={imgFace} size="small" unimplementedMechanics={obj.unimplemented_mechanics} colors={displayColors} isToken={obj.card_id === 0} tokenFilters={obj.card_id === 0 ? { power: obj.power, toughness: obj.toughness, colors: obj.color } : undefined} />
             {/* Keyword strip overlay — inside the card image wrapper so absolute positioning works */}
             {showKeywordStrip && obj.keywords.length > 0 && !obj.face_down && (
               <KeywordStrip keywords={obj.keywords} baseKeywords={obj.base_keywords} />
@@ -429,6 +431,7 @@ const ExileGhostCard = memo(function ExileGhostCard({ objectId, offset }: ExileG
     obj.card_types.subtypes,
     obj.available_mana_colors,
   );
+  const { name: imgName, faceIndex: imgFace } = cardImageLookup(obj);
   const useArtCrop = battlefieldCardDisplay === "art_crop";
 
   return (
@@ -442,7 +445,7 @@ const ExileGhostCard = memo(function ExileGhostCard({ objectId, offset }: ExileG
       {useArtCrop ? (
         <ArtCropCard objectId={objectId} />
       ) : (
-        <CardImage cardName={obj.name} size="small" colors={displayColors} isToken={obj.card_id === 0} tokenFilters={obj.card_id === 0 ? { power: obj.power, toughness: obj.toughness, colors: obj.color } : undefined} />
+        <CardImage cardName={imgName} faceIndex={imgFace} size="small" colors={displayColors} isToken={obj.card_id === 0} tokenFilters={obj.card_id === 0 ? { power: obj.power, toughness: obj.toughness, colors: obj.color } : undefined} />
       )}
     </div>
   );
