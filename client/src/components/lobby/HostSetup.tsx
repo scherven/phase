@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import type { FormatConfig, GameFormat, MatchType } from "../../adapter/types";
+import type { FormatConfig, FormatGroup, GameFormat, MatchType } from "../../adapter/types";
 import { FORMAT_REGISTRY } from "../../data/formatRegistry";
 import { FORMAT_DEFAULTS, useMultiplayerStore } from "../../stores/multiplayerStore";
 import type { AiSeatConfig, HostingSettings } from "../../stores/multiplayerStore";
@@ -26,11 +26,20 @@ interface HostSetupProps {
 // formats added in `crates/engine/src/types/format.rs` flow through to this
 // picker automatically. Two-Headed Giant is intentionally absent from the
 // registry (team-based play unsupported), so it never appears here either.
-const FORMAT_OPTIONS: { format: GameFormat; label: string; description: string }[] = FORMAT_REGISTRY.map((m) => ({
+const FORMAT_OPTIONS: { format: GameFormat; label: string; description: string; group: FormatGroup }[] = FORMAT_REGISTRY.map((m) => ({
   format: m.format,
   label: m.label,
   description: m.description,
+  group: m.group,
 }));
+
+// <optgroup> render order for the format <select>. New engine FormatGroup
+// variants become a TS exhaustiveness error here.
+const GROUP_ORDER: Record<FormatGroup, number> = {
+  Constructed: 0,
+  Commander: 1,
+  Multiplayer: 2,
+};
 
 const DIFFICULTY_OPTIONS = ["VeryEasy", "Easy", "Medium", "Hard", "VeryHard"];
 
@@ -212,32 +221,47 @@ export function HostSetup({
           </p>
         </div>
 
-        {/* Format selection */}
+        {/* Format selection -- grouped native <select>. Native is the
+            mobile/tablet UX win here: iOS/Android render full-screen
+            touch-optimized pickers from <select>, while a custom listbox
+            would have to reimplement keyboard avoidance, momentum scroll,
+            and 44/48px hit targets. <optgroup>s mirror the engine's
+            FormatGroup taxonomy. */}
         <div>
-          <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-gray-400">
+          <label
+            htmlFor="host-setup-format"
+            className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-gray-400"
+          >
             Format
           </label>
-          <div className="grid grid-cols-2 gap-2">
-            {availableFormats.map((opt) => {
-              const isSelected = selectedFormat === opt.format;
-              return (
-                <button
-                  type="button"
-                  key={opt.format}
-                  onClick={() => handleFormatSelect(opt.format)}
-                  title={opt.description}
-                  aria-label={`${opt.label} — ${opt.description}`}
-                  className={`rounded-[16px] border px-3 py-2.5 text-sm font-medium transition-colors ${
-                    isSelected
-                      ? "border-white/18 bg-white/10 text-white"
-                      : "border-white/10 bg-black/18 text-slate-400 hover:border-white/18 hover:text-white"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+          <select
+            id="host-setup-format"
+            value={selectedFormat}
+            onChange={(e) => handleFormatSelect(e.target.value as GameFormat)}
+            className="w-full min-h-[48px] rounded-[16px] border border-white/10 bg-black/18 px-3 py-3 text-base font-medium text-white outline-none ring-1 ring-white/10 focus:border-white/18 focus:ring-white/20"
+          >
+            {(Object.keys(GROUP_ORDER) as FormatGroup[])
+              .sort((a, b) => GROUP_ORDER[a] - GROUP_ORDER[b])
+              .map((group) => {
+                const items = availableFormats.filter((f) => f.group === group);
+                if (items.length === 0) return null;
+                return (
+                  <optgroup key={group} label={group}>
+                    {items.map((opt) => (
+                      <option key={opt.format} value={opt.format} title={opt.description}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+          </select>
+          {(() => {
+            const meta = availableFormats.find((f) => f.format === selectedFormat);
+            return meta ? (
+              <p className="mt-1.5 text-[11px] leading-4 text-slate-500">{meta.description}</p>
+            ) : null;
+          })()}
         </div>
 
         {/* Format-specific settings */}
