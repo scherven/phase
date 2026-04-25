@@ -264,6 +264,17 @@ pub fn resolve_event_context_target(
             let controller = state.objects.get(&source_obj_id)?.controller;
             Some(TargetRef::Player(controller))
         }
+        // CR 615.5 + CR 609.7: "the source's controller" / "that source's
+        // controller" inside a prevention follow-up resolves to the controller
+        // of the prevented event's damage source. Stashed by the prevention
+        // applier at `replacement.rs:Prevented`; read here during follow-up
+        // resolution. Returns `None` if invoked outside the post-replacement
+        // window — caller should never reach this filter from elsewhere.
+        TargetFilter::PostReplacementSourceController => {
+            let source_obj_id = state.post_replacement_event_source?;
+            let controller = state.objects.get(&source_obj_id)?.controller;
+            Some(TargetRef::Player(controller))
+        }
         _ => None,
     }
 }
@@ -537,6 +548,13 @@ fn add_players(state: &GameState, targets: &mut Vec<TargetRef>) {
     // applied to players via card Oracle text like "you phase out").
     for player in &state.players {
         if player.is_phased_out() {
+            continue;
+        }
+        // CR 800.4a: When a player leaves the game in a multiplayer game, all
+        // objects they own/control leave the game and the player ceases to be
+        // a valid target. Eliminated players cannot be targeted by any spell
+        // or ability (CR 608.2b illegal-target fizzle applies on resolution).
+        if player.is_eliminated {
             continue;
         }
         // CR 702.16b + CR 702.16j: A player with protection from everything
@@ -1023,6 +1041,29 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert!(targets.contains(&TargetRef::Player(PlayerId(0))));
         assert!(targets.contains(&TargetRef::Player(PlayerId(1))));
+    }
+
+    /// CR 800.4a: Eliminated players are not legal targets in multiplayer.
+    /// Regression: AI was targeting dead opponents in commander multiplayer.
+    #[test]
+    fn find_legal_targets_excludes_eliminated_player() {
+        let (mut state, _c0, _c1, _land) = setup_with_typed_creatures();
+        state.players[1].is_eliminated = true;
+        state.eliminated_players.push(PlayerId(1));
+
+        let player_targets =
+            find_legal_targets(&state, &TargetFilter::Player, PlayerId(0), ObjectId(99));
+        assert!(
+            !player_targets.contains(&TargetRef::Player(PlayerId(1))),
+            "eliminated player must not appear in legal targets"
+        );
+
+        let any_targets =
+            find_legal_targets(&state, &TargetFilter::Any, PlayerId(0), ObjectId(99));
+        assert!(
+            !any_targets.contains(&TargetRef::Player(PlayerId(1))),
+            "eliminated player must not appear under TargetFilter::Any either"
+        );
     }
 
     #[test]

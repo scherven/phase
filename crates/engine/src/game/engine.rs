@@ -2729,6 +2729,7 @@ fn handle_play_land(
             // the wrong controller context.
             if let Some(effect_def) = state.post_replacement_effect.take() {
                 state.post_replacement_source = None;
+                state.post_replacement_event_source = None;
                 if let Some(next_waiting_for) = engine_replacement::apply_post_replacement_effect(
                     state,
                     &effect_def,

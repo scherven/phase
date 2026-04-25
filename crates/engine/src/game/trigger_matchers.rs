@@ -520,6 +520,7 @@ pub(super) fn target_filter_matches_object(
         | TargetFilter::DefendingPlayer
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetController
+        | TargetFilter::PostReplacementSourceController
         | TargetFilter::StackAbility
         | TargetFilter::StackSpell
         | TargetFilter::Owner => false,

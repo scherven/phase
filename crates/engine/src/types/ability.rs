@@ -1581,6 +1581,25 @@ pub enum TargetFilter {
     /// Used for "its controller" in compound effects (e.g., "counter target spell. Its controller
     /// loses 2 life."). At resolution time, looks up the controller of the first parent target.
     ParentTargetController,
+    /// CR 615.5 + CR 609.7: Resolves to the controller of the *prevented event's*
+    /// damage source. Used by prevention follow-up sentences such as "the source's
+    /// controller draws cards equal to the damage prevented this way" (Swans of
+    /// Bryn Argoll) and "deals damage to that source's controller" (Deflecting
+    /// Palm class). At resolution time, looks up `state.post_replacement_event_source`
+    /// and returns its controller.
+    ///
+    /// Distinct from `ParentTargetController` (which resolves via the parent
+    /// ability's target slot) and `TriggeringSpellController` (which resolves
+    /// via `state.current_trigger_event`, which is `None` during post-replacement
+    /// resolution). Architectural twin of the quantity-side `last_effect_count`
+    /// fallback at `replacement.rs:317` — both stash event context that lives
+    /// outside the trigger window. The parser never emits this variant directly;
+    /// the prevention follow-up call site rewrites `ParentTargetController`
+    /// → `PostReplacementSourceController` via `each_target_filter_mut` after
+    /// `parse_effect_chain` returns, so the surface phrase "the source's
+    /// controller" can stay consolidated in `parse_target` for non-prevention
+    /// callers.
+    PostReplacementSourceController,
     /// CR 506.3d: Resolves to the player being attacked by the source creature.
     /// Looked up from `state.combat.attackers` using the trigger's source_id.
     DefendingPlayer,
@@ -4089,6 +4108,7 @@ impl TargetFilter {
                 | TargetFilter::DefendingPlayer
                 | TargetFilter::ParentTarget
                 | TargetFilter::ParentTargetController
+                | TargetFilter::PostReplacementSourceController
         )
     }
 

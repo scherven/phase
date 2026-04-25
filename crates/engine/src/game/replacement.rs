@@ -2194,6 +2194,15 @@ fn apply_single_replacement(
         None => return Ok(proposed),
     };
 
+    // CR 615.5 + CR 609.7: Snapshot the *prevented event's* damage source
+    // before the applier consumes `proposed`. Stashed below at the `Prevented`
+    // arm so `TargetFilter::PostReplacementSourceController` can resolve "the
+    // source's controller draws cards" follow-ups (Swans of Bryn Argoll class).
+    let proposed_damage_source = match &proposed {
+        ProposedEvent::Damage { source_id, .. } => Some(*source_id),
+        _ => None,
+    };
+
     if let Some(handler) = registry.get(&event_key) {
         let event_type = event_key.to_string();
         match (handler.applier)(proposed, rid, state, events) {
@@ -2232,6 +2241,10 @@ fn apply_single_replacement(
                     if state.post_replacement_effect.is_none() {
                         state.post_replacement_effect = Some(post);
                         state.post_replacement_source = Some(rid.source);
+                        // CR 615.5 + CR 609.7: only the Prevented arm populates
+                        // `post_replacement_event_source`; clear here so a prior
+                        // prevention's source can't leak into a non-prevention stash.
+                        state.post_replacement_event_source = None;
                     }
                 }
                 events.push(GameEvent::ReplacementApplied {
@@ -2248,10 +2261,17 @@ fn apply_single_replacement(
                 // prevention applier has already stamped `last_effect_count`
                 // with the prevented amount so `EventContextAmount` resolves
                 // correctly when the follow-up effect fires.
+                //
+                // CR 615.5 + CR 609.7 + CR 614.12a: Stash the *prevented event's*
+                // damage source so `TargetFilter::PostReplacementSourceController`
+                // can resolve "the source's controller draws cards" follow-ups
+                // (Swans of Bryn Argoll). Distinct from `post_replacement_source`,
+                // which is the replacement's own source (Swans itself).
                 if let Some(post) = mandatory_post_effect {
                     if state.post_replacement_effect.is_none() {
                         state.post_replacement_effect = Some(post);
                         state.post_replacement_source = Some(rid.source);
+                        state.post_replacement_event_source = proposed_damage_source;
                     }
                 }
                 events.push(GameEvent::ReplacementApplied {
@@ -2412,6 +2432,10 @@ pub fn continue_replacement(
         }
         if post_effect.is_some() {
             state.post_replacement_source = Some(rid.source);
+            // CR 615.5 + CR 609.7: Optional/decline post-effects don't carry
+            // prevention-event-source semantics — clear so a prior prevention
+            // can't leak into a non-prevention stash.
+            state.post_replacement_event_source = None;
         }
         state.post_replacement_effect = post_effect;
 

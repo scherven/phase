@@ -2909,10 +2909,39 @@ fn parse_damage_prevention_replacement(
     // consumes the damage. Class members: Phyrexian Hydra, Vigor, Stormwild
     // Capridor, Hostility.
     if let Some(followup) = extract_prevention_followup(original_text) {
-        def = def.execute(parse_effect_chain(&followup, AbilityKind::Spell));
+        let mut followup_def = parse_effect_chain(&followup, AbilityKind::Spell);
+        // CR 615.5 + CR 609.7: `parse_target` maps "the source's controller" /
+        // "that source's controller" to `ParentTargetController` (correct for
+        // anaphoric "its controller" in non-prevention contexts). Inside a
+        // prevention follow-up the same surface phrase refers instead to the
+        // controller of the *prevented event's* damage source (Swans of Bryn
+        // Argoll, Deflecting Palm class). Rewrite the filter at the call site
+        // — keeps `parse_target` consolidated for non-prevention callers and
+        // avoids parser-context plumbing. Single building-block walker
+        // (`each_target_filter_mut`) handles every target-bearing effect arm.
+        rewrite_parent_target_controller_to_post_replacement_source(&mut followup_def);
+        def = def.execute(followup_def);
     }
 
     Some(def)
+}
+
+/// CR 615.5 + CR 609.7: Walk an `AbilityDefinition` tree and rewrite every
+/// `TargetFilter::ParentTargetController` slot to
+/// `TargetFilter::PostReplacementSourceController`. Invoked at the prevention
+/// follow-up call site only — see the parent comment for rationale.
+fn rewrite_parent_target_controller_to_post_replacement_source(def: &mut AbilityDefinition) {
+    super::oracle_effect::each_target_filter_mut(&mut def.effect, &mut |f| {
+        if matches!(f, TargetFilter::ParentTargetController) {
+            *f = TargetFilter::PostReplacementSourceController;
+        }
+    });
+    if let Some(sub) = def.sub_ability.as_mut() {
+        rewrite_parent_target_controller_to_post_replacement_source(sub);
+    }
+    if let Some(else_branch) = def.else_ability.as_mut() {
+        rewrite_parent_target_controller_to_post_replacement_source(else_branch);
+    }
 }
 
 /// CR 615.5: Extract the trailing additional-effect sentence from a prevention
@@ -3209,6 +3238,85 @@ mod tests {
     };
     use crate::types::card_type::Supertype;
     use crate::types::keywords::Keyword;
+
+    #[test]
+    fn rewrite_parent_target_controller_flips_top_level_draw_target() {
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextAmount,
+                },
+                target: TargetFilter::ParentTargetController,
+            },
+        );
+        rewrite_parent_target_controller_to_post_replacement_source(&mut def);
+        assert!(matches!(
+            *def.effect,
+            Effect::Draw {
+                target: TargetFilter::PostReplacementSourceController,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rewrite_parent_target_controller_recurses_into_sub_ability() {
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DealDamage {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextAmount,
+                },
+                target: TargetFilter::ParentTargetController,
+                damage_source: None,
+            },
+        );
+        def.sub_ability = Some(Box::new(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextAmount,
+                },
+                target: TargetFilter::ParentTargetController,
+            },
+        )));
+        rewrite_parent_target_controller_to_post_replacement_source(&mut def);
+        assert!(matches!(
+            *def.effect,
+            Effect::DealDamage {
+                target: TargetFilter::PostReplacementSourceController,
+                ..
+            }
+        ));
+        assert!(matches!(
+            *def.sub_ability.as_ref().unwrap().effect,
+            Effect::Draw {
+                target: TargetFilter::PostReplacementSourceController,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rewrite_parent_target_controller_leaves_other_filters_untouched() {
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+        );
+        rewrite_parent_target_controller_to_post_replacement_source(&mut def);
+        assert!(matches!(
+            *def.effect,
+            Effect::DealDamage {
+                target: TargetFilter::Any,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn extract_prevention_followup_returns_none_when_no_followup() {
