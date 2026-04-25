@@ -339,6 +339,7 @@ mod tests {
             distribution: None,
             player_scope: None,
             chosen_x: None,
+            ability_index: None,
         };
 
         let mut events = Vec::new();
