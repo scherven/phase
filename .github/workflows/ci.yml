@@ -138,7 +138,9 @@ jobs:
         # above (no proptest support, no tests). Without this step, compile
         # errors in the desktop crate only surface at release time during the
         # 30-45min build-tauri matrix. Catches them on every PR in ~3 min.
-        run: cargo check -p phase-tauri
+        # Driven via --manifest-path because client/src-tauri is excluded
+        # from the root workspace, so `-p phase-tauri` cannot resolve it.
+        run: cargo check --manifest-path client/src-tauri/Cargo.toml
 
   frontend:
     name: Frontend (lint, type-check, test)
