@@ -1134,6 +1134,26 @@ fn try_parse_choose_one_of_inline(
     // what's missing between the two returned halves.
     let (before_lower, after_lower) =
         split_around(tp.lower, ", or ").or_else(|| split_around(tp.lower, " or "))?;
+
+    // Multi-`or` chains and inner-noun disjunctions ("discard a creature card
+    // or land, or sacrifice a creature") would split here at the FIRST `or`,
+    // leaving the left half's inner ` or ` to be silently dropped by
+    // `parse_effect_clause` — both halves parse to non-Unimplemented but the
+    // left has the wrong meaning. Reject unless the left half is unambiguously
+    // a single imperative (no further top-level ` or `). This keeps the
+    // 2-branch case working and conservatively declines on 3+ chains so they
+    // fall through to higher-fidelity parsing rather than misread silently.
+    //
+    // Detection uses nom's `take_until` to scan for ` or ` in the already-
+    // separated left half — a structural post-split sanity check, not parser
+    // dispatch.
+    if take_until::<_, _, VerboseError<&str>>(" or ")
+        .parse(before_lower)
+        .is_ok()
+    {
+        return None;
+    }
+
     let split_index = before_lower.len();
     let after_offset = tp.lower.len() - after_lower.len();
 
@@ -1977,8 +1997,11 @@ fn try_parse_have_its_controller(
     }
 
     // Rebind the acting player of player-scoped sub-effects to the triggering
-    // source's controller. Token creation is the scope for this ticket; other
-    // rebinding sites can be added here as needed.
+    // source's controller. Mirrors the original Token-only rebind across the
+    // common player-scoped sub-effects so cards in the same class (Captive
+    // Audience-style "have its controller draw/discard/lose life") resolve
+    // their player field to the *acting* player rather than the static
+    // ability's controller.
     let rebound = rebind_controller_to_triggering_source(clause);
     Some(rebound)
 }
@@ -1988,11 +2011,30 @@ fn try_parse_have_its_controller(
 /// player" fields) resolve to the controller of the triggering object at
 /// runtime. Only effects whose player-scope field is currently the default
 /// `Controller` are touched — an explicit target/filter is preserved.
+///
+/// Covers the player-scoped sub-effects that the "have its controller [verb]"
+/// pattern can produce: Token (creation), Draw, DiscardCard, LoseLife, Mill.
+/// Each receives the same defaulted-Controller-only guard so a parser arm
+/// that wired an explicit target (e.g. "have its controller mill target
+/// player's library") survives unchanged.
 fn rebind_controller_to_triggering_source(mut clause: ParsedEffectClause) -> ParsedEffectClause {
-    if let Effect::Token { ref mut owner, .. } = clause.effect {
-        if matches!(owner, TargetFilter::Controller) {
-            *owner = TargetFilter::TriggeringSource;
+    let rebind = |target: &mut TargetFilter| {
+        if matches!(target, TargetFilter::Controller) {
+            *target = TargetFilter::TriggeringSource;
         }
+    };
+    match &mut clause.effect {
+        Effect::Token { owner, .. } => rebind(owner),
+        Effect::Draw { target, .. } => rebind(target),
+        Effect::DiscardCard { target, .. } => rebind(target),
+        Effect::Mill { target, .. } => rebind(target),
+        // CR 119.3: `LoseLife.target` is `Option<TargetFilter>` — only rebind
+        // the populated `Controller` case; `None` means "the controller of
+        // the resolving ability" and that semantic is preserved by leaving it.
+        Effect::LoseLife {
+            target: Some(t), ..
+        } => rebind(t),
+        _ => {}
     }
     clause
 }
