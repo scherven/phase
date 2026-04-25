@@ -1,5 +1,6 @@
 mod abigale_integration;
 mod adapter_contract_fixtures;
+mod aura_on_player;
 mod cr_annotations;
 mod elusive_otter_repro;
 #[cfg(feature = "proptest")]
