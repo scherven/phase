@@ -5616,6 +5616,17 @@ pub enum ReplacementCondition {
     /// Used by Stranglehold ("If a player would begin an extra turn...").
     /// Evaluated by `begin_turn_matcher` against `ProposedEvent::BeginTurn`.
     OnlyExtraTurn,
+    /// CR 614.1a + CR 111.1: Gate a `CreateToken` replacement on whether the
+    /// proposed event creates a token whose subtypes overlap a fixed set.
+    /// Used by Xorn ("if you would create one or more Treasure tokens, …") and
+    /// Academy Manufactor ("if you would create a Clue, Food, or Treasure
+    /// token, …"). Subtype strings are matched case-insensitively against the
+    /// proposed `TokenSpec.subtypes`. Substantive subtype canonicalization
+    /// remains the parser's job.
+    ///
+    /// `subtypes` is `Vec<String>` to mirror the existing `TokenSpec.subtypes`
+    /// shape; introducing a typed `Subtype` enum is a separate, broader refactor.
+    TokenSubtypeMatches { subtypes: Vec<String> },
     /// "unless you revealed a [type] card" / "unless you paid {mana}"
     /// CR 614.1d — Generic condition text that the engine does not yet decompose further.
     /// Using this variant lets the replacement be recognized for coverage while deferring

@@ -4,6 +4,7 @@ use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::char;
 use nom::combinator::{opt, value};
+use nom::sequence::preceded;
 use nom::Parser;
 use nom_language::error::VerboseError;
 
@@ -246,6 +247,19 @@ pub fn parse_replacement_line(text: &str, card_name: &str) -> Option<Replacement
         || nom_primitives::scan_contains(&lower, "would create a token")
     {
         if let Some(def) = parse_token_replacement(&lower, &text) {
+            return Some(def);
+        }
+    }
+
+    // CR 614.1a + CR 111.1: Subtype-gated token creation replacement —
+    // "if you would create one or more <subtype> tokens, instead create
+    // those tokens plus an additional <subtype> token" (Xorn class).
+    // Distinguished from the Chatterfang/Doubling-Season class above by its
+    // subtype condition AND inverted "instead create" word order.
+    if nom_primitives::scan_contains(&lower, "would create one or more")
+        && nom_primitives::scan_contains(&lower, "instead create those tokens plus")
+    {
+        if let Some(def) = parse_xorn_subtype_token_replacement(&lower, &text) {
             return Some(def);
         }
     }
@@ -2407,6 +2421,111 @@ fn parse_token_replacement_shape(lower: &str) -> Option<TokenReplacementShape> {
     Some(TokenReplacementShape::PlusSpec {
         spec: Box::new(spec),
     })
+}
+
+/// CR 614.1a + CR 111.1: Parse Xorn-class subtype-gated additional-token
+/// replacements. Matches the shape:
+///
+///     "If you would create one or more <subtype> tokens, instead create
+///      those tokens plus an additional <subtype> token."
+///
+/// Differs from `parse_token_replacement` (Chatterfang) in two ways:
+/// (1) the original event already creates tokens of the listed subtype, so a
+/// `ReplacementCondition::TokenSubtypeMatches` gate is emitted; (2) the
+/// "instead create those tokens plus X" word order is inverted from
+/// Chatterfang's "those tokens plus X are created instead." Manufactor
+/// ("instead create one of each") shares the same prefix and is parsed
+/// separately in Item 5b.
+fn parse_xorn_subtype_token_replacement(
+    lower: &str,
+    original_text: &str,
+) -> Option<ReplacementDefinition> {
+    // Extract the subtype after "would create one or more ".
+    // Stops at " tokens," — the comma separator before "instead create".
+    let ((subtype_start, subtype_len), _) = nom_on_lower(lower, lower, |i| {
+        let (i, pre) =
+            take_until::<_, _, VerboseError<&str>>("would create one or more ").parse(i)?;
+        let start_offset = pre.len() + "would create one or more ".len();
+        let (i, _) = tag("would create one or more ").parse(i)?;
+        let (_, subtype) = take_until::<_, _, VerboseError<&str>>(" tokens,").parse(i)?;
+        Ok((i, (start_offset, subtype.len())))
+    })?;
+
+    let subtype_phrase = lower
+        .get(subtype_start..subtype_start + subtype_len)?
+        .trim();
+    if subtype_phrase.is_empty() || subtype_phrase.contains(' ') {
+        // Multi-word subtypes (e.g., "or more Treasure") indicate the prefix
+        // didn't isolate a single canonical subtype — bail and let a future
+        // multi-subtype branch (Manufactor) handle it.
+        return None;
+    }
+
+    // Extract the additional-token descriptor after
+    // "instead create those tokens plus [an additional ]?", up to a
+    // terminating comma or "." Track the post-strip position via input length.
+    let total_len = lower.len();
+    let ((desc_start, desc_len, needs_article), _) = nom_on_lower(lower, lower, |i| {
+        let (i, _) =
+            take_until::<_, _, VerboseError<&str>>("instead create those tokens plus ").parse(i)?;
+        let (i, _) = tag("instead create those tokens plus ").parse(i)?;
+        // Strip the "additional " modifier (with its optional leading article)
+        // so parse_token_description sees the canonical token tail. Factor as
+        // (opt article) + required "additional " to avoid the cartesian-product
+        // expansion of {a_, an_, ε} × additional_.
+        let (i, _) = opt(value(
+            (),
+            preceded(opt(alt((tag("a "), tag("an ")))), tag("additional ")),
+        ))
+        .parse(i)?;
+        let start_offset = total_len - i.len();
+        let needs_article = !i.starts_with("a ") && !i.starts_with("an ");
+        let (i, descriptor) = alt((
+            take_until::<_, _, VerboseError<&str>>("."),
+            nom::combinator::rest,
+        ))
+        .parse(i)?;
+        Ok((i, (start_offset, descriptor.len(), needs_article)))
+    })?;
+
+    let descriptor_raw = lower.get(desc_start..desc_start + desc_len)?.trim();
+    // CR 111.1: parse_token_description's count-prefix requirement
+    // (parser/oracle_effect/token.rs:169-175) needs an article or numeric
+    // count. Re-add "a " when the modifier strip above consumed the article.
+    let descriptor_owned;
+    let descriptor: &str = if needs_article {
+        descriptor_owned = format!("a {descriptor_raw}");
+        &descriptor_owned
+    } else {
+        descriptor_raw
+    };
+    let token = super::oracle_effect::parse_token_description(descriptor)?;
+    let spec = token_description_to_spec(&token)?;
+
+    // Capitalize the subtype to match the parser's existing convention
+    // (TokenSpec.subtypes uses title-case: "Treasure", not "treasure").
+    let canonical_subtype = canonicalize_subtype(subtype_phrase);
+
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::CreateToken)
+            .condition(ReplacementCondition::TokenSubtypeMatches {
+                subtypes: vec![canonical_subtype],
+            })
+            .additional_token_spec(spec)
+            .description(original_text.to_string()),
+    )
+}
+
+/// Title-case a single-word subtype string for canonical TokenSpec storage.
+/// "treasure" → "Treasure". Mirrors the existing parser convention; if a
+/// shared subtype-canonicalization helper lands later this function should
+/// delegate to it.
+fn canonicalize_subtype(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+        None => String::new(),
+    }
 }
 
 /// CR 111.1 + CR 111.4: Convert a parser-extracted `TokenDescription` into a
@@ -5296,5 +5415,38 @@ mod tests {
             Some(crate::types::ability::QuantityModification::Double)
         ));
         assert!(def.additional_token_spec.is_none());
+    }
+
+    /// CR 614.1a + CR 111.1 + CR 111.10p: Xorn's full Oracle text parses to a
+    /// CreateToken replacement with a `TokenSubtypeMatches { ["Treasure"] }`
+    /// gate and an `additional_token_spec` carrying the Treasure spec.
+    #[test]
+    fn parses_xorn_additional_treasure_token_replacement_cr_614_1a() {
+        let text = "If you would create one or more Treasure tokens, instead create those tokens plus an additional Treasure token.";
+        let def =
+            parse_replacement_line(text, "Xorn").expect("should parse Xorn token replacement");
+
+        assert_eq!(def.event, ReplacementEvent::CreateToken);
+        match &def.condition {
+            Some(ReplacementCondition::TokenSubtypeMatches { subtypes }) => {
+                assert_eq!(
+                    subtypes,
+                    &vec!["Treasure".to_string()],
+                    "Xorn gates on Treasure subtype"
+                );
+            }
+            other => panic!("Expected TokenSubtypeMatches, got {other:?}"),
+        }
+        let spec = def
+            .additional_token_spec
+            .as_ref()
+            .expect("Xorn must populate additional_token_spec");
+        assert!(
+            spec.subtypes
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case("Treasure")),
+            "appended spec must be a Treasure token, got {:?}",
+            spec.subtypes
+        );
     }
 }

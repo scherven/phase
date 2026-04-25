@@ -1547,6 +1547,17 @@ fn evaluate_replacement_condition(
                 ..
             }
         ),
+        // CR 614.1a + CR 111.1: "if you would create one or more <subtype> tokens" —
+        // applies iff the proposed CreateToken event's spec subtypes overlap any
+        // listed subtype. Non-CreateToken events never match this condition.
+        ReplacementCondition::TokenSubtypeMatches { subtypes } => match event {
+            ProposedEvent::CreateToken { spec, .. } => subtypes.iter().any(|wanted| {
+                spec.subtypes
+                    .iter()
+                    .any(|got| got.eq_ignore_ascii_case(wanted))
+            }),
+            _ => false,
+        },
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.
