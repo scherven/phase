@@ -134,7 +134,6 @@ pub(crate) fn has_recursion_keyword(obj: &engine::game::game_object::GameObject)
 /// CR 302.6: Creatures with summoning sickness cannot activate tap abilities,
 /// so sick non-land mana dorks are excluded.
 pub(crate) fn available_mana(state: &GameState, player: PlayerId) -> u32 {
-    let turn = state.turn_number;
     let untapped_mana_sources = state
         .battlefield
         .iter()
@@ -143,7 +142,7 @@ pub(crate) fn available_mana(state: &GameState, player: PlayerId) -> u32 {
                 obj.controller == player
                     && !obj.tapped
                     && (obj.card_types.core_types.contains(&CoreType::Land)
-                        || (!combat::has_summoning_sickness(obj, turn)
+                        || (!combat::has_summoning_sickness(obj)
                             && obj.abilities.iter().any(mana_abilities::is_mana_ability)))
             })
         })
@@ -154,6 +153,8 @@ pub(crate) fn available_mana(state: &GameState, player: PlayerId) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::zones::create_object;
     use engine::types::identifiers::CardId;
@@ -282,7 +283,7 @@ mod tests {
             },
         );
         mana_ability.cost = Some(AbilityCost::Tap);
-        dork_obj.abilities.push(mana_ability);
+        Arc::make_mut(&mut dork_obj.abilities).push(mana_ability);
 
         // Should count both: 1 land + 1 mana dork = 2
         let mana = available_mana(&state, PlayerId(0));

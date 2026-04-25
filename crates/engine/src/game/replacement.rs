@@ -309,6 +309,15 @@ fn damage_done_applier(
                     target,
                     amount: prevented_amount,
                 });
+                // CR 615.5: Stash the prevented amount as the chain's last effect
+                // count so a post-replacement follow-up effect (e.g. Phyrexian
+                // Hydra's "Put a -1/-1 counter on ~ for each 1 damage prevented
+                // this way") can resolve `QuantityRef::EventContextAmount`
+                // against the prevented amount. The follow-up runs outside the
+                // trigger-resolution window, so `current_trigger_event` is None
+                // and `last_effect_count` is the documented fallback slot
+                // (see `quantity.rs` resolver).
+                state.last_effect_count = Some(prevented_amount as i32);
             }
 
             return result;
@@ -460,7 +469,7 @@ fn draw_replacement_count(
         .as_deref()?;
 
     match &*execute.effect {
-        Effect::Draw { count: qty } if execute.sub_ability.is_none() => {
+        Effect::Draw { count: qty, .. } if execute.sub_ability.is_none() => {
             let resolved = resolve_draw_replacement_quantity(qty, *count)?;
             Some(resolved.max(0) as u32)
         }
@@ -669,7 +678,7 @@ fn create_token_applier(
     events: &mut Vec<GameEvent>,
 ) -> ApplyResult {
     use crate::types::ability::QuantityModification;
-    let (modification, additional_spec) = state
+    let (modification, additional_spec, ensure_specs) = state
         .objects
         .get(&rid.source)
         .and_then(|obj| obj.replacement_definitions.get(rid.index))
@@ -677,9 +686,10 @@ fn create_token_applier(
             (
                 def.quantity_modification.clone(),
                 def.additional_token_spec.clone(),
+                def.ensure_token_specs.clone(),
             )
         })
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, None));
 
     if let ProposedEvent::CreateToken {
         owner,
@@ -753,6 +763,52 @@ fn create_token_applier(
                 // current class (no cards combine Chatterfang-style appends
                 // with optional ETB replacements on their targets).
                 ReplacementResult::Prevented | ReplacementResult::NeedsChoice(_) => {}
+            }
+        }
+
+        // CR 614.1a + CR 111.1: Manufactor's "ensure one of each" — emit a
+        // recursive CreateToken event for every listed spec whose subtype is
+        // *not* already in the primary event's spec. The primary event keeps
+        // the original subtype's count (Doubling Season etc. composes via
+        // `quantity_modification` above), and each additional batch is sized
+        // at `new_count` so any post-Manufactor multiplier ordered earlier in
+        // CR 616 reaches the appended subtypes.
+        if let Some(specs) = ensure_specs {
+            let source_controller = state
+                .objects
+                .get(&rid.source)
+                .map(|o| o.controller)
+                .unwrap_or(owner);
+            for mut extra in specs {
+                let already_present = extra.subtypes.iter().any(|s| {
+                    spec.subtypes
+                        .iter()
+                        .any(|already| already.eq_ignore_ascii_case(s))
+                });
+                if already_present {
+                    continue;
+                }
+                extra.source_id = rid.source;
+                extra.controller = source_controller;
+                let mut applied_on_extra = HashSet::new();
+                applied_on_extra.insert(rid);
+                let extra_proposed = ProposedEvent::CreateToken {
+                    owner,
+                    spec: Box::new(extra),
+                    enter_tapped: EtbTapState::Unspecified,
+                    count: new_count,
+                    applied: applied_on_extra,
+                };
+                match replace_event(state, extra_proposed, events) {
+                    ReplacementResult::Execute(extra_event) => {
+                        crate::game::effects::token::apply_create_token_after_replacement(
+                            state,
+                            extra_event,
+                            events,
+                        );
+                    }
+                    ReplacementResult::Prevented | ReplacementResult::NeedsChoice(_) => {}
+                }
             }
         }
 
@@ -1538,6 +1594,17 @@ fn evaluate_replacement_condition(
                 ..
             }
         ),
+        // CR 614.1a + CR 111.1: "if you would create one or more <subtype> tokens" —
+        // applies iff the proposed CreateToken event's spec subtypes overlap any
+        // listed subtype. Non-CreateToken events never match this condition.
+        ReplacementCondition::TokenSubtypeMatches { subtypes } => match event {
+            ProposedEvent::CreateToken { spec, .. } => subtypes.iter().any(|wanted| {
+                spec.subtypes
+                    .iter()
+                    .any(|got| got.eq_ignore_ascii_case(wanted))
+            }),
+            _ => false,
+        },
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.
@@ -2088,6 +2155,14 @@ fn apply_single_replacement(
             };
             let post_effect = match (branch, &repl_def.mode) {
                 (ReplacementBranch::Execute, ReplacementMode::Mandatory) => {
+                    // CR 615.5: Damage prevention follow-ups (e.g. Phyrexian
+                    // Hydra's "Put a -1/-1 counter on ~ for each 1 damage
+                    // prevented this way") must always stash as a post-effect
+                    // — the `has_only_event_modifier` heuristic that classifies
+                    // self-targeted PutCounter as an ETB modifier does not
+                    // apply to Damage events, where there is no `etb_counters`
+                    // slot to absorb the counters into.
+                    let is_damage = matches!(proposed, ProposedEvent::Damage { .. });
                     repl_def
                         .execute
                         .as_deref()
@@ -2100,7 +2175,11 @@ fn apply_single_replacement(
                             // the whole def as fully absorbed and silently drop the
                             // chain, so we take the sub_ability explicitly here.
                             Effect::ChangeZone { .. } => def.sub_ability.clone(),
-                            _ if EventModifiers::has_only_event_modifier(Some(def)) => None,
+                            _ if !is_damage
+                                && EventModifiers::has_only_event_modifier(Some(def)) =>
+                            {
+                                None
+                            }
                             _ => Some(Box::new(def.clone())),
                         })
                 }
@@ -2113,6 +2192,15 @@ fn apply_single_replacement(
             )
         }
         None => return Ok(proposed),
+    };
+
+    // CR 615.5 + CR 609.7: Snapshot the *prevented event's* damage source
+    // before the applier consumes `proposed`. Stashed below at the `Prevented`
+    // arm so `TargetFilter::PostReplacementSourceController` can resolve "the
+    // source's controller draws cards" follow-ups (Swans of Bryn Argoll class).
+    let proposed_damage_source = match &proposed {
+        ProposedEvent::Damage { source_id, .. } => Some(*source_id),
+        _ => None,
     };
 
     if let Some(handler) = registry.get(&event_key) {
@@ -2152,6 +2240,11 @@ fn apply_single_replacement(
                 if let Some(post) = mandatory_post_effect {
                     if state.post_replacement_effect.is_none() {
                         state.post_replacement_effect = Some(post);
+                        state.post_replacement_source = Some(rid.source);
+                        // CR 615.5 + CR 609.7: only the Prevented arm populates
+                        // `post_replacement_event_source`; clear here so a prior
+                        // prevention's source can't leak into a non-prevention stash.
+                        state.post_replacement_event_source = None;
                     }
                 }
                 events.push(GameEvent::ReplacementApplied {
@@ -2161,6 +2254,26 @@ fn apply_single_replacement(
                 return Ok(new_event);
             }
             ApplyResult::Prevented => {
+                // CR 615.5: A prevention effect's additional effect (e.g.
+                // Phyrexian Hydra's "Put a -1/-1 counter on ~ for each 1 damage
+                // prevented this way") is stashed as a post-replacement effect
+                // and runs immediately after the prevention takes place. The
+                // prevention applier has already stamped `last_effect_count`
+                // with the prevented amount so `EventContextAmount` resolves
+                // correctly when the follow-up effect fires.
+                //
+                // CR 615.5 + CR 609.7 + CR 614.12a: Stash the *prevented event's*
+                // damage source so `TargetFilter::PostReplacementSourceController`
+                // can resolve "the source's controller draws cards" follow-ups
+                // (Swans of Bryn Argoll). Distinct from `post_replacement_source`,
+                // which is the replacement's own source (Swans itself).
+                if let Some(post) = mandatory_post_effect {
+                    if state.post_replacement_effect.is_none() {
+                        state.post_replacement_effect = Some(post);
+                        state.post_replacement_source = Some(rid.source);
+                        state.post_replacement_event_source = proposed_damage_source;
+                    }
+                }
                 events.push(GameEvent::ReplacementApplied {
                     source_id: rid.source,
                     event_type,
@@ -2317,6 +2430,13 @@ pub fn continue_replacement(
             Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
             Err(ApplyResult::Modified(_)) => unreachable!(),
         }
+        if post_effect.is_some() {
+            state.post_replacement_source = Some(rid.source);
+            // CR 615.5 + CR 609.7: Optional/decline post-effects don't carry
+            // prevention-event-source semantics — clear so a prior prevention
+            // can't leak into a non-prevention stash.
+            state.post_replacement_event_source = None;
+        }
         state.post_replacement_effect = post_effect;
 
         return pipeline_loop(state, proposed, pending.depth + 1, &registry, events);
@@ -2379,7 +2499,7 @@ mod tests {
         obj.replacement_definitions = replacements.into();
         state.objects.insert(obj_id, obj);
         if zone == Zone::Battlefield {
-            state.battlefield.push(obj_id);
+            state.battlefield.push_back(obj_id);
         }
         state
     }
@@ -2481,8 +2601,8 @@ mod tests {
 
         state.objects.insert(ObjectId(10), obj1);
         state.objects.insert(ObjectId(20), obj2);
-        state.battlefield.push(ObjectId(10));
-        state.battlefield.push(ObjectId(20));
+        state.battlefield.push_back(ObjectId(10));
+        state.battlefield.push_back(ObjectId(20));
 
         let target = GameObject::new(
             ObjectId(30),
@@ -2562,6 +2682,7 @@ mod tests {
                         }),
                         offset: 1,
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
         let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
@@ -2602,6 +2723,7 @@ mod tests {
                         }),
                         offset: 1,
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
         let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
@@ -2635,6 +2757,7 @@ mod tests {
                         }),
                         offset: 1,
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
         let state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
@@ -3263,7 +3386,7 @@ mod tests {
         );
         other_source.replacement_definitions = vec![untap_repl].into();
         state.objects.insert(ObjectId(11), other_source);
-        state.battlefield.push(ObjectId(11));
+        state.battlefield.push_back(ObjectId(11));
 
         let registry = build_replacement_registry();
         let mut events = Vec::new();
@@ -3411,7 +3534,7 @@ mod tests {
             Zone::Battlefield,
         );
         state.objects.insert(ObjectId(30), target);
-        state.battlefield.push(ObjectId(30));
+        state.battlefield.push_back(ObjectId(30));
 
         let mut events = Vec::new();
         let proposed =
@@ -3456,7 +3579,7 @@ mod tests {
         );
         obj.replacement_definitions = repls.into();
         state.objects.insert(obj_id, obj);
-        state.battlefield.push(obj_id);
+        state.battlefield.push_back(obj_id);
         state
     }
 
@@ -3589,7 +3712,7 @@ mod tests {
         );
         source_obj.controller = PlayerId(1);
         state.objects.insert(ObjectId(50), source_obj);
-        state.battlefield.push(ObjectId(50));
+        state.battlefield.push_back(ObjectId(50));
 
         let proposed = damage_event(3);
         let registry = build_replacement_registry();
@@ -3617,7 +3740,7 @@ mod tests {
             Zone::Battlefield,
         );
         state.objects.insert(ObjectId(50), source_obj);
-        state.battlefield.push(ObjectId(50));
+        state.battlefield.push_back(ObjectId(50));
 
         let proposed = damage_event(3);
         let registry = build_replacement_registry();
@@ -3684,7 +3807,7 @@ mod tests {
         );
         opp_creature.card_types.core_types.push(CoreType::Creature);
         state.objects.insert(ObjectId(60), opp_creature);
-        state.battlefield.push(ObjectId(60));
+        state.battlefield.push_back(ObjectId(60));
 
         let proposed = ProposedEvent::Damage {
             source_id: ObjectId(50),
@@ -4182,7 +4305,10 @@ mod tests {
     #[test]
     fn only_if_quantity_applies_when_condition_is_true() {
         let mut state = GameState::new_two_player(42);
-        state.players[0].hand.truncate(1);
+        let h = &mut state.players[0].hand;
+        if h.len() > 1 {
+            h.truncate(1);
+        }
         let cond = ReplacementCondition::OnlyIfQuantity {
             lhs: QuantityExpr::Ref {
                 qty: crate::types::ability::QuantityRef::HandSize,
@@ -4224,10 +4350,14 @@ mod tests {
                         }),
                         offset: 1,
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
         let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
-        state.players[0].hand.truncate(1);
+        let h = &mut state.players[0].hand;
+        if h.len() > 1 {
+            h.truncate(1);
+        }
 
         let proposed = ProposedEvent::Draw {
             player_id: PlayerId(1),
@@ -4326,7 +4456,7 @@ mod tests {
         );
         creature.card_types.core_types.push(CoreType::Creature);
         state2.objects.insert(ObjectId(60), creature);
-        state2.battlefield.push(ObjectId(60));
+        state2.battlefield.push_back(ObjectId(60));
 
         let proposed_creature = ProposedEvent::Damage {
             source_id: ObjectId(50),
@@ -4464,7 +4594,7 @@ mod tests {
             Zone::Battlefield,
         );
         state.objects.insert(land_id, land);
-        state.battlefield.push(land_id);
+        state.battlefield.push_back(land_id);
 
         let mut events = Vec::new();
         let proposed = ProposedEvent::produce_mana(land_id, PlayerId(0), ManaType::Green);
@@ -4739,5 +4869,95 @@ mod tests {
             .values()
             .filter(|o| o.is_token)
             .all(|o| o.owner == PlayerId(0)));
+    }
+
+    /// CR 614.1a + CR 111.1: Manufactor's "ensure one of each" — when the
+    /// proposed event creates a Treasure, the applier emits Clue and Food
+    /// recursively, but does NOT re-emit Treasure (already present in the
+    /// primary spec). Idempotence: the spawned Clue/Food events carry the
+    /// Manufactor `ReplacementId` in `applied`, so a second Manufactor on the
+    /// battlefield does not re-fire on its own output (CR 616.1).
+    #[test]
+    fn create_token_applier_ensure_specs_emits_only_missing_subtypes_cr_614_1a() {
+        fn artifact_spec(name: &str) -> TokenSpec {
+            TokenSpec {
+                display_name: name.to_string(),
+                script_name: name.to_string(),
+                power: None,
+                toughness: None,
+                core_types: vec![crate::types::card_type::CoreType::Artifact],
+                subtypes: vec![name.to_string()],
+                supertypes: Vec::new(),
+                colors: Vec::new(),
+                keywords: Vec::new(),
+                static_abilities: Vec::new(),
+                enter_with_counters: Vec::new(),
+                tapped: false,
+                enters_attacking: false,
+                sacrifice_at: None,
+                source_id: ObjectId(0),
+                controller: PlayerId(0),
+            }
+        }
+
+        let manufactor = ObjectId(700);
+        let repl = ReplacementDefinition::new(ReplacementEvent::CreateToken)
+            .condition(ReplacementCondition::TokenSubtypeMatches {
+                subtypes: vec![
+                    "Clue".to_string(),
+                    "Food".to_string(),
+                    "Treasure".to_string(),
+                ],
+            })
+            .ensure_token_specs(vec![
+                artifact_spec("Clue"),
+                artifact_spec("Food"),
+                artifact_spec("Treasure"),
+            ]);
+        let mut state = test_state_with_object(manufactor, Zone::Battlefield, vec![repl]);
+        let mut events = Vec::new();
+
+        let mut treasure = artifact_spec("Treasure");
+        treasure.source_id = manufactor;
+        let proposed = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(treasure),
+            enter_tapped: EtbTapState::Unspecified,
+            count: 1,
+            applied: HashSet::new(),
+        };
+
+        let result = replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::Execute(primary) = result else {
+            panic!("expected Execute; got {:?}", result);
+        };
+        crate::game::effects::token::apply_create_token_after_replacement(
+            &mut state,
+            primary,
+            &mut events,
+        );
+
+        let count_subtype = |sub: &str| {
+            state
+                .objects
+                .values()
+                .filter(|o| o.is_token && o.card_types.subtypes.iter().any(|s| s == sub))
+                .count()
+        };
+        assert_eq!(
+            count_subtype("Treasure"),
+            1,
+            "primary Treasure materializes"
+        );
+        assert_eq!(
+            count_subtype("Clue"),
+            1,
+            "missing Clue emitted by ensure-all"
+        );
+        assert_eq!(
+            count_subtype("Food"),
+            1,
+            "missing Food emitted by ensure-all"
+        );
     }
 }

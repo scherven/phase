@@ -336,7 +336,7 @@ mod tests {
         };
         obj.power = Some(power);
         obj.toughness = Some(power);
-        state.battlefield.push(oid);
+        state.battlefield.push_back(oid);
         oid
     }
 
@@ -359,7 +359,7 @@ mod tests {
             subtypes: Vec::new(),
         };
         obj.mana_cost = ManaCost::generic(1);
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
         oid
     }
 

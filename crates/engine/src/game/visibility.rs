@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
@@ -154,6 +155,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         ref cards,
         count,
         reveal,
+        up_to,
     } = state.waiting_for
     {
         if !can_view_private_for_player(player) {
@@ -162,6 +164,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                 cards: cards.iter().map(|_| ObjectId(0)).collect(),
                 count,
                 reveal,
+                up_to,
             };
         }
     }
@@ -223,6 +226,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     }
 
     filtered.auto_pass.retain(|pid, _| *pid == viewer);
+    filtered.phase_stops.retain(|pid, _| *pid == viewer);
     filtered
         .lands_tapped_for_mana
         .retain(|pid, _| *pid == viewer);
@@ -238,10 +242,14 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
 
     for pool in &mut filtered.deck_pools {
         if pool.player != viewer {
-            pool.registered_main.clear();
-            pool.registered_sideboard.clear();
-            pool.current_main.clear();
-            pool.current_sideboard.clear();
+            // Per-seat redaction: replace the Arc'd decks with fresh empties.
+            // Cheaper than `make_mut + clear` because we discard the contents;
+            // the original Arcs remain shared by the unfiltered state and any
+            // other viewer's filter.
+            pool.registered_main = Arc::new(Vec::new());
+            pool.registered_sideboard = Arc::new(Vec::new());
+            pool.current_main = Arc::new(Vec::new());
+            pool.current_sideboard = Arc::new(Vec::new());
         }
     }
 
@@ -252,7 +260,7 @@ fn hide_card(state: &mut GameState, obj_id: ObjectId) {
     if let Some(obj) = state.objects.get_mut(&obj_id) {
         obj.face_down = true;
         obj.name = "Hidden Card".to_string();
-        obj.abilities.clear();
+        Arc::make_mut(&mut obj.abilities).clear();
         obj.keywords.clear();
         obj.base_keywords.clear();
         obj.power = None;
@@ -322,6 +330,7 @@ mod tests {
             cards: vec![card_id],
             count: 1,
             reveal: false,
+            up_to: false,
         };
 
         let filtered = filter_state_for_viewer(&state, PlayerId(0));
@@ -353,6 +362,7 @@ mod tests {
             cards: vec![card_id],
             count: 1,
             reveal: false,
+            up_to: false,
         };
 
         let filtered = filter_state_for_viewer(&state, PlayerId(2));
@@ -377,7 +387,7 @@ mod tests {
 
         let filtered = filter_state_for_viewer(&state, PlayerId(0));
 
-        assert_eq!(filtered.command_zone, vec![commander_id]);
+        assert_eq!(filtered.command_zone, im::vector![commander_id]);
         let commander = filtered.objects.get(&commander_id).unwrap();
         assert_eq!(commander.name, "Opponent Commander");
         assert!(!commander.face_down);

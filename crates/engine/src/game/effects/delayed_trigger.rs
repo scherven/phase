@@ -218,6 +218,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         );
         let ability = ResolvedAbility::new(
@@ -367,6 +368,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         );
         // Cast by PlayerId(1), with the placeholder PlayerId(0) in the

@@ -239,6 +239,8 @@ fn finalize_loyalty_activation(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -290,7 +292,7 @@ mod tests {
         obj.loyalty = Some(loyalty);
         obj.counters
             .insert(crate::types::counter::CounterType::Loyalty, loyalty);
-        obj.abilities = abilities;
+        obj.abilities = Arc::new(abilities);
         obj.entered_battlefield_turn = Some(state.turn_number);
         id
     }
@@ -307,6 +309,7 @@ mod tests {
                 1,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             )],
         );
@@ -333,6 +336,7 @@ mod tests {
                 // Use non-targeted effect so no target selection is needed.
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::Controller,
                 },
             )],
         );
@@ -356,6 +360,7 @@ mod tests {
                 1,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             )],
         );
@@ -383,6 +388,7 @@ mod tests {
                 1,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             )],
         );
@@ -418,6 +424,7 @@ mod tests {
                 1,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             )],
         );
@@ -436,7 +443,7 @@ mod tests {
 
         // Stack not empty
         state.active_player = PlayerId(0);
-        state.stack.push(crate::types::game_state::StackEntry {
+        state.stack.push_back(crate::types::game_state::StackEntry {
             id: ObjectId(99),
             source_id: ObjectId(99),
             controller: PlayerId(1),
@@ -481,6 +488,7 @@ mod tests {
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         )
         .cost(AbilityCost::Loyalty { amount: -3 });
@@ -495,6 +503,7 @@ mod tests {
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         );
         assert_eq!(parse_loyalty_cost(&ability), 0);
@@ -506,7 +515,8 @@ mod tests {
             parse_loyalty_cost(&make_loyalty_ability(
                 1,
                 Effect::Draw {
-                    count: QuantityExpr::Fixed { value: 1 }
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 }
             )),
             1
@@ -537,6 +547,7 @@ mod tests {
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         );
         assert_eq!(parse_loyalty_cost(&no_cost), 0);

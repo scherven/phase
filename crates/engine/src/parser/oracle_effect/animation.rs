@@ -330,6 +330,113 @@ fn parse_animation_type_sequence(input: &str) -> OracleResult<'_, Vec<AnimationT
     separated_list1(multispace1, parse_animation_type_token).parse(input)
 }
 
+/// CR 205.3: Case-insensitive subtype grammar — accepts either a capitalized
+/// proper noun (standard form) OR a lowercase alphabetic word (≥ 2 chars,
+/// optionally hyphenated). Used only in the "loose" type-sequence parse path
+/// which requires the trailing "in addition to its other [creature ]types"
+/// structural signal that guarantees the preceding phrase is a type
+/// expression (e.g., trigger-effect text that has been pre-lowercased by the
+/// oracle_trigger pipeline).
+fn parse_animation_subtype_loose(input: &str) -> OracleResult<'_, AnimationTypeToken> {
+    let (rest, word) = recognize(pair(
+        satisfy(|c: char| c.is_ascii_alphabetic()),
+        pair(
+            satisfy(|c: char| c.is_ascii_alphabetic()),
+            many0(satisfy(|c: char| c.is_ascii_alphabetic() || c == '-')),
+        ),
+    ))
+    .parse(input)?;
+    let (rest, _) = peek(alt((
+        nom::combinator::eof,
+        recognize(satisfy(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | '.' | ';' | ')' | '!' | '?')
+        })),
+    )))
+    .parse(rest)?;
+    Ok((rest, AnimationTypeToken::Subtype(word.to_string())))
+}
+
+/// Case-insensitive type-token parser: core type / supertype / subtype,
+/// accepting lowercase subtypes so pre-lowered trigger-effect text (where the
+/// CR 205.3 proper-noun casing has been destroyed upstream) can still be
+/// decomposed. Halting words are excluded via the terminator arms in
+/// [`parse_animation_type_sequence_loose`].
+fn parse_animation_type_token_loose(input: &str) -> OracleResult<'_, AnimationTypeToken> {
+    alt((
+        parse_animation_core_type,
+        parse_animation_supertype,
+        parse_animation_subtype_loose,
+    ))
+    .parse(input)
+}
+
+fn parse_animation_type_sequence_loose(input: &str) -> OracleResult<'_, Vec<AnimationTypeToken>> {
+    separated_list1(multispace1, parse_animation_type_token_loose).parse(input)
+}
+
+/// Run the strict (CR 205.3 capitalized) type-sequence parser; fall back to the
+/// case-insensitive `_loose` variant when the input is terminated by the
+/// "in addition to its other [creature ]types" structural signal. The tail
+/// guarantees the preceding phrase is a type expression, so lowercase subtype
+/// words are safe to classify. Shared by [`parse_becomes_type_modifications`]
+/// and [`parse_animation_types`] so both the static-ability and effect-
+/// imperative paths decompose the descriptor identically.
+fn try_parse_type_sequence_with_suffix(input: &str) -> Option<Vec<AnimationTypeToken>> {
+    // Strict path first — preserves existing behavior when the CR 205.3
+    // capitalization is present (native effect text, static abilities). The
+    // terminator-halt grammar (capitalized subtype required) naturally stops
+    // the sequence at lowercase connective words like "in".
+    let suffix_parser = opt(preceded(
+        multispace0,
+        alt((
+            tag("in addition to its other creature types"),
+            tag("in addition to its other types"),
+        )),
+    ));
+    if let Ok((_, (tokens, _))) = (parse_animation_type_sequence, suffix_parser).parse(input) {
+        return Some(tokens);
+    }
+
+    // Loose fallback: only fires when the trailing "in addition to its other
+    // [creature ]types" marker is present, which structurally guarantees the
+    // preceding phrase is a type expression. Because the loose subtype
+    // grammar accepts any alphabetic word, we must first split the input on
+    // the structural marker so the loose sequence doesn't greedily consume
+    // "in addition to its other types" as six subtypes.
+    let (prefix, _) = split_in_addition_tail(input)?;
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return None;
+    }
+    if let Ok((_, tokens)) = parse_animation_type_sequence_loose(prefix) {
+        return Some(tokens);
+    }
+
+    None
+}
+
+/// Split `input` on the " in addition to its other [creature ]types" marker,
+/// returning the prefix and the matched marker variant. Returns `None` if the
+/// marker is absent. Uses `take_until` to locate the marker, then a nom `alt`
+/// to select between the two CR 205.3 variants (creature-types form is the
+/// longer alternative and listed first per nom short-circuit semantics).
+fn split_in_addition_tail(input: &str) -> Option<(&str, &str)> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+    // Longer alternative first (nom short-circuit).
+    let (_, prefix) =
+        nom::bytes::complete::take_until::<_, _, VE<'_>>(" in addition to its other")(input)
+            .ok()?;
+    let pos = prefix.len();
+    let rest = input[pos..].trim_start();
+    let (_, matched) = alt((
+        tag::<_, _, VE<'_>>("in addition to its other creature types"),
+        tag::<_, _, VE<'_>>("in addition to its other types"),
+    ))
+    .parse(rest)
+    .ok()?;
+    Some((prefix, matched))
+}
+
 /// CR 205.1a + CR 205.2 + CR 205.3 + CR 613.1c: Decompose a "becomes a
 /// [subtype]* [core-type]+ [in addition to its other types]?" descriptor into
 /// a list of typed `ContinuousModification`s.
@@ -365,19 +472,16 @@ pub(crate) fn parse_becomes_type_modifications(
     // other [creature] types" clause. The longer alternative is tried first
     // because nom's alt() is short-circuit. See oracle_nom/PATTERNS.md
     // ("Optional trailing clause after a token sequence").
-    let mut parser = (
-        parse_animation_type_sequence,
-        opt(preceded(
-            multispace0,
-            alt((
-                tag("in addition to its other creature types"),
-                tag("in addition to its other types"),
-            )),
-        )),
-    );
-    let tokens = match parser.parse(trimmed) {
-        Ok((_, (tokens, _))) => tokens,
-        Err(_) => return Vec::new(),
+    //
+    // When the trailing "in addition to its other [creature] types" signal is
+    // present and the strict (capitalized) grammar fails — e.g., trigger-effect
+    // text that upstream lowercased before reaching here — retry with the
+    // case-insensitive `_loose` variant. The structural tail guarantees the
+    // preceding phrase is a type expression, so lowercase subtype words are
+    // safe to classify (CR 205.3 applies regardless of glyph case).
+    let tokens = match try_parse_type_sequence_with_suffix(trimmed) {
+        Some(tokens) => tokens,
+        None => return Vec::new(),
     };
 
     let mut modifications = Vec::new();
@@ -421,19 +525,9 @@ fn parse_animation_types(text: &str, infer_creature: bool) -> Vec<String> {
 
     // See parse_becomes_type_modifications for the same forward-parse pattern.
     // oracle_nom/PATTERNS.md ("Optional trailing clause after a token sequence").
-    let mut parser = (
-        parse_animation_type_sequence,
-        opt(preceded(
-            multispace0,
-            alt((
-                tag("in addition to its other creature types"),
-                tag("in addition to its other types"),
-            )),
-        )),
-    );
-    let tokens = match parser.parse(descriptor) {
-        Ok((_, (tokens, _))) => tokens,
-        Err(_) => return Vec::new(),
+    let tokens = match try_parse_type_sequence_with_suffix(descriptor) {
+        Some(tokens) => tokens,
+        None => return Vec::new(),
     };
 
     let mut core_types = Vec::new();
@@ -673,5 +767,43 @@ mod test_den_bugbear {
         // Empty / malformed input produces no modifications.
         assert!(parse_becomes_type_modifications("").is_empty());
         assert!(parse_becomes_type_modifications("   ").is_empty());
+    }
+
+    /// CR 205.3 + CR 613.1c: Case-insensitive fallback — trigger-effect text
+    /// that has been pre-lowercased by the upstream `oracle_trigger` pipeline
+    /// (which runs `effect_text.to_lowercase()` before dispatch) must still
+    /// decompose into typed modifications when the "in addition to its other
+    /// types" structural marker guarantees a type expression. Covers the
+    /// Clavileño class: "target attacking Vampire that isn't a Demon becomes
+    /// a Demon in addition to its other types."
+    #[test]
+    fn becomes_type_modifications_lowercase_with_in_addition_tail() {
+        use crate::types::ability::ContinuousModification;
+
+        assert_eq!(
+            parse_becomes_type_modifications("demon in addition to its other types"),
+            vec![ContinuousModification::AddSubtype {
+                subtype: "Demon".into()
+            }]
+        );
+
+        // Creature types tail variant.
+        assert_eq!(
+            parse_becomes_type_modifications("zombie in addition to its other creature types"),
+            vec![ContinuousModification::AddSubtype {
+                subtype: "Zombie".into()
+            }]
+        );
+
+        // Without the tail, loose mode must NOT fire — "demon" alone would
+        // have been a capitalized subtype in the original CR 205.3 grammar,
+        // but lacking the structural signal we must reject lowercase input.
+        assert!(parse_becomes_type_modifications("demon").is_empty());
+
+        // parse_animation_types exercises the same fallback.
+        assert_eq!(
+            parse_animation_types("demon in addition to its other types", false),
+            vec!["Demon"]
+        );
     }
 }

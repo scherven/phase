@@ -11,6 +11,7 @@ import type {
   LegalActionsResult,
   MatchConfig,
   SubmitResult,
+  ViewerSnapshot,
 } from "./types";
 import { debugLog } from "../game/debugLog";
 
@@ -134,6 +135,14 @@ export class EngineWorkerClient {
     return this.request<LegalActionsResult>({ type: "getLegalActions" });
   }
 
+  async getLegalActionsForViewer(viewerId: number): Promise<LegalActionsResult> {
+    return this.request<LegalActionsResult>({ type: "getLegalActionsForViewer", viewerId });
+  }
+
+  async getViewerSnapshot(viewerId: number): Promise<ViewerSnapshot> {
+    return this.request<ViewerSnapshot>({ type: "getViewerSnapshot", viewerId });
+  }
+
   async getAiAction(
     difficulty: string,
     playerId: number,
@@ -208,6 +217,18 @@ export class EngineWorkerClient {
 
   async ping(): Promise<string> {
     return this.request<string>({ type: "ping" });
+  }
+
+  /**
+   * Drain the panic message captured by the Rust panic hook in engine-wasm.
+   * Returns `null` if no panic has been observed since the last drain.
+   *
+   * The adapter calls this after a thrown STATE_LOST sentinel: if a panic
+   * is present, the failure is a real engine crash (re-running the same
+   * input will re-panic) and recovery must surface it instead of retrying.
+   */
+  async takeLastPanic(): Promise<string | null> {
+    return this.request<string | null>({ type: "takeLastPanic" });
   }
 
   dispose(): void {

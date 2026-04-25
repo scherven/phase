@@ -48,7 +48,9 @@ export type WsAdapterEvent =
   | { type: "latencyChanged"; latencyMs: number | null }
   | { type: "sessionChanged"; session: WsSessionData | null }
   | { type: "gameCreated"; gameCode: string }
+  | { type: "passwordRequired"; gameCode: string }
   | { type: "waitingForOpponent" }
+  | { type: "opponentJoined"; opponentName?: string }
   | { type: "opponentDisconnected"; graceSeconds: number }
   | { type: "opponentReconnected" }
   | { type: "playerDisconnected"; playerId: PlayerId; graceSeconds: number }
@@ -105,6 +107,13 @@ export class WebSocketAdapter implements EngineAdapter {
    * the server confirms the resumed session.
    */
   private reconnectInFlight = false;
+  /**
+   * `true` between `GameCreated` (host path) and the first `GameStarted`.
+   * When `GameStarted` arrives with this flag set, emit `opponentJoined`
+   * exactly once so the UI can fire a browser notification. Cleared on
+   * first fire so re-connects and state updates don't re-notify.
+   */
+  private hostWaitingForOpponent = false;
 
   constructor(
     private readonly serverUrl: string,
@@ -246,6 +255,11 @@ export class WebSocketAdapter implements EngineAdapter {
         clearInterval(this.pingInterval);
         this.pingInterval = null;
       }
+      // Clear the "host waiting for opponent" latch on socket close —
+      // otherwise a host who received GameCreated, disconnected before
+      // GameStarted, and then reconnected through a different path would
+      // fire `opponentJoined` spuriously on the replayed GameStarted.
+      this.hostWaitingForOpponent = false;
       if (this.pendingReject) {
         this.emit({ type: "actionPendingChanged", pending: false });
         this.pendingReject(
@@ -293,7 +307,7 @@ export class WebSocketAdapter implements EngineAdapter {
     return this.gameState;
   }
 
-  getAiAction(_difficulty: string): GameAction | null {
+  getAiAction(_difficulty: string, _playerId: number): GameAction | null {
     return null;
   }
 
@@ -437,25 +451,66 @@ export class WebSocketAdapter implements EngineAdapter {
         const data = msg.data as { game_code: string; player_token: string };
         this._gameCode = data.game_code;
         this.playerToken = data.player_token;
+        this.hostWaitingForOpponent = true;
         this.emit({ type: "sessionChanged", session: this.currentSession() });
         this.emit({ type: "gameCreated", gameCode: data.game_code });
         this.emit({ type: "waitingForOpponent" });
         break;
       }
 
+      case "PasswordRequired": {
+        // Server says: this room is password-protected and the client
+        // either sent no password or a wrong one. Surface an event so the
+        // UI can prompt, and reject init so callers know the join failed
+        // for a recoverable reason. Recoverable because the UI just needs
+        // to collect a password and create a fresh adapter with it.
+        //
+        // Reconnect path: if this arrives while `reconnectInFlight` (e.g.
+        // server restarted and re-demands the password), clear the flag
+        // and surface `reconnectFailed` so the UI stops retrying silently.
+        // Otherwise the adapter would stay stuck waiting for a
+        // `GameStarted` that will never come.
+        const data = msg.data as { game_code: string };
+        this.emit({ type: "passwordRequired", gameCode: data.game_code });
+        if (this.reconnectInFlight) {
+          this.reconnectInFlight = false;
+          this.reconnectAttempt = 0;
+          this.emit({ type: "reconnectFailed" });
+        }
+        if (this.initReject) {
+          this.initReject(
+            new AdapterError(
+              "PASSWORD_REQUIRED",
+              "Room requires a password",
+              true,
+            ),
+          );
+          this.initResolve = null;
+          this.initReject = null;
+        }
+        break;
+      }
+
       case "GameStarted": {
-        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; spell_costs?: Record<string, ManaCost>; player_token?: string };
+        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; spell_costs?: Record<string, ManaCost>; legal_actions_by_object?: Record<string, GameAction[]>; derived?: GameState["derived"]; player_token?: string };
         if (this.reconnectInFlight) {
           this.reconnectInFlight = false;
           this.reconnectAttempt = 0;
           this.emit({ type: "reconnected" });
+        } else if (this.hostWaitingForOpponent) {
+          this.hostWaitingForOpponent = false;
+          this.emit({
+            type: "opponentJoined",
+            opponentName: data.opponent_name,
+          });
         }
-        this.gameState = data.state;
+        this.gameState = { ...data.state, derived: data.derived ?? data.state.derived };
         this._playerId = data.your_player;
         this._legalActions = {
           actions: data.legal_actions ?? [],
           autoPassRecommended: data.auto_pass_recommended ?? false,
           spellCosts: data.spell_costs,
+          legalActionsByObject: data.legal_actions_by_object,
         };
         // Joiners receive their player_token here (hosts get it via GameCreated).
         // Set _gameCode from joinGameCode if not already set (host sets it via GameCreated).
@@ -484,12 +539,17 @@ export class WebSocketAdapter implements EngineAdapter {
       }
 
       case "StateUpdate": {
-        const data = msg.data as { state: GameState; events: GameEvent[]; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; spell_costs?: Record<string, ManaCost>; log_entries?: GameLogEntry[] };
-        this.gameState = data.state;
+        const data = msg.data as { state: GameState; events: GameEvent[]; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; spell_costs?: Record<string, ManaCost>; legal_actions_by_object?: Record<string, GameAction[]>; log_entries?: GameLogEntry[]; derived?: GameState["derived"] };
+        // Attach the engine-authored derived views to the state snapshot so
+        // components (e.g. CommanderDamage) can read them via gameState.derived
+        // without a separate subscription path. See
+        // crates/engine/src/game/derived_views.rs.
+        this.gameState = { ...data.state, derived: data.derived ?? data.state.derived };
         this._legalActions = {
           actions: data.legal_actions ?? [],
           autoPassRecommended: data.auto_pass_recommended ?? false,
           spellCosts: data.spell_costs,
+          legalActionsByObject: data.legal_actions_by_object,
         };
         if (this.pendingResolve) {
           this.emit({ type: "actionPendingChanged", pending: false });

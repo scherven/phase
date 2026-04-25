@@ -31,7 +31,7 @@ pub fn known_remaining_deck_counts(
     };
 
     let mut counts = HashMap::new();
-    for entry in &pool.current_main {
+    for entry in pool.current_main.iter() {
         if entry.count == 0 {
             continue;
         }
@@ -167,10 +167,10 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         state.deck_pools.push(PlayerDeckPool {
             player: PlayerId(0),
-            current_main: vec![
+            current_main: std::sync::Arc::new(vec![
                 deck_entry("Alpha", 2, Some("a")),
                 deck_entry("Beta", 1, None),
-            ],
+            ]),
             ..Default::default()
         });
 
@@ -202,7 +202,7 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         state.deck_pools.push(PlayerDeckPool {
             player: PlayerId(0),
-            current_main: vec![deck_entry("Alpha", 1, None)],
+            current_main: std::sync::Arc::new(vec![deck_entry("Alpha", 1, None)]),
             ..Default::default()
         });
 
@@ -215,7 +215,7 @@ mod tests {
         );
         state.objects.get_mut(&token).unwrap().is_token = true;
 
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: ObjectId(50),
             source_id: token,
             controller: PlayerId(0),
@@ -224,6 +224,7 @@ mod tests {
                 ability: engine::types::ability::ResolvedAbility::new(
                     engine::types::ability::Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
+                        target: engine::types::ability::TargetFilter::Controller,
                     },
                     Vec::new(),
                     token,
@@ -241,7 +242,7 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         state.deck_pools.push(PlayerDeckPool {
             player: PlayerId(0),
-            current_main: vec![deck_entry("Alpha", 1, None)],
+            current_main: std::sync::Arc::new(vec![deck_entry("Alpha", 1, None)]),
             ..Default::default()
         });
 
@@ -252,7 +253,7 @@ mod tests {
             "Alpha".to_string(),
             Zone::Stack,
         );
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: ObjectId(60),
             source_id: spell,
             controller: PlayerId(0),
@@ -261,6 +262,7 @@ mod tests {
                 ability: Some(engine::types::ability::ResolvedAbility::new(
                     engine::types::ability::Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
+                        target: engine::types::ability::TargetFilter::Controller,
                     },
                     Vec::new(),
                     spell,

@@ -8,6 +8,7 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::zones::Zone;
+use std::sync::Arc;
 
 /// CR 707.2 / CR 707.5: Create a token that's a copy of a permanent.
 /// Copies copiable characteristics from the target to a newly created token.
@@ -116,16 +117,20 @@ pub fn resolve(
             token.loyalty = values.loyalty;
             token.base_keywords = values.keywords.clone();
             token.keywords = values.keywords.clone();
-            token.base_abilities = values.abilities.clone();
-            token.abilities = values.abilities.clone();
-            token.base_trigger_definitions = values.trigger_definitions.clone();
-            token.trigger_definitions = values.trigger_definitions.clone().into();
-            token.base_replacement_definitions = values.replacement_definitions.clone();
-            token.replacement_definitions = values.replacement_definitions.clone().into();
-            token.base_static_definitions = values.static_definitions.clone();
-            token.static_definitions = values.static_definitions.clone().into();
+            // All four ability sets are Arc-shared — refcount bumps, no deep copy.
+            token.base_abilities = Arc::clone(&values.abilities);
+            token.abilities = Arc::clone(&values.abilities);
+            token.base_trigger_definitions = Arc::clone(&values.trigger_definitions);
+            token.trigger_definitions = Arc::clone(&values.trigger_definitions).into();
+            token.base_replacement_definitions = Arc::clone(&values.replacement_definitions);
+            token.replacement_definitions = Arc::clone(&values.replacement_definitions).into();
+            token.base_static_definitions = Arc::clone(&values.static_definitions);
+            token.static_definitions = Arc::clone(&values.static_definitions).into();
             token.base_characteristics_initialized = true;
-            token.entered_battlefield_turn = Some(state.turn_number);
+            // CR 400.7 + CR 302.6: Single authority for ETB state. Haste
+            // granted below via `extra_keywords` (Twinflame, etc.) is folded
+            // in at query time by `has_summoning_sickness`.
+            token.reset_for_battlefield_entry(state.turn_number);
 
             // CR 707.2 + CR 702: "except it has [keyword]" — grant additional
             // keywords on top of the copied characteristics. Twinflame's haste
@@ -163,6 +168,22 @@ pub fn resolve(
             crate::game::restrictions::record_token_created(state, token_id);
 
             // Step 7: Emit events.
+            // CR 111.1 + CR 603.6a: Token creation is a zone change from outside
+            // the game. Emit `ZoneChanged { from: None }` so every ETB trigger
+            // matcher fires for copied tokens (Elvish Vanguard, Soul Warden,
+            // Panharmonicon) without token-specific matcher code. `TokenCreated`
+            // is preserved for token-specific consumers.
+            let zone_change_record = state
+                .objects
+                .get(&token_id)
+                .expect("token just created")
+                .snapshot_for_zone_change(token_id, None, Zone::Battlefield);
+            events.push(GameEvent::ZoneChanged {
+                object_id: token_id,
+                from: None,
+                to: Zone::Battlefield,
+                record: Box::new(zone_change_record),
+            });
             events.push(GameEvent::TokenCreated {
                 object_id: token_id,
                 name: name.clone(),

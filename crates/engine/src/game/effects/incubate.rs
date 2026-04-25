@@ -53,7 +53,8 @@ pub fn resolve(
         obj.base_card_types = obj.card_types.clone();
         obj.color = vec![];
         obj.base_color = vec![];
-        obj.entered_battlefield_turn = Some(state.turn_number);
+        // CR 400.7 + CR 302.6: Single authority for ETB state.
+        obj.reset_for_battlefield_entry(state.turn_number);
     }
 
     // CR 701.53a: The Incubator enters with N +1/+1 counters.

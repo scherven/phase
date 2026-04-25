@@ -380,6 +380,12 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         "the exiled permanent",
         "the exiled creature",
         "both creatures",
+        // CR 608.2c: "later text on the card may modify the meaning of earlier
+        // text" — anaphoric back-reference to objects produced by prior sibling
+        // steps in the same resolution (e.g., Sword of Hearth and Home: exiled
+        // creature + searched basic land → "Put both cards onto the battlefield
+        // under your control").
+        "both cards",
     ];
     for phrase in TRACKED_SET_PHRASES {
         if let Ok((rest, _)) =
@@ -1148,6 +1154,14 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     {
         pos +=
             parse_ownership_or_controller_suffix(&lower[pos..], &mut properties, &mut controller);
+    }
+
+    // CR 205.3 + CR 205.4b: "that isn't a <Subtype>" relative-clause negation.
+    // Checked before `parse_that_clause_suffix` so the subtype exclusion short-circuits
+    // the generic that-clause branch (which does not recognize subtype negation).
+    if let Some((neg_tfs, consumed)) = parse_that_isnt_subtype_suffix(&lower[pos..]) {
+        neg_type_filters.extend(neg_tfs);
+        pos += consumed;
     }
 
     // CR 700.5: "that share(s) a creature type" / "that has/have [keyword]" relative clause.
@@ -2263,6 +2277,56 @@ fn parse_that_clause_suffix(text: &str) -> Option<(Vec<FilterProp>, usize)> {
     }
 
     None
+}
+
+/// CR 205.3 + CR 205.4b: "that isn't a <Subtype>" / "that's not a <Subtype>"
+/// relative-clause negation suffix. Returns negated type filters to append to
+/// the enclosing target's `neg_type_filters`. Mirrors the `non-<Subtype>`
+/// prefix pattern but expressed as a trailing relative clause
+/// ("target attacking Vampire that isn't a Demon" → `Non(Subtype("Demon"))`).
+/// Composable with other suffix parsers — consumes only the "that isn't ..."
+/// fragment and leaves the remainder intact.
+fn parse_that_isnt_subtype_suffix(text: &str) -> Option<(Vec<TypeFilter>, usize)> {
+    let trimmed = text.trim_start();
+    let leading_ws = text.len() - trimmed.len();
+
+    // "that isn't" / "that's not" / "that is not" — longest-match-first.
+    let (after_neg, neg_len) = if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("that isn't ").parse(trimmed)
+    {
+        (rest, "that isn't ".len())
+    } else if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("that's not ").parse(trimmed)
+    {
+        (rest, "that's not ".len())
+    } else if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("that is not ").parse(trimmed)
+    {
+        (rest, "that is not ".len())
+    } else {
+        return None;
+    };
+
+    // Optional article: "a " / "an " before the subtype.
+    let (after_article, article_len) = if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("a ").parse(after_neg)
+    {
+        (rest, "a ".len())
+    } else if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("an ").parse(after_neg)
+    {
+        (rest, "an ".len())
+    } else {
+        (after_neg, 0)
+    };
+
+    // CR 205.3: Subtype token — delegates to the shared subtype recognizer.
+    let (subtype, sub_len) = parse_subtype(after_article)?;
+    let total = leading_ws + neg_len + article_len + sub_len;
+    Some((
+        vec![TypeFilter::Non(Box::new(TypeFilter::Subtype(subtype)))],
+        total,
+    ))
 }
 
 /// CR 115.9c: Parse the constraint after "that targets only ".
@@ -3524,6 +3588,23 @@ mod tests {
     #[test]
     fn the_rest_produces_tracked_set() {
         let (f, rest) = parse_target("the rest");
+        assert_eq!(
+            f,
+            TargetFilter::TrackedSet {
+                id: TrackedSetId(0)
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn both_cards_produces_tracked_set() {
+        // CR 608.2c: Sword of Hearth and Home — "exile up to one target
+        // creature you own, then search your library for a basic land card.
+        // Put both cards onto the battlefield under your control." "both
+        // cards" is an anaphoric back-reference to the exiled creature + the
+        // searched land, both published into the chain-scoped tracked set.
+        let (f, rest) = parse_target("both cards");
         assert_eq!(
             f,
             TargetFilter::TrackedSet {
@@ -5598,5 +5679,73 @@ mod tests {
         let (filter, rest) = parse_target("the creature's controller");
         assert_eq!(filter, TargetFilter::ParentTargetController);
         assert_eq!(rest, "");
+    }
+
+    /// CR 205.3 + CR 205.4b: "target attacking Vampire that isn't a Demon" — the
+    /// subtype-negation relative clause must append `Non(Subtype("Demon"))` to
+    /// the target's type filters so a Vampire Demon is rejected.
+    #[test]
+    fn parse_target_that_isnt_subtype_appends_negation() {
+        let (filter, _) = parse_target("target attacking Vampire that isn't a Demon");
+        match filter {
+            TargetFilter::Typed(tf) => {
+                assert!(
+                    tf.type_filters
+                        .contains(&TypeFilter::Subtype("Vampire".into())),
+                    "expected Vampire subtype in type_filters, got {:?}",
+                    tf.type_filters
+                );
+                assert!(
+                    tf.type_filters
+                        .contains(&TypeFilter::Non(Box::new(TypeFilter::Subtype(
+                            "Demon".into()
+                        )))),
+                    "expected Non(Subtype(Demon)) in type_filters, got {:?}",
+                    tf.type_filters
+                );
+                assert!(
+                    tf.properties
+                        .iter()
+                        .any(|p| matches!(p, FilterProp::Attacking)),
+                    "expected Attacking property, got {:?}",
+                    tf.properties
+                );
+            }
+            other => panic!("expected Typed filter, got {other:?}"),
+        }
+    }
+
+    /// CR 205.3: "that's not a <Subtype>" — contraction form.
+    #[test]
+    fn parse_target_thats_not_subtype_appends_negation() {
+        let (filter, _) = parse_target("target Vampire that's not a Demon");
+        match filter {
+            TargetFilter::Typed(tf) => assert!(
+                tf.type_filters
+                    .contains(&TypeFilter::Non(Box::new(TypeFilter::Subtype(
+                        "Demon".into()
+                    )))),
+                "expected Non(Subtype(Demon)) in type_filters, got {:?}",
+                tf.type_filters
+            ),
+            other => panic!("expected Typed filter, got {other:?}"),
+        }
+    }
+
+    /// CR 205.3: "that is not <Subtype>" — unabridged variant without article.
+    #[test]
+    fn parse_target_that_is_not_subtype_appends_negation() {
+        let (filter, _) = parse_target("target creature that is not Human");
+        match filter {
+            TargetFilter::Typed(tf) => assert!(
+                tf.type_filters
+                    .contains(&TypeFilter::Non(Box::new(TypeFilter::Subtype(
+                        "Human".into()
+                    )))),
+                "expected Non(Subtype(Human)) in type_filters, got {:?}",
+                tf.type_filters
+            ),
+            other => panic!("expected Typed filter, got {other:?}"),
+        }
     }
 }

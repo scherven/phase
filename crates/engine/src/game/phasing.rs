@@ -309,6 +309,8 @@ pub fn execute_untap_step_player_phase_in(state: &mut GameState, events: &mut Ve
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::identifiers::CardId;
@@ -350,7 +352,7 @@ mod tests {
         if let Some(obj) = state.objects.get_mut(&id) {
             obj.card_types.core_types = vec![CoreType::Enchantment];
             obj.card_types.subtypes = vec!["Aura".to_string()];
-            obj.attached_to = Some(attached_to);
+            obj.attached_to = Some(attached_to.into());
         }
         if let Some(host) = state.objects.get_mut(&attached_to) {
             host.attachments.push(id);
@@ -561,7 +563,7 @@ mod tests {
             .objects
             .get_mut(&anthem_id)
             .unwrap()
-            .base_static_definitions = vec![anthem_static];
+            .base_static_definitions = Arc::new(vec![anthem_static]);
 
         let before = collect_shared_active_continuous_effects(&state);
         assert!(

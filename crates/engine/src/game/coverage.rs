@@ -50,6 +50,8 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::CantSearchLibrary { .. }
             // CR 603.2g: SuppressTriggers carries `source_filter` + `events`.
             | StaticMode::SuppressTriggers { .. }
+            // CR 603.2d: DoubleTriggers carries the `TriggerCause` predicate.
+            | StaticMode::DoubleTriggers { .. }
     )
 }
 
@@ -230,6 +232,9 @@ fn fmt_target(filter: &TargetFilter) -> String {
         TargetFilter::DefendingPlayer => "defending player".into(),
         TargetFilter::ParentTarget => "parent target".into(),
         TargetFilter::ParentTargetController => "parent target's controller".into(),
+        TargetFilter::PostReplacementSourceController => {
+            "prevented event source's controller".into()
+        }
         TargetFilter::SpecificObject { id } => format!("object #{}", id.0),
         TargetFilter::SpecificPlayer { id } => format!("player #{}", id.0),
         TargetFilter::TrackedSet { id } => format!("tracked set #{}", id.0),
@@ -287,6 +292,10 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::CmcEQ { value } => parts.push(format!("mv {}", fmt_quantity(value))),
             FilterProp::SameName => parts.push("same name".into()),
             FilterProp::SameNameAsParentTarget => parts.push("same name as parent target".into()),
+            FilterProp::NameMatchesAnyPermanent { controller } => match controller {
+                Some(c) => parts.push(format!("name matches {} permanent", fmt_controller(c))),
+                None => parts.push("name matches any permanent".into()),
+            },
             FilterProp::InZone { zone } => parts.push(format!("in {}", fmt_zone(zone))),
             FilterProp::Owned { controller } => parts.push(fmt_controller(controller)),
             FilterProp::EnchantedBy => parts.push("enchanted by self".into()),
@@ -302,6 +311,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
                 }
             }
             FilterProp::Another => parts.push("another".into()),
+            FilterProp::OtherThanTriggerObject => parts.push("other".into()),
             FilterProp::HasColor { color } => parts.push(format!("{color:?}").to_lowercase()),
             FilterProp::PowerLE { value } => parts.push(format!("power ≤{}", fmt_quantity(value))),
             FilterProp::PowerGE { value } => parts.push(format!("power ≥{}", fmt_quantity(value))),
@@ -521,6 +531,9 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::StartingLifeTotal => "starting life total".into(),
         QuantityRef::Speed => "speed".into(),
         QuantityRef::ObjectCount { filter } => format!("# of {}", fmt_target(filter)),
+        QuantityRef::ObjectCountDistinctNames { filter } => {
+            format!("# of distinctly-named {}", fmt_target(filter))
+        }
         QuantityRef::PlayerCount { filter } => format!("# of {}", fmt_player_filter(filter)),
         QuantityRef::CountersOnSelf { counter_type } => {
             format!("{counter_type} counters on self")
@@ -595,6 +608,9 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
             )
         }
         QuantityRef::BasicLandTypeCount => "basic land types".into(),
+        QuantityRef::DistinctColorsAmongPermanents { filter } => {
+            format!("# of colors among {}", fmt_target(filter))
+        }
         QuantityRef::PreviousEffectAmount => "amount from preceding effect".into(),
         QuantityRef::TrackedSetSize => "cards moved".into(),
         QuantityRef::ExiledFromHandThisResolution => "cards exiled from hand this way".into(),
@@ -626,6 +642,7 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::SpellsCastLastTurn => "spells cast last turn".into(),
         QuantityRef::OpponentLifeLostThisTurn => "opponent life lost this turn".into(),
         QuantityRef::CounterAddedThisTurn => "counter added this turn".into(),
+        QuantityRef::OpponentDiscardedCardThisTurn => "opponent discarded card this turn".into(),
         QuantityRef::OpponentLifeTotal => "opponent life total".into(),
         QuantityRef::OpponentHandSize => "opponent hand size".into(),
         QuantityRef::DungeonsCompleted => "dungeons completed".into(),
@@ -647,6 +664,14 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
                 None => format!("# of {kind_s} attached at ltb"),
                 Some(c) => format!("# of {kind_s} ({}) attached at ltb", fmt_controller(c)),
             }
+        }
+        QuantityRef::PlayerCounter { kind, scope } => {
+            let scope_s = match scope {
+                CountScope::Controller => "you have",
+                CountScope::Opponents => "each opponent has",
+                CountScope::All => "each player has",
+            };
+            format!("# of {kind} counters {scope_s}")
         }
     }
 }
@@ -753,6 +778,10 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
         ManaProduction::AnyInCommandersColorIdentity { count, .. } => {
             format!("1 of commander's color identity x{}", fmt_quantity(count))
         }
+        ManaProduction::DistinctColorsAmongPermanents { filter } => {
+            format!("1 of each color among {}", fmt_target(filter))
+        }
+        ManaProduction::TriggerEventManaType => "1 of the triggering mana's type".to_string(),
     }
 }
 
@@ -872,9 +901,12 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("amount".into(), fmt_quantity(amount)));
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::Draw { count } => {
+        Effect::Draw { count, target } => {
             if !matches!(count, QuantityExpr::Fixed { value: 1 }) {
                 d.push(("count".into(), fmt_quantity(count)));
+            }
+            if !matches!(target, TargetFilter::Controller) {
+                d.push(("target".into(), fmt_target(target)));
             }
         }
         Effect::ExileTop { player, count } => {
@@ -1078,7 +1110,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
                 d.push(("destination".into(), format!("{destination:?}")));
             }
         }
-        Effect::Scry { count } | Effect::Surveil { count } => {
+        Effect::Scry { count, .. } | Effect::Surveil { count, .. } => {
             d.push(("count".into(), fmt_quantity(count)));
         }
         Effect::GainLife { amount, player } => {
@@ -1211,6 +1243,14 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             }
             if let Some(c) = count {
                 d.push(("count".into(), fmt_quantity(c)));
+            }
+        }
+        Effect::RevealFromHand { filter, on_decline } => {
+            if !matches!(filter, TargetFilter::Any) {
+                d.push(("filter".into(), fmt_target(filter)));
+            }
+            if on_decline.is_some() {
+                d.push(("on_decline".into(), "present".into()));
             }
         }
         Effect::RevealTop { player, count } => {
@@ -1529,7 +1569,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::TimeTravel
         | Effect::Conjure { .. }
         | Effect::AddPendingETBCounters { .. }
-        | Effect::ChooseAndSacrificeRest { .. } => {}
+        | Effect::ChooseAndSacrificeRest { .. }
+        | Effect::ChooseOneOf { .. } => {}
     }
     d
 }
@@ -1682,6 +1723,9 @@ fn fmt_modification(m: &crate::types::ability::ContinuousModification) -> String
             format!("set land type {}", land_type.as_subtype_str())
         }
         ContinuousModification::AssignNoCombatDamage => "assign no combat damage".into(),
+        ContinuousModification::RetainPrintedTriggerFromSource {
+            source_trigger_index,
+        } => format!("retain printed trigger {source_trigger_index}"),
     }
 }
 
@@ -1776,7 +1820,7 @@ pub fn build_parse_details(
     }
 
     // Activated/spell abilities
-    for def in &face.abilities {
+    for def in face.abilities.iter() {
         items.push(build_ability_item(def));
     }
 
@@ -2211,7 +2255,7 @@ pub fn unimplemented_mechanics(obj: &GameObject) -> Vec<String> {
     }
 
     // 2. Check abilities against known effect types
-    for def in &obj.abilities {
+    for def in obj.abilities.iter() {
         if let Effect::Unimplemented { name, .. } = &*def.effect {
             missing.push(format!("Effect: {name}"));
         }
@@ -2792,7 +2836,7 @@ fn collect_valid_subtypes(card_db: &CardDatabase) -> HashSet<String> {
 /// replacements' execute/decline bodies. The visitor is invoked for each
 /// modification so callers can inspect or validate the payload.
 fn visit_face_modifications(face: &CardFace, visit: &mut impl FnMut(&ContinuousModification)) {
-    for ability in &face.abilities {
+    for ability in face.abilities.iter() {
         visit_ability_modifications(ability, visit);
     }
     for stat in &face.static_abilities {
@@ -3521,7 +3565,7 @@ fn is_card_supported(
     static_registry: &HashMap<StaticMode, StaticAbilityHandler>,
 ) -> bool {
     // Check abilities
-    for def in &face.abilities {
+    for def in face.abilities.iter() {
         if !is_ability_supported(def) {
             return false;
         }
@@ -3659,7 +3703,7 @@ impl StructuralFeature {
 /// via exhaustive matches on the source enum, so adding a new variant is a
 /// compile error until it is explicitly classified.
 fn extract_card_features(face: &CardFace, features: &mut HashMap<String, FeatureSupport>) {
-    for def in &face.abilities {
+    for def in face.abilities.iter() {
         extract_ability_features(def, features);
     }
     for trig in &face.triggers {
@@ -3911,6 +3955,7 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::StartingLifeTotal => ("StartingLifeTotal", Unhandled),
         QuantityRef::Speed => ("Speed", Handled),
         QuantityRef::ObjectCount { .. } => ("ObjectCount", Handled),
+        QuantityRef::ObjectCountDistinctNames { .. } => ("ObjectCountDistinctNames", Handled),
         QuantityRef::PlayerCount { .. } => ("PlayerCount", Handled),
         QuantityRef::CountersOnSelf { .. } => ("CountersOnSelf", Handled),
         QuantityRef::CountersOnTarget { .. } => ("CountersOnTarget", Handled),
@@ -3930,6 +3975,9 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::CardsExiledBySource => ("CardsExiledBySource", Handled),
         QuantityRef::ZoneCardCount { .. } => ("ZoneCardCount", Handled),
         QuantityRef::BasicLandTypeCount => ("BasicLandTypeCount", Handled),
+        QuantityRef::DistinctColorsAmongPermanents { .. } => {
+            ("DistinctColorsAmongPermanents", Handled)
+        }
         QuantityRef::PreviousEffectAmount => ("PreviousEffectAmount", Handled),
         QuantityRef::TrackedSetSize => ("TrackedSetSize", Handled),
         QuantityRef::ExiledFromHandThisResolution => ("ExiledFromHandThisResolution", Handled),
@@ -3956,6 +4004,7 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::SpellsCastLastTurn => ("SpellsCastLastTurn", Unhandled),
         QuantityRef::OpponentLifeLostThisTurn => ("OpponentLifeLostThisTurn", Unhandled),
         QuantityRef::CounterAddedThisTurn => ("CounterAddedThisTurn", Unhandled),
+        QuantityRef::OpponentDiscardedCardThisTurn => ("OpponentDiscardedCardThisTurn", Handled),
         QuantityRef::OpponentLifeTotal => ("OpponentLifeTotal", Unhandled),
         QuantityRef::OpponentHandSize => ("OpponentHandSize", Unhandled),
         QuantityRef::DungeonsCompleted => ("DungeonsCompleted", Unhandled),
@@ -3969,6 +4018,7 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
             ("ColorsInCommandersColorIdentity", Handled)
         }
         QuantityRef::AttachmentsOnLeavingObject { .. } => ("AttachmentsOnLeavingObject", Handled),
+        QuantityRef::PlayerCounter { .. } => ("PlayerCounter", Handled),
     }
 }
 
@@ -4791,7 +4841,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             push_ability_tree(else_ab, out);
         }
     }
-    for a in &face.abilities {
+    for a in face.abilities.iter() {
         push_ability_tree(a, &mut elements);
     }
     for t in &face.triggers {
@@ -4917,7 +4967,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                 }
             }
             // Collect from ability-level modals (activated/triggered modal abilities)
-            for a in &face.abilities {
+            for a in face.abilities.iter() {
                 if let Some(ref modal) = a.modal {
                     for (i, desc) in modal.mode_descriptions.iter().enumerate() {
                         if desc_matches(desc) {
@@ -5059,7 +5109,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             StaticMode::MayChooseNotToUntap => effective_lower.contains("may choose not to untap"),
             StaticMode::CantDraw { .. } => effective_lower.contains("can't draw"),
             StaticMode::PerTurnDrawLimit { .. } => effective_lower.contains("can't draw more than"),
-            StaticMode::Panharmonicon => {
+            StaticMode::DoubleTriggers { .. } => {
                 effective_lower.contains("triggers an additional time")
                     || effective_lower.contains("trigger an additional time")
             }
@@ -5613,8 +5663,6 @@ fn line_has_condition_text(lower: &str) -> Option<&'static str> {
             || lower.contains("unless that creature")
             // "unless they're mana abilities" — structural restriction qualifier
             || lower.contains("unless they're mana abilities")
-            // "unless it escaped" — cast-method condition (escape keyword)
-            || lower.contains("unless it escaped")
             // "unless {W} was spent" / "unless two or more colors of mana were spent" — casting conditions
             || (lower.contains("unless") && lower.contains("was spent"))
             || (lower.contains("unless") && lower.contains("were spent"))
@@ -6561,6 +6609,8 @@ pub fn format_semantic_audit_markdown(summary: &SemanticAuditSummary) -> String 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::database::legality::{legalities_to_export_map, LegalityStatus};
     use crate::types::ability::{AbilityKind, Effect, ReplacementCondition, TargetFilter};
@@ -6660,29 +6710,27 @@ mod tests {
     #[test]
     fn object_with_registered_ability_has_no_unimplemented() {
         let mut obj = make_obj();
-        obj.abilities
-            .push(crate::types::ability::AbilityDefinition::new(
-                AbilityKind::Spell,
-                Effect::DealDamage {
-                    amount: QuantityExpr::Fixed { value: 3 },
-                    target: TargetFilter::Any,
-                    damage_source: None,
-                },
-            ));
+        Arc::make_mut(&mut obj.abilities).push(crate::types::ability::AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+        ));
         assert!(unimplemented_mechanics(&obj).is_empty());
     }
 
     #[test]
     fn object_with_unregistered_ability_has_unimplemented() {
         let mut obj = make_obj();
-        obj.abilities
-            .push(crate::types::ability::AbilityDefinition::new(
-                AbilityKind::Spell,
-                Effect::Unimplemented {
-                    name: "Fateseal".to_string(),
-                    description: None,
-                },
-            ));
+        Arc::make_mut(&mut obj.abilities).push(crate::types::ability::AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Unimplemented {
+                name: "Fateseal".to_string(),
+                description: None,
+            },
+        ));
         assert!(!unimplemented_mechanics(&obj).is_empty());
     }
 
@@ -7349,6 +7397,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             )
             .condition(AbilityCondition::QuantityCheck {

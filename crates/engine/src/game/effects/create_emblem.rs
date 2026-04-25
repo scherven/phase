@@ -4,16 +4,19 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::CardId;
 use crate::types::zones::Zone;
+use std::sync::Arc;
 
-/// CR 114.1: Create an emblem in the command zone with the given static abilities.
-/// Emblems are not permanents — they cannot be destroyed, exiled, bounced, or sacrificed.
+/// CR 114.1 + CR 114.4: Create an emblem in the command zone with the given
+/// abilities (statics and triggers). Emblems are not permanents — they cannot
+/// be destroyed, exiled, bounced, or sacrificed. Per CR 114.4, both static
+/// and triggered abilities function from the command zone.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let statics = match &ability.effect {
-        Effect::CreateEmblem { statics } => statics,
+    let (statics, triggers) = match &ability.effect {
+        Effect::CreateEmblem { statics, triggers } => (statics, triggers),
         _ => return Err(EffectError::MissingParam("CreateEmblem".into())),
     };
 
@@ -26,10 +29,18 @@ pub fn resolve(
         Zone::Command,
     );
     let obj = state.objects.get_mut(&emblem_id).unwrap();
-    // CR 114.5: An emblem is neither a card nor a permanent. Emblem isn't a card type.
+    // CR 114.5: An emblem is neither a card nor a permanent. Emblem isn't a
+    // card type. Setting `is_emblem` BEFORE installing ability definitions is
+    // load-bearing: `functioning_abilities::object_functions` uses this flag
+    // to admit command-zone objects, so the first trigger/static scan after
+    // creation sees the emblem's abilities.
     obj.is_emblem = true;
     obj.static_definitions = statics.clone().into();
-    obj.base_static_definitions = statics.clone();
+    obj.base_static_definitions = Arc::new(statics.clone());
+    // CR 113.1c + CR 114.4: Install triggered abilities on the emblem so
+    // `active_trigger_definitions` yields them during command-zone scans.
+    obj.trigger_definitions = triggers.clone().into();
+    obj.base_trigger_definitions = Arc::new(triggers.clone());
 
     state.layers_dirty = true;
     events.push(GameEvent::EffectResolved {
@@ -78,6 +89,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::CreateEmblem {
                 statics: vec![ninja_pump_static()],
+                triggers: Vec::new(),
             },
             vec![],
             ObjectId(100),
@@ -105,6 +117,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::CreateEmblem {
                 statics: vec![ninja_pump_static()],
+                triggers: Vec::new(),
             },
             vec![],
             ObjectId(100),
@@ -122,6 +135,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::CreateEmblem {
                 statics: vec![ninja_pump_static()],
+                triggers: Vec::new(),
             },
             vec![],
             ObjectId(100),
@@ -221,5 +235,39 @@ mod tests {
         super::super::sacrifice::resolve(&mut state, &ability, &mut events).unwrap();
 
         assert!(state.command_zone.contains(&emblem_id));
+    }
+
+    #[test]
+    fn create_emblem_installs_triggered_abilities_on_command_zone_emblem() {
+        // CR 113.1c + CR 114.4: An emblem-hosted triggered ability must be
+        // installed as a `TriggerDefinition` on the emblem object, with both
+        // the live and base stores populated so clones and layer resets
+        // preserve the trigger.
+        use crate::types::triggers::TriggerMode;
+        let mut state = GameState::new_two_player(42);
+        let trig = crate::types::ability::TriggerDefinition::new(TriggerMode::SpellCast)
+            .trigger_zones(vec![Zone::Command]);
+        let ability = ResolvedAbility::new(
+            Effect::CreateEmblem {
+                statics: Vec::new(),
+                triggers: vec![trig.clone()],
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let emblem_id = state.command_zone[0];
+        let emblem = state.objects.get(&emblem_id).unwrap();
+        assert!(emblem.is_emblem);
+        assert_eq!(emblem.trigger_definitions.len(), 1);
+        assert_eq!(emblem.base_trigger_definitions.len(), 1);
+        // CR 114.4 gate: `active_trigger_definitions` must yield the trigger
+        // because `is_emblem` is set.
+        let count =
+            crate::game::functioning_abilities::active_trigger_definitions(&state, emblem).count();
+        assert_eq!(count, 1, "command-zone emblem trigger must be active");
     }
 }

@@ -56,6 +56,12 @@ pub(crate) struct TokenDescription {
     pub(crate) count: QuantityExpr,
     pub(crate) attach_to: Option<TargetFilter>,
     pub(crate) static_abilities: Vec<StaticDefinition>,
+    /// CR 508.4: Inline "that's tapped and attacking" clause inside the token
+    /// description phrase (e.g., "a 1/1 Goblin creature token that's tapped
+    /// and attacking"). Distinct from a trailing "It enters tapped and
+    /// attacking" continuation sentence, which is patched onto the preceding
+    /// `Effect::Token` by the sequence-level continuation handler.
+    pub(crate) enters_attacking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -75,6 +81,22 @@ pub(super) struct SearchLibraryDetails {
     pub(super) reveal: bool,
     /// CR 701.23a: When set, search this player's library instead of controller's.
     pub(super) target_player: Option<TargetFilter>,
+    /// CR 107.1c + CR 701.23d: "any number of" / "up to N" allow 0..=count picks.
+    pub(super) up_to: bool,
+    /// CR 701.23a + CR 107.1: "a X card and a Y card" — additional filters, each
+    /// producing its own independent search. The primary filter is `filter`;
+    /// each `extra_filters` entry becomes a chained `SearchLibrary` sub-ability.
+    /// Empty for the common single-filter case.
+    pub(super) extra_filters: Vec<TargetFilter>,
+    /// CR 701.23a + CR 701.18a: Destination zone scanned from the imperative
+    /// text. Populated only when `extra_filters` is non-empty — used by the
+    /// multi-filter lowering to splice a `ChangeZone` between each search in
+    /// the chain. Single-filter searches get their destination from the
+    /// sequence-level continuation machinery and ignore this field.
+    pub(super) multi_destination: Zone,
+    /// CR 701.23a: Whether the interleaved `ChangeZone`s in a multi-filter
+    /// chain should enter tapped ("put them onto the battlefield tapped").
+    pub(super) multi_enter_tapped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +478,10 @@ pub(super) enum TargetedImperativeAst {
         /// CR 608.2c: "discard N unless you discard a [type]" — type filter for
         /// the alternative 1-card discard.
         unless_filter: Option<TargetFilter>,
+        /// CR 701.9a + CR 608.2c: Restricts which cards are legal to discard
+        /// (e.g., "discard a creature card" — Dokuchi Silencer). `None` means
+        /// any card in the discarding player's hand is legal.
+        filter: Option<TargetFilter>,
     },
     /// CR 701.3: Return to hand (bounce).
     Return {
@@ -512,6 +538,18 @@ pub(super) enum SearchCreationImperativeAst {
         reveal: bool,
         /// CR 701.23a: When set, search this player's library instead of controller's.
         target_player: Option<TargetFilter>,
+        /// CR 107.1c + CR 701.23d: "any number of" / "up to N" allow 0..=count picks.
+        up_to: bool,
+        /// CR 701.23a + CR 107.1: Dual/N-way search — "a X card and a Y card".
+        /// Each entry is an additional independent library search chained after
+        /// the primary `filter`. Empty for the common single-filter case.
+        extra_filters: Vec<TargetFilter>,
+        /// CR 701.23a + CR 701.18a: Destination zone for each found card in a
+        /// multi-filter chain. Ignored when `extra_filters` is empty.
+        multi_destination: Zone,
+        /// CR 701.23a: "put them onto the battlefield tapped" — enters-tapped
+        /// flag for multi-filter chains. Ignored when `extra_filters` is empty.
+        multi_enter_tapped: bool,
     },
     Dig {
         count: QuantityExpr,

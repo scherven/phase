@@ -8,7 +8,7 @@ use crate::types::game_state::{
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::Keyword;
-use crate::types::mana::{ManaCost, ManaCostShard, ManaType};
+use crate::types::mana::{ManaCost, ManaCostShard, ManaType, PaymentContext};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
@@ -1802,12 +1802,13 @@ pub(super) fn auto_tap_mana_sources(
     let spell_meta =
         deprioritize_source.and_then(|sid| super::casting::build_spell_meta(state, player, sid));
     let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
+    let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
     let residual = state
         .players
         .iter()
         .find(|p| p.id == player)
         .map(|p| {
-            mana_payment::reduce_cost_by_pool(&p.mana_pool, cost, spell_meta.as_ref(), any_color)
+            mana_payment::reduce_cost_by_pool(&p.mana_pool, cost, spell_ctx.as_ref(), any_color)
         })
         .unwrap_or_else(|| cost.clone());
 
@@ -1840,27 +1841,38 @@ pub(super) fn auto_tap_mana_sources(
         .flatten()
         .collect();
 
-    // Tier sort: 0 = pure land, 1 = non-land mana dork, 2 = land-creature (preserve for combat),
-    //            3 = deprioritized source, 4 = sacrifice-for-mana (Treasure — irreversible)
+    // CR 605.3b: Auto-tap sort key. Tier layout (preserved from the
+    // pre-refactor sort; the enum factors the two scattered bool flags):
+    //   outer (tier_byte): 0 = non-sacrifice mana source; 1 = sacrifice-for-mana
+    //     (source will not come back — always last).
+    //   middle (card_tier): 0 = pure land, 1 = non-land mana dork,
+    //     2 = land-creature (preserve for combat), 3 = deprioritized source
+    //     (spell's own source).
+    //   inner (priority_amount): penalty sub-tier + fixed-amount tiebreak
+    //     (e.g. painland-1 < painland-2 < painland-None). Replaces the
+    //     collapsed `harms_controller` bool — amounts now rank.
+    // The entire penalty axis is consulted only via `ManaSourcePenalty`
+    // methods, so a future variant (e.g. `DiscardsOnActivation`) updates
+    // the ordering at one place, not seven.
     available.sort_by_key(|option| {
-        if option.requires_sacrifice {
-            return (4, false); // sacrifice is irreversible — always last
-        }
-        if deprioritize_source == Some(option.object_id) {
-            return (3, option.requires_life_payment);
-        }
         let obj = state.objects.get(&option.object_id);
         let is_land = obj.is_some_and(|o| o.card_types.core_types.contains(&CoreType::Land));
         let is_creature =
             obj.is_some_and(|o| o.card_types.core_types.contains(&CoreType::Creature));
-        let base_tier = if is_land && is_creature {
-            2 // animated lands (e.g. Earthbender) — preserve for combat
+        let card_tier: u32 = if deprioritize_source == Some(option.object_id) {
+            3
+        } else if is_land && is_creature {
+            2
         } else if is_land {
             0
         } else {
-            1 // non-land mana dork (creature, artifact, etc.)
+            1
         };
-        (base_tier, option.requires_life_payment)
+        (
+            option.penalty.tier_byte() as u32,
+            card_tier,
+            option.penalty.priority_amount(),
+        )
     });
 
     let mut to_tap: Vec<ManaSourceOption> = Vec::new();
@@ -2120,11 +2132,14 @@ fn score_combination(
 /// Upper bound = (mana currently in pool) + (mana producible from untapped,
 /// free-to-tap sources under the caster's control) − (fixed portion of cost).
 ///
-/// Free-to-tap = mana abilities whose only cost is {T}: i.e., `ManaSourceOption`
-/// entries with `requires_sacrifice == false` and `requires_life_payment == false`.
-/// Costed mana abilities (e.g. "1, T: Add {C}") are excluded for v1 — they cascade
-/// and would require a search to bound precisely. Treasure tokens are likewise
-/// excluded because they require sacrifice.
+/// Free-to-tap = mana abilities whose activation imposes no irreversible cost
+/// on the player: i.e., `ManaSourceOption` entries classified as
+/// `ManaSourcePenalty::None` (`penalty.is_free()`). Costed mana abilities
+/// (e.g. "1, T: Add {C}") are excluded for v1 — they cascade and would
+/// require a search to bound precisely. Treasure tokens are likewise
+/// excluded because they sacrifice the source; pain lands and pay-life
+/// sources are excluded because activating them for extra X damages or
+/// drains the caster.
 ///
 /// Each untapped producer counts once, regardless of how many color options it
 /// offers (a shock land is still one tap → one mana).
@@ -2166,7 +2181,7 @@ pub fn max_x_value(state: &GameState, player: PlayerId, cost: &ManaCost) -> u32 
         .filter(|&&id| {
             mana_sources::activatable_mana_options(state, id, player)
                 .iter()
-                .any(|opt| !opt.requires_sacrifice && !opt.requires_life_payment)
+                .any(|opt| opt.penalty.is_free())
         })
         .count() as u32;
 
@@ -2524,6 +2539,7 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
     auto_tap_mana_sources(state, player, cost, events, Some(source_id));
 
     let spell_meta = super::casting::build_spell_meta(state, player, source_id);
+    let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
     let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
     let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
 
@@ -2532,7 +2548,7 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
         mana_payment::compute_phyrexian_shards(
             &player_data.mana_pool,
             cost,
-            spell_meta.as_ref(),
+            spell_ctx.as_ref(),
             any_color,
             max_life,
         )
@@ -2608,6 +2624,8 @@ pub fn extract_x_mana_cost(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -2624,6 +2642,7 @@ mod tests {
             ability: ResolvedAbility::new(
                 Effect::Scry {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: crate::types::ability::TargetFilter::Controller,
                 },
                 Vec::new(),
                 source_id,
@@ -2649,7 +2668,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&town).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2663,7 +2682,7 @@ mod tests {
             )
             .cost(AbilityCost::Tap),
         );
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2707,7 +2726,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&land).unwrap();
         obj.card_types.core_types.push(CoreType::Land);
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -2722,7 +2741,7 @@ mod tests {
             .cost(AbilityCost::Tap),
         );
         // Only the combinations ability is what we exercise in auto-tap tests.
-        obj.abilities.push(
+        Arc::make_mut(&mut obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3124,12 +3143,13 @@ mod tests {
 
         // Give source an ability so push_activated_ability_to_stack can record activation
         state.objects.get_mut(&source).unwrap().abilities =
-            vec![crate::types::ability::AbilityDefinition::new(
+            Arc::new(vec![crate::types::ability::AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Scry {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: crate::types::ability::TargetFilter::Controller,
                 },
-            )];
+            )]);
 
         let pending = make_pending(source);
         let legal = vec![creature_a, creature_b];
@@ -3587,7 +3607,7 @@ mod tests {
         let spider_obj = state.objects.get_mut(&spider).unwrap();
         spider_obj.card_types.core_types.push(CoreType::Creature);
         spider_obj.entered_battlefield_turn = Some(1);
-        spider_obj.abilities.push(
+        Arc::make_mut(&mut spider_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3613,7 +3633,7 @@ mod tests {
         );
         let hushwood_obj = state.objects.get_mut(&hushwood).unwrap();
         hushwood_obj.card_types.core_types.push(CoreType::Land);
-        hushwood_obj.abilities.push(
+        Arc::make_mut(&mut hushwood_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3628,7 +3648,7 @@ mod tests {
             )
             .cost(AbilityCost::Tap),
         );
-        hushwood_obj.abilities.push(
+        Arc::make_mut(&mut hushwood_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3653,7 +3673,7 @@ mod tests {
         );
         let air_obj = state.objects.get_mut(&air_temple).unwrap();
         air_obj.card_types.core_types.push(CoreType::Land);
-        air_obj.abilities.push(
+        Arc::make_mut(&mut air_obj.abilities).push(
             AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::Mana {
@@ -3836,7 +3856,7 @@ mod tests {
         fn rejection_handler_pops_stack_and_bottom_shuffles_all() {
             let (mut state, hit, misses) = setup_x_cost_hit(4, 4);
 
-            state.stack.push(StackEntry {
+            state.stack.push_back(StackEntry {
                 id: hit,
                 source_id: hit,
                 controller: PlayerId(0),

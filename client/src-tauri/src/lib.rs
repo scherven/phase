@@ -10,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(AppState {
             game: Mutex::new(None),
+            card_db: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::initialize_game,
@@ -18,6 +19,7 @@ pub fn run() {
             commands::get_legal_actions,
             commands::get_ai_action,
             commands::dispose_game,
+            commands::load_card_database,
         ])
         .run(tauri::generate_context!())
         .expect("error while running phase.rs");

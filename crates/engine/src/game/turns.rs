@@ -242,11 +242,20 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
         player.bending_types_this_turn.clear();
     }
 
-    // CR 606.3: Loyalty abilities may be activated only once per turn per permanent.
+    // CR 302.6: At the start of a player's turn, any permanent they have
+    // controlled continuously since before this moment has now been under
+    // their control "since that player's most recent turn began" — clear
+    // summoning sickness. CR 606.3: Loyalty abilities may be activated only
+    // once per turn per permanent — reset the per-turn flag in the same pass.
     let active = state.active_player;
-    for obj in state.objects.values_mut() {
-        if obj.controller == active && obj.loyalty_activated_this_turn {
-            obj.loyalty_activated_this_turn = false;
+    for obj in state.objects.iter_mut().map(|(_, v)| v) {
+        if obj.controller == active {
+            if obj.summoning_sick {
+                obj.summoning_sick = false;
+            }
+            if obj.loyalty_activated_this_turn {
+                obj.loyalty_activated_this_turn = false;
+            }
         }
     }
 
@@ -404,9 +413,112 @@ pub fn execute_untap(state: &mut GameState, events: &mut Vec<GameEvent>) {
         }
     }
 
+    // CR 502.3 + CR 113.6: Seedborn-Muse-class statics grant a second untap
+    // pass during each OTHER player's untap step. Scan the battlefield for
+    // `StaticMode::UntapsDuringEachOtherPlayersUntapStep` sources whose
+    // controller is NOT the active player; that controller untaps all of
+    // their permanents matching the static's `affected` filter.
+    //
+    // This runs AFTER the active player's normal untap and BEFORE the
+    // "until controller's next untap step" prune, so it does not interfere
+    // with either. Untapping already-untapped permanents is a no-op, so
+    // multiple Seedborn-like sources (e.g. copy effects) compose safely.
+    // Phased-out sources are excluded by `active_static_definitions`.
+    //
+    // Note: "doesn't untap during your controller's untap step" restrictions
+    // (Frozen Shade, Tidewater Minion) do NOT apply here — this is "another
+    // player's untap step", not the permanent's controller's. This is
+    // consistent with CR 502.3.
+    execute_seedborn_statics(state, events, active);
+
     // CR 502.3: Prune "until controller's next untap step" effects AFTER the untap
     // step has been processed, so the permanent skips exactly one untap.
     super::layers::prune_controller_untap_step_effects(state, active);
+}
+
+/// CR 502.3 + CR 113.6: Second-pass untap for `UntapsDuringEachOtherPlayersUntapStep`
+/// statics (Seedborn Muse class). Runs during the active player's untap step,
+/// after the normal active-player untap. Each matching source whose controller
+/// != `active_player` triggers an untap of that controller's permanents
+/// matching the static's `affected` filter.
+fn execute_seedborn_statics(state: &mut GameState, events: &mut Vec<GameEvent>, active: PlayerId) {
+    use crate::game::filter::{matches_target_filter, FilterContext};
+    use crate::types::ability::TargetFilter;
+
+    // Collect (source_id, source_controller, affected_filter) tuples up-front
+    // so we don't borrow `state` mutably while iterating statics.
+    let seedborn_pulls: Vec<(ObjectId, PlayerId, TargetFilter)> =
+        super::functioning_abilities::battlefield_active_statics(state)
+            .filter(|(_, def)| {
+                matches!(def.mode, StaticMode::UntapsDuringEachOtherPlayersUntapStep)
+            })
+            .filter(|(obj, _)| obj.controller != active)
+            .filter_map(|(obj, def)| {
+                def.affected
+                    .as_ref()
+                    .map(|f| (obj.id, obj.controller, f.clone()))
+            })
+            .collect();
+
+    if seedborn_pulls.is_empty() {
+        return;
+    }
+
+    for (source_id, source_controller, filter) in seedborn_pulls {
+        let ctx = FilterContext::from_source_with_controller(source_id, source_controller);
+        // Snapshot IDs so the mutation loop doesn't alias the battlefield iteration.
+        let to_untap: Vec<ObjectId> = state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|obj| obj.controller == source_controller && obj.tapped)
+            })
+            .filter(|id| matches_target_filter(state, *id, &filter, &ctx))
+            .collect();
+
+        for id in to_untap {
+            // CR 502.3: Untapping is idempotent; already-untapped permanents
+            // (e.g. from an earlier Seedborn pass) are filtered out above.
+            // Route through the replacement pipeline so "doesn't untap"
+            // effects still apply when they are in scope (rare — most such
+            // effects scope to "your controller's untap step", which does
+            // not cover this pass).
+            let proposed = ProposedEvent::Untap {
+                object_id: id,
+                applied: HashSet::new(),
+            };
+            match replacement::replace_event(state, proposed, events) {
+                ReplacementResult::Execute(event) => {
+                    if let ProposedEvent::Untap { object_id, .. } = event {
+                        if let Some(obj) = state.objects.get_mut(&object_id) {
+                            // CR 122.1g: Stun-counter removal takes precedence
+                            // over the untap, matching the main untap pass.
+                            if let Some(entry) = obj.counters.get_mut(&CounterType::Stun) {
+                                *entry -= 1;
+                                if *entry == 0 {
+                                    obj.counters.remove(&CounterType::Stun);
+                                }
+                                events.push(GameEvent::CounterRemoved {
+                                    object_id,
+                                    counter_type: CounterType::Stun,
+                                    count: 1,
+                                });
+                            } else {
+                                obj.tapped = false;
+                                events.push(GameEvent::PermanentUntapped { object_id });
+                            }
+                        }
+                    }
+                }
+                ReplacementResult::Prevented => {}
+                ReplacementResult::NeedsChoice(_) => {}
+            }
+        }
+    }
 }
 
 /// CR 504.1: During the draw step, the active player draws a card.
@@ -479,7 +591,7 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     // CR 701.19b: Regeneration shields expire at cleanup.
     // CR 615: Prevention effects also expire.
     // Also prune any consumed shields from earlier this turn.
-    for obj in state.objects.values_mut() {
+    for obj in state.objects.iter_mut().map(|(_, v)| v) {
         obj.replacement_definitions
             .retain(|r| !r.shield_kind.is_shield());
     }
@@ -544,7 +656,7 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
         let hand_size = player.hand.len();
         if hand_size > max_hand_size {
             let count = hand_size - max_hand_size;
-            let cards = player.hand.clone();
+            let cards = player.hand.iter().copied().collect();
             return Some(WaitingFor::DiscardToHandSize {
                 player: active,
                 count,
@@ -578,7 +690,7 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     // CR 702.171b: "Once a permanent has become saddled, it stays saddled until
     // the end of the turn or it leaves the battlefield." Clear the designation
     // at cleanup (CR 514).
-    for obj in state.objects.values_mut() {
+    for obj in state.objects.iter_mut().map(|(_, v)| v) {
         if obj.is_saddled {
             obj.is_saddled = false;
         }
@@ -879,8 +991,10 @@ pub fn auto_advance(state: &mut GameState, events: &mut Vec<GameEvent>) -> Waiti
                     // emits the interactive waiting state; whether to auto-submit empty
                     // blockers (because no legal blocks exist, or because the defender
                     // is in UntilEndOfTurn mode) is decided by `run_auto_pass_loop`.
-                    let defending = super::players::next_player(state, state.active_player);
-                    let valid_block_targets = super::combat::get_valid_block_targets(state);
+                    let defending = combat::next_defending_player_to_declare_blockers(state)
+                        .unwrap_or_else(|| super::players::next_player(state, state.active_player));
+                    let valid_block_targets =
+                        super::combat::get_valid_block_targets_for_player(state, defending);
                     let valid_blocker_ids: Vec<_> = valid_block_targets.keys().copied().collect();
                     return WaitingFor::DeclareBlockers {
                         player: defending,
@@ -958,11 +1072,178 @@ mod tests {
     use crate::game::zones::create_object;
     use crate::types::identifiers::CardId;
     use crate::types::player::PlayerId;
+    use std::sync::Arc;
 
     fn setup() -> GameState {
         let mut state = GameState::new_two_player(42);
         state.turn_number = 1;
         state
+    }
+
+    #[test]
+    fn declare_blockers_prompts_actual_defending_player_in_multiplayer() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::free_for_all(), 4, 42);
+        state.active_player = PlayerId(0);
+        state.phase = Phase::DeclareBlockers;
+        state.combat = Some(combat::CombatState {
+            attackers: vec![combat::AttackerInfo::new(
+                ObjectId(1),
+                combat::AttackTarget::Player(PlayerId(2)),
+                PlayerId(2),
+            )],
+            ..Default::default()
+        });
+
+        let waiting = auto_advance(&mut state, &mut Vec::new());
+
+        assert!(matches!(
+            waiting,
+            WaitingFor::DeclareBlockers {
+                player: PlayerId(2),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn multiplayer_defending_players_declare_blockers_separately_in_turn_order() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::free_for_all(), 4, 42);
+        state.active_player = PlayerId(0);
+        state.phase = Phase::DeclareBlockers;
+
+        let attacker_to_p2 = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Attacker to P2".to_string(),
+            Zone::Battlefield,
+        );
+        let attacker_to_p3 = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Attacker to P3".to_string(),
+            Zone::Battlefield,
+        );
+        let blocker_p2 = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(2),
+            "P2 Blocker".to_string(),
+            Zone::Battlefield,
+        );
+        let blocker_p3 = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(3),
+            "P3 Blocker".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [attacker_to_p2, attacker_to_p3, blocker_p2, blocker_p3] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+        }
+
+        state.combat = Some(combat::CombatState {
+            attackers: vec![
+                combat::AttackerInfo::new(
+                    attacker_to_p2,
+                    combat::AttackTarget::Player(PlayerId(2)),
+                    PlayerId(2),
+                ),
+                combat::AttackerInfo::new(
+                    attacker_to_p3,
+                    combat::AttackTarget::Player(PlayerId(3)),
+                    PlayerId(3),
+                ),
+            ],
+            ..Default::default()
+        });
+
+        let waiting = auto_advance(&mut state, &mut Vec::new());
+        assert!(matches!(
+            waiting,
+            WaitingFor::DeclareBlockers {
+                player: PlayerId(2),
+                ..
+            }
+        ));
+        if let WaitingFor::DeclareBlockers {
+            valid_blocker_ids,
+            valid_block_targets,
+            ..
+        } = &waiting
+        {
+            assert_eq!(valid_blocker_ids, &vec![blocker_p2]);
+            assert_eq!(
+                valid_block_targets.get(&blocker_p2),
+                Some(&vec![attacker_to_p2])
+            );
+        }
+        state.waiting_for = waiting;
+
+        let result = crate::game::engine::apply(
+            &mut state,
+            PlayerId(2),
+            crate::types::actions::GameAction::DeclareBlockers {
+                assignments: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            state
+                .combat
+                .as_ref()
+                .unwrap()
+                .pending_blocker_declaration_events
+                .len(),
+            1
+        );
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::DeclareBlockers {
+                player: PlayerId(3),
+                ..
+            }
+        ));
+        if let WaitingFor::DeclareBlockers {
+            valid_blocker_ids,
+            valid_block_targets,
+            ..
+        } = &result.waiting_for
+        {
+            assert_eq!(valid_blocker_ids, &vec![blocker_p3]);
+            assert_eq!(
+                valid_block_targets.get(&blocker_p3),
+                Some(&vec![attacker_to_p3])
+            );
+        }
+
+        let result = crate::game::engine::apply(
+            &mut state,
+            PlayerId(3),
+            crate::types::actions::GameAction::DeclareBlockers {
+                assignments: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(state
+            .combat
+            .as_ref()
+            .unwrap()
+            .pending_blocker_declaration_events
+            .is_empty());
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::Priority {
+                player: PlayerId(0)
+            }
+        ));
     }
 
     #[test]
@@ -1097,6 +1378,137 @@ mod tests {
             .any(|e| matches!(e, GameEvent::PermanentUntapped { object_id } if *object_id == id)));
     }
 
+    /// CR 502.3 + CR 113.6: Seedborn Muse class — its controller untaps
+    /// permanents during each OTHER player's untap step.
+    fn install_seedborn_static(state: &mut GameState, source_id: ObjectId) {
+        use crate::types::ability::{ControllerRef, StaticDefinition, TargetFilter, TypedFilter};
+        let def = StaticDefinition::new(StaticMode::UntapsDuringEachOtherPlayersUntapStep)
+            .affected(TargetFilter::Typed(
+                TypedFilter::permanent().controller(ControllerRef::You),
+            ));
+        let obj = state.objects.get_mut(&source_id).unwrap();
+        obj.static_definitions.push(def.clone());
+        Arc::make_mut(&mut obj.base_static_definitions).push(def);
+    }
+
+    /// Mark the object as a creature so `TypeFilter::Permanent` matches.
+    fn mark_as_creature(state: &mut GameState, id: ObjectId) {
+        use crate::types::card_type::CoreType;
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+    }
+
+    #[test]
+    fn seedborn_untaps_controllers_permanents_on_opponents_untap_step() {
+        let mut state = setup();
+        state.active_player = PlayerId(1); // Opponent's untap step.
+
+        let seedborn = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Seedborn Muse".to_string(),
+            Zone::Battlefield,
+        );
+        install_seedborn_static(&mut state, seedborn);
+
+        let mine_a = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        let mine_b = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        mark_as_creature(&mut state, seedborn);
+        mark_as_creature(&mut state, mine_a);
+        mark_as_creature(&mut state, mine_b);
+        state.objects.get_mut(&mine_a).unwrap().tapped = true;
+        state.objects.get_mut(&mine_b).unwrap().tapped = true;
+        state.objects.get_mut(&seedborn).unwrap().tapped = true;
+
+        let mut events = Vec::new();
+        execute_untap(&mut state, &mut events);
+
+        // Seedborn's controller's permanents untapped during opponent's step.
+        assert!(!state.objects[&mine_a].tapped);
+        assert!(!state.objects[&mine_b].tapped);
+        assert!(!state.objects[&seedborn].tapped);
+    }
+
+    #[test]
+    fn seedborn_does_not_fire_on_controllers_own_untap_step() {
+        let mut state = setup();
+        state.active_player = PlayerId(0); // Seedborn's controller is active.
+
+        let seedborn = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Seedborn Muse".to_string(),
+            Zone::Battlefield,
+        );
+        install_seedborn_static(&mut state, seedborn);
+
+        // A tapped opponent permanent must NOT untap — Seedborn only affects
+        // its own controller's permanents, and this pass only runs when the
+        // active player is NOT Seedborn's controller (it isn't this test).
+        let opp_perm = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&opp_perm).unwrap().tapped = true;
+
+        let mut events = Vec::new();
+        execute_untap(&mut state, &mut events);
+
+        assert!(state.objects[&opp_perm].tapped);
+    }
+
+    #[test]
+    fn seedborn_phased_out_does_not_fire() {
+        let mut state = setup();
+        state.active_player = PlayerId(1);
+
+        let seedborn = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Seedborn Muse".to_string(),
+            Zone::Battlefield,
+        );
+        install_seedborn_static(&mut state, seedborn);
+        // CR 702.26c: Phased-out permanents don't function.
+        use crate::game::game_object::{PhaseOutCause, PhaseStatus};
+        state.objects.get_mut(&seedborn).unwrap().phase_status = PhaseStatus::PhasedOut {
+            cause: PhaseOutCause::Directly,
+        };
+
+        let mine = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&mine).unwrap().tapped = true;
+
+        let mut events = Vec::new();
+        execute_untap(&mut state, &mut events);
+
+        // Seedborn is phased out, so the second-pass should NOT fire.
+        assert!(state.objects[&mine].tapped);
+    }
+
     #[test]
     fn execute_untap_does_not_untap_opponents_permanents() {
         let mut state = setup();
@@ -1146,6 +1558,68 @@ mod tests {
 
         state.turn_number = 2;
         assert!(!should_skip_draw(&state));
+    }
+
+    /// End-to-end: drive the engine through End-step priority passes and verify
+    /// that with > 7 cards in hand, the resulting WaitingFor is DiscardToHandSize.
+    /// Mirrors the user-visible flow (no direct execute_cleanup call).
+    #[test]
+    fn end_step_pass_priority_surfaces_discard_to_hand_size() {
+        use crate::game::engine::apply;
+        use crate::game::zones::create_object;
+        use crate::types::actions::GameAction;
+        use crate::types::identifiers::CardId;
+
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.phase = Phase::End;
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        for i in 0..9 {
+            create_object(
+                &mut state,
+                CardId(i),
+                PlayerId(0),
+                format!("Card {}", i),
+                Zone::Hand,
+            );
+        }
+        assert_eq!(state.players[0].hand.len(), 9);
+
+        // P0 passes end-step priority.
+        let r1 = apply(&mut state, PlayerId(0), GameAction::PassPriority)
+            .expect("p0 pass priority on End");
+        // Expect priority to move to P1 (still End step).
+        assert!(
+            matches!(r1.waiting_for, WaitingFor::Priority { player } if player == PlayerId(1)),
+            "after P0 pass, expected priority to P1, got {:?}",
+            r1.waiting_for
+        );
+
+        // P1 passes — this should advance End → Cleanup and trigger discard prompt.
+        let r2 = apply(&mut state, PlayerId(1), GameAction::PassPriority)
+            .expect("p1 pass priority on End");
+
+        match &r2.waiting_for {
+            WaitingFor::DiscardToHandSize {
+                player,
+                count,
+                cards,
+            } => {
+                assert_eq!(*player, PlayerId(0));
+                assert_eq!(*count, 2);
+                assert_eq!(cards.len(), 9);
+            }
+            other => panic!(
+                "expected DiscardToHandSize after End-step double-pass with 9 cards, got {:?}",
+                other
+            ),
+        }
+        // Hand untouched until selection made.
+        assert_eq!(state.players[0].hand.len(), 9);
     }
 
     #[test]
@@ -2006,7 +2480,7 @@ mod tests {
         }
         obj.replacement_definitions = vec![def].into();
         state.objects.insert(obj_id, obj);
-        state.battlefield.push(obj_id);
+        state.battlefield.push_back(obj_id);
     }
 
     #[test]
@@ -2119,7 +2593,7 @@ mod tests {
         )]
         .into();
         state.objects.insert(ObjectId(200), obj);
-        state.battlefield.push(ObjectId(200));
+        state.battlefield.push_back(ObjectId(200));
 
         let mut events = Vec::new();
 

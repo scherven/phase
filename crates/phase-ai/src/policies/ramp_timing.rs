@@ -295,6 +295,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 1 },
                 reveal: false,
                 target_player: None,
+                up_to: false,
             },
         );
         ability.sub_ability = Some(Box::new(AbilityDefinition::new(
@@ -349,7 +350,7 @@ mod tests {
             core_types: vec![CoreType::Sorcery],
             subtypes: Vec::new(),
         };
-        obj.abilities.push(make_fetch_spell_ability());
+        Arc::make_mut(&mut obj.abilities).push(make_fetch_spell_ability());
 
         let candidate = cast_candidate(spell_id, card_id);
         let decision = decision();
@@ -393,7 +394,7 @@ mod tests {
             core_types: vec![CoreType::Sorcery],
             subtypes: Vec::new(),
         };
-        ramp_obj.abilities.push(make_fetch_spell_ability());
+        Arc::make_mut(&mut ramp_obj.abilities).push(make_fetch_spell_ability());
 
         // The candidate action: cast a non-ramp creature spell.
         let creature_id = create_object(&mut state, CardId(21), AI, "Bear".to_string(), Zone::Hand);
@@ -482,7 +483,7 @@ mod tests {
             core_types: vec![CoreType::Creature],
             subtypes: Vec::new(),
         };
-        obj.abilities.push(make_mana_ability());
+        Arc::make_mut(&mut obj.abilities).push(make_mana_ability());
 
         let candidate = activate_candidate(source_id, 0);
         let decision = decision();

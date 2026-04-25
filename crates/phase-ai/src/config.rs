@@ -4,6 +4,23 @@ use crate::deck_profile::ArchetypeMultipliers;
 use crate::eval::{EvalWeightSet, KeywordBonuses};
 use crate::strategy_profile::StrategyProfile;
 
+/// Wall-clock budget for AI search across ALL difficulties and platforms.
+///
+/// When `Some(ms)`, search terminates at the deadline even if `max_depth` /
+/// `max_nodes` hasn't been reached — capping user-visible AI latency at the
+/// cost of search quality on slow hardware. When `None`, search runs to its
+/// node/depth budget, keeping quality consistent regardless of host speed.
+///
+/// Historically set to 1500/2500/4000 ms for Medium/Hard/VeryHard to mask a
+/// deep-clone perf regression on AI search nodes. The Arc-share migration
+/// (Commits 1/2/3 of perf(engine) on 2026-04-24) eliminated that cost, so
+/// the deadline is currently disabled.
+///
+/// **Single source of truth** — every `SearchConfig::time_budget_ms` in this
+/// crate references this constant. Change the value here to re-enable or
+/// re-tune wall-clock capping globally.
+pub const AI_SEARCH_TIME_BUDGET_MS: Option<u32> = None;
+
 /// How much the AI reasons about what the opponent might hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThreatAwareness {
@@ -45,11 +62,29 @@ pub struct SearchConfig {
     pub rollout_samples: u32,
     pub opponent_model: OpponentModel,
     /// Optional time budget in milliseconds. When set, search terminates
-    /// after this duration regardless of node count. Essential for WASM
-    /// where hardware performance varies widely.
+    /// after this duration regardless of node count. See
+    /// `AI_SEARCH_TIME_BUDGET_MS` (top of module) for the single source of
+    /// truth — every call-site should reference that constant rather than
+    /// writing a literal.
     pub time_budget_ms: Option<u32>,
+    /// When `true`, wall-clock deadlines are disabled — search is bounded only
+    /// by `max_nodes` / `max_depth`. Integration tests and `ai-duel` regression
+    /// runs pin this to `true` so they don't observe wall-clock flake.
+    /// Benchmarks and production code leave this `false` to measure the real
+    /// deadline-bounded regime users experience.
+    pub deterministic: bool,
     /// How much the AI reasons about opponent hand threats.
     pub threat_awareness: ThreatAwareness,
+    /// Minimum remaining wall-clock budget (ms) required before running an
+    /// uncached multi-turn projection (e.g., `velocity_score`'s opponent-turn
+    /// simulation). When `time_budget_ms.remaining < this`, policies fall back
+    /// to cache-only lookups and a heuristic score — preserves the tactical
+    /// signal without blowing the user-visible turn-time budget.
+    ///
+    /// Scaled per difficulty: Medium needs tighter gating than VeryHard because
+    /// Medium's shorter budget (1500ms native) leaves less headroom for a
+    /// ~1.5s opponent-turn simulation. Set to 0 to always run projections.
+    pub projection_min_budget_ms: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,8 +144,10 @@ impl Default for SearchConfig {
             rollout_depth: 0,
             rollout_samples: 0,
             opponent_model: OpponentModel::DeterministicBestReply,
-            time_budget_ms: None,
+            time_budget_ms: AI_SEARCH_TIME_BUDGET_MS,
+            deterministic: false,
             threat_awareness: ThreatAwareness::None,
+            projection_min_budget_ms: 500,
         }
     }
 }
@@ -347,8 +384,10 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 rollout_depth: 0,
                 rollout_samples: 0,
                 opponent_model: OpponentModel::DeterministicBestReply,
-                time_budget_ms: None,
+                time_budget_ms: AI_SEARCH_TIME_BUDGET_MS,
+                deterministic: false,
                 threat_awareness: ThreatAwareness::None,
+                projection_min_budget_ms: 0,
             },
         ),
         AiDifficulty::Easy => (
@@ -369,8 +408,10 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 rollout_depth: 0,
                 rollout_samples: 0,
                 opponent_model: OpponentModel::DeterministicBestReply,
-                time_budget_ms: None,
+                time_budget_ms: AI_SEARCH_TIME_BUDGET_MS,
+                deterministic: false,
                 threat_awareness: ThreatAwareness::None,
+                projection_min_budget_ms: 0,
             },
         ),
         AiDifficulty::Medium => (
@@ -391,8 +432,10 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 rollout_depth: 1,
                 rollout_samples: 1,
                 opponent_model: OpponentModel::DeterministicBestReply,
-                time_budget_ms: None,
+                time_budget_ms: AI_SEARCH_TIME_BUDGET_MS,
+                deterministic: false,
                 threat_awareness: ThreatAwareness::ArchetypeOnly,
+                projection_min_budget_ms: 500,
             },
         ),
         AiDifficulty::Hard => (
@@ -413,8 +456,10 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 rollout_depth: 2,
                 rollout_samples: 1,
                 opponent_model: OpponentModel::ThreatWeightedReply,
-                time_budget_ms: None,
+                time_budget_ms: AI_SEARCH_TIME_BUDGET_MS,
+                deterministic: false,
                 threat_awareness: ThreatAwareness::Full,
+                projection_min_budget_ms: 300,
             },
         ),
         AiDifficulty::VeryHard => (
@@ -435,8 +480,10 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 rollout_depth: 2,
                 rollout_samples: 2,
                 opponent_model: OpponentModel::ThreatWeightedReply,
-                time_budget_ms: None,
+                time_budget_ms: AI_SEARCH_TIME_BUDGET_MS,
+                deterministic: false,
                 threat_awareness: ThreatAwareness::Full,
+                projection_min_budget_ms: 300,
             },
         ),
     };
@@ -455,8 +502,12 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
         player_count: 2,
     };
 
-    // WASM platform constraints: reduce search budgets.
-    // AI computation runs in a Web Worker so it does not block the UI thread.
+    // WASM platform constraints: reduce search budgets. AI computation runs in
+    // a Web Worker so it does not block the UI thread. Wall-clock deadlines are
+    // intentionally absent — bounds are set by `max_depth` / `max_nodes` /
+    // `rollout_depth` instead, so AI quality is consistent regardless of host
+    // speed. Wall-clock capping was previously needed to hide a deep-clone
+    // perf regression; the Arc-share migration removed that cost.
     if platform == Platform::Wasm {
         config.search.max_depth = config.search.max_depth.min(2);
         config.search.max_nodes = config.search.max_nodes * 2 / 3;
@@ -464,6 +515,17 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
     }
 
     config
+}
+
+impl AiConfig {
+    /// Return a copy of this config with deterministic mode enabled: wall-clock
+    /// deadlines are disabled and search is bounded solely by `max_nodes` /
+    /// `max_depth`. Used by integration tests and `ai-duel` regression runs to
+    /// eliminate wall-clock flake. Production and benchmarks leave this off.
+    pub fn into_deterministic(mut self) -> Self {
+        self.search.deterministic = true;
+        self
+    }
 }
 
 /// Create an AI configuration scaled for the given player count.

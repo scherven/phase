@@ -21,6 +21,7 @@ use super::lethality_awareness::LethalityAwarenessPolicy;
 use super::life_total_resource::LifeTotalResourcePolicy;
 use super::plus_one_counters::PlusOneCountersPolicy;
 use super::ramp_timing::RampTimingPolicy;
+use super::reactive_self_protection::ReactiveSelfProtectionPolicy;
 use super::recursion_awareness::RecursionAwarenessPolicy;
 use super::redundancy_avoidance::RedundancyAvoidancePolicy;
 use super::sacrifice_value::SacrificeValuePolicy;
@@ -85,6 +86,7 @@ pub enum PolicyId {
     SpellslingerCasting,
     SpellslingerKeepablesMulligan,
     CombatTaxPayment,
+    ReactiveSelfProtection,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -206,6 +208,7 @@ impl Default for PolicyRegistry {
             Box::new(PlusOneCountersPolicy),
             Box::new(SpellslingerCastingPolicy),
             Box::new(super::combat_tax::CombatTaxPaymentPolicy),
+            Box::new(ReactiveSelfProtectionPolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {
@@ -218,6 +221,19 @@ impl Default for PolicyRegistry {
 }
 
 impl PolicyRegistry {
+    /// Return a process-wide shared `PolicyRegistry`, constructed once on first
+    /// access. Policies are stateless (`TacticalPolicy: Send + Sync`, no
+    /// interior mutability by construction), so a single instance safely
+    /// serves every thread and every decision without cross-game bleed.
+    ///
+    /// Prefer this over `PolicyRegistry::default()` in hot paths: `default()`
+    /// allocates ~20 `Box<dyn TacticalPolicy>` per call, which the scorer and
+    /// decision tracer previously ran on every candidate evaluation.
+    pub fn shared() -> &'static Self {
+        static REGISTRY: std::sync::OnceLock<PolicyRegistry> = std::sync::OnceLock::new();
+        REGISTRY.get_or_init(PolicyRegistry::default)
+    }
+
     /// Run every policy whose `decision_kinds()` matches the classified kind
     /// for `ctx.candidate`, returning each policy's structured verdict.
     /// Used by `priors()` and (when tracing is enabled) for trace aggregation.
@@ -226,17 +242,25 @@ impl PolicyRegistry {
         let Some(indices) = self.by_kind.get(&kind) else {
             return Vec::new();
         };
-        let session_features = ctx
-            .context
-            .session
-            .features
-            .get(&ctx.ai_player)
-            .cloned()
-            .unwrap_or_default();
+        // Borrow the cached DeckFeatures instead of cloning. Cloning a
+        // DeckFeatures (9 Feature sub-structs, most carrying Vec<CardId>)
+        // per candidate is a ~hundred-microsecond hit × hundreds of
+        // `verdicts()` calls per decision — a measurable fraction of the
+        // pre-search tactical pass on large states. `AiSession::features`
+        // stays `cached-per-decision` so the borrow is safe for the scope.
+        let default_features;
+        let session_features: &crate::features::DeckFeatures =
+            match ctx.context.session.features.get(&ctx.ai_player) {
+                Some(f) => f,
+                None => {
+                    default_features = crate::features::DeckFeatures::default();
+                    &default_features
+                }
+            };
         let mut out = Vec::with_capacity(indices.len());
         for &idx in indices {
             let policy = &self.policies[idx];
-            let Some(activation) = policy.activation(&session_features, ctx.state, ctx.ai_player)
+            let Some(activation) = policy.activation(session_features, ctx.state, ctx.ai_player)
             else {
                 continue;
             };
@@ -323,5 +347,32 @@ impl PolicyRegistry {
                 prior: prior / total,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod shared_invariant_tests {
+    use super::*;
+
+    /// `PolicyRegistry::shared()` returns a stable process-wide instance.
+    /// Two calls must hand back the same pointer and the same policy count —
+    /// if a future `TacticalPolicy` impl adds interior mutability, the shape
+    /// may still match but cross-game bleed becomes possible. This test is
+    /// the minimum check that the sharing contract is wired correctly.
+    #[test]
+    fn shared_returns_same_instance() {
+        let a = PolicyRegistry::shared();
+        let b = PolicyRegistry::shared();
+        assert!(
+            std::ptr::eq(a, b),
+            "PolicyRegistry::shared() must return the same OnceLock-backed \
+             instance across calls — interior mutability in any policy \
+             would then bleed state across games"
+        );
+        assert_eq!(
+            a.policies.len(),
+            PolicyRegistry::default().policies.len(),
+            "shared instance must contain the same policy set as a fresh default()"
+        );
     }
 }

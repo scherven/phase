@@ -3,8 +3,8 @@ import { motion } from "framer-motion";
 
 import { CardImage } from "../card/CardImage.tsx";
 import { useGameStore } from "../../stores/gameStore.ts";
-import { useUiStore } from "../../stores/uiStore.ts";
 import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
+import { useInspectHoverProps } from "../../hooks/useInspectHoverProps.ts";
 import type { GameObject, ManaCost, ManaType, ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { ChoiceOverlay, ConfirmButton, ScrollableCardStrip } from "./ChoiceOverlay.tsx";
@@ -14,6 +14,7 @@ import { DungeonChoiceModal, RoomChoiceModal } from "./DungeonChoiceModal.tsx";
 import { DamageAssignmentModal } from "../combat/DamageAssignmentModal.tsx";
 import { DistributeAmongModal } from "./DistributeAmongModal.tsx";
 import { RetargetChoiceModal } from "./RetargetChoiceModal.tsx";
+import { ProliferateModal } from "./ProliferateModal.tsx";
 
 type ScryChoice = Extract<WaitingFor, { type: "ScryChoice" }>;
 type DigChoice = Extract<WaitingFor, { type: "DigChoice" }>;
@@ -171,6 +172,9 @@ export function CardChoiceModal() {
     case "RetargetChoice":
       if (!canActForWaitingState) return null;
       return <RetargetChoiceModal data={waitingFor.data} />;
+    case "ProliferateChoice":
+      if (!canActForWaitingState) return null;
+      return <ProliferateModal data={waitingFor.data} />;
     case "ManifestDreadChoice":
       if (!canActForWaitingState) return null;
       return <ManifestDreadModal data={waitingFor.data} />;
@@ -193,7 +197,7 @@ export function CardChoiceModal() {
 function ScryModal({ data }: { data: ScryChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   // Track which cards go to bottom (default: all on top)
   const [bottomSet, setBottomSet] = useState<Set<ObjectId>>(new Set());
 
@@ -252,8 +256,7 @@ function ScryModal({ data }: { data: ScryChoice["data"] }) {
                 }`}
                 whileHover={{ scale: 1.05, y: -6 }}
                 onClick={() => toggleBottom(id)}
-                onMouseEnter={() => inspectObject(id)}
-                onMouseLeave={() => inspectObject(null)}
+                {...hoverProps(id)}
               >
                 <CardImage
                   cardName={obj.name}
@@ -284,7 +287,7 @@ function ScryModal({ data }: { data: ScryChoice["data"] }) {
 function DigModal({ data }: { data: DigChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
 
   const isUpTo = data.up_to ?? false;
@@ -358,8 +361,7 @@ function DigModal({ data }: { data: DigChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={isSelectable ? { scale: 1.05, y: -6 } : undefined}
               onClick={() => isSelectable && toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -386,7 +388,7 @@ function DigModal({ data }: { data: DigChoice["data"] }) {
 function SurveilModal({ data }: { data: SurveilChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   // Track which cards go to graveyard (default: all stay on top)
   const [graveyardSet, setGraveyardSet] = useState<Set<ObjectId>>(new Set());
 
@@ -438,8 +440,7 @@ function SurveilModal({ data }: { data: SurveilChoice["data"] }) {
                 }`}
                 whileHover={{ scale: 1.05, y: -6 }}
                 onClick={() => toggleGraveyard(id)}
-                onMouseEnter={() => inspectObject(id)}
-                onMouseLeave={() => inspectObject(null)}
+                {...hoverProps(id)}
               >
                 <CardImage
                   cardName={obj.name}
@@ -470,8 +471,9 @@ function SurveilModal({ data }: { data: SurveilChoice["data"] }) {
 function RevealModal({ data }: { data: RevealChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<ObjectId | null>(null);
+  const isOptional = data.optional === true;
 
   const handleConfirm = useCallback(() => {
     if (selected !== null) {
@@ -482,13 +484,28 @@ function RevealModal({ data }: { data: RevealChoice["data"] }) {
     }
   }, [dispatch, selected]);
 
+  // CR 701.20a: Optional reveals (reveal-lands like Port Town) offer a
+  // "decline" path — dispatch an empty selection so the engine's RevealChoice
+  // handler runs the source's decline branch (e.g., Tap SelfRef).
+  const handleDecline = useCallback(() => {
+    dispatch({
+      type: "SelectCards",
+      data: { cards: [] },
+    });
+  }, [dispatch]);
+
   if (!objects) return null;
 
   return (
     <ChoiceOverlay
-      title="Opponent's Hand"
-      subtitle="Choose a card"
-      footer={<ConfirmButton onClick={handleConfirm} disabled={selected === null} />}
+      title={isOptional ? "Reveal from Hand" : "Opponent's Hand"}
+      subtitle={isOptional ? "Choose a card to reveal, or decline" : "Choose a card"}
+      footer={
+        <div className="flex gap-2">
+          {isOptional && <ConfirmButton onClick={handleDecline} label="Decline" />}
+          <ConfirmButton onClick={handleConfirm} disabled={selected === null} />
+        </div>
+      }
     >
       <ScrollableCardStrip>
         {data.cards.map((id, index) => {
@@ -508,8 +525,7 @@ function RevealModal({ data }: { data: RevealChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => setSelected(isSelected ? null : id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -536,7 +552,7 @@ function RevealModal({ data }: { data: RevealChoice["data"] }) {
 function SearchModal({ data }: { data: SearchChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selectedSet, setSelectedSet] = useState<Set<ObjectId>>(new Set());
 
   const toggleSelect = useCallback(
@@ -589,8 +605,7 @@ function SearchModal({ data }: { data: SearchChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -621,7 +636,7 @@ function ChooseFromZoneModal({
 }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selectedSet, setSelectedSet] = useState<Set<ObjectId>>(new Set());
   const selectedIds = useMemo(() => Array.from(selectedSet), [selectedSet]);
   const selectionRule = data.constraint;
@@ -691,8 +706,7 @@ function ChooseFromZoneModal({
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -717,7 +731,7 @@ function ChooseFromZoneModal({
 function EffectZoneModal({ data }: { data: EffectZoneChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
   const isSacrifice = data.zone === "Battlefield";
   const isUpTo = data.up_to === true;
@@ -787,8 +801,7 @@ function EffectZoneModal({ data }: { data: EffectZoneChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -859,7 +872,7 @@ function PermanentCostModal({
 }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
 
   const toggleSelect = useCallback(
@@ -912,8 +925,7 @@ function PermanentCostModal({
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -938,7 +950,7 @@ function PermanentCostModal({
 function BlightModal({ data }: { data: BlightChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
 
   const toggleSelect = useCallback(
@@ -991,8 +1003,7 @@ function BlightModal({ data }: { data: BlightChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1019,7 +1030,7 @@ function BlightModal({ data }: { data: BlightChoice["data"] }) {
 function CrewModal({ data }: { data: CrewVehicle["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
 
   const toggleSelect = useCallback((id: ObjectId) => {
@@ -1074,8 +1085,7 @@ function CrewModal({ data }: { data: CrewVehicle["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1104,7 +1114,7 @@ function CrewModal({ data }: { data: CrewVehicle["data"] }) {
 function StationTargetModal({ data }: { data: StationTarget["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<ObjectId | null>(null);
 
   const handleConfirm = useCallback(() => {
@@ -1151,8 +1161,7 @@ function StationTargetModal({ data }: { data: StationTarget["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => setSelected(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1181,7 +1190,7 @@ function StationTargetModal({ data }: { data: StationTarget["data"] }) {
 function SaddleModal({ data }: { data: SaddleMount["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
 
   const toggleSelect = useCallback((id: ObjectId) => {
@@ -1236,8 +1245,7 @@ function SaddleModal({ data }: { data: SaddleMount["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1266,7 +1274,7 @@ type WardSacrificeChoice = Extract<WaitingFor, { type: "WardSacrificeChoice" }>;
 function WardSacrificeModal({ data }: { data: WardSacrificeChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<ObjectId | null>(null);
 
   const handleConfirm = useCallback(() => {
@@ -1303,8 +1311,7 @@ function WardSacrificeModal({ data }: { data: WardSacrificeChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => setSelected(isSelected ? null : id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1331,7 +1338,7 @@ function WardSacrificeModal({ data }: { data: WardSacrificeChoice["data"] }) {
 function ExileFromGraveyardModal({ data }: { data: ExileFromGraveyardForCost["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
 
   const toggleSelect = useCallback(
@@ -1384,8 +1391,7 @@ function ExileFromGraveyardModal({ data }: { data: ExileFromGraveyardForCost["da
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1439,7 +1445,7 @@ function manaValueOfObject(obj: { mana_cost: ManaCost }): number {
 function CollectEvidenceModal({ data }: { data: CollectEvidenceChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
 
   const toggleSelect = useCallback((id: ObjectId) => {
@@ -1494,8 +1500,7 @@ function CollectEvidenceModal({ data }: { data: CollectEvidenceChoice["data"] })
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1525,7 +1530,7 @@ function CollectEvidenceModal({ data }: { data: CollectEvidenceChoice["data"] })
 function DiscardModal({ data, title = "Discard" }: { data: DiscardToHandSize["data"] & { up_to?: boolean; unless_filter?: TargetFilter }; title?: string }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
   const hasUnlessOption = data.unless_filter != null;
   const isUpTo = data.up_to === true;
@@ -1590,8 +1595,7 @@ function DiscardModal({ data, title = "Discard" }: { data: DiscardToHandSize["da
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => toggleSelect(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1618,7 +1622,7 @@ function DiscardModal({ data, title = "Discard" }: { data: DiscardToHandSize["da
 function HarmonizeTapModal({ data }: { data: HarmonizeTapChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
 
   const handleTap = useCallback(
     (id: ObjectId) => {
@@ -1653,8 +1657,7 @@ function HarmonizeTapModal({ data }: { data: HarmonizeTapChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => handleTap(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1679,7 +1682,7 @@ function HarmonizeTapModal({ data }: { data: HarmonizeTapChoice["data"] }) {
 function LegendChoiceModal({ data }: { data: ChooseLegend["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
 
   if (!objects) return null;
 
@@ -1703,8 +1706,7 @@ function LegendChoiceModal({ data }: { data: ChooseLegend["data"] }) {
               onClick={() =>
                 dispatch({ type: "ChooseLegend", data: { keep: id } })
               }
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}
@@ -1724,7 +1726,7 @@ function LegendChoiceModal({ data }: { data: ChooseLegend["data"] }) {
 function ManifestDreadModal({ data }: { data: ManifestDreadChoice["data"] }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
-  const inspectObject = useUiStore((s) => s.inspectObject);
+  const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<ObjectId | null>(null);
 
   const handleConfirm = useCallback(() => {
@@ -1761,8 +1763,7 @@ function ManifestDreadModal({ data }: { data: ManifestDreadChoice["data"] }) {
               transition={{ delay: 0.1 + index * 0.08, duration: 0.35 }}
               whileHover={{ scale: 1.05, y: -6 }}
               onClick={() => setSelected(id)}
-              onMouseEnter={() => inspectObject(id)}
-              onMouseLeave={() => inspectObject(null)}
+              {...hoverProps(id)}
             >
               <CardImage
                 cardName={obj.name}

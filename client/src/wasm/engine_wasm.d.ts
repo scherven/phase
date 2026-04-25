@@ -46,6 +46,13 @@ export function evaluate_deck_compatibility_js(request: any): any;
 export function export_game_state_json(): string;
 
 /**
+ * Return the authoritative list of user-selectable formats as a typed array.
+ * The frontend treats this as the single source of truth for rendering
+ * format pickers, badges, and default configs — no hand-maintained mirrors.
+ */
+export function getFormatRegistry(): any;
+
+/**
  * Get the AI's chosen action for the current game state.
  * `difficulty` is one of: "VeryEasy", "Easy", "Medium", "Hard", "VeryHard".
  * `player_id` is the seat index of the AI player (0-based).
@@ -86,16 +93,30 @@ export function get_card_parse_details(name: string): any;
 export function get_card_rulings(name: string): any;
 
 /**
- * Get a filtered view of the current game state for the given player.
+ * Filtered-viewer variant of `get_game_state`. Runs the viewer filter
+ * first (hides opponent hand/library per standard multiplayer redaction),
+ * then derives views over the filtered state so the wire shape is
+ * identical to `get_game_state` regardless of filter path.
  */
 export function get_filtered_game_state(viewer: number): any;
 
 /**
- * Get the current game state as JSON.
- * Derived display fields (summoning sickness, devotion, etc.) are computed
- * automatically by the engine in apply()/start_game().
+ * Get the current game state as a `ClientGameState` wire envelope
+ * (`{ state, derived }`). The `derived` block holds engine-authored
+ * presentation projections — commander-damage grouping, etc. — so the
+ * frontend never computes game logic. Derivation happens just-in-time per
+ * call and does not mutate `GameState`. See
+ * `engine::game::derived_views::ClientGameStateRef`.
  */
 export function get_game_state(): any;
+
+/**
+ * Viewer-scoped legal actions. Returns the same shape as `get_legal_actions_js`
+ * but empty when the viewer is not the player currently expected to act. Used
+ * by the P2P host to broadcast per-guest legal-action payloads without leaking
+ * game logic into the transport adapter.
+ */
+export function get_legal_actions_for_viewer_js(player_id: number): any;
 
 /**
  * Get the legal actions, auto-pass recommendation, and spell costs for the current game state.
@@ -104,8 +125,24 @@ export function get_game_state(): any;
 export function get_legal_actions_js(): any;
 
 /**
+ * Current stack pressure bucket for animation pacing (Normal/Elevated/Rapid/Instant).
+ * Not a rules concept — presentation policy owned by the engine for consistency
+ * across browser/desktop/server consumers. Returned as a string to avoid
+ * tsify enum-sharing overhead; frontend maps the string to a multiplier.
+ */
+export function get_stack_pressure(): any;
+
+export function get_viewer_snapshot_js(player_id: number): any;
+
+/**
  * Initialize panic hook for better error messages in WASM.
  * Called automatically on first use — safe to call multiple times.
+ *
+ * We install our own hook (composing with `console_error_panic_hook`'s
+ * console output) so panics are *both* logged to devtools and captured
+ * for later retrieval. With `panic = 'abort'`, the hook runs before the
+ * WASM trap, so a thread-local written here is readable from the next JS
+ * call into the module.
  */
 export function init_panic_hook(): void;
 
@@ -227,6 +264,15 @@ export function sideboardPolicyForFormat(format: any): any;
  */
 export function submit_action(actor: number, action: any): any;
 
+/**
+ * Drain the last captured panic message (consuming it). Returns `null` when
+ * no panic has been observed since the last drain. JS calls this after a
+ * thrown `RuntimeError` to decide whether to surface the modal as a real
+ * engine crash (with the panic text + report link) or a transient
+ * state-loss (the legacy reload prompt).
+ */
+export function take_last_panic_message(): string | undefined;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -235,12 +281,15 @@ export interface InitOutput {
     readonly classify_deck_js: (a: any) => [number, number, number];
     readonly evaluate_deck_compatibility_js: (a: any) => [number, number, number];
     readonly export_game_state_json: () => [number, number, number, number];
+    readonly getFormatRegistry: () => any;
     readonly get_ai_action: (a: number, b: number, c: number) => [number, number, number];
     readonly get_ai_scored_candidates: (a: number, b: number, c: number, d: bigint) => [number, number, number];
     readonly get_card_face_data: (a: number, b: number) => any;
     readonly get_card_parse_details: (a: number, b: number) => any;
     readonly get_card_rulings: (a: number, b: number) => any;
     readonly get_filtered_game_state: (a: number) => any;
+    readonly get_legal_actions_for_viewer_js: (a: number) => any;
+    readonly get_viewer_snapshot_js: (a: number) => any;
     readonly initialize_game: (a: any, b: number, c: number, d: any, e: any, f: number, g: number) => any;
     readonly is_card_commander_eligible: (a: number, b: number) => number;
     readonly is_multiplayer_mode: () => number;
@@ -252,8 +301,10 @@ export interface InitOutput {
     readonly set_multiplayer_mode: (a: number) => void;
     readonly sideboardPolicyForFormat: (a: any) => [number, number, number];
     readonly submit_action: (a: number, b: any) => any;
+    readonly take_last_panic_message: () => [number, number];
     readonly get_game_state: () => any;
     readonly get_legal_actions_js: () => any;
+    readonly get_stack_pressure: () => any;
     readonly init_panic_hook: () => void;
     readonly create_initial_state: () => any;
     readonly clear_game_state: () => void;

@@ -1,12 +1,16 @@
+use std::sync::Arc;
+
+use crate::game::arithmetic::saturating_pt_add;
 use crate::game::devotion::count_devotion;
 use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::game::printed_cards::{apply_copiable_values, intrinsic_copiable_values};
 use crate::game::speed::{effective_speed, has_max_speed};
 use crate::types::ability::{
-    BasicLandType, CastingPermission, ContinuousModification, CopiableValues, Duration,
+    AbilityCost, AbilityDefinition, AbilityKind, BasicLandType, CastingPermission,
+    ContinuousModification, CopiableValues, Duration, Effect, ManaContribution, ManaProduction,
     QuantityExpr, StaticCondition, StaticDefinition, TargetFilter, TypedFilter,
 };
-use crate::types::card_type::is_land_subtype;
+use crate::types::card_type::{is_land_subtype, CoreType};
 use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
@@ -48,7 +52,7 @@ pub fn prune_end_of_combat_effects(state: &mut GameState) {
 /// (`AdventureCreature`, `ExileWithAltCost`, `ExileWithEnergyCost`, `WarpExile`)
 /// persist until the object leaves exile (handled by `zones::apply_zone_exit_cleanup`).
 pub fn prune_end_of_turn_casting_permissions(state: &mut GameState) {
-    for obj in state.objects.values_mut() {
+    for obj in state.objects.iter_mut().map(|(_, v)| v) {
         obj.casting_permissions.retain(|p| match p {
             CastingPermission::PlayFromExile {
                 duration: Duration::UntilEndOfTurn,
@@ -71,7 +75,10 @@ pub fn prune_end_of_turn_casting_permissions(state: &mut GameState) {
             CastingPermission::AdventureCreature
             | CastingPermission::ExileWithAltCost { .. }
             | CastingPermission::ExileWithEnergyCost
-            | CastingPermission::WarpExile { .. } => true,
+            | CastingPermission::WarpExile { .. }
+            // CR 702.170d: Plotted persists across turns (that is the whole
+            // point of Plot — cast "on a later turn"); never pruned at cleanup.
+            | CastingPermission::Plotted { .. } => true,
         });
     }
 }
@@ -81,7 +88,7 @@ pub fn prune_end_of_turn_casting_permissions(state: &mut GameState) {
 /// player's untap step. Called from the untap step alongside
 /// `prune_until_next_turn_effects`.
 pub fn prune_until_next_turn_casting_permissions(state: &mut GameState, active_player: PlayerId) {
-    for obj in state.objects.values_mut() {
+    for obj in state.objects.iter_mut().map(|(_, v)| v) {
         obj.casting_permissions.retain(|p| match p {
             CastingPermission::PlayFromExile {
                 duration: Duration::UntilYourNextTurn,
@@ -91,7 +98,10 @@ pub fn prune_until_next_turn_casting_permissions(state: &mut GameState, active_p
             | CastingPermission::AdventureCreature
             | CastingPermission::ExileWithAltCost { .. }
             | CastingPermission::ExileWithEnergyCost
-            | CastingPermission::WarpExile { .. } => true,
+            | CastingPermission::WarpExile { .. }
+            // CR 702.170d: Plotted persists across turns; never pruned at the
+            // untap step. Retention is zone-scoped (see zones::apply_zone_exit_cleanup).
+            | CastingPermission::Plotted { .. } => true,
         });
     }
 }
@@ -285,8 +295,10 @@ pub(crate) fn evaluate_condition(
             .is_some_and(|obj| obj.controller == *player),
         // CR 301.5a: True when at least one Equipment is attached to the source object.
         // Mirrors the attacher-is-equipment subtype check from `effects/attach.rs:64-67`.
+        // CR 301.5: Equipment can only attach to objects, so any non-Object host
+        // is rejected by `as_object`.
         StaticCondition::SourceIsEquipped => state.objects.values().any(|obj| {
-            obj.attached_to == Some(source_id)
+            obj.attached_to.and_then(|t| t.as_object()) == Some(source_id)
                 && obj.card_types.subtypes.iter().any(|s| s == "Equipment")
         }),
         // CR 701.37: True when the source permanent is monstrous.
@@ -294,11 +306,14 @@ pub(crate) fn evaluate_condition(
             .objects
             .get(&source_id)
             .is_some_and(|obj| obj.monstrous),
-        // CR 301.5 + CR 303.4: True when source Aura/Equipment is attached to a creature.
+        // CR 301.5 + CR 303.4: True when source Aura/Equipment is attached to a
+        // creature. A Player host (CR 303.4 + CR 702.5d) is never a creature, so
+        // we filter to Object hosts via `as_object`.
         StaticCondition::SourceAttachedToCreature => state
             .objects
             .get(&source_id)
             .and_then(|obj| obj.attached_to)
+            .and_then(|t| t.as_object())
             .and_then(|target_id| state.objects.get(&target_id))
             .is_some_and(|target| {
                 target
@@ -313,11 +328,13 @@ pub(crate) fn evaluate_condition(
             .is_some_and(|obj| obj.zone == *zone),
         // CR 708.2 + CR 707.2: True when the creature this Aura/Equipment is attached to
         // is face-down. Traverses `attached_to` to the target object and reads its
-        // `face_down` status (false if source is not attached to any object).
+        // `face_down` status (false if source is not attached, or attached to a
+        // player — players have no face-down state).
         StaticCondition::EnchantedIsFaceDown => state
             .objects
             .get(&source_id)
             .and_then(|obj| obj.attached_to)
+            .and_then(|t| t.as_object())
             .and_then(|target_id| state.objects.get(&target_id))
             .is_some_and(|target| target.face_down),
         // CR 608.2c: Check if the source object matches a type filter (leveler gates).
@@ -426,10 +443,24 @@ pub fn evaluate_condition_for_test(
 ///
 /// CR 613.1: Evaluate all continuous effects in layer order (1–7e).
 pub fn evaluate_layers(state: &mut GameState) {
+    // CR 302.6 + CR 613.1b + CR 702.26c: Snapshot effective controllers for
+    // phased-in permanents BEFORE the Step 1 reset below wipes them. The
+    // post-pass diff at the end of this function compares against this
+    // snapshot to detect effective-controller transitions (Layer 2 control-
+    // changing effect start/end, exchange-control, gain-control expiry) and
+    // re-applies summoning sickness per CR 302.6 ("continuously under that
+    // player's control since that player's most recent turn began").
+    // Phased-out permanents are excluded per CR 702.26c.
+    let prev_controllers: Vec<(ObjectId, PlayerId)> = state
+        .battlefield_phased_in_ids()
+        .into_iter()
+        .filter_map(|id| state.objects.get(&id).map(|o| (id, o.controller)))
+        .collect();
+
     // Step 1: Reset computed characteristics to base values.
     // Only reset fields where base values were explicitly set; objects without
     // base values (e.g., from older test helpers) retain their current values.
-    let bf_ids: Vec<ObjectId> = state.battlefield.clone();
+    let bf_ids: Vec<ObjectId> = state.battlefield.iter().copied().collect();
     for &id in &bf_ids {
         if let Some(obj) = state.objects.get_mut(&id) {
             obj.sync_missing_base_characteristics();
@@ -440,10 +471,16 @@ pub fn evaluate_layers(state: &mut GameState) {
             obj.card_types = obj.base_card_types.clone();
             obj.mana_cost = obj.base_mana_cost.clone();
             obj.keywords = obj.base_keywords.clone();
-            obj.abilities = obj.base_abilities.clone();
-            obj.trigger_definitions = obj.base_trigger_definitions.clone().into();
-            obj.replacement_definitions = obj.base_replacement_definitions.clone().into();
-            obj.static_definitions = obj.base_static_definitions.clone().into();
+            // CR 613.1: Reset live ability fields to the printed-card baseline.
+            // Post Commit 2 of Arc-share migration: both sides are `Arc<Vec<T>>`
+            // (via `Definitions<T>`-holds-`Arc`), so this reset is a refcount
+            // bump — no deep copy of ability data per layer pass per permanent.
+            // Subsequent layer effects that mutate `obj.abilities` / definitions
+            // trigger copy-on-write via `Arc::make_mut`.
+            obj.abilities = Arc::clone(&obj.base_abilities);
+            obj.trigger_definitions = Arc::clone(&obj.base_trigger_definitions).into();
+            obj.replacement_definitions = Arc::clone(&obj.base_replacement_definitions).into();
+            obj.static_definitions = Arc::clone(&obj.base_static_definitions).into();
             obj.color = obj.base_color.clone();
             // CR 613.1b: Reset controller to owner; Layer 2 re-applies control-changing effects.
             obj.controller = obj.owner;
@@ -559,15 +596,19 @@ pub fn evaluate_layers(state: &mut GameState) {
     // CR 613.4c: +1/+1 and -1/-1 counters modify P/T in layer 7c.
     for &id in &bf_ids {
         if let Some(obj) = state.objects.get_mut(&id) {
-            let plus = *obj.counters.get(&CounterType::Plus1Plus1).unwrap_or(&0) as i32;
-            let minus = *obj.counters.get(&CounterType::Minus1Minus1).unwrap_or(&0) as i32;
-            let delta = plus - minus;
+            let plus = crate::game::arithmetic::u32_to_i32_saturating(
+                *obj.counters.get(&CounterType::Plus1Plus1).unwrap_or(&0),
+            );
+            let minus = crate::game::arithmetic::u32_to_i32_saturating(
+                *obj.counters.get(&CounterType::Minus1Minus1).unwrap_or(&0),
+            );
+            let delta = plus.saturating_sub(minus);
             if delta != 0 {
                 if let Some(ref mut p) = obj.power {
-                    *p += delta;
+                    *p = saturating_pt_add(*p, delta);
                 }
                 if let Some(ref mut t) = obj.toughness {
-                    *t += delta;
+                    *t = saturating_pt_add(*t, delta);
                 }
             }
 
@@ -575,6 +616,26 @@ pub fn evaluate_layers(state: &mut GameState) {
             // reverts obj.loyalty to base_loyalty, re-derive it from the actual counter.
             if let Some(&loyalty_counters) = obj.counters.get(&CounterType::Loyalty) {
                 obj.loyalty = Some(loyalty_counters);
+            }
+        }
+    }
+
+    // CR 302.6: Re-apply summoning sickness for any permanent whose effective
+    // controller changed during this evaluation. The diff is taken against
+    // `prev_controllers` snapshotted at the top of the function. Layer 2
+    // (CR 613.1b) is the single authority for post-ETB control changes, so
+    // every relevant transition — Act of Treason / Threaten cast and expiry,
+    // Control Magic / Mind Control on/off, exchange-control, "until end of
+    // combat" duration termination — produces a diff here. Newly-ETB'd
+    // permanents are absent from the snapshot and therefore unaffected
+    // (their `summoning_sick` was set true upstream by
+    // `GameObject::reset_for_battlefield_entry`). Clearing back to false is
+    // the sole responsibility of `turns::start_next_turn` for the active
+    // player's permanents.
+    for (id, prev) in prev_controllers {
+        if let Some(obj) = state.objects.get_mut(&id) {
+            if obj.controller != prev {
+                obj.summoning_sick = true;
             }
         }
     }
@@ -927,6 +988,7 @@ fn depends_on(a: &ActiveContinuousEffect, b: &ActiveContinuousEffect, _state: &G
             | ContinuousModification::GrantTrigger { .. }
             | ContinuousModification::RemoveAllAbilities
             | ContinuousModification::AddStaticMode { .. }
+            | ContinuousModification::RetainPrintedTriggerFromSource { .. }
     );
 
     if b_changes_abilities && filter_references_ability(&a.affected_filter) {
@@ -1056,6 +1118,23 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
         _ => None,
     };
 
+    // CR 707.9a: Pre-read the printed trigger to retain from the source object's
+    // `base_trigger_definitions`. Reads here (immutable) before we take the
+    // per-object mutable borrow inside the loop. Cloning out the trigger keeps
+    // the dispatch arm's mutation site free of nested borrows.
+    let retained_printed_trigger = if let ContinuousModification::RetainPrintedTriggerFromSource {
+        source_trigger_index,
+    } = &effect.modification
+    {
+        state.objects.get(&effect.source_id).and_then(|src| {
+            src.base_trigger_definitions
+                .get(*source_trigger_index)
+                .cloned()
+        })
+    } else {
+        None
+    };
+
     for id in affected_ids {
         let obj = match state.objects.get_mut(&id) {
             Some(o) => o,
@@ -1075,12 +1154,12 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
             }
             ContinuousModification::AddPower { value } => {
                 if let Some(ref mut p) = obj.power {
-                    *p += value;
+                    *p = saturating_pt_add(*p, *value);
                 }
             }
             ContinuousModification::AddToughness { value } => {
                 if let Some(ref mut t) = obj.toughness {
-                    *t += value;
+                    *t = saturating_pt_add(*t, *value);
                 }
             }
             ContinuousModification::SetPower { value } => {
@@ -1099,7 +1178,7 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                     .retain(|k| std::mem::discriminant(k) != std::mem::discriminant(keyword));
             }
             ContinuousModification::RemoveAllAbilities => {
-                obj.abilities.clear();
+                Arc::make_mut(&mut obj.abilities).clear();
                 obj.trigger_definitions.clear();
                 obj.replacement_definitions.clear();
                 obj.static_definitions.clear();
@@ -1125,6 +1204,11 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                 if !obj.card_types.subtypes.iter().any(|s| s == subtype) {
                     obj.card_types.subtypes.push(subtype.clone());
                 }
+                // CR 305.6: A land that gains a basic land type also gains the
+                // appropriate mana ability for that type. When a type is ADDED
+                // (as opposed to replaced via SetBasicLandType), the land keeps
+                // its existing abilities AND gains the basic mana ability.
+                inject_basic_mana_ability_for_subtype(obj, subtype);
             }
             ContinuousModification::RemoveSubtype { ref subtype } => {
                 obj.card_types.subtypes.retain(|s| s != subtype);
@@ -1141,8 +1225,11 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                 for land_type in BasicLandType::all() {
                     let subtype = land_type.as_subtype_str().to_string();
                     if !obj.card_types.subtypes.iter().any(|s| s == &subtype) {
-                        obj.card_types.subtypes.push(subtype);
+                        obj.card_types.subtypes.push(subtype.clone());
                     }
+                    // CR 305.6: Inject the basic mana ability for each basic
+                    // land type that was added.
+                    inject_basic_mana_ability_for_subtype(obj, &subtype);
                 }
             }
             ContinuousModification::AddChosenSubtype { .. } => {
@@ -1150,6 +1237,8 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                     if !obj.card_types.subtypes.iter().any(|s| s == subtype) {
                         obj.card_types.subtypes.push(subtype.clone());
                     }
+                    // CR 305.6: A chosen basic land type grants its mana ability.
+                    inject_basic_mana_ability_for_subtype(obj, subtype);
                 }
             }
             // CR 105.3: Set the object's color to the chosen color.
@@ -1203,13 +1292,28 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                     }
                 }
             }
+            // CR 613.1f: Layer 6 ability-granting effects are applied fresh
+            // each layer pass (obj.abilities was reset to base_abilities at the
+            // start of the pass). Within a single pass, a duplicate
+            // GrantAbility — whether from a single static with repeated
+            // modifications (e.g., Ragost parses the "have ..." clause twice)
+            // or from multiple sources granting the same ability — must not
+            // stack. Structural equality dedup keeps the grant idempotent.
             ContinuousModification::GrantAbility { definition } => {
-                obj.abilities.push(*definition.clone());
+                if !obj.abilities.iter().any(|a| a == definition.as_ref()) {
+                    Arc::make_mut(&mut obj.abilities).push(*definition.clone());
+                }
             }
             // CR 604.1: Push granted trigger to trigger_definitions so
             // the trigger's event matching and condition metadata is preserved.
             ContinuousModification::GrantTrigger { trigger } => {
-                obj.trigger_definitions.push(*trigger.clone());
+                if !obj
+                    .trigger_definitions
+                    .iter_all()
+                    .any(|t| t == trigger.as_ref())
+                {
+                    obj.trigger_definitions.push(*trigger.clone());
+                }
             }
             ContinuousModification::AddStaticMode { mode } => {
                 let def = StaticDefinition::new(mode.clone()).affected(TargetFilter::SelfRef);
@@ -1251,14 +1355,83 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                 obj.card_types
                     .subtypes
                     .push(land_type.as_subtype_str().to_string());
-                obj.abilities.clear();
+                Arc::make_mut(&mut obj.abilities).clear();
                 obj.trigger_definitions.clear();
                 obj.replacement_definitions.clear();
                 obj.static_definitions.clear();
                 obj.keywords.clear();
             }
+            // CR 707.9a: Retain the source's printed trigger on the copy.
+            // After `CopyValues` overwrote `obj.trigger_definitions` with the
+            // copied values, push the source's printed trigger back so the
+            // copy retains "this ability". Idempotent — duplicate retain calls
+            // (same trigger structurally) collapse into one.
+            ContinuousModification::RetainPrintedTriggerFromSource { .. } => {
+                if let Some(trigger) = retained_printed_trigger.clone() {
+                    if !obj.trigger_definitions.iter_all().any(|t| t == &trigger) {
+                        obj.trigger_definitions.push(trigger);
+                    }
+                }
+            }
         }
     }
+}
+
+/// CR 305.6: Inject the intrinsic basic-land mana ability for `subtype` when it
+/// is added additively to an object. No-op unless the object is a land and the
+/// subtype names a basic land type. Idempotent: if the object already has an
+/// activated mana ability producing only the matching color via a plain `{T}`
+/// cost (whether printed or previously injected by another layer pass), the
+/// injection is skipped so double-Urborg or Urborg + basic Swamp does not
+/// duplicate the ability.
+fn inject_basic_mana_ability_for_subtype(
+    obj: &mut crate::game::game_object::GameObject,
+    subtype: &str,
+) {
+    if !obj.card_types.core_types.contains(&CoreType::Land) {
+        return;
+    }
+    let Ok(land_type) = subtype.parse::<BasicLandType>() else {
+        return;
+    };
+    let color = land_type.mana_color();
+
+    // Idempotent: skip if an existing `{T}: Add {color}` ability is already
+    // present (base printed ability or a prior injection).
+    let already_present = obj.abilities.iter().any(|ability| {
+        if ability.kind != AbilityKind::Activated {
+            return false;
+        }
+        if !matches!(ability.cost, Some(AbilityCost::Tap)) {
+            return false;
+        }
+        matches!(
+            &*ability.effect,
+            Effect::Mana {
+                produced: ManaProduction::Fixed { colors, .. },
+                ..
+            } if colors.as_slice() == [color]
+        )
+    });
+    if already_present {
+        return;
+    }
+
+    Arc::make_mut(&mut obj.abilities).push(
+        AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::Fixed {
+                    colors: vec![color],
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: Vec::new(),
+                grants: Vec::new(),
+                expiry: None,
+            },
+        )
+        .cost(AbilityCost::Tap),
+    );
 }
 
 pub(crate) fn compute_current_copiable_values(
@@ -1294,6 +1467,29 @@ pub(crate) fn compute_current_copiable_values(
             ContinuousModification::SetName { name } => {
                 values.name = name.clone();
             }
+            // CR 707.9a: A copy effect that grants/retains an ability ("…
+            // and it has this ability") makes that ability part of the
+            // copiable values of the copy. A subsequent copy of this object
+            // must see the retained trigger as one of its copiable triggers.
+            // Read the printed trigger from the *effect's source object*
+            // (the original printer of the retain modification — Irma) by
+            // index, mirroring the write-side application in
+            // `apply_continuous_effect`. Idempotent under stacking: a
+            // structurally-equal trigger already present is not duplicated.
+            ContinuousModification::RetainPrintedTriggerFromSource {
+                source_trigger_index,
+            } => {
+                if let Some(trigger) = state.objects.get(&effect.source_id).and_then(|src| {
+                    src.base_trigger_definitions
+                        .get(*source_trigger_index)
+                        .cloned()
+                }) {
+                    let triggers = Arc::make_mut(&mut values.trigger_definitions);
+                    if !triggers.iter().any(|t| t == &trigger) {
+                        triggers.push(trigger);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1320,6 +1516,7 @@ mod tests {
     use crate::types::statics::StaticMode;
     use crate::types::triggers::TriggerMode;
     use crate::types::zones::Zone;
+    use std::sync::Arc;
 
     fn setup() -> GameState {
         GameState::new_two_player(42)
@@ -1351,6 +1548,79 @@ mod tests {
         id
     }
 
+    /// CR 613.4c + CR 704.5f: A runaway `+X/+X` chain (e.g. from a `ObjectCount`
+    /// quantity resolving against an extremely large collection) must clamp at
+    /// `i32::MAX` rather than wrapping to negative. If it wrapped, the creature's
+    /// toughness would become `i32::MIN + delta`, state-based actions would see
+    /// toughness ≤ 0, and the creature would die — a silent rules violation.
+    #[test]
+    fn saturating_pt_prevents_overflow_death_cascade() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Big Guy", 5, 5, PlayerId(0));
+
+        // Stack two huge boosts whose naive sum overflows `i32`.
+        let boost_a = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![
+                ContinuousModification::AddPower {
+                    value: i32::MAX - 2,
+                },
+                ContinuousModification::AddToughness {
+                    value: i32::MAX - 2,
+                },
+            ]);
+        let boost_b = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![
+                ContinuousModification::AddPower { value: 100 },
+                ContinuousModification::AddToughness { value: 100 },
+            ]);
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            Arc::make_mut(&mut obj.base_static_definitions).push(boost_a.clone());
+            obj.static_definitions.push(boost_a);
+            Arc::make_mut(&mut obj.base_static_definitions).push(boost_b.clone());
+            obj.static_definitions.push(boost_b);
+        }
+
+        evaluate_layers(&mut state);
+
+        let obj = &state.objects[&id];
+        assert_eq!(
+            obj.power,
+            Some(i32::MAX),
+            "power must saturate at i32::MAX rather than wrapping"
+        );
+        assert_eq!(
+            obj.toughness,
+            Some(i32::MAX),
+            "toughness must saturate at i32::MAX rather than wrapping"
+        );
+        assert!(
+            obj.toughness.unwrap() > 0,
+            "toughness must stay positive so CR 704.5f SBAs don't kill the creature",
+        );
+    }
+
+    /// CR 613.4c: A +1/+1 counter stack that overflows `u32 → i32` conversion
+    /// must saturate; the resulting P/T must remain positive.
+    #[test]
+    fn saturating_counter_conversion_keeps_creature_alive() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Counter Pile", 1, 1, PlayerId(0));
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.counters.insert(CounterType::Plus1Plus1, u32::MAX);
+        }
+
+        evaluate_layers(&mut state);
+
+        let obj = &state.objects[&id];
+        assert_eq!(obj.power, Some(i32::MAX));
+        assert_eq!(obj.toughness, Some(i32::MAX));
+        assert!(obj.toughness.unwrap() > 0);
+    }
+
     #[test]
     fn assign_damage_as_though_unblocked_flag_resets_with_layers() {
         let mut state = setup();
@@ -1360,7 +1630,7 @@ mod tests {
             .modifications(vec![ContinuousModification::AssignDamageAsThoughUnblocked]);
         {
             let obj = state.objects.get_mut(&id).unwrap();
-            obj.base_static_definitions.push(static_def.clone());
+            Arc::make_mut(&mut obj.base_static_definitions).push(static_def.clone());
             obj.static_definitions.push(static_def);
         }
 
@@ -1369,7 +1639,7 @@ mod tests {
 
         {
             let obj = state.objects.get_mut(&id).unwrap();
-            obj.base_static_definitions.clear();
+            Arc::make_mut(&mut obj.base_static_definitions).clear();
             obj.static_definitions.clear();
         }
 
@@ -1664,7 +1934,7 @@ mod tests {
             obj.card_types
                 .core_types
                 .push(crate::types::card_type::CoreType::Enchantment);
-            obj.attached_to = Some(bear_a);
+            obj.attached_to = Some(bear_a.into());
             obj.timestamp = ts;
 
             let enchanted_creature = TargetFilter::Typed(
@@ -2321,7 +2591,7 @@ mod tests {
             .card_types
             .core_types
             .push(CoreType::Creature);
-        state.players[0].graveyard.push(gy_creature);
+        state.players[0].graveyard.push_back(gy_creature);
 
         state.layers_dirty = true;
         evaluate_layers(&mut state);
@@ -2348,7 +2618,7 @@ mod tests {
             .card_types
             .core_types
             .push(CoreType::Instant);
-        state.players[1].graveyard.push(gy_instant);
+        state.players[1].graveyard.push_back(gy_instant);
 
         state.layers_dirty = true;
         evaluate_layers(&mut state);
@@ -2369,7 +2639,7 @@ mod tests {
             obj.card_types.core_types.push(CoreType::Artifact);
             obj.card_types.core_types.push(CoreType::Creature);
         }
-        state.players[0].graveyard.push(gy_artcreature);
+        state.players[0].graveyard.push_back(gy_artcreature);
 
         state.layers_dirty = true;
         evaluate_layers(&mut state);
@@ -2891,7 +3161,7 @@ mod tests {
         }
 
         // Attach aura to land
-        state.objects.get_mut(&aura_id).unwrap().attached_to = Some(land_id);
+        state.objects.get_mut(&aura_id).unwrap().attached_to = Some(land_id.into());
 
         evaluate_layers(&mut state);
 
@@ -2938,7 +3208,7 @@ mod tests {
         let aura = make_creature(&mut state, "Aura", 0, 0, PlayerId(0));
         let creature = make_creature(&mut state, "Manifested", 2, 2, PlayerId(0));
         state.objects.get_mut(&creature).unwrap().face_down = true;
-        state.objects.get_mut(&aura).unwrap().attached_to = Some(creature);
+        state.objects.get_mut(&aura).unwrap().attached_to = Some(creature.into());
         assert!(evaluate_condition_for_test(
             &state,
             &StaticCondition::EnchantedIsFaceDown,
@@ -2952,7 +3222,7 @@ mod tests {
         let mut state = setup();
         let aura = make_creature(&mut state, "Aura", 0, 0, PlayerId(0));
         let creature = make_creature(&mut state, "Face Up", 2, 2, PlayerId(0));
-        state.objects.get_mut(&aura).unwrap().attached_to = Some(creature);
+        state.objects.get_mut(&aura).unwrap().attached_to = Some(creature.into());
         assert!(!evaluate_condition_for_test(
             &state,
             &StaticCondition::EnchantedIsFaceDown,
@@ -3100,7 +3370,7 @@ mod tests {
         let ts = state.next_timestamp();
         state
             .transient_continuous_effects
-            .push(TransientContinuousEffect {
+            .push_back(TransientContinuousEffect {
                 id: 1,
                 source_id: id,
                 controller: PlayerId(0),
@@ -3130,7 +3400,7 @@ mod tests {
         let ts = state.next_timestamp();
         state
             .transient_continuous_effects
-            .push(TransientContinuousEffect {
+            .push_back(TransientContinuousEffect {
                 id: 1,
                 source_id: id,
                 controller: PlayerId(0),
@@ -3181,14 +3451,14 @@ mod tests {
             let obj = state.objects.get_mut(&land_id).unwrap();
             obj.card_types.subtypes.push("Desert".to_string());
             obj.base_card_types = obj.card_types.clone();
-            obj.base_abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.base_abilities).push(AbilityDefinition::new(
                 AbilityKind::Activated,
                 Effect::GainLife {
                     amount: QuantityExpr::Fixed { value: 1 },
                     player: GainLifePlayer::Controller,
                 },
             ));
-            obj.abilities = obj.base_abilities.clone();
+            obj.abilities = Arc::new((*obj.base_abilities).clone());
         }
 
         // Source: enchantment with SetBasicLandType static
@@ -3445,7 +3715,7 @@ mod tests {
             src.card_types.core_types.push(CoreType::Creature);
             src.base_card_types = src.card_types.clone();
             src.static_definitions.push(grant_static.clone());
-            src.base_static_definitions = vec![grant_static];
+            src.base_static_definitions = Arc::new(vec![grant_static]);
         }
 
         // Put an instant in the same player's hand.
@@ -3466,7 +3736,7 @@ mod tests {
         // zone routing — but `zone_object_ids(Hand)` reads `state.players[n].hand`.
         // Add bolt to the player's hand vector explicitly.
         if let Some(player) = state.players.iter_mut().find(|p| p.id == PlayerId(0)) {
-            player.hand.push(bolt);
+            player.hand.push_back(bolt);
         }
 
         // Pre-condition: hand card has no keywords.
@@ -3499,7 +3769,7 @@ mod tests {
             obj.base_card_types = obj.card_types.clone();
         }
         if let Some(player) = state.players.iter_mut().find(|p| p.id == PlayerId(1)) {
-            player.hand.push(opp_bolt);
+            player.hand.push_back(opp_bolt);
         }
 
         evaluate_layers(&mut state);
@@ -3692,7 +3962,7 @@ mod tests {
                     .active_zones(vec![Zone::Graveyard]),
             );
         }
-        state.players[0].graveyard.push(anger);
+        state.players[0].graveyard.push_back(anger);
 
         // Mountain on player 0's battlefield.
         let mountain = create_object(
@@ -3763,7 +4033,7 @@ mod tests {
                     .active_zones(vec![Zone::Graveyard]),
             );
         }
-        state.players[0].graveyard.push(anger);
+        state.players[0].graveyard.push_back(anger);
 
         let bear = make_creature(&mut state, "Bear", 2, 2, PlayerId(0));
 
@@ -3848,5 +4118,484 @@ mod tests {
             !bear_obj.has_keyword(&Keyword::Haste),
             "Anger on battlefield (outside its active_zones) must not grant Haste"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // CR 305.6: Basic-land subtype additions inject their mana ability.
+    // ---------------------------------------------------------------
+
+    fn make_land_with_mana(
+        state: &mut GameState,
+        name: &str,
+        controller: PlayerId,
+        color: ManaColor,
+    ) -> ObjectId {
+        let land = create_object(
+            state,
+            CardId(9000),
+            controller,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&land).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        let ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::Fixed {
+                    colors: vec![color],
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: Vec::new(),
+                grants: Vec::new(),
+                expiry: None,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        obj.base_abilities = Arc::new(vec![ability.clone()]);
+        obj.abilities = Arc::new(vec![ability]);
+        land
+    }
+
+    fn add_global_land_subtype_static(state: &mut GameState, host: ObjectId, subtype: &str) {
+        let obj = state.objects.get_mut(&host).unwrap();
+        obj.static_definitions.push(
+            StaticDefinition::continuous()
+                .affected(TargetFilter::Typed(TypedFilter::land()))
+                .modifications(vec![ContinuousModification::AddSubtype {
+                    subtype: subtype.to_string(),
+                }]),
+        );
+    }
+
+    fn count_mana_abilities(obj: &crate::game::game_object::GameObject, color: ManaColor) -> usize {
+        obj.abilities
+            .iter()
+            .filter(|ability| {
+                matches!(ability.kind, AbilityKind::Activated)
+                    && matches!(ability.cost, Some(AbilityCost::Tap))
+                    && matches!(
+                        &*ability.effect,
+                        Effect::Mana {
+                            produced: ManaProduction::Fixed { colors, .. },
+                            ..
+                        } if colors.as_slice() == [color]
+                    )
+            })
+            .count()
+    }
+
+    #[test]
+    fn urborg_adds_swamp_mana_ability_to_every_land() {
+        // Urborg, Tomb of Yawgmoth makes every land a Swamp IN ADDITION to
+        // its other types. A Mountain should retain `{T}: Add {R}` AND gain
+        // `{T}: Add {B}` (CR 305.6).
+        let mut state = setup();
+        let mountain = make_land_with_mana(&mut state, "Mountain", PlayerId(0), ManaColor::Red);
+        let urborg = make_land_with_mana(&mut state, "Urborg", PlayerId(0), ManaColor::Black);
+        add_global_land_subtype_static(&mut state, urborg, "Swamp");
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        let mountain_obj = state.objects.get(&mountain).unwrap();
+        assert_eq!(
+            count_mana_abilities(mountain_obj, ManaColor::Red),
+            1,
+            "Mountain must retain its {{T}}: Add {{R}} ability"
+        );
+        assert_eq!(
+            count_mana_abilities(mountain_obj, ManaColor::Black),
+            1,
+            "Mountain must gain {{T}}: Add {{B}} from the injected Swamp subtype"
+        );
+    }
+
+    #[test]
+    fn yavimaya_adds_forest_mana_ability_to_plains() {
+        let mut state = setup();
+        let plains = make_land_with_mana(&mut state, "Plains", PlayerId(0), ManaColor::White);
+        let yavimaya = make_land_with_mana(&mut state, "Yavimaya", PlayerId(0), ManaColor::Green);
+        add_global_land_subtype_static(&mut state, yavimaya, "Forest");
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        let plains_obj = state.objects.get(&plains).unwrap();
+        assert_eq!(count_mana_abilities(plains_obj, ManaColor::White), 1);
+        assert_eq!(count_mana_abilities(plains_obj, ManaColor::Green), 1);
+    }
+
+    #[test]
+    fn double_urborg_only_injects_one_swamp_mana_ability() {
+        // Idempotency: two copies of Urborg in play must not stack the Swamp
+        // mana ability twice on every land.
+        let mut state = setup();
+        let mountain = make_land_with_mana(&mut state, "Mountain", PlayerId(0), ManaColor::Red);
+        let urborg1 = make_land_with_mana(&mut state, "Urborg", PlayerId(0), ManaColor::Black);
+        add_global_land_subtype_static(&mut state, urborg1, "Swamp");
+        let urborg2 = make_land_with_mana(&mut state, "Urborg", PlayerId(0), ManaColor::Black);
+        add_global_land_subtype_static(&mut state, urborg2, "Swamp");
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        let mountain_obj = state.objects.get(&mountain).unwrap();
+        assert_eq!(
+            count_mana_abilities(mountain_obj, ManaColor::Black),
+            1,
+            "Two Urborgs must inject exactly one Swamp mana ability"
+        );
+    }
+
+    #[test]
+    fn basic_swamp_receives_no_duplicate_swamp_ability_from_urborg() {
+        // An actual basic Swamp already has `{T}: Add {B}`. Urborg adding
+        // Swamp to it must not append a second `{T}: Add {B}`.
+        let mut state = setup();
+        let basic_swamp = make_land_with_mana(&mut state, "Swamp", PlayerId(0), ManaColor::Black);
+        state
+            .objects
+            .get_mut(&basic_swamp)
+            .unwrap()
+            .card_types
+            .subtypes
+            .push("Swamp".to_string());
+        // Ensure base_card_types mirrors so layers reset doesn't lose it.
+        state
+            .objects
+            .get_mut(&basic_swamp)
+            .unwrap()
+            .base_card_types
+            .subtypes
+            .push("Swamp".to_string());
+        let urborg = make_land_with_mana(&mut state, "Urborg", PlayerId(0), ManaColor::Black);
+        add_global_land_subtype_static(&mut state, urborg, "Swamp");
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        let swamp_obj = state.objects.get(&basic_swamp).unwrap();
+        assert_eq!(
+            count_mana_abilities(swamp_obj, ManaColor::Black),
+            1,
+            "Basic Swamp must keep a single {{T}}: Add {{B}} ability"
+        );
+    }
+
+    #[test]
+    fn urborg_does_not_inject_mana_onto_non_land() {
+        // Defensive: the injection must be guarded by CoreType::Land. An
+        // Urborg-like static whose filter accidentally matched a creature
+        // should not grant mana abilities.
+        let mut state = setup();
+        let bear = make_creature(&mut state, "Bear", 2, 2, PlayerId(0));
+        let host = make_land_with_mana(&mut state, "GhostHost", PlayerId(0), ManaColor::Black);
+        // Use a self-targeted static so we can exercise the AddSubtype path
+        // on a non-land directly.
+        let bear_obj = state.objects.get_mut(&bear).unwrap();
+        bear_obj.static_definitions.push(
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .modifications(vec![ContinuousModification::AddSubtype {
+                    subtype: "Swamp".to_string(),
+                }]),
+        );
+        // Silence host warning.
+        let _ = host;
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        let bear_obj = state.objects.get(&bear).unwrap();
+        assert_eq!(
+            count_mana_abilities(bear_obj, ManaColor::Black),
+            0,
+            "Non-land objects must not receive injected mana abilities"
+        );
+    }
+
+    /// CR 613.1f: Granting the same ability twice in a single layer pass must
+    /// be idempotent. Ragost, Deft Gastronaut parses two identical
+    /// `GrantAbility` modifications for its "Artifacts you control ... have
+    /// '{2}, {T}, Sacrifice: You gain 3 life'" clause; the layer system must
+    /// deduplicate so each artifact ends up with exactly one granted ability.
+    /// The same dedup must also hold across two distinct Ragosts granting the
+    /// same ability to the same artifact.
+    fn ragost_food_ability() -> AbilityDefinition {
+        AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 3 },
+                player: GainLifePlayer::Controller,
+            },
+        )
+        .cost(AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::Sacrifice {
+                    target: TargetFilter::SelfRef,
+                    count: 1,
+                },
+            ],
+        })
+    }
+
+    fn make_artifact(state: &mut GameState, name: &str, player: PlayerId) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(0),
+            player,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let ts = state.next_timestamp();
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.base_card_types = obj.card_types.clone();
+        obj.timestamp = ts;
+        id
+    }
+
+    fn count_food_abilities(obj: &crate::game::game_object::GameObject) -> usize {
+        let target = ragost_food_ability();
+        obj.abilities.iter().filter(|a| **a == target).count()
+    }
+
+    fn ragost_static(ability: AbilityDefinition) -> StaticDefinition {
+        StaticDefinition::continuous()
+            .affected(TargetFilter::Typed(
+                TypedFilter::new(TypeFilter::Artifact).controller(ControllerRef::You),
+            ))
+            .modifications(vec![
+                ContinuousModification::GrantAbility {
+                    definition: Box::new(ability.clone()),
+                },
+                ContinuousModification::AddSubtype {
+                    subtype: "Food".to_string(),
+                },
+                // Parser emits the GrantAbility twice (see Ragost card data):
+                // the "have ..." clause round-trips through two handlers.
+                ContinuousModification::GrantAbility {
+                    definition: Box::new(ability),
+                },
+            ])
+    }
+
+    #[test]
+    fn ragost_duplicate_grant_ability_dedups_to_single_ability() {
+        let mut state = setup();
+        let ragost = make_creature(&mut state, "Ragost", 2, 2, PlayerId(0));
+        let artifact1 = make_artifact(&mut state, "Artifact 1", PlayerId(0));
+        let artifact2 = make_artifact(&mut state, "Artifact 2", PlayerId(0));
+        let artifact3 = make_artifact(&mut state, "Artifact 3", PlayerId(0));
+
+        let static_def = ragost_static(ragost_food_ability());
+        state
+            .objects
+            .get_mut(&ragost)
+            .unwrap()
+            .static_definitions
+            .push(static_def);
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        for id in [artifact1, artifact2, artifact3] {
+            let obj = state.objects.get(&id).unwrap();
+            assert_eq!(
+                count_food_abilities(obj),
+                1,
+                "each artifact must have exactly one granted Food ability"
+            );
+        }
+
+        // Idempotency across layer passes: running layers twice must not stack.
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+        for id in [artifact1, artifact2, artifact3] {
+            assert_eq!(count_food_abilities(&state.objects[&id]), 1);
+        }
+    }
+
+    #[test]
+    fn two_ragosts_grant_food_ability_only_once() {
+        let mut state = setup();
+        let ragost_a = make_creature(&mut state, "Ragost A", 2, 2, PlayerId(0));
+        let ragost_b = make_creature(&mut state, "Ragost B", 2, 2, PlayerId(0));
+        let artifact = make_artifact(&mut state, "Artifact", PlayerId(0));
+
+        for host in [ragost_a, ragost_b] {
+            let static_def = ragost_static(ragost_food_ability());
+            state
+                .objects
+                .get_mut(&host)
+                .unwrap()
+                .static_definitions
+                .push(static_def);
+        }
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        assert_eq!(
+            count_food_abilities(&state.objects[&artifact]),
+            1,
+            "two Ragosts must not stack the granted Food ability",
+        );
+    }
+
+    // -- CR 302.6 control-change sickness diff --
+    //
+    // Helper: add a Layer 2 ChangeController effect targeting `target_id`,
+    // controlled by `new_controller` (i.e., they become the effect's controller
+    // and per CR 613.1b the new effective controller of `target_id`).
+    fn add_change_controller_effect(
+        state: &mut GameState,
+        source_id: ObjectId,
+        target_id: ObjectId,
+        new_controller: PlayerId,
+        duration: Duration,
+    ) -> u64 {
+        state.add_transient_continuous_effect(
+            source_id,
+            new_controller,
+            duration,
+            TargetFilter::SpecificObject { id: target_id },
+            vec![ContinuousModification::ChangeController],
+            None,
+        )
+    }
+
+    /// CR 302.6 + CR 613.1b: Act-of-Treason-style mid-game control change.
+    /// A creature whose effective controller flips from P0 to P1 must become
+    /// summoning-sick for P1 (the new controller has not had it
+    /// "continuously since their most recent turn began").
+    #[test]
+    fn control_change_sicks_new_controller() {
+        let mut state = setup();
+        let bear = make_creature(&mut state, "Bear", 2, 2, PlayerId(0));
+        // Pre-existing creature — clear sickness as if controller had a prior turn.
+        state.objects.get_mut(&bear).unwrap().summoning_sick = false;
+        evaluate_layers(&mut state);
+        assert!(
+            !state.objects[&bear].summoning_sick,
+            "stable creature, no control change → not sick"
+        );
+
+        // Apply Act-of-Treason-style control change: P1 takes control of bear.
+        let _eid = add_change_controller_effect(
+            &mut state,
+            bear,
+            bear,
+            PlayerId(1),
+            Duration::UntilEndOfTurn,
+        );
+        evaluate_layers(&mut state);
+
+        assert_eq!(
+            state.objects[&bear].controller,
+            PlayerId(1),
+            "Layer 2 should have applied the ChangeController effect"
+        );
+        assert!(
+            state.objects[&bear].summoning_sick,
+            "control change P0→P1 must re-apply summoning sickness (CR 302.6)"
+        );
+    }
+
+    /// CR 302.6: When a control-changing effect expires, the permanent
+    /// reverts to its owner per CR 613.1b's owner-reset. That reversion is
+    /// itself a control transition and must re-sick the original owner —
+    /// continuity broke during the opponent's tenure.
+    #[test]
+    fn control_change_expiry_resicks_original_controller() {
+        let mut state = setup();
+        let bear = make_creature(&mut state, "Bear", 2, 2, PlayerId(0));
+        state.objects.get_mut(&bear).unwrap().summoning_sick = false;
+
+        let eid = add_change_controller_effect(
+            &mut state,
+            bear,
+            bear,
+            PlayerId(1),
+            Duration::UntilEndOfTurn,
+        );
+        evaluate_layers(&mut state);
+        // Simulate the original owner clearing sickness via their next turn.
+        state.objects.get_mut(&bear).unwrap().summoning_sick = false;
+        // Re-eval with effect still present: stable, no flip.
+        evaluate_layers(&mut state);
+        assert!(
+            !state.objects[&bear].summoning_sick,
+            "stable Control Magic must not re-sick on every eval"
+        );
+
+        // Effect expires — drop it from the transient list.
+        state.transient_continuous_effects.retain(|e| e.id != eid);
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        assert_eq!(
+            state.objects[&bear].controller,
+            PlayerId(0),
+            "owner-reset (CR 613.1b) reverts controller to owner on expiry"
+        );
+        assert!(
+            state.objects[&bear].summoning_sick,
+            "expiry-revert P1→P0 is a control transition → sick again (CR 302.6)"
+        );
+    }
+
+    /// CR 302.6: Exchange-control sicks BOTH permanents — each side sees a
+    /// new effective controller, so continuity breaks symmetrically.
+    #[test]
+    fn exchange_control_sicks_both_permanents() {
+        let mut state = setup();
+        let bear_a = make_creature(&mut state, "Bear A", 2, 2, PlayerId(0));
+        let bear_b = make_creature(&mut state, "Bear B", 2, 2, PlayerId(1));
+        for id in [bear_a, bear_b] {
+            state.objects.get_mut(&id).unwrap().summoning_sick = false;
+        }
+
+        // Swap: A becomes controlled by P1, B becomes controlled by P0.
+        add_change_controller_effect(&mut state, bear_a, bear_a, PlayerId(1), Duration::Permanent);
+        add_change_controller_effect(&mut state, bear_b, bear_b, PlayerId(0), Duration::Permanent);
+        evaluate_layers(&mut state);
+
+        assert_eq!(state.objects[&bear_a].controller, PlayerId(1));
+        assert_eq!(state.objects[&bear_b].controller, PlayerId(0));
+        assert!(
+            state.objects[&bear_a].summoning_sick,
+            "exchanged permanent A: new controller, sick (CR 302.6)"
+        );
+        assert!(
+            state.objects[&bear_b].summoning_sick,
+            "exchanged permanent B: new controller, sick (CR 302.6)"
+        );
+    }
+
+    /// Defensive: a permanent that exits the battlefield mid-pass (e.g., SBA
+    /// destroys it during a chained effect) still appears in the pre-pass
+    /// snapshot. The post-pass `get_mut` must None-guard gracefully.
+    #[test]
+    fn permanent_removed_during_eval_does_not_panic() {
+        let mut state = setup();
+        let bear = make_creature(&mut state, "Bear", 2, 2, PlayerId(0));
+        state.objects.get_mut(&bear).unwrap().summoning_sick = false;
+
+        // Snapshot will capture `bear` once eval starts; remove it before the
+        // diff runs by simulating a mid-pass drop. The cleanest reproduction
+        // here is to evaluate normally (stable), then manually drop the
+        // object and evaluate again — the snapshot at the second eval will
+        // include `bear`, but mid-pass we delete it. We approximate by
+        // dropping it from `state.objects` between snapshot and diff via a
+        // direct call boundary; here we just verify the post-eval-get-after-
+        // remove doesn't crash on a separate eval cycle.
+        evaluate_layers(&mut state);
+        state.objects.remove(&bear);
+        state.layers_dirty = true;
+        // No panic; the diff loop's `get_mut(...).if let Some` swallows it.
+        evaluate_layers(&mut state);
     }
 }

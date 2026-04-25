@@ -715,6 +715,7 @@ mod tests {
     use crate::types::player::PlayerId;
     use crate::types::triggers::TriggerMode;
     use crate::types::zones::Zone;
+    use std::sync::Arc;
 
     fn setup() -> GameState {
         let mut state = GameState::new_two_player(42);
@@ -1359,6 +1360,7 @@ mod tests {
                         crate::types::ability::AbilityKind::Spell,
                         Effect::Draw {
                             count: QuantityExpr::Fixed { value: 1 },
+                            target: crate::types::ability::TargetFilter::Controller,
                         },
                     ));
                 trigger.valid_source = Some(crate::types::ability::TargetFilter::Typed(
@@ -1411,6 +1413,7 @@ mod tests {
                         crate::types::ability::AbilityKind::Spell,
                         Effect::Draw {
                             count: QuantityExpr::Fixed { value: 1 },
+                            target: crate::types::ability::TargetFilter::Controller,
                         },
                     ));
                 trigger.valid_source = Some(crate::types::ability::TargetFilter::Typed(
@@ -1497,7 +1500,7 @@ mod tests {
                 ContinuousModification::AddToughness { value: 2 },
             ]);
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
 
         setup_combat(
             &mut state,

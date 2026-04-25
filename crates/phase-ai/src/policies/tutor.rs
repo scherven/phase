@@ -353,6 +353,8 @@ fn is_push_object(object: &GameObject) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -378,7 +380,7 @@ mod tests {
         };
         state.deck_pools.push(PlayerDeckPool {
             player: PlayerId(0),
-            current_main: vec![engine::game::deck_loading::DeckEntry {
+            current_main: std::sync::Arc::new(vec![engine::game::deck_loading::DeckEntry {
                 card: CardFace {
                     name: "Deck Titan".to_string(),
                     mana_cost: ManaCost::Cost {
@@ -395,7 +397,7 @@ mod tests {
                     ..Default::default()
                 },
                 count: 1,
-            }],
+            }]),
             ..Default::default()
         });
         for index in 0..4 {
@@ -422,20 +424,18 @@ mod tests {
             "Tutor".to_string(),
             Zone::Hand,
         );
-        state
-            .objects
-            .get_mut(&tutor)
-            .unwrap()
-            .abilities
-            .push(AbilityDefinition::new(
+        Arc::make_mut(&mut state.objects.get_mut(&tutor).unwrap().abilities).push(
+            AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::SearchLibrary {
                     filter: TargetFilter::Any,
                     count: QuantityExpr::Fixed { value: 1 },
                     reveal: false,
                     target_player: None,
+                    up_to: false,
                 },
-            ));
+            ),
+        );
 
         let candidate = CandidateAction {
             action: GameAction::CastSpell {
@@ -551,18 +551,15 @@ mod tests {
             object.power = Some(6);
             object.toughness = Some(6);
         }
-        state
-            .objects
-            .get_mut(&removal)
-            .unwrap()
-            .abilities
-            .push(AbilityDefinition::new(
+        Arc::make_mut(&mut state.objects.get_mut(&removal).unwrap().abilities).push(
+            AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Destroy {
                     target: TargetFilter::Any,
                     cant_regenerate: false,
                 },
-            ));
+            ),
+        );
 
         let duplicate_score = score_search_choice_selection(&state, PlayerId(0), &[first, second]);
         let mixed_score = score_search_choice_selection(&state, PlayerId(0), &[first, removal]);

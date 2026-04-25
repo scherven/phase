@@ -364,6 +364,7 @@ fn filter_inner_for_object(
             .objects
             .get(&source_id)
             .and_then(|src| src.attached_to)
+            .and_then(|t| t.as_object())
             .is_some_and(|attached| attached == object_id),
         TargetFilter::LastCreated => state.last_created_token_ids.contains(&object_id),
         // CR 603.7: Match objects in a tracked set from the originating effect.
@@ -409,8 +410,11 @@ fn filter_inner_for_object(
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::DefendingPlayer => false,
-        // ParentTarget/ParentTargetController resolve at resolution time, not via object matching.
-        TargetFilter::ParentTarget | TargetFilter::ParentTargetController => false,
+        // ParentTarget/ParentTargetController/PostReplacementSourceController resolve
+        // at resolution time, not via object matching.
+        TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetController
+        | TargetFilter::PostReplacementSourceController => false,
         // "card with the chosen name" — match against source's ChosenAttribute::CardName.
         TargetFilter::HasChosenName => {
             let chosen_name = state.objects.get(&source_id).and_then(|obj| {
@@ -566,13 +570,20 @@ fn zone_change_filter_inner(
         }
         TargetFilter::Named { name } => record.name == *name,
 
-        // Relational / stack / battlefield-live selectors. A zone-change
-        // subject has already left its zone; these selectors reference either
-        // live state (stack entries, current attachments) or trigger-context
-        // players that are resolved by the caller before this function runs.
-        // When reached here they do not match a zone-change record.
-        TargetFilter::AttachedTo
-        | TargetFilter::LastCreated
+        // CR 603.10a + CR 603.6e + CR 702.6: `AttachedTo` against a zone-change
+        // record resolves via the record's `attachments` snapshot — the list of
+        // objects attached to the leaving permanent at the instant before the
+        // move. This covers "whenever equipped creature dies" (Skullclamp) and
+        // "whenever enchanted creature dies" (Aura look-back triggers): the
+        // trigger source is still on the battlefield, but SBA (CR 704.5n /
+        // CR 704.5m) has already cleared its live `attached_to` pointer by the
+        // time `process_triggers` runs. Matching against the snapshot is the
+        // authoritative last-known-information path.
+        TargetFilter::AttachedTo => record
+            .attachments
+            .iter()
+            .any(|att| att.object_id == source_id),
+        TargetFilter::LastCreated
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
@@ -582,6 +593,7 @@ fn zone_change_filter_inner(
         | TargetFilter::TriggeringSource
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetController
+        | TargetFilter::PostReplacementSourceController
         | TargetFilter::DefendingPlayer
         | TargetFilter::StackAbility
         | TargetFilter::StackSpell
@@ -728,6 +740,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::TriggeringSource
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetController
+        | TargetFilter::PostReplacementSourceController
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::Named { .. }
@@ -839,6 +852,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::TriggeringSource
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetController
+        | TargetFilter::PostReplacementSourceController
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::Named { .. }
@@ -943,6 +957,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::EquippedBy
         | FilterProp::HasAttachment { .. }
         | FilterProp::Another
+        | FilterProp::OtherThanTriggerObject
         | FilterProp::PowerLE { .. }
         | FilterProp::PowerGE { .. }
         | FilterProp::ToughnessLE { .. }
@@ -971,6 +986,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::Named { .. }
         | FilterProp::SameName
         | FilterProp::SameNameAsParentTarget
+        | FilterProp::NameMatchesAnyPermanent { .. }
         | FilterProp::Other { .. } => false,
     }
 }
@@ -979,7 +995,11 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
 struct SourceContext<'a> {
     id: ObjectId,
     controller: Option<PlayerId>,
-    attached_to: Option<ObjectId>,
+    /// CR 303.4 + CR 301.5: Resolved host of the source's attachment, if any.
+    /// Widened to `AttachTarget` so attachment-aware filter properties
+    /// (`EnchantedBy`, `EquippedBy`) can route on Object vs Player. The
+    /// `FilterContext` snapshot mirrors this shape — see `FilterContext`.
+    attached_to: Option<crate::game::game_object::AttachTarget>,
     chosen_creature_type: Option<&'a str>,
     chosen_attributes: &'a [crate::types::ability::ChosenAttribute],
     /// CR 107.3a + CR 601.2b: The resolving ability, when one is in scope.
@@ -1129,6 +1149,37 @@ fn matches_filter_prop(
         // (e.g., the seed was just exiled by the preceding effect).
         FilterProp::SameNameAsParentTarget => parent_target_name(state, source.ability)
             .is_some_and(|name| obj.name.eq_ignore_ascii_case(&name)),
+        // CR 201.2 + CR 201.2a: Matches if `obj.name` equals the name of any
+        // permanent on the battlefield (optionally narrowed by controller).
+        // Name comparison is case-insensitive per `FilterProp::Named` /
+        // `FilterProp::SameName` conventions.
+        FilterProp::NameMatchesAnyPermanent { controller } => {
+            let controller_pid = controller.as_ref().and_then(|c| match c {
+                ControllerRef::You => source.controller,
+                ControllerRef::Opponent => None,
+                ControllerRef::TargetPlayer => source.ability.and_then(|a| {
+                    a.targets.iter().find_map(|t| match t {
+                        TargetRef::Player(pid) => Some(*pid),
+                        TargetRef::Object(_) => None,
+                    })
+                }),
+            });
+            state.objects.values().any(|perm| {
+                if perm.zone != crate::types::zones::Zone::Battlefield {
+                    return false;
+                }
+                let controller_ok = match (controller, controller_pid) {
+                    (Some(ControllerRef::You), Some(pid)) => perm.controller == pid,
+                    (Some(ControllerRef::Opponent), _) => {
+                        source.controller.is_some() && Some(perm.controller) != source.controller
+                    }
+                    (Some(ControllerRef::TargetPlayer), Some(pid)) => perm.controller == pid,
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                controller_ok && perm.name.eq_ignore_ascii_case(&obj.name)
+            })
+        }
         FilterProp::InZone { zone } => obj.zone == *zone,
         FilterProp::Owned { controller } => match controller {
             ControllerRef::You => source.controller == Some(obj.owner),
@@ -1155,7 +1206,9 @@ fn matches_filter_prop(
         // use of "enchanted creature" on a non-Aura trigger source.
         FilterProp::EnchantedBy => {
             if source.attached_to.is_some() {
-                source.attached_to == Some(object_id)
+                // CR 303.4: An Aura attached to a player never matches an object
+                // filter ("enchanted creature"); only Object hosts qualify.
+                source.attached_to.and_then(|t| t.as_object()) == Some(object_id)
             } else {
                 obj.attachments.iter().any(|att_id| {
                     state
@@ -1170,7 +1223,10 @@ fn matches_filter_prop(
         // "has at least one Equipment attached" for non-Equipment trigger sources.
         FilterProp::EquippedBy => {
             if source.attached_to.is_some() {
-                source.attached_to == Some(object_id)
+                // CR 301.5: Equipment can attach only to creatures (objects), so
+                // a Player host is structurally impossible here — but routing
+                // through `as_object` is the typed way to express that.
+                source.attached_to.and_then(|t| t.as_object()) == Some(object_id)
             } else {
                 obj.attachments.iter().any(|att_id| {
                     state
@@ -1216,6 +1272,14 @@ fn matches_filter_prop(
             }
         }),
         FilterProp::Another => object_id != source.id,
+        // CR 603.4 + CR 109.3: `OtherThanTriggerObject` is a typed marker that
+        // signals "exclude the triggering object" for count semantics. The
+        // exclusion is applied at the `QuantityRef::ObjectCount` resolver level
+        // (see `game::quantity`) using the current trigger event, not here —
+        // this variant acts as a transparent pass-through for per-object
+        // filter evaluation so that the marker does not spuriously exclude
+        // every object from individual match checks.
+        FilterProp::OtherThanTriggerObject => true,
         FilterProp::HasColor { color } => obj.color.contains(color),
         // CR 208.1: Power comparison against a dynamic threshold. Dynamic thresholds
         // (`QuantityRef::Variable { "X" }`) resolve against the ability's `chosen_x`
@@ -1434,8 +1498,15 @@ fn zone_change_record_matches_property(
         // -------- Group 2: source/event relational --------
         // CR 109.1 "another": same-object check against the triggering source.
         FilterProp::Another => record.object_id != source.id,
+        // CR 603.4 + CR 109.3: Record-variant of OtherThanTriggerObject. See the
+        // comment in `matches_property_typed` — the exclusion is applied at the
+        // quantity-resolver layer; here the prop is a transparent pass-through.
+        FilterProp::OtherThanTriggerObject => true,
         // CR 400.1: "from [zone]" — the record's origin zone.
-        FilterProp::InZone { zone } => record.from_zone == *zone,
+        // CR 111.1 + CR 603.6a: Token creation produces `from_zone = None`,
+        // which cannot match any specific origin zone — correct for triggers
+        // like "from the graveyard" that must not fire on tokens.
+        FilterProp::InZone { zone } => record.from_zone == Some(*zone),
         // CR 109.5: Ownership relative to the source's controller.
         FilterProp::Owned { controller } => match controller {
             ControllerRef::You => source.controller == Some(record.owner),
@@ -1497,7 +1568,10 @@ fn zone_change_record_matches_property(
         | FilterProp::HasAttachment { .. }
         | FilterProp::FaceDown
         | FilterProp::CountersGE { .. }
-        | FilterProp::HasAnyCounter => false,
+        | FilterProp::HasAnyCounter
+        // CR 201.2: Name-matches-any-permanent is a live-battlefield predicate
+        // — a zone-change snapshot cannot represent it. Fail closed.
+        | FilterProp::NameMatchesAnyPermanent { .. } => false,
 
         // Disjunctive composite: recurse into inner props under the same record.
         FilterProp::AnyOf { props } => props
@@ -1997,7 +2071,7 @@ mod tests {
             .card_types
             .core_types
             .push(CoreType::Enchantment);
-        state.objects.get_mut(&aura).unwrap().attached_to = Some(creature_a);
+        state.objects.get_mut(&aura).unwrap().attached_to = Some(creature_a.into());
 
         let filter =
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]));
@@ -2752,6 +2826,7 @@ mod tests {
             count: QuantityExpr::Fixed { value: 2 },
             reveal: true,
             target_player: None,
+            up_to: false,
         };
         let json = serde_json::to_string(&search).unwrap();
         let restored: Effect = serde_json::from_str(&json).unwrap();
@@ -2801,7 +2876,7 @@ mod tests {
             let a = state.objects.get_mut(&aura_a).unwrap();
             a.card_types.core_types.push(CoreType::Enchantment);
             a.card_types.subtypes.push("Aura".into());
-            a.attached_to = Some(cre_a);
+            a.attached_to = Some(cre_a.into());
         }
         state
             .objects
@@ -2836,7 +2911,7 @@ mod tests {
             let a = state.objects.get_mut(&aura_b).unwrap();
             a.card_types.core_types.push(CoreType::Enchantment);
             a.card_types.subtypes.push("Aura".into());
-            a.attached_to = Some(cre_b);
+            a.attached_to = Some(cre_b.into());
         }
         state
             .objects
@@ -2930,7 +3005,7 @@ mod tests {
             let a = state.objects.get_mut(&aura).unwrap();
             a.card_types.core_types.push(CoreType::Enchantment);
             a.card_types.subtypes.push("Aura".into());
-            a.attached_to = Some(cre_enchanted);
+            a.attached_to = Some(cre_enchanted.into());
         }
         state
             .objects
@@ -3042,7 +3117,7 @@ mod tests {
             let a = state.objects.get_mut(&eq).unwrap();
             a.card_types.core_types.push(CoreType::Artifact);
             a.card_types.subtypes.push("Equipment".into());
-            a.attached_to = Some(cre);
+            a.attached_to = Some(cre.into());
         }
         state.objects.get_mut(&cre).unwrap().attachments.push(eq);
 
@@ -3092,7 +3167,7 @@ mod tests {
             let a = state.objects.get_mut(&aura_a).unwrap();
             a.card_types.core_types.push(CoreType::Enchantment);
             a.card_types.subtypes.push("Aura".into());
-            a.attached_to = Some(cre_a);
+            a.attached_to = Some(cre_a.into());
         }
         state
             .objects
@@ -3127,7 +3202,7 @@ mod tests {
             let a = state.objects.get_mut(&aura_b).unwrap();
             a.card_types.core_types.push(CoreType::Enchantment);
             a.card_types.subtypes.push("Aura".into());
-            a.attached_to = Some(cre_b);
+            a.attached_to = Some(cre_b.into());
         }
         state
             .objects
@@ -3202,7 +3277,7 @@ mod tests {
         let token_record = ZoneChangeRecord {
             core_types: vec![CoreType::Creature],
             is_token: true,
-            ..ZoneChangeRecord::test_minimal(ObjectId(42), Zone::Battlefield, Zone::Graveyard)
+            ..ZoneChangeRecord::test_minimal(ObjectId(42), Some(Zone::Battlefield), Zone::Graveyard)
         };
         assert!(zone_change_record_matches_property(
             &FilterProp::Token,
@@ -3214,7 +3289,7 @@ mod tests {
         let nontoken_record = ZoneChangeRecord {
             core_types: vec![CoreType::Creature],
             is_token: false,
-            ..ZoneChangeRecord::test_minimal(ObjectId(43), Zone::Battlefield, Zone::Graveyard)
+            ..ZoneChangeRecord::test_minimal(ObjectId(43), Some(Zone::Battlefield), Zone::Graveyard)
         };
         assert!(!zone_change_record_matches_property(
             &FilterProp::Token,

@@ -19,7 +19,6 @@ use crate::types::statics::StaticMode;
 /// - `GameObject::commander_tax` (CR 903.8 commander tax)
 /// - `Player::can_look_at_top_of_library`
 pub fn derive_display_state(state: &mut GameState) {
-    let turn = state.turn_number;
     let dirty = &state.public_state_dirty;
 
     let object_ids: Vec<_> = if dirty.all_objects_dirty {
@@ -50,7 +49,7 @@ pub fn derive_display_state(state: &mut GameState) {
             (
                 unimplemented_mechanics(obj),
                 // CR 302.6: Creature must have been under controller's control since turn began to attack or {T}.
-                has_summoning_sickness(obj, turn),
+                has_summoning_sickness(obj),
                 mana_idx,
             )
         };
@@ -200,6 +199,44 @@ pub fn derive_display_state(state: &mut GameState) {
     );
 }
 
+/// Commander damage received by `victim`, grouped by the commander's
+/// controller (the attacking opponent). Each inner entry is
+/// `(commander_object_id, damage)`. The frontend renders one badge per
+/// entry, so this preserves the "separate commanders from the same
+/// opponent" distinction (partners, backgrounds) while giving the HUD a
+/// ready-to-render per-opponent summary without client-side filtering.
+///
+/// CR 903.10a tracks commander damage per commander; this helper adds the
+/// display-oriented grouping-by-controller layer that clients need.
+pub fn commander_damage_received(
+    state: &GameState,
+    victim: crate::types::player::PlayerId,
+) -> std::collections::BTreeMap<
+    crate::types::player::PlayerId,
+    Vec<(crate::types::identifiers::ObjectId, u32)>,
+> {
+    let mut out: std::collections::BTreeMap<
+        crate::types::player::PlayerId,
+        Vec<(crate::types::identifiers::ObjectId, u32)>,
+    > = std::collections::BTreeMap::new();
+    for entry in &state.commander_damage {
+        if entry.player != victim {
+            continue;
+        }
+        // Look up the commander's controller (the attacking opponent).
+        // A commander that has left the battlefield still exists in
+        // state.objects — the Command zone sticks it back there — so the
+        // lookup is stable across zone changes.
+        let Some(commander_obj) = state.objects.get(&entry.commander) else {
+            continue;
+        };
+        out.entry(commander_obj.controller)
+            .or_default()
+            .push((entry.commander, entry.damage));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,14 +256,15 @@ mod tests {
             "Bear".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&id)
-            .unwrap()
-            .card_types
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types
             .core_types
             .push(crate::types::card_type::CoreType::Creature);
-        state.objects.get_mut(&id).unwrap().entered_battlefield_turn = Some(1);
+        obj.entered_battlefield_turn = Some(1);
+        // CR 302.6: State-flip model — ETB-time sickness is a persistent flag,
+        // set true on real ETB by `reset_for_battlefield_entry`. The test uses
+        // `create_object` (scaffolding path) so we set it explicitly here.
+        obj.summoning_sick = true;
 
         derive_display_state(&mut state);
 
@@ -252,6 +290,7 @@ mod tests {
             .core_types
             .push(crate::types::card_type::CoreType::Creature);
         state.objects.get_mut(&id).unwrap().entered_battlefield_turn = Some(1);
+        // `summoning_sick` defaults to false — "old creature, not sick".
 
         derive_display_state(&mut state);
 
@@ -324,5 +363,94 @@ mod tests {
 
         derive_display_state(&mut state);
         assert_eq!(state.objects[&id].commander_tax, None);
+    }
+
+    #[test]
+    fn commander_damage_received_groups_by_controller() {
+        use crate::types::game_state::CommanderDamageEntry;
+        use crate::types::identifiers::ObjectId;
+
+        let mut state = GameState::new_two_player(42);
+        // Two commanders controlled by different opponents, both hitting P0.
+        let cmdr_a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Atraxa".to_string(),
+            Zone::Battlefield,
+        );
+        let cmdr_b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(2),
+            "Breya".to_string(),
+            Zone::Battlefield,
+        );
+        state.commander_damage = vec![
+            CommanderDamageEntry {
+                player: PlayerId(0),
+                commander: cmdr_a,
+                damage: 12,
+            },
+            CommanderDamageEntry {
+                player: PlayerId(0),
+                commander: cmdr_b,
+                damage: 7,
+            },
+            // Unrelated entry: someone else's damage — must NOT appear in P0's map.
+            CommanderDamageEntry {
+                player: PlayerId(1),
+                commander: ObjectId(9999),
+                damage: 3,
+            },
+        ];
+
+        let grouped = commander_damage_received(&state, PlayerId(0));
+        assert_eq!(grouped.len(), 2, "expected two attacking opponents");
+        assert_eq!(grouped[&PlayerId(1)], vec![(cmdr_a, 12)]);
+        assert_eq!(grouped[&PlayerId(2)], vec![(cmdr_b, 7)]);
+    }
+
+    #[test]
+    fn commander_damage_received_collects_partners_under_same_controller() {
+        use crate::types::game_state::CommanderDamageEntry;
+
+        let mut state = GameState::new_two_player(42);
+        // Partner commanders: both controlled by P1, both hitting P0.
+        let partner_a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Ravos".to_string(),
+            Zone::Battlefield,
+        );
+        let partner_b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Tymna".to_string(),
+            Zone::Battlefield,
+        );
+        state.commander_damage = vec![
+            CommanderDamageEntry {
+                player: PlayerId(0),
+                commander: partner_a,
+                damage: 6,
+            },
+            CommanderDamageEntry {
+                player: PlayerId(0),
+                commander: partner_b,
+                damage: 4,
+            },
+        ];
+
+        let grouped = commander_damage_received(&state, PlayerId(0));
+        assert_eq!(grouped.len(), 1);
+        let entries = &grouped[&PlayerId(1)];
+        assert_eq!(
+            entries.len(),
+            2,
+            "partners kept as distinct entries under same controller"
+        );
     }
 }

@@ -24,11 +24,29 @@ fn is_self_ref(text: &str) -> bool {
     .is_some()
 }
 
-/// Check if text is or starts with an "it" pronoun: "it", "it ", "itself"
+/// Check if text is or starts with a bare object pronoun: "it"/"itself",
+/// "him"/"himself", "her"/"herself", "them"/"themselves". CR 608.2k: these
+/// anaphoric references resolve against the parse context's subject rather
+/// than an outer targeted object. Gendered pronouns ("him", "her") must route
+/// through the same resolver so ETB-self triggers like "put X counters on
+/// him" bind to `SelfRef` when the trigger subject is the source permanent.
 fn is_it_pronoun(text: &str) -> bool {
-    text == "it"
+    matches!(text, "it" | "him" | "her" | "them")
         || nom_on_lower(text, text, |i| {
-            value((), alt((tag("itself"), tag("it ")))).parse(i)
+            value(
+                (),
+                alt((
+                    tag("itself"),
+                    tag("himself"),
+                    tag("herself"),
+                    tag("themselves"),
+                    tag("it "),
+                    tag("him "),
+                    tag("her "),
+                    tag("them "),
+                )),
+            )
+            .parse(i)
         })
         .is_some()
 }
@@ -571,6 +589,55 @@ pub(super) fn try_parse_double_effect(lower: &str, ctx: &ParseContext) -> Option
                 target_kind: DoubleTarget::ManaPool { color },
                 target: TargetFilter::Controller,
             });
+        }
+    }
+
+    // CR 701.10b: "double <target>'s power [and toughness]" — possessive form covering
+    // "double target creature's power" (Bulk Up class) and "double ~'s power" (Devilish
+    // Valet / Okaun class, where ~ is the self-reference normalization). Composes with
+    // existing `parse_target` building block to cover any target phrase, then matches the
+    // possessive P/T tail. Sibling of the `tag("double its ")` and `tag("double the ")`
+    // arms below; placed first so the `parse_target`-driven possessive form takes
+    // precedence and the more specific "its" / "the X of Y" patterns fall through.
+    if let Some(((), after_double)) =
+        nom_on_lower(lower, lower, |i| value((), tag("double ")).parse(i))
+    {
+        // Skip patterns owned by sibling arms below.
+        let owned_by_sibling = nom_on_lower(after_double, after_double, |i| {
+            value(
+                (),
+                alt((
+                    tag("its "),
+                    tag("the "),
+                    tag("your "),
+                    tag("target player"),
+                    tag("the amount"),
+                    tag("the number"),
+                )),
+            )
+            .parse(i)
+        })
+        .is_some();
+        if !owned_by_sibling {
+            let (target, rem) = parse_target(after_double);
+            if !matches!(target, TargetFilter::Any) {
+                let rem_lower = rem.to_lowercase();
+                let mode: Option<DoublePTMode> = nom_on_lower(&rem_lower, &rem_lower, |i| {
+                    alt((
+                        value(
+                            DoublePTMode::PowerAndToughness,
+                            tag("'s power and toughness"),
+                        ),
+                        value(DoublePTMode::Power, tag("'s power")),
+                        value(DoublePTMode::Toughness, tag("'s toughness")),
+                    ))
+                    .parse(i)
+                })
+                .map(|(m, _)| m);
+                if let Some(mode) = mode {
+                    return Some(Effect::DoublePT { mode, target });
+                }
+            }
         }
     }
 

@@ -5,6 +5,7 @@
 //! Zero filesystem dependencies -- all cards are constructed inline.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::database::synthesis::synthesize_all;
 use crate::game::engine::{apply_as_current, EngineError};
@@ -310,6 +311,11 @@ impl GameScenario {
         obj.base_power = Some(power);
         obj.base_toughness = Some(toughness);
         obj.entered_battlefield_turn = Some(entered_turn);
+        // CR 302.6: Scenario builder places pre-existing creatures (entered
+        // on a prior turn), so they are not summoning-sick. `create_object`
+        // sets the flag true for battlefield ETB; override here to match
+        // the "already on battlefield" semantics the builder expresses.
+        obj.summoning_sick = false;
         obj.timestamp = ts;
 
         CardBuilder {
@@ -351,6 +357,8 @@ impl GameScenario {
         obj.card_types.supertypes.push(Supertype::Basic);
         obj.base_card_types = obj.card_types.clone();
         obj.entered_battlefield_turn = Some(self.state.turn_number.saturating_sub(1));
+        // Pre-existing land — see `add_creature` for the parallel rationale.
+        obj.summoning_sick = false;
         // Add mana ability
         let ability = AbilityDefinition::new(
             AbilityKind::Activated,
@@ -365,8 +373,8 @@ impl GameScenario {
             },
         )
         .cost(crate::types::ability::AbilityCost::Tap);
-        obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         id
     }
 
@@ -411,8 +419,8 @@ impl GameScenario {
                 damage_source: None,
             },
         );
-        obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         id
     }
 
@@ -647,15 +655,15 @@ impl<'a> CardBuilder<'a> {
     pub fn with_ability(&mut self, effect: Effect) -> &mut Self {
         let ability = AbilityDefinition::new(AbilityKind::Spell, effect);
         let obj = self.obj();
-        obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         self
     }
 
     pub fn with_ability_definition(&mut self, ability: AbilityDefinition) -> &mut Self {
         let obj = self.obj();
-        obj.abilities.push(ability.clone());
-        obj.base_abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability.clone());
+        Arc::make_mut(&mut obj.base_abilities).push(ability);
         self
     }
 
@@ -664,14 +672,14 @@ impl<'a> CardBuilder<'a> {
         let static_def = StaticDefinition::new(mode);
         let obj = self.obj();
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
         self
     }
 
     pub fn with_static_definition(&mut self, static_def: StaticDefinition) -> &mut Self {
         let obj = self.obj();
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
         self
     }
 
@@ -683,7 +691,7 @@ impl<'a> CardBuilder<'a> {
         let static_def = StaticDefinition::continuous().modifications(modifications);
         let obj = self.obj();
         obj.static_definitions.push(static_def.clone());
-        obj.base_static_definitions.push(static_def);
+        Arc::make_mut(&mut obj.base_static_definitions).push(static_def);
         self
     }
 
@@ -692,7 +700,7 @@ impl<'a> CardBuilder<'a> {
         let trigger = TriggerDefinition::new(mode);
         let obj = self.obj();
         obj.trigger_definitions.push(trigger.clone());
-        obj.base_trigger_definitions.push(trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(trigger);
         self
     }
 
@@ -700,7 +708,7 @@ impl<'a> CardBuilder<'a> {
     pub fn with_trigger_definition(&mut self, trigger: TriggerDefinition) -> &mut Self {
         let obj = self.obj();
         obj.trigger_definitions.push(trigger.clone());
-        obj.base_trigger_definitions.push(trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(trigger);
         self
     }
 
@@ -711,14 +719,14 @@ impl<'a> CardBuilder<'a> {
         let replacement = ReplacementDefinition::new(event);
         let obj = self.obj();
         obj.replacement_definitions.push(replacement.clone());
-        obj.base_replacement_definitions.push(replacement);
+        Arc::make_mut(&mut obj.base_replacement_definitions).push(replacement);
         self
     }
 
     pub fn with_replacement_definition(&mut self, def: ReplacementDefinition) -> &mut Self {
         let obj = self.obj();
         obj.replacement_definitions.push(def.clone());
-        obj.base_replacement_definitions.push(def);
+        Arc::make_mut(&mut obj.base_replacement_definitions).push(def);
         self
     }
 
@@ -769,7 +777,9 @@ impl<'a> CardBuilder<'a> {
     /// Mark this creature as having summoning sickness (entered this turn).
     pub fn with_summoning_sickness(&mut self) -> &mut Self {
         let turn = self.state.turn_number;
-        self.obj().entered_battlefield_turn = Some(turn);
+        let obj = self.obj();
+        obj.entered_battlefield_turn = Some(turn);
+        obj.summoning_sick = true;
         self
     }
 
@@ -1056,6 +1066,7 @@ impl GameRunner {
             WaitingFor::ModalFaceChoice { .. } => "ModalFaceChoice",
             WaitingFor::WarpCostChoice { .. } => "WarpCostChoice",
             WaitingFor::EvokeCostChoice { .. } => "EvokeCostChoice",
+            WaitingFor::OverloadCostChoice { .. } => "OverloadCostChoice",
             WaitingFor::MultiTargetSelection { .. } => "MultiTargetSelection",
             WaitingFor::AbilityModeChoice { .. } => "AbilityModeChoice",
             WaitingFor::OptionalEffectChoice { .. } => "OptionalEffectChoice",
@@ -1084,6 +1095,7 @@ impl GameRunner {
             WaitingFor::CopyRetarget { .. } => "CopyRetarget",
             WaitingFor::AssignCombatDamage { .. } => "AssignCombatDamage",
             WaitingFor::DistributeAmong { .. } => "DistributeAmong",
+            WaitingFor::PayAmountChoice { .. } => "PayAmountChoice",
             WaitingFor::RetargetChoice { .. } => "RetargetChoice",
             WaitingFor::WardDiscardChoice { .. } => "WardDiscardChoice",
             WaitingFor::WardSacrificeChoice { .. } => "WardSacrificeChoice",
@@ -1424,6 +1436,7 @@ mod tests {
             let mut builder = scenario.add_creature(P0, "Wizard", 1, 1);
             builder.with_ability(Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             });
             builder.with_static(StaticMode::Continuous);
             builder.id()

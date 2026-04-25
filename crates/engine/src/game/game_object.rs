@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -102,6 +103,55 @@ pub struct CaseState {
     pub solve_condition: SolveCondition,
 }
 
+/// CR 303.4 + CR 301.5: The host an attachment (Aura, Equipment, Fortification)
+/// is attached to. Equipment and Fortification can attach only to objects
+/// (CR 301.5 / CR 301.6); Auras can attach to objects OR players, depending on
+/// the Aura's `Enchant <type>` keyword (CR 303.4 / CR 702.5).
+///
+/// Storing the host as a typed enum (rather than `Option<ObjectId>` plus a
+/// parallel `Option<PlayerId>`) keeps "attached to whom" a single source of
+/// truth and lets exhaustive `match` arms force every consumer to handle both
+/// variants. Equipment-only call sites use `as_object()` with a CR-cited
+/// `expect` to assert the rules invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum AttachTarget {
+    /// CR 301.5 / CR 303.4f: attached to a permanent.
+    Object(ObjectId),
+    /// CR 303.4 + CR 702.5: attached to a player (Curse cycle, Faith's
+    /// Fetters-class). Equipment can never be in this variant — CR 301.5
+    /// restricts Equipment hosts to creatures.
+    Player(PlayerId),
+}
+
+impl AttachTarget {
+    /// Returns `Some(ObjectId)` for `Object`, `None` for `Player`. Use this at
+    /// call sites that have a CR-grounded reason to expect an object host
+    /// (e.g., Equipment per CR 301.5) — pair with `.expect("CR …")` to make
+    /// the invariant explicit.
+    pub fn as_object(&self) -> Option<ObjectId> {
+        match self {
+            AttachTarget::Object(id) => Some(*id),
+            AttachTarget::Player(_) => None,
+        }
+    }
+
+    /// Returns `Some(PlayerId)` for `Player`, `None` for `Object`. Mirror of
+    /// `as_object`; used by player-aura code paths (Curse cycle, SBA CR 704.5n).
+    pub fn as_player(&self) -> Option<PlayerId> {
+        match self {
+            AttachTarget::Player(pid) => Some(*pid),
+            AttachTarget::Object(_) => None,
+        }
+    }
+}
+
+impl From<ObjectId> for AttachTarget {
+    fn from(id: ObjectId) -> Self {
+        AttachTarget::Object(id)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameObject {
     pub id: ObjectId,
@@ -121,7 +171,9 @@ pub struct GameObject {
     pub dealt_deathtouch_damage: bool,
 
     // Attachments
-    pub attached_to: Option<ObjectId>,
+    /// CR 303.4 + CR 301.5: Host this attachment is attached to.
+    /// `None` if unattached. See `AttachTarget` for variants.
+    pub attached_to: Option<AttachTarget>,
     pub attachments: Vec<ObjectId>,
 
     // Counters
@@ -139,7 +191,10 @@ pub struct GameObject {
     pub card_types: CardType,
     pub mana_cost: ManaCost,
     pub keywords: Vec<Keyword>,
-    pub abilities: Vec<AbilityDefinition>,
+    /// Live abilities after layer evaluation. Wrapped in `Arc<Vec<_>>` so
+    /// `GameState::clone()` shares the ability list across cloned states
+    /// (AI search); mutations go through `Arc::make_mut` for copy-on-write.
+    pub abilities: Arc<Vec<AbilityDefinition>>,
     pub trigger_definitions: Definitions<TriggerDefinition>,
     pub replacement_definitions: Definitions<ReplacementDefinition>,
     pub static_definitions: Definitions<StaticDefinition>,
@@ -163,19 +218,24 @@ pub struct GameObject {
     #[serde(default)]
     pub base_mana_cost: ManaCost,
     pub base_keywords: Vec<Keyword>,
-    pub base_abilities: Vec<AbilityDefinition>,
+    /// CR 613.1: Printed baseline abilities. Wrapped in `Arc<Vec<_>>` so
+    /// `GameState::clone()` (called constantly by the AI search) shares
+    /// the printed-card slice instead of deep-cloning it per search node.
+    /// Writes use `Arc::make_mut` for copy-on-write semantics.
+    pub base_abilities: Arc<Vec<AbilityDefinition>>,
     /// CR 613.1: Printed baselines captured at `GameObject` construction —
     /// the values on the card (or defined by the effect that created this
     /// object) before any continuous effects apply. They are rebuilt, not
     /// runtime-mutated, so they intentionally use plain `Vec<T>` rather
     /// than the `Definitions<T>` wrapper that gates live reads.
-    pub base_trigger_definitions: Vec<TriggerDefinition>,
+    /// Wrapped in `Arc` for structural sharing across cloned `GameState`s.
+    pub base_trigger_definitions: Arc<Vec<TriggerDefinition>>,
     /// CR 613.1: printed-card baseline for replacement definitions. See
     /// `base_trigger_definitions`.
-    pub base_replacement_definitions: Vec<ReplacementDefinition>,
+    pub base_replacement_definitions: Arc<Vec<ReplacementDefinition>>,
     /// CR 613.1: printed-card baseline for static definitions. See
     /// `base_trigger_definitions`.
-    pub base_static_definitions: Vec<StaticDefinition>,
+    pub base_static_definitions: Arc<Vec<StaticDefinition>>,
     pub base_color: Vec<ManaColor>,
     #[serde(default)]
     pub base_characteristics_initialized: bool,
@@ -183,8 +243,20 @@ pub struct GameObject {
     // Timestamp for layer ordering
     pub timestamp: u64,
 
-    // Summoning sickness
+    // CR 603.6a: Turn on which this object entered the battlefield (global turn
+    // counter). Used for "entered this turn" triggers and `EnteredThisTurn`
+    // filters — NOT for summoning-sickness (see `summoning_sick`).
     pub entered_battlefield_turn: Option<u32>,
+
+    /// CR 302.6: Summoning-sickness state flag. True when this permanent has
+    /// NOT been continuously under its controller's control since that player's
+    /// most recent turn began — i.e., it can't attack or pay `{T}`/`{Q}` costs
+    /// (haste overrides at query time). Event-driven: set true on ETB; cleared
+    /// to false at the start of controller's next turn (see `start_next_turn`).
+    /// Query via `combat::has_summoning_sickness` which folds in Haste +
+    /// non-creature short-circuits.
+    #[serde(default)]
+    pub summoning_sick: bool,
 
     /// CR 702.49 + CR 702.190a: Which alt-cost cast/activation variant was paid to put this
     /// permanent onto the battlefield, and on which turn. Used by trigger conditions and
@@ -400,7 +472,7 @@ impl GameObject {
     pub fn snapshot_for_zone_change(
         &self,
         object_id: ObjectId,
-        from: Zone,
+        from: Option<Zone>,
         to: Zone,
     ) -> crate::types::game_state::ZoneChangeRecord {
         crate::types::game_state::ZoneChangeRecord {
@@ -451,18 +523,21 @@ impl GameObject {
             self.base_keywords = self.keywords.clone();
         }
         if self.base_abilities.is_empty() && !self.abilities.is_empty() {
-            self.base_abilities = self.abilities.clone();
+            // Both sides are `Arc<Vec<_>>` — refcount-only clone.
+            self.base_abilities = Arc::clone(&self.abilities);
         }
         if self.base_trigger_definitions.is_empty() && !self.trigger_definitions.is_empty() {
-            self.base_trigger_definitions = self.trigger_definitions.iter_all().cloned().collect();
+            self.base_trigger_definitions =
+                Arc::new(self.trigger_definitions.iter_all().cloned().collect());
         }
         if self.base_replacement_definitions.is_empty() && !self.replacement_definitions.is_empty()
         {
             self.base_replacement_definitions =
-                self.replacement_definitions.iter_all().cloned().collect();
+                Arc::new(self.replacement_definitions.iter_all().cloned().collect());
         }
         if self.base_static_definitions.is_empty() && !self.static_definitions.is_empty() {
-            self.base_static_definitions = self.static_definitions.iter_all().cloned().collect();
+            self.base_static_definitions =
+                Arc::new(self.static_definitions.iter_all().cloned().collect());
         }
         if self.base_color.is_empty() && !self.color.is_empty() {
             self.base_color = self.color.clone();
@@ -495,7 +570,7 @@ impl GameObject {
             card_types: CardType::default(),
             mana_cost: ManaCost::default(),
             keywords: Vec::new(),
-            abilities: Vec::new(),
+            abilities: Arc::new(Vec::new()),
             trigger_definitions: Definitions::default(),
             replacement_definitions: Definitions::default(),
             static_definitions: Definitions::default(),
@@ -510,7 +585,7 @@ impl GameObject {
             base_card_types: CardType::default(),
             base_mana_cost: ManaCost::default(),
             base_keywords: Vec::new(),
-            base_abilities: Vec::new(),
+            base_abilities: Arc::new(Vec::new()),
             base_trigger_definitions: Default::default(),
             base_replacement_definitions: Default::default(),
             base_static_definitions: Default::default(),
@@ -518,6 +593,7 @@ impl GameObject {
             base_characteristics_initialized: false,
             timestamp: 0,
             entered_battlefield_turn: None,
+            summoning_sick: false,
             cast_variant_paid: None,
             cost_x_paid: None,
             unimplemented_mechanics: Vec::new(),
@@ -563,6 +639,13 @@ impl GameObject {
     /// existence. Callers that need enter_tapped=true override `tapped` after this call.
     pub fn reset_for_battlefield_entry(&mut self, turn_number: u32) {
         self.entered_battlefield_turn = Some(turn_number);
+        // CR 302.6: A permanent that enters the battlefield has not been
+        // continuously under its controller's control since that player's
+        // most recent turn began. Cleared at controller's next turn start
+        // (see `turns::start_next_turn`). Haste is folded in at query time
+        // by `combat::has_summoning_sickness`, so the flag is set
+        // unconditionally here; the query short-circuits for non-creatures.
+        self.summoning_sick = true;
         self.tapped = false;
         self.damage_marked = 0;
         self.dealt_deathtouch_damage = false;

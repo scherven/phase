@@ -58,13 +58,18 @@ pub(super) fn parse_search_library_details(lower: &str) -> SearchLibraryDetails 
     // These target a player, searching that player's library instead of the controller's.
     let target_player = parse_search_target_player(lower);
 
+    // CR 107.1c: "any number of [FILTER] cards" — searcher may find 0..=matching.len()
+    // cards. Detected before "up to N" since they share no overlap: "any number of"
+    // emits a sentinel count that is capped to the matching-set size at resolution.
+    let any_number_tail = scan_after_tag(lower, "any number of ");
+
     // Extract count from "up to N" / "up to X" (must be done before filter extraction
     // since "for up to five creature cards" needs to skip the count to find the type).
     // CR 107.3a + CR 601.2b: X resolves to the caster's announced value at cast time.
     let up_to_match = scan_preceded(lower, "up to ", nom_quantity::parse_quantity_expr_number);
 
     // Fallback: "for N cards" / "for X cards" without "up to".
-    let for_match = if up_to_match.is_none() {
+    let for_match = if up_to_match.is_none() && any_number_tail.is_none() {
         scan_preceded(lower, "for ", nom_quantity::parse_quantity_expr_number)
             // Require a word break after the number (" cards" / " creature ...").
             // Guards against matching "for a", "for an", etc. where parse_number fails
@@ -74,22 +79,48 @@ pub(super) fn parse_search_library_details(lower: &str) -> SearchLibraryDetails 
         None
     };
 
-    let (count, count_end_in_for) = match (up_to_match, for_match) {
-        (Some((expr, off)), _) => (expr, Some(off)),
-        (None, Some((expr, _))) => (expr, None),
-        (None, None) => (QuantityExpr::Fixed { value: 1 }, None),
+    // CR 107.1c + CR 701.23d: up_to=true ⇒ searcher picks 0..=count (vs. exactly count).
+    // "any number of" uses i32::MAX as an unbounded ceiling — the resolver floors it
+    // against matching.len(), so the effective ceiling is always the legal-option set.
+    let (count, count_end_in_for, up_to) = match (any_number_tail, up_to_match, for_match) {
+        (Some(off), _, _) => (QuantityExpr::Fixed { value: i32::MAX }, Some(off), true),
+        (None, Some((expr, off)), _) => (expr, Some(off), true),
+        (None, None, Some((expr, _))) => (expr, None, false),
+        (None, None, None) => (QuantityExpr::Fixed { value: 1 }, None, false),
     };
 
-    // Extract the type filter from after "for a/an" or from the tail after "up to N".
-    let filter = if let Some(after_for) = strip_after(lower, "for a ") {
-        parse_search_filter(after_for)
+    // Extract the type filter from after "for a/an" or from the tail after "up to N"
+    // or "any number of".
+    // CR 701.23a + CR 107.1: "search your library for a X card and a Y card" —
+    // the "and a Y card" clause introduces a second independent filter. Split
+    // the filter tail on this conjunction BEFORE parsing so each side becomes a
+    // distinct `TargetFilter` and the suffix parser for the primary filter does
+    // not consume the extras as a dangling "and a ..." fragment.
+    let (filter, extra_filters) = if let Some(type_start) = count_end_in_for {
+        // "for up to five creature cards" or "for any number of dragon creature cards"
+        // — type text starts after the number / quantity phrase. Multi-filter is
+        // not supported for explicit-count searches (grammar always uses "a X and a Y").
+        (parse_search_filter(&lower[type_start..]), Vec::new())
+    } else if let Some(after_for) = strip_after(lower, "for a ") {
+        parse_search_filter_with_extras(after_for)
     } else if let Some(after_for) = strip_after(lower, "for an ") {
-        parse_search_filter(after_for)
-    } else if let Some(type_start) = count_end_in_for {
-        // "for up to five creature cards" — type text starts after the number
-        parse_search_filter(&lower[type_start..])
+        parse_search_filter_with_extras(after_for)
     } else {
-        TargetFilter::Any
+        (TargetFilter::Any, Vec::new())
+    };
+
+    // CR 701.23a + CR 701.18a: For multi-filter chains, capture destination
+    // and enter-tapped flags now so the downstream lowering can interleave
+    // `ChangeZone`s between each `SearchLibrary`. Single-filter searches
+    // ignore these fields; their destination comes from the sequence-level
+    // intrinsic continuation.
+    let (multi_destination, multi_enter_tapped) = if extra_filters.is_empty() {
+        (Zone::Hand, false)
+    } else {
+        (
+            parse_search_destination(lower),
+            scan_contains_phrase(lower, "battlefield tapped"),
+        )
     };
 
     SearchLibraryDetails {
@@ -97,7 +128,125 @@ pub(super) fn parse_search_library_details(lower: &str) -> SearchLibraryDetails 
         count,
         reveal,
         target_player,
+        up_to,
+        extra_filters,
+        multi_destination,
+        multi_enter_tapped,
     }
+}
+
+/// CR 701.23a + CR 107.1: Split a search filter tail on conjunction boundaries
+/// (`"<primary> and a <secondary>"`, `"... and an ..."`, `"... and basic ..."`)
+/// so each filter phrase parses independently. Returns the primary filter and
+/// a list of extra filters; the list is empty in the common single-filter case.
+///
+/// The conjunction scan ends at the first clause-terminating comma / period
+/// (e.g., `"..., put them onto the battlefield tapped, then shuffle"`) because
+/// anything after that belongs to the destination / action chain — not to the
+/// filter expression.
+fn parse_search_filter_with_extras(tail: &str) -> (TargetFilter, Vec<TargetFilter>) {
+    // structural: not dispatch — bound the filter region at the first clause
+    // terminator (comma / period) before running the conjunction combinator,
+    // so `" and "` inside e.g. `"put it onto the battlefield, then ..."` can't
+    // pollute the filter split.
+    let filter_region_end = tail
+        .find(',')
+        .or_else(|| tail.find('.'))
+        .unwrap_or(tail.len());
+    let filter_region = &tail[..filter_region_end];
+
+    // Split on `" and a "` / `" and an "` / `" and basic "` at filter-region
+    // boundaries only. The "and basic" branch preserves the supertype prefix so
+    // the downstream filter parser sees e.g. `"basic plains card"` intact.
+    let segments = split_filter_conjunctions(filter_region);
+    if segments.len() < 2 {
+        return (parse_search_filter(tail), Vec::new());
+    }
+
+    let primary = parse_search_filter(segments[0]);
+    let extras: Vec<TargetFilter> = segments[1..]
+        .iter()
+        .map(|segment| parse_search_filter(segment))
+        .collect();
+    (primary, extras)
+}
+
+/// Split a filter-region string (no action chain) on `" and a "` / `" and an "`
+/// / `" and basic "` conjunctions using a nom `take_until` + `alt` scan. For
+/// the "and basic" variant the supertype stays attached to the following
+/// segment by re-prepending `"basic "` to the remainder after consuming the
+/// shared `" and "` prefix. Returns a single-segment vector when no
+/// conjunction matches.
+fn split_filter_conjunctions(filter_region: &str) -> Vec<&str> {
+    use nom::branch::alt;
+    use nom::bytes::complete::take_until;
+    use nom::combinator::value;
+    use nom::Parser;
+
+    // (nom `alt` arm that consumes the conjunction, amount pushed back onto
+    // the remainder so the "basic" supertype stays on the following segment)
+    #[derive(Clone, Copy)]
+    enum Conjunction {
+        AndA,
+        AndAn,
+        AndBasic,
+    }
+
+    let mut segments = Vec::new();
+    let mut remaining = filter_region;
+    loop {
+        // Scan ahead for the earliest conjunction tag. `take_until` + `alt` is
+        // the nom idiom for "find the first occurrence of any of these tags";
+        // the error branch falls through to a single-segment result.
+        let mut scan = (
+            take_until::<_, _, VerboseError<&str>>(" and "),
+            alt((
+                value(Conjunction::AndA, tag(" and a ")),
+                value(Conjunction::AndAn, tag(" and an ")),
+                value(Conjunction::AndBasic, tag(" and basic ")),
+            )),
+        );
+
+        let Ok((rest, (before, conj))) = scan.parse(remaining) else {
+            segments.push(remaining.trim());
+            break;
+        };
+        segments.push(before.trim());
+        remaining = match conj {
+            Conjunction::AndA | Conjunction::AndAn => rest,
+            // Keep the "basic " supertype attached to the following segment.
+            // SAFETY: `rest` is a suffix of `filter_region`, so stepping back
+            // "basic ".len() bytes yields a well-aligned slice that begins with
+            // "basic …".
+            Conjunction::AndBasic => {
+                let start = filter_region.len() - rest.len() - "basic ".len();
+                &filter_region[start..]
+            }
+        };
+    }
+    segments
+}
+
+/// Locate `tag_prefix` at a word boundary in `lower` and return the byte offset of
+/// the character immediately following the prefix. Mirrors `scan_preceded`'s boundary
+/// rules but does not apply a nom combinator — the tail is the filter text itself.
+fn scan_after_tag(lower: &str, tag_prefix: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while search_from <= lower.len() {
+        let idx = lower[search_from..]
+            .find(tag_prefix)
+            .map(|i| search_from + i)?;
+        let at_boundary = idx == 0
+            || matches!(
+                lower.as_bytes()[idx - 1],
+                b' ' | b',' | b';' | b'(' | b'.' | b'\n' | b'\t'
+            );
+        if at_boundary {
+            return Some(idx + tag_prefix.len());
+        }
+        search_from = idx + 1;
+    }
+    None
 }
 
 /// CR 701.23a: Detect player-targeting search patterns like "search target opponent's library"
@@ -717,11 +866,133 @@ mod tests {
     }
 
     #[test]
+    fn search_any_number_of_dragon_creature_cards_sets_up_to_and_filter() {
+        // CR 107.1c: Sarkhan, Dragonsoul [-9]: "Search your library for any number
+        // of Dragon creature cards, put them onto the battlefield, then shuffle."
+        let details = parse_search_library_details(
+            "search your library for any number of dragon creature cards, put them onto the battlefield, then shuffle",
+        );
+        assert!(details.up_to, "any number of should set up_to=true");
+        assert_eq!(details.count, QuantityExpr::Fixed { value: i32::MAX });
+        match details.filter {
+            TargetFilter::Typed(ref tf) => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert_eq!(tf.get_subtype(), Some("Dragon"));
+            }
+            ref other => panic!("expected Typed creature filter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_up_to_n_sets_up_to_true() {
+        // "Search your library for up to three cards" — player may pick 0..=3.
+        let details = parse_search_library_details(
+            "search your library for up to three creature cards, reveal them",
+        );
+        assert!(details.up_to, "up to N should set up_to=true");
+        assert_eq!(details.count, QuantityExpr::Fixed { value: 3 });
+    }
+
+    #[test]
+    fn search_for_a_card_does_not_set_up_to() {
+        // "Search your library for a creature card" — exactly one required pick
+        // (CR 701.23d: must find if present).
+        let details = parse_search_library_details(
+            "search your library for a creature card, put it onto the battlefield",
+        );
+        assert!(!details.up_to, "exact-count search should not set up_to");
+        assert_eq!(details.count, QuantityExpr::Fixed { value: 1 });
+    }
+
+    #[test]
     fn parse_search_specialized_type_word_handles_unknown_alphabetic_subtype() {
         let filter = parse_search_specialized_type_word("elf", vec![]);
         let TargetFilter::Typed(typed) = filter else {
             panic!("expected Typed filter, got {filter:?}");
         };
         assert_eq!(typed.get_subtype(), Some("Elf"));
+    }
+
+    /// CR 701.23a + CR 107.1: Krosan Verge "a Forest card and a Plains card"
+    /// must lower to two independent filters — one for each filter segment.
+    #[test]
+    fn search_dual_filter_forest_and_plains_extracts_both() {
+        let details = parse_search_library_details(
+            "search your library for a forest card and a plains card, put them onto the battlefield tapped, then shuffle",
+        );
+        assert_eq!(details.extra_filters.len(), 1, "expected one extra filter");
+        match &details.filter {
+            TargetFilter::Typed(tf) => assert_eq!(tf.get_subtype(), Some("Forest")),
+            other => panic!("expected Forest filter, got {other:?}"),
+        }
+        match &details.extra_filters[0] {
+            TargetFilter::Typed(tf) => assert_eq!(tf.get_subtype(), Some("Plains")),
+            other => panic!("expected Plains filter, got {other:?}"),
+        }
+        assert_eq!(details.multi_destination, Zone::Battlefield);
+        assert!(details.multi_enter_tapped);
+    }
+
+    /// CR 701.23a + CR 107.1: Corpse Harvester: "a Zombie card and a Swamp card,
+    /// reveal them, put them into your hand" — dual-filter, destination Hand.
+    #[test]
+    fn search_dual_filter_corpse_harvester_variant() {
+        let details = parse_search_library_details(
+            "search your library for a zombie card and a swamp card, reveal them, put them into your hand, then shuffle",
+        );
+        assert_eq!(details.extra_filters.len(), 1);
+        assert_eq!(details.multi_destination, Zone::Hand);
+        assert!(!details.multi_enter_tapped);
+        assert!(details.reveal);
+    }
+
+    /// CR 701.23a + CR 107.1: Yasharn: "a basic Forest card and a basic Plains
+    /// card" — the "and basic" variant preserves the supertype prefix.
+    #[test]
+    fn search_dual_filter_basic_supertype_preserved() {
+        let details = parse_search_library_details(
+            "search your library for a basic forest card and a basic plains card, reveal those cards, put them into your hand, then shuffle",
+        );
+        assert_eq!(details.extra_filters.len(), 1);
+        match &details.filter {
+            TargetFilter::Typed(tf) => {
+                assert_eq!(tf.get_subtype(), Some("Forest"));
+                assert!(
+                    tf.properties.iter().any(|property| matches!(
+                        property,
+                        FilterProp::HasSupertype {
+                            value: crate::types::card_type::Supertype::Basic
+                        }
+                    )),
+                    "primary filter should carry Basic supertype"
+                );
+            }
+            other => panic!("expected typed basic Forest, got {other:?}"),
+        }
+        match &details.extra_filters[0] {
+            TargetFilter::Typed(tf) => {
+                assert_eq!(tf.get_subtype(), Some("Plains"));
+                assert!(
+                    tf.properties.iter().any(|property| matches!(
+                        property,
+                        FilterProp::HasSupertype {
+                            value: crate::types::card_type::Supertype::Basic
+                        }
+                    )),
+                    "extra filter should carry Basic supertype"
+                );
+            }
+            other => panic!("expected typed basic Plains, got {other:?}"),
+        }
+    }
+
+    /// Regression: single-filter search ("a creature card") still lowers to
+    /// `extra_filters = []` and does not spuriously match the dual-search path.
+    #[test]
+    fn search_single_filter_has_no_extras() {
+        let details = parse_search_library_details(
+            "search your library for a creature card, put it onto the battlefield",
+        );
+        assert!(details.extra_filters.is_empty());
     }
 }

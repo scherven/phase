@@ -83,7 +83,7 @@ pub fn apply(
     state.last_effect_count = None;
     state.exiled_from_hand_this_resolution = 0;
     check_actor_authorization(state, actor, &action)?;
-    let mut result = apply_action(state, action)?;
+    let mut result = apply_action(state, actor, action)?;
     bump_state_revision(state);
     mark_public_state_all_dirty(state);
     sync_waiting_for(state, &result.waiting_for);
@@ -93,11 +93,19 @@ pub fn apply(
     Ok(result)
 }
 
-/// Engine-level authorization guard. Any action other than `Concede` must come
-/// from the `authorized_submitter` for the current `WaitingFor` (which already
-/// accounts for turn-decision-controller effects like Mindslaver). `Concede`
-/// self-authenticates via its own `player_id` field — but we still require it
-/// to match `actor` so a player cannot concede someone else on their behalf.
+/// Engine-level authorization guard. Any *game action* must come from the
+/// `authorized_submitter` for the current `WaitingFor` (which already accounts
+/// for turn-decision-controller effects like Mindslaver). Two exception classes:
+///
+/// - `Concede` self-authenticates via its own `player_id` field — but we still
+///   require it to match `actor` so a player cannot concede someone else on
+///   their behalf (CR 104.3a).
+/// - **Preference actions** (SetPhaseStops, SetAutoPass, CancelAutoPass) are
+///   per-player UI settings. They have no CR semantics, mutate only the
+///   submitter's own preference slot, and may legitimately fire at any time —
+///   e.g. the human toggles a phase stop while the AI holds priority. The
+///   downstream handlers route by `actor`, so any seat may set its own
+///   preferences regardless of `WaitingFor`.
 fn check_actor_authorization(
     state: &GameState,
     actor: PlayerId,
@@ -108,6 +116,12 @@ fn check_actor_authorization(
         if *player_id != actor {
             return Err(EngineError::WrongPlayer);
         }
+        return Ok(());
+    }
+    if matches!(
+        action,
+        GameAction::SetPhaseStops { .. } | GameAction::CancelAutoPass
+    ) {
         return Ok(());
     }
     if let Some(expected) = turn_control::authorized_submitter(state) {
@@ -151,6 +165,202 @@ pub(super) fn resume_pending_continuation_if_priority(
     Ok(())
 }
 
+/// Decision emitted by the auto-pass loop's per-iteration check.
+enum AutoPassDecision {
+    /// No active auto-pass — leave the loop and let the frontend take over.
+    Exit,
+    /// Auto-pass completed or was interrupted (opponent action, phase stop,
+    /// stack terminator). Clear the flag and exit.
+    Finish,
+    /// Continue passing priority for this iteration.
+    Pass,
+}
+
+/// Classify what the auto-pass loop should do for `player` at the current
+/// priority window.
+///
+/// Interrupts (MTGA-style): `UntilStackEmpty` bails when the stack empties or
+/// grows beyond the baseline (trigger or opponent spell); `UntilEndOfTurn`
+/// bails when an opponent-controlled object is on top of the stack or when the
+/// current phase is in the user-supplied `phase_stops` list.
+fn priority_auto_pass_decision(state: &GameState, player: PlayerId) -> AutoPassDecision {
+    let Some(mode) = state.auto_pass.get(&player) else {
+        return AutoPassDecision::Exit;
+    };
+    match mode {
+        AutoPassMode::UntilStackEmpty { initial_stack_len } => {
+            if state.stack.is_empty() || state.stack.len() > *initial_stack_len {
+                AutoPassDecision::Finish
+            } else {
+                AutoPassDecision::Pass
+            }
+        }
+        AutoPassMode::UntilEndOfTurn => {
+            let opponent_on_stack = state
+                .stack
+                .last()
+                .is_some_and(|top| top.controller != player);
+            if opponent_on_stack || phase_stop_hit(state, player) {
+                AutoPassDecision::Finish
+            } else {
+                AutoPassDecision::Pass
+            }
+        }
+    }
+}
+
+/// True when `player` has an active `UntilEndOfTurn` auto-pass session.
+fn end_of_turn_active(state: &GameState, player: PlayerId) -> bool {
+    matches!(
+        state.auto_pass.get(&player),
+        Some(AutoPassMode::UntilEndOfTurn)
+    )
+}
+
+/// True when the current phase appears in `player`'s configured phase-stop list.
+/// Consulted at every engine-driven auto-pass site so the user's preference is
+/// respected whether or not an auto-pass session is active (e.g. suppresses
+/// the empty-blockers auto-submit when the defender wants a Ninjutsu window).
+fn phase_stop_hit(state: &GameState, player: PlayerId) -> bool {
+    state
+        .phase_stops
+        .get(&player)
+        .is_some_and(|stops| stops.contains(&state.phase))
+}
+
+#[cfg(test)]
+mod auto_pass_decision_tests {
+    use super::*;
+    use crate::types::identifiers::ObjectId;
+
+    fn stack_entry(controller: PlayerId) -> StackEntry {
+        StackEntry {
+            id: ObjectId(0),
+            source_id: ObjectId(0),
+            controller,
+            kind: StackEntryKind::KeywordAction {
+                action: KeywordAction::Equip {
+                    equipment_id: ObjectId(0),
+                    target_creature_id: ObjectId(0),
+                },
+            },
+        }
+    }
+
+    fn is_pass(d: &AutoPassDecision) -> bool {
+        matches!(d, AutoPassDecision::Pass)
+    }
+
+    fn is_finish(d: &AutoPassDecision) -> bool {
+        matches!(d, AutoPassDecision::Finish)
+    }
+
+    #[test]
+    fn exit_when_no_auto_pass_set() {
+        let state = GameState::default();
+        assert!(matches!(
+            priority_auto_pass_decision(&state, PlayerId(0)),
+            AutoPassDecision::Exit
+        ));
+    }
+
+    #[test]
+    fn until_end_of_turn_passes_through_empty_stack_without_phase_stop() {
+        let mut state = GameState {
+            phase: Phase::PostCombatMain,
+            ..GameState::default()
+        };
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        assert!(is_pass(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn until_end_of_turn_finishes_on_opponent_stack_activity() {
+        // Opponent spell/trigger on top must interrupt auto-pass so the player
+        // always gets a chance to respond.
+        let mut state = GameState::default();
+        state.stack.push_back(stack_entry(PlayerId(1)));
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        assert!(is_finish(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn until_end_of_turn_passes_through_own_stack_activity() {
+        // MTGA-style: resolve your own spells without pausing.
+        let mut state = GameState::default();
+        state.stack.push_back(stack_entry(PlayerId(0)));
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        assert!(is_pass(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn until_end_of_turn_finishes_at_configured_phase_stop() {
+        // User-flagged phase stop halts auto-pass even when the stack is empty
+        // and no opponent action has interrupted.
+        let mut state = GameState {
+            phase: Phase::DeclareBlockers,
+            ..GameState::default()
+        };
+        state
+            .auto_pass
+            .insert(PlayerId(0), AutoPassMode::UntilEndOfTurn);
+        state
+            .phase_stops
+            .insert(PlayerId(0), vec![Phase::DeclareBlockers]);
+        assert!(is_finish(&priority_auto_pass_decision(&state, PlayerId(0))));
+    }
+
+    #[test]
+    fn phase_stop_hit_reads_per_player_preferences() {
+        let mut state = GameState {
+            phase: Phase::DeclareBlockers,
+            ..GameState::default()
+        };
+        // No entry for the player → no stop.
+        assert!(!phase_stop_hit(&state, PlayerId(0)));
+
+        // Unrelated phase in the list → no stop.
+        state.phase_stops.insert(PlayerId(0), vec![Phase::Upkeep]);
+        assert!(!phase_stop_hit(&state, PlayerId(0)));
+
+        // Current phase in the list → stop.
+        state
+            .phase_stops
+            .insert(PlayerId(0), vec![Phase::Upkeep, Phase::DeclareBlockers]);
+        assert!(phase_stop_hit(&state, PlayerId(0)));
+
+        // Per-player: player 1's stops don't bleed into player 0.
+        state.phase_stops.remove(&PlayerId(0));
+        state
+            .phase_stops
+            .insert(PlayerId(1), vec![Phase::DeclareBlockers]);
+        assert!(!phase_stop_hit(&state, PlayerId(0)));
+        assert!(phase_stop_hit(&state, PlayerId(1)));
+    }
+
+    #[test]
+    fn phase_stop_hit_is_independent_of_auto_pass_mode() {
+        // Phase stops apply even without an active auto-pass session —
+        // this is what closes the "no legal blockers auto-submitted
+        // regardless of preference" gap.
+        let mut state = GameState {
+            phase: Phase::DeclareBlockers,
+            ..GameState::default()
+        };
+        state
+            .phase_stops
+            .insert(PlayerId(0), vec![Phase::DeclareBlockers]);
+        assert!(phase_stop_hit(&state, PlayerId(0)));
+        assert!(!end_of_turn_active(&state, PlayerId(0)));
+    }
+}
+
 /// Auto-pass loop: when a player has an auto-pass flag and receives priority,
 /// automatically pass for them until the goal condition is met or interrupted.
 fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
@@ -160,26 +370,14 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
         match &result.waiting_for {
             WaitingFor::Priority { player } => {
                 let player = *player;
-                let Some(&mode) = state.auto_pass.get(&player) else {
-                    break;
-                };
-
-                match mode {
-                    AutoPassMode::UntilStackEmpty { initial_stack_len } => {
-                        // Goal achieved: stack is empty
-                        if state.stack.is_empty() {
-                            state.auto_pass.remove(&player);
-                            break;
-                        }
-                        // Interrupt: stack grew beyond the baseline (trigger or opponent spell)
-                        if state.stack.len() > initial_stack_len {
-                            state.auto_pass.remove(&player);
-                            break;
-                        }
+                let decision = priority_auto_pass_decision(state, player);
+                match decision {
+                    AutoPassDecision::Exit => break,
+                    AutoPassDecision::Finish => {
+                        state.auto_pass.remove(&player);
+                        break;
                     }
-                    AutoPassMode::UntilEndOfTurn => {
-                        // UntilEndOfTurn passes through everything at priority
-                    }
+                    AutoPassDecision::Pass => {}
                 }
 
                 // Pass priority internally
@@ -202,10 +400,10 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                         sync_waiting_for(state, &wf);
 
                         // Check for stack growth after pipeline (triggers may have fired)
-                        if let Some(&AutoPassMode::UntilStackEmpty { initial_stack_len }) =
+                        if let Some(AutoPassMode::UntilStackEmpty { initial_stack_len }) =
                             state.auto_pass.get(&player)
                         {
-                            if state.stack.len() > initial_stack_len {
+                            if state.stack.len() > *initial_stack_len {
                                 state.auto_pass.remove(&player);
                             }
                         }
@@ -217,12 +415,10 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                 }
             }
 
-            // UntilEndOfTurn: auto-submit empty attackers
+            // UntilEndOfTurn: auto-submit empty attackers unless the user flagged
+            // this phase as a stop.
             WaitingFor::DeclareAttackers { player, .. }
-                if state
-                    .auto_pass
-                    .get(player)
-                    .is_some_and(|m| matches!(m, AutoPassMode::UntilEndOfTurn)) =>
+                if end_of_turn_active(state, *player) && !phase_stop_hit(state, *player) =>
             {
                 let mut events = Vec::new();
                 match engine_combat::handle_empty_attackers(state, &mut events) {
@@ -241,18 +437,18 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
             //       still runs, and CR 117.1c requires the active player to receive
             //       priority during the step (instants and Ninjutsu-family activations
             //       per CR 702.49 — notably Sneak, which is restricted to this step).
+            // A phase stop on Declare Blockers overrides both paths regardless of
+            // whether an auto-pass session is active: if the player explicitly asked
+            // to pause here, honor it.
             WaitingFor::DeclareBlockers {
                 player,
                 valid_blocker_ids,
                 ..
-            } if valid_blocker_ids.is_empty()
-                || state
-                    .auto_pass
-                    .get(player)
-                    .is_some_and(|m| matches!(m, AutoPassMode::UntilEndOfTurn)) =>
+            } if !phase_stop_hit(state, *player)
+                && (valid_blocker_ids.is_empty() || end_of_turn_active(state, *player)) =>
             {
                 let mut events = Vec::new();
-                match engine_combat::handle_empty_blockers(state, &mut events) {
+                match engine_combat::handle_empty_blockers(state, *player, &mut events) {
                     Ok(wf) => {
                         sync_waiting_for(state, &wf);
                         result.events.extend(events);
@@ -268,7 +464,11 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
     }
 }
 
-fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResult, EngineError> {
+fn apply_action(
+    state: &mut GameState,
+    actor: PlayerId,
+    action: GameAction,
+) -> Result<ActionResult, EngineError> {
     // Clear stale revealed_cards from the previous action.
     // RevealTop reveals (e.g. Goblin Guide) are momentary — shown for one state update.
     // RevealHand reveals (e.g. Thoughtseize) persist through the RevealChoice interaction.
@@ -287,10 +487,30 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
     let mut events = Vec::new();
     let mut triggers_processed_inline = false;
 
-    // CancelAutoPass works from any WaitingFor state (player may cancel during interactive choices)
+    // CancelAutoPass works from any WaitingFor state (player may cancel during
+    // interactive choices). Routed by `actor` — previously used
+    // `authorized_submitter(state)`, which silently cancelled the wrong player's
+    // session when fired while an opponent held the prompt.
     if matches!(action, GameAction::CancelAutoPass) {
-        if let Some(player) = turn_control::authorized_submitter(state) {
-            state.auto_pass.remove(&player);
+        state.auto_pass.remove(&actor);
+        return Ok(ActionResult {
+            events: vec![],
+            waiting_for: state.waiting_for.clone(),
+            log_entries: vec![],
+        });
+    }
+
+    // SetPhaseStops propagates the player's phase-stop preference. Pure preference
+    // state — no game logic, no WaitingFor transition. Works from any state so
+    // frontends can sync on preference changes regardless of the current prompt.
+    // Routed by `actor` so the human can update their own stops while the AI
+    // holds priority (the previous "authorized_submitter" lookup rejected this
+    // outright via the WrongPlayer guard, surfacing as an in-game dispatch error).
+    if let GameAction::SetPhaseStops { stops } = &action {
+        if stops.is_empty() {
+            state.phase_stops.remove(&actor);
+        } else {
+            state.phase_stops.insert(actor, stops.clone());
         }
         return Ok(ActionResult {
             events: vec![],
@@ -385,13 +605,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             {
                 return Err(EngineError::NotYourPriority);
             }
-            let wf = handle_tap_land_for_mana(state, object_id, &mut events)?;
-            state
-                .lands_tapped_for_mana
-                .entry(state.priority_player)
-                .or_default()
-                .push(object_id);
-            wf
+            handle_tap_land_for_mana(state, object_id, &mut events)?
         }
         (WaitingFor::Priority { player }, GameAction::UntapLandForMana { object_id }) => {
             if state.priority_player
@@ -452,9 +666,13 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     crate::types::game_state::ManaAbilityResume::Priority,
                     None,
                 )?;
-                // Track land mana taps for undo (UntapLandForMana), matching
-                // the TapLandForMana path so dual lands are undoable too.
-                if is_land {
+                // CR 605.3b: Track land mana taps for undo (UntapLandForMana),
+                // matching the TapLandForMana path so dual lands are undoable
+                // too. `ManaSourcePenalty::None` is the only variant that
+                // allows undo — painlands (damage on resolution), pay-life
+                // sources, and sacrifice sources all commit irreversible
+                // state atomically with CR 605.3b resolution.
+                if is_land && mana_sources::mana_ability_penalty(&ability_def).is_undoable() {
                     state
                         .lands_tapped_for_mana
                         .entry(state.priority_player)
@@ -574,6 +792,23 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             *object_id,
             *card_id,
             use_evoke,
+            &mut events,
+        )?,
+        // CR 702.96a: Player chooses normal cast or Overload cast from hand.
+        (
+            WaitingFor::OverloadCostChoice {
+                player,
+                object_id,
+                card_id,
+                ..
+            },
+            GameAction::ChooseOverloadCost { use_overload },
+        ) => casting::handle_overload_cost_choice(
+            state,
+            *player,
+            *object_id,
+            *card_id,
+            use_overload,
             &mut events,
         )?,
         (WaitingFor::ModeChoice { player, .. }, GameAction::SelectModes { indices }) => {
@@ -1127,10 +1362,13 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     .find(|p| p.id == player)
                     .map(|p| p.mana_pool.clone())
                     .ok_or_else(|| EngineError::InvalidAction("Player not found".to_string()))?;
+                let spell_ctx = spell_meta
+                    .as_ref()
+                    .map(crate::types::mana::PaymentContext::Spell);
                 let current_shards = mana_payment::compute_phyrexian_shards(
                     &player_pool,
                     &cost,
-                    spell_meta.as_ref(),
+                    spell_ctx.as_ref(),
                     any_color,
                     max_life,
                 );
@@ -1348,9 +1586,12 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             triggers_processed_inline = true;
             engine_combat::handle_declare_attackers(state, *player, &attacks, &mut events)?
         }
-        (WaitingFor::DeclareBlockers { .. }, GameAction::DeclareBlockers { assignments }) => {
+        (
+            WaitingFor::DeclareBlockers { player, .. },
+            GameAction::DeclareBlockers { assignments },
+        ) => {
             triggers_processed_inline = true;
-            engine_combat::handle_declare_blockers(state, &assignments, &mut events)?
+            engine_combat::handle_declare_blockers(state, *player, &assignments, &mut events)?
         }
         (WaitingFor::ReplacementChoice { .. }, GameAction::ChooseReplacement { index }) => {
             engine_replacement::handle_replacement_choice(state, index, &mut events)?
@@ -1555,11 +1796,14 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             .map_err(EngineError::InvalidAction)?;
             WaitingFor::Priority { player: p }
         }
-        // CR 702.190a: Sneak — cast creature from graveyard during declare blockers.
+        // CR 702.190a: Sneak — cast a spell from hand during declare blockers
+        // by paying the Sneak cost and returning an unblocked attacker.
+        // Applies to any card type; permanent-spell placement (CR 702.190b)
+        // is handled at resolution based on the variant's `placement`.
         (
             WaitingFor::Priority { player },
             GameAction::CastSpellAsSneak {
-                gy_object,
+                hand_object,
                 card_id,
                 creature_to_return,
             },
@@ -1568,7 +1812,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             super::casting::handle_cast_spell_as_sneak(
                 state,
                 p,
-                gy_object,
+                hand_object,
                 card_id,
                 creature_to_return,
                 &mut events,
@@ -1924,7 +2168,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             WaitingFor::Priority { player: *player }
         }
         (WaitingFor::Priority { player }, GameAction::SetAutoPass { mode }) => {
-            // Convert request to stored mode, capturing engine state as needed
+            // Convert request to stored mode, capturing engine state as needed.
             let stored_mode = match mode {
                 AutoPassRequest::UntilStackEmpty => AutoPassMode::UntilStackEmpty {
                     initial_stack_len: state.stack.len(),
@@ -2484,6 +2728,8 @@ fn handle_play_land(
             // the choice prompt would fire at a random later resolution point with
             // the wrong controller context.
             if let Some(effect_def) = state.post_replacement_effect.take() {
+                state.post_replacement_source = None;
+                state.post_replacement_event_source = None;
                 if let Some(next_waiting_for) = engine_replacement::apply_post_replacement_effect(
                     state,
                     &effect_def,
@@ -2621,6 +2867,16 @@ pub(super) fn handle_tap_land_for_mana(
 
     if let Some(ability_def) = ability_to_resolve {
         mana_abilities::resolve_mana_ability(state, object_id, player, &ability_def, events, None)?;
+        // CR 605.3b: Only record for `UntapLandForMana` when the activation is
+        // fully reversible — painlands / pay-life sources commit irreversible
+        // state during inline resolution and must not be eligible for undo.
+        if mana_option.penalty.is_undoable() {
+            state
+                .lands_tapped_for_mana
+                .entry(player)
+                .or_default()
+                .push(object_id);
+        }
     } else {
         // Legacy fallback for subtype-only lands.
         let obj = state.objects.get_mut(&object_id).unwrap();
@@ -2637,6 +2893,11 @@ pub(super) fn handle_tap_land_for_mana(
             true,
             events,
         );
+        state
+            .lands_tapped_for_mana
+            .entry(player)
+            .or_default()
+            .push(object_id);
     }
 
     Ok(WaitingFor::Priority { player })
@@ -3444,7 +3705,7 @@ pub(super) fn check_exile_returns(state: &mut GameState, events: &mut Vec<GameEv
     for event in events.iter() {
         if let GameEvent::ZoneChanged {
             object_id,
-            from: Zone::Battlefield,
+            from: Some(Zone::Battlefield),
             ..
         } = event
         {
@@ -3494,6 +3755,8 @@ pub(super) fn check_exile_returns(state: &mut GameState, events: &mut Vec<GameEv
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -3511,6 +3774,7 @@ mod tests {
                 count: QuantityExpr::Fixed {
                     value: num_cards as i32,
                 },
+                target: TargetFilter::Controller,
             },
         )
     }
@@ -3535,6 +3799,8 @@ mod tests {
         }
         def
     }
+
+    use crate::game::test_fixtures::brushland_colored_ability;
 
     fn setup_game_at_main_phase() -> GameState {
         let mut state = new_game(42);
@@ -3580,6 +3846,65 @@ mod tests {
         // uses priority_player. So this is a protocol-level concern.
         let result = apply_as_current(&mut state, GameAction::PassPriority);
         assert!(result.is_ok());
+    }
+
+    // --- Preference actions (SetPhaseStops, CancelAutoPass) bypass actor gate ---
+
+    #[test]
+    fn set_phase_stops_from_non_priority_actor_succeeds() {
+        // Regression: the human (P0) updates phase stops while the AI (P1) holds
+        // priority. Previously this was rejected by check_actor_authorization with
+        // WrongPlayer; the dispatch surfaced "Engine error: Wrong player" to the
+        // user and the preference silently never landed.
+        let mut state = setup_game_at_main_phase();
+        state.priority_player = PlayerId(1);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+
+        let result = apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::SetPhaseStops {
+                stops: vec![Phase::End],
+            },
+        );
+
+        assert!(
+            result.is_ok(),
+            "expected SetPhaseStops to succeed, got {result:?}"
+        );
+        assert_eq!(
+            state.phase_stops.get(&PlayerId(0)),
+            Some(&vec![Phase::End]),
+            "expected actor (P0) preference to be written, not authorized submitter (P1)",
+        );
+        assert!(!state.phase_stops.contains_key(&PlayerId(1)));
+    }
+
+    #[test]
+    fn cancel_auto_pass_routes_by_actor() {
+        // Regression: P0 had an auto-pass session; P1 holds priority and submits
+        // CancelAutoPass on P0's behalf would previously cancel *P1's* session
+        // (handler used authorized_submitter, not actor). After the fix, the
+        // actor field decides which seat is mutated.
+        let mut state = setup_game_at_main_phase();
+        state.auto_pass.insert(
+            PlayerId(0),
+            crate::types::game_state::AutoPassMode::UntilEndOfTurn,
+        );
+        state.priority_player = PlayerId(1);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+
+        let result = apply(&mut state, PlayerId(0), GameAction::CancelAutoPass);
+
+        assert!(result.is_ok());
+        assert!(
+            !state.auto_pass.contains_key(&PlayerId(0)),
+            "P0's auto-pass should have been cancelled"
+        );
     }
 
     // --- GameAction::Concede (CR 104.3a + CR 800.4a) ---
@@ -4351,7 +4676,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&dual_id).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4366,7 +4691,7 @@ mod tests {
                 )
                 .cost(crate::types::ability::AbilityCost::Tap),
             );
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4409,7 +4734,7 @@ mod tests {
             let obj = state.objects.get_mut(&dual_id).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
             obj.has_mana_ability = true;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4424,7 +4749,7 @@ mod tests {
                 )
                 .cost(crate::types::ability::AbilityCost::Tap),
             );
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4488,7 +4813,7 @@ mod tests {
             let obj = state.objects.get_mut(&dual_id).unwrap();
             obj.card_types.core_types.push(CoreType::Land);
             obj.has_mana_ability = true;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Mana {
@@ -4537,6 +4862,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn controller_harming_mana_land_is_not_undoable_after_manual_activation() {
+        let mut state = setup_game_at_main_phase();
+
+        let brushland = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Brushland".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&brushland).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.has_mana_ability = true;
+            Arc::make_mut(&mut obj.abilities).push(brushland_colored_ability());
+        }
+
+        let first = apply_as_current(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: brushland,
+                ability_index: 0,
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(first.waiting_for, WaitingFor::ChooseManaColor { .. }),
+            "expected ChooseManaColor after activating Brushland, got {:?}",
+            first.waiting_for
+        );
+
+        let second = apply_as_current(
+            &mut state,
+            GameAction::ChooseManaColor {
+                choice: crate::types::game_state::ManaChoice::SingleColor(
+                    crate::types::mana::ManaType::Green,
+                ),
+            },
+        )
+        .unwrap();
+        assert!(matches!(second.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.objects[&brushland].tapped);
+        assert_eq!(state.players[0].life, 19);
+        assert!(state
+            .lands_tapped_for_mana
+            .get(&PlayerId(0))
+            .is_none_or(|ids| !ids.contains(&brushland)));
+
+        let undo = apply_as_current(
+            &mut state,
+            GameAction::UntapLandForMana {
+                object_id: brushland,
+            },
+        );
+        assert!(
+            undo.is_err(),
+            "controller-harming mana activations should not be undoable"
+        );
+    }
+
     // CR 605.1b + CR 722.1: End-to-end integration test. Driving a real
     // `ActivateAbility` action on the Forest must (a) update the mana pool with
     // the Forest's base {G}, (b) fire Utopia Sprawl's TapsForMana trigger
@@ -4566,7 +4952,7 @@ mod tests {
             obj.card_types.core_types.push(CoreType::Land);
             obj.card_types.subtypes.push("Forest".to_string());
             obj.has_mana_ability = true;
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Eff::Mana {
@@ -4595,7 +4981,7 @@ mod tests {
             let obj = state.objects.get_mut(&aura).unwrap();
             obj.card_types.core_types.push(CoreType::Enchantment);
             obj.card_types.subtypes.push("Aura".to_string());
-            obj.attached_to = Some(forest);
+            obj.attached_to = Some(forest.into());
             obj.entered_battlefield_turn = Some(1);
             obj.chosen_attributes
                 .push(ChosenAttribute::Color(crate::types::mana::ManaColor::Red));
@@ -4796,7 +5182,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(make_draw_ability(2));
+            Arc::make_mut(&mut obj.abilities).push(make_draw_ability(2));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Blue],
                 generic: 2,
@@ -4857,7 +5243,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(make_draw_ability(2));
+            Arc::make_mut(&mut obj.abilities).push(make_draw_ability(2));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Blue],
                 generic: 2,
@@ -4949,7 +5335,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5059,7 +5445,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5122,7 +5508,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5221,7 +5607,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&counter_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Counter {
                     target: TargetFilter::Typed(TypedFilter::card()),
@@ -5304,7 +5690,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&growth_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(AbilityDefinition::new(
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::Pump {
                     power: crate::types::ability::PtValue::Fixed(3),
@@ -5375,7 +5761,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&bolt_id).unwrap();
             obj.card_types.core_types.push(CoreType::Instant);
-            obj.abilities.push(make_damage_ability(3, None));
+            Arc::make_mut(&mut obj.abilities).push(make_damage_ability(3, None));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Red],
                 generic: 0,
@@ -5440,7 +5826,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Creature);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -5532,7 +5918,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&obj_id).unwrap();
             obj.card_types.core_types.push(CoreType::Creature);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -5589,7 +5975,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&drum).unwrap();
             obj.card_types.core_types.push(CoreType::Artifact);
-            obj.abilities.push(
+            Arc::make_mut(&mut obj.abilities).push(
                 AbilityDefinition::new(
                     AbilityKind::Activated,
                     Effect::Mana {
@@ -5829,7 +6215,14 @@ mod tests {
             apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
             apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
             assert_eq!(
-                state.objects.get(&equipment_id).unwrap().attached_to,
+                state
+                    .objects
+                    .get(&equipment_id)
+                    .unwrap()
+                    .attached_to
+                    // CR 301.5: Equipment must attach to an object — `as_object`
+                    // makes the rules invariant explicit.
+                    .and_then(|t| t.as_object()),
                 Some(creature_a)
             );
             assert!(state
@@ -5867,7 +6260,12 @@ mod tests {
             apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
             apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
             assert_eq!(
-                state.objects.get(&equipment_id).unwrap().attached_to,
+                state
+                    .objects
+                    .get(&equipment_id)
+                    .unwrap()
+                    .attached_to
+                    .and_then(|t| t.as_object()),
                 Some(creature_a)
             );
 
@@ -5892,7 +6290,12 @@ mod tests {
             apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
 
             assert_eq!(
-                state.objects.get(&equipment_id).unwrap().attached_to,
+                state
+                    .objects
+                    .get(&equipment_id)
+                    .unwrap()
+                    .attached_to
+                    .and_then(|t| t.as_object()),
                 Some(creature_b)
             );
             assert!(state
@@ -5928,7 +6331,7 @@ mod tests {
 
             // Try with non-empty stack - should fail
             state.phase = Phase::PreCombatMain;
-            state.stack.push(crate::types::game_state::StackEntry {
+            state.stack.push_back(crate::types::game_state::StackEntry {
                 id: ObjectId(99),
                 source_id: ObjectId(99),
                 controller: PlayerId(1),
@@ -5991,7 +6394,12 @@ mod tests {
             apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
             apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
             assert_eq!(
-                state.objects.get(&equipment_id).unwrap().attached_to,
+                state
+                    .objects
+                    .get(&equipment_id)
+                    .unwrap()
+                    .attached_to
+                    .and_then(|t| t.as_object()),
                 Some(creature)
             );
         }
@@ -6255,7 +6663,7 @@ mod tests {
         {
             let obj = state.objects.get_mut(&spell_id).unwrap();
             obj.card_types.core_types.push(CoreType::Sorcery);
-            obj.abilities.push(make_draw_ability(2));
+            Arc::make_mut(&mut obj.abilities).push(make_draw_ability(2));
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Blue, ManaCostShard::Blue],
                 generic: 1,
@@ -6871,6 +7279,7 @@ mod trigger_target_tests {
                     AbilityKind::Database,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
                     },
                 ),
             ],
@@ -6899,6 +7308,7 @@ mod trigger_target_tests {
                     AbilityKind::Database,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
                     },
                 ),
             ],
@@ -7351,11 +7761,15 @@ mod exile_return_tests {
         // Simulate events where source leaves the battlefield
         let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
-            from: Zone::Battlefield,
+            from: Some(Zone::Battlefield),
             to: Zone::Graveyard,
             record: Box::new(ZoneChangeRecord {
                 name: "Banishing Light".to_string(),
-                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+                ..ZoneChangeRecord::test_minimal(
+                    source_id,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
             }),
         }];
 
@@ -7416,11 +7830,15 @@ mod exile_return_tests {
 
         let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
-            from: Zone::Battlefield,
+            from: Some(Zone::Battlefield),
             to: Zone::Graveyard,
             record: Box::new(ZoneChangeRecord {
                 name: "Deep-Cavern Bat".to_string(),
-                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+                ..ZoneChangeRecord::test_minimal(
+                    source_id,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
             }),
         }];
 
@@ -7473,11 +7891,15 @@ mod exile_return_tests {
 
         let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
-            from: Zone::Battlefield,
+            from: Some(Zone::Battlefield),
             to: Zone::Graveyard,
             record: Box::new(ZoneChangeRecord {
                 name: "Source".to_string(),
-                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+                ..ZoneChangeRecord::test_minimal(
+                    source_id,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
             }),
         }];
 
@@ -7543,11 +7965,15 @@ mod exile_return_tests {
 
         let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
-            from: Zone::Battlefield,
+            from: Some(Zone::Battlefield),
             to: Zone::Graveyard,
             record: Box::new(ZoneChangeRecord {
                 name: "Source".to_string(),
-                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+                ..ZoneChangeRecord::test_minimal(
+                    source_id,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
             }),
         }];
 
@@ -7561,10 +7987,374 @@ mod exile_return_tests {
         assert_eq!(state.exile_links.len(), 1);
         assert_eq!(state.exile_links[0].exiled_id, other_exiled);
     }
+
+    /// CR 400.7 + CR 610.3a: End-to-end — when the source permanent of an
+    /// `UntilHostLeavesPlay` exile leaves the battlefield through the real
+    /// reducer pipeline (move_to_zone → post-action pipeline), the exiled
+    /// card must return to its previous zone. Regression test for White
+    /// Auracite / Oblivion Ring / Banishing Light class.
+    #[test]
+    fn exile_return_end_to_end_through_pipeline() {
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        // Source permanent (e.g., White Auracite) on P0's battlefield
+        let source_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "White Auracite".to_string(),
+            Zone::Battlefield,
+        );
+
+        // Opponent's enchantment on battlefield, then exiled by the source
+        let exiled_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Opponent Enchantment".to_string(),
+            Zone::Exile,
+        );
+
+        // Register the UntilSourceLeaves link as if the trigger had resolved
+        state.exile_links.push(ExileLink {
+            exiled_id,
+            source_id,
+            kind: ExileLinkKind::UntilSourceLeaves {
+                return_zone: Zone::Battlefield,
+            },
+        });
+
+        // Destroy the source via move_to_zone, then run the post-action pipeline
+        // (mirrors what happens when an SBA or destroy effect runs during apply).
+        let mut events: Vec<GameEvent> = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, source_id, Zone::Graveyard, &mut events);
+
+        let default_wf = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        crate::game::engine_priority::run_post_action_pipeline(
+            &mut state,
+            &mut events,
+            &default_wf,
+            true,
+        )
+        .unwrap();
+
+        // Exiled card must have returned to battlefield
+        assert!(
+            state.battlefield.contains(&exiled_id),
+            "Exiled card should return to battlefield when source leaves; battlefield={:?}, exile={:?}",
+            state.battlefield,
+            state.exile,
+        );
+        assert!(!state.exile.contains(&exiled_id));
+        assert!(
+            state.exile_links.is_empty(),
+            "ExileLink should be consumed after return"
+        );
+    }
+
+    /// CR 400.7 + CR 610.3a: End-to-end through full apply path — cast a
+    /// Destroy spell targeting the source, resolve it, verify the exiled
+    /// card returns. Regression test for the White Auracite user report.
+    #[test]
+    fn exile_return_after_destroy_resolution_via_apply() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect, TargetFilter};
+
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(1);
+        state.priority_player = PlayerId(1);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+
+        // P0 controls White Auracite (source)
+        let source_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "White Auracite".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Artifact);
+
+        // The opponent's enchantment that WA exiled
+        let exiled_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Opponent Enchantment".to_string(),
+            Zone::Exile,
+        );
+
+        // Link: UntilSourceLeaves → Battlefield
+        state.exile_links.push(ExileLink {
+            exiled_id,
+            source_id,
+            kind: ExileLinkKind::UntilSourceLeaves {
+                return_zone: Zone::Battlefield,
+            },
+        });
+
+        // P1 casts a Destroy ability targeting WA: push ResolvedAbility with
+        // Effect::Destroy onto the stack and resolve it via resolve_top.
+        let _ = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Destroy {
+                target: TargetFilter::Any,
+                cant_regenerate: false,
+            },
+        );
+        let destroy_ability = crate::types::ability::ResolvedAbility::new(
+            Effect::Destroy {
+                target: TargetFilter::Any,
+                cant_regenerate: false,
+            },
+            vec![crate::types::ability::TargetRef::Object(source_id)],
+            ObjectId(999),
+            PlayerId(1),
+        )
+        .kind(AbilityKind::Spell);
+
+        let spell_obj = create_object(
+            &mut state,
+            CardId(99),
+            PlayerId(1),
+            "Disenchant".to_string(),
+            Zone::Stack,
+        );
+
+        state.stack.push_back(crate::types::game_state::StackEntry {
+            id: spell_obj,
+            source_id: spell_obj,
+            controller: PlayerId(1),
+            kind: crate::types::game_state::StackEntryKind::Spell {
+                ability: Some(destroy_ability),
+                card_id: CardId(99),
+                casting_variant: crate::types::game_state::CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+
+        // Resolve the top stack entry
+        let mut events = Vec::new();
+        crate::game::stack::resolve_top(&mut state, &mut events);
+
+        // Run the post-action pipeline exactly as apply() would
+        let default_wf = WaitingFor::Priority {
+            player: PlayerId(1),
+        };
+        crate::game::engine_priority::run_post_action_pipeline(
+            &mut state,
+            &mut events,
+            &default_wf,
+            false,
+        )
+        .unwrap();
+
+        // White Auracite should be destroyed
+        assert!(
+            state.players[0].graveyard.contains(&source_id),
+            "White Auracite should be in graveyard"
+        );
+        // Exiled enchantment should have returned to battlefield
+        assert!(
+            state.battlefield.contains(&exiled_id),
+            "Exiled enchantment should return to battlefield; battlefield={:?}, exile={:?}",
+            state.battlefield,
+            state.exile,
+        );
+        assert!(!state.exile.contains(&exiled_id));
+        assert!(state.exile_links.is_empty());
+    }
+
+    /// CR 400.7 + CR 610.3a + CR 611.2: Full integration test using the real
+    /// parsed Oracle text for White Auracite. Exercises the complete pipeline:
+    /// parser → trigger.execute (with Duration::UntilHostLeavesPlay) →
+    /// build_resolved_from_def → stack resolution → execute_zone_move
+    /// (which must register the ExileLink) → destroy source → post-action
+    /// pipeline → check_exile_returns → return to battlefield.
+    ///
+    /// Regression test for the L4-18 user report: White Auracite's exiled
+    /// enchantment was not returning when White Auracite itself was destroyed.
+    #[test]
+    fn white_auracite_real_oracle_text_returns_exiled_card() {
+        use crate::game::ability_utils::build_resolved_from_def;
+        use crate::game::scenario::{GameScenario, P0, P1};
+        use crate::types::ability::TargetRef;
+        use crate::types::card_type::CoreType;
+        use crate::types::game_state::StackEntry;
+
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+
+        // White Auracite on P0's battlefield, with its real parsed triggers.
+        let wa_id = scenario
+            .add_creature(P0, "White Auracite", 0, 0)
+            .as_artifact()
+            .from_oracle_text(
+                "When this artifact enters, exile target nonland permanent an opponent \
+                 controls until this artifact leaves the battlefield.\n{T}: Add {W}.",
+            )
+            .id();
+
+        // Opponent's enchantment on battlefield (the one WA will exile).
+        let ench_id = scenario
+            .add_creature(P1, "Opponent Enchantment", 0, 0)
+            .as_enchantment()
+            .id();
+
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        // Sanity-check the parser: WA must have an ETB trigger whose execute
+        // ability carries Duration::UntilHostLeavesPlay on a ChangeZone to
+        // Exile. If this fails, the parser regressed, not the engine.
+        let wa = state.objects.get(&wa_id).expect("WA on battlefield");
+        let etb_trigger = wa
+            .trigger_definitions
+            .iter_all()
+            .find(|t| {
+                matches!(t.mode, crate::types::TriggerMode::ChangesZone)
+                    && t.destination == Some(Zone::Battlefield)
+            })
+            .expect("WA must have an ETB (ChangesZone to Battlefield) trigger");
+        let execute_def = etb_trigger.execute.as_deref().expect("trigger.execute");
+        assert_eq!(
+            execute_def.duration,
+            Some(crate::types::ability::Duration::UntilHostLeavesPlay),
+            "parser regression: WA's exile trigger must carry UntilHostLeavesPlay"
+        );
+        assert!(
+            matches!(
+                &*execute_def.effect,
+                crate::types::ability::Effect::ChangeZone {
+                    destination: Zone::Exile,
+                    ..
+                }
+            ),
+            "parser regression: WA's trigger effect must be ChangeZone→Exile"
+        );
+
+        // Build a ResolvedAbility from the real parsed execute and pre-populate
+        // its target with the opponent's enchantment. This bypasses the target
+        // selection UX but exercises every downstream code path (ability
+        // duration threading, execute_zone_move, exile link creation,
+        // check_exile_returns). The parser / targeting is tested separately.
+        let mut resolved = build_resolved_from_def(execute_def, wa_id, PlayerId(0));
+        resolved.targets = vec![TargetRef::Object(ench_id)];
+
+        // Push a TriggeredAbility stack entry that mirrors what
+        // push_pending_trigger_to_stack would create.
+        let stack_id = ObjectId(9_000_000);
+        state.stack.push_back(StackEntry {
+            id: stack_id,
+            source_id: wa_id,
+            controller: PlayerId(0),
+            kind: crate::types::game_state::StackEntryKind::TriggeredAbility {
+                source_id: wa_id,
+                ability: Box::new(resolved),
+                description: Some("When WA enters...".to_string()),
+                condition: None,
+                trigger_event: None,
+            },
+        });
+
+        // Resolve the trigger: WA's target enchantment moves to exile and the
+        // ExileLink for UntilSourceLeaves must be created.
+        let mut events = Vec::new();
+        crate::game::stack::resolve_top(state, &mut events);
+
+        assert!(
+            state.exile.contains(&ench_id),
+            "opponent enchantment must be in exile after trigger resolves"
+        );
+        let has_link = state.exile_links.iter().any(|link| {
+            link.exiled_id == ench_id
+                && link.source_id == wa_id
+                && matches!(
+                    link.kind,
+                    crate::types::game_state::ExileLinkKind::UntilSourceLeaves {
+                        return_zone: Zone::Battlefield
+                    }
+                )
+        });
+        assert!(
+            has_link,
+            "execute_zone_move must register an UntilSourceLeaves link; exile_links={:?}",
+            state.exile_links
+        );
+
+        // Now destroy White Auracite via move_to_zone and run the full
+        // post-action pipeline exactly as apply() would.
+        let mut events: Vec<GameEvent> = Vec::new();
+        crate::game::zones::move_to_zone(state, wa_id, Zone::Graveyard, &mut events);
+
+        let default_wf = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        crate::game::engine_priority::run_post_action_pipeline(
+            state,
+            &mut events,
+            &default_wf,
+            false,
+        )
+        .unwrap();
+
+        // Confirm WA is in graveyard and the exiled enchantment has returned.
+        assert!(
+            state.players[0].graveyard.contains(&wa_id),
+            "White Auracite should be in graveyard"
+        );
+        // The returned enchantment must be on the battlefield under its owner's
+        // control (CR 400.7a).
+        assert!(
+            state.battlefield.contains(&ench_id),
+            "exiled enchantment should return to battlefield; battlefield={:?}, exile={:?}",
+            state.battlefield,
+            state.exile,
+        );
+        assert!(!state.exile.contains(&ench_id));
+        assert!(
+            state.exile_links.is_empty(),
+            "ExileLink should be consumed after return; remaining={:?}",
+            state.exile_links
+        );
+        let returned = state.objects.get(&ench_id).unwrap();
+        assert!(
+            returned
+                .card_types
+                .core_types
+                .contains(&CoreType::Enchantment),
+            "returned object must still be an enchantment"
+        );
+    }
 }
 
 #[cfg(test)]
 mod phase_trigger_regression_tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::combat::AttackTarget;
     use crate::game::zones::create_object;
@@ -7598,6 +8388,7 @@ mod phase_trigger_regression_tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::EventContextAmount,
                 },
+                target: TargetFilter::Controller,
             },
             vec![],
             source_id,
@@ -7926,7 +8717,7 @@ mod phase_trigger_regression_tests {
             .card_types
             .core_types
             .push(CoreType::Creature);
-        state.stack.push(crate::types::game_state::StackEntry {
+        state.stack.push_back(crate::types::game_state::StackEntry {
             id: creature_spell,
             source_id: creature_spell,
             controller: PlayerId(0),
@@ -7954,6 +8745,7 @@ mod phase_trigger_regression_tests {
                         AbilityKind::Database,
                         Effect::Draw {
                             count: QuantityExpr::Fixed { value: 1 },
+                            target: TargetFilter::Controller,
                         },
                     ),
                 ));
@@ -8236,7 +9028,8 @@ mod phase_trigger_regression_tests {
                         },
                     )),
             );
-            obj.base_trigger_definitions = obj.trigger_definitions.iter_all().cloned().collect();
+            obj.base_trigger_definitions =
+                Arc::new(obj.trigger_definitions.iter_all().cloned().collect());
         }
 
         // Leyline of Hope analog: "If you would gain life, gain that much + 1 instead"
@@ -8262,7 +9055,7 @@ mod phase_trigger_regression_tests {
                 ),
             );
             obj.base_replacement_definitions =
-                obj.replacement_definitions.iter_all().cloned().collect();
+                Arc::new(obj.replacement_definitions.iter_all().cloned().collect());
         }
 
         // Declare bat as attacker
@@ -9002,12 +9795,13 @@ mod phase_trigger_regression_tests {
                 subtypes: vec!["Phyrexian".to_string(), "Praetor".to_string()],
             };
             obj.base_keywords = vec![crate::types::keywords::Keyword::Vigilance];
-            obj.base_abilities = vec![crate::types::ability::AbilityDefinition::new(
+            obj.base_abilities = Arc::new(vec![crate::types::ability::AbilityDefinition::new(
                 crate::types::ability::AbilityKind::Activated,
                 Effect::Draw {
                     count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
-            )];
+            )]);
         }
 
         // Superior Spider-Man freshly on battlefield under PlayerId(0)'s control.
@@ -10219,7 +11013,7 @@ mod keyword_action_stack_tests {
     fn simulate_counter_top_of_stack(state: &mut GameState) {
         let popped = state
             .stack
-            .pop()
+            .pop_back()
             .expect("stack must have an entry to counter");
         assert!(
             matches!(

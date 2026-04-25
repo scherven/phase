@@ -26,6 +26,7 @@ use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::statics::StaticMode;
 use engine::types::zones::Zone;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,18 +137,19 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
         // Add compound animation static
         let animation = kaito_animation_static();
         obj.static_definitions.push(animation.clone());
-        obj.base_static_definitions.push(animation);
+        Arc::make_mut(&mut obj.base_static_definitions).push(animation);
 
         // +1 loyalty: CreateEmblem
         let emblem_ability = AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::CreateEmblem {
                 statics: vec![ninja_pump_static()],
+                triggers: Vec::new(),
             },
         )
         .cost(AbilityCost::Loyalty { amount: 1 });
-        obj.abilities.push(emblem_ability.clone());
-        obj.base_abilities.push(emblem_ability);
+        Arc::make_mut(&mut obj.abilities).push(emblem_ability.clone());
+        Arc::make_mut(&mut obj.base_abilities).push(emblem_ability);
 
         // 0 loyalty: Surveil 2, then draw for each opponent who lost life
         let draw_sub = AbilityDefinition::new(
@@ -158,18 +160,20 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
                         filter: PlayerFilter::OpponentLostLife,
                     },
                 },
+                target: TargetFilter::Controller,
             },
         );
         let surveil_ability = AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::Surveil {
                 count: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Controller,
             },
         )
         .cost(AbilityCost::Loyalty { amount: 0 })
         .sub_ability(draw_sub);
-        obj.abilities.push(surveil_ability.clone());
-        obj.base_abilities.push(surveil_ability);
+        Arc::make_mut(&mut obj.abilities).push(surveil_ability.clone());
+        Arc::make_mut(&mut obj.base_abilities).push(surveil_ability);
 
         obj.mana_cost = ManaCost::Cost {
             shards: vec![ManaCostShard::Blue, ManaCostShard::Black],
@@ -511,7 +515,7 @@ fn kaito_surveil_and_draw() {
             .find(|p| p.id == P0)
             .unwrap()
             .library
-            .push(id);
+            .push_back(id);
     }
 
     // Mark opponent (P1) as having lost life this turn

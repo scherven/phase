@@ -85,16 +85,18 @@ fn deck_payload_from_current_pools(state: &GameState) -> Result<DeckPayload, Str
         .find(|p| p.player == PlayerId(1))
         .ok_or_else(|| "Missing player 1 deck pool".to_string())?;
 
+    // `PlayerDeckPayload`'s deck fields are plain `Vec<DeckEntry>` — deref
+    // the Arc then deep-clone so the payload owns its own vec.
     Ok(DeckPayload {
         player: PlayerDeckPayload {
-            main_deck: p0.current_main.clone(),
-            sideboard: p0.current_sideboard.clone(),
-            commander: p0.current_commander.clone(),
+            main_deck: (*p0.current_main).clone(),
+            sideboard: (*p0.current_sideboard).clone(),
+            commander: (*p0.current_commander).clone(),
         },
         opponent: PlayerDeckPayload {
-            main_deck: p1.current_main.clone(),
-            sideboard: p1.current_sideboard.clone(),
-            commander: p1.current_commander.clone(),
+            main_deck: (*p1.current_main).clone(),
+            sideboard: (*p1.current_sideboard).clone(),
+            commander: (*p1.current_commander).clone(),
         },
         ai_decks: vec![],
     })
@@ -190,8 +192,8 @@ pub fn handle_submit_sideboard(
     }
 
     let face_map = build_card_face_map(pool);
-    pool.current_main = counts_to_entries(&main, &face_map)?;
-    pool.current_sideboard = counts_to_entries(&sideboard, &face_map)?;
+    pool.current_main = std::sync::Arc::new(counts_to_entries(&main, &face_map)?);
+    pool.current_sideboard = std::sync::Arc::new(counts_to_entries(&sideboard, &face_map)?);
 
     if !state.sideboard_submitted.contains(&player) {
         state.sideboard_submitted.push(player);
@@ -373,10 +375,10 @@ mod tests {
         state.match_phase = MatchPhase::BetweenGames;
         state.deck_pools = vec![PlayerDeckPool {
             player: PlayerId(0),
-            registered_main: vec![entry("A", 2)],
-            registered_sideboard: vec![entry("B", 1)],
-            current_main: vec![entry("A", 2)],
-            current_sideboard: vec![entry("B", 1)],
+            registered_main: std::sync::Arc::new(vec![entry("A", 2)]),
+            registered_sideboard: std::sync::Arc::new(vec![entry("B", 1)]),
+            current_main: std::sync::Arc::new(vec![entry("A", 2)]),
+            current_sideboard: std::sync::Arc::new(vec![entry("B", 1)]),
             ..Default::default()
         }];
 

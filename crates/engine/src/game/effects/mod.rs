@@ -74,6 +74,7 @@ pub mod manifest;
 pub mod manifest_dread;
 pub mod mill;
 pub mod monstrosity;
+pub mod overload;
 pub mod paradigm;
 pub mod pay;
 pub mod phase_out;
@@ -89,6 +90,7 @@ pub mod regenerate;
 pub mod register_bending;
 pub mod remove_from_combat;
 pub mod reveal;
+pub mod reveal_from_hand;
 pub mod reveal_hand;
 pub mod reveal_top;
 pub mod reveal_until;
@@ -328,6 +330,7 @@ pub fn resolve_effect(
         Effect::SearchLibrary { .. } => search_library::resolve(state, ability, events),
         Effect::Seek { .. } => seek::resolve(state, ability, events),
         Effect::RevealHand { .. } => reveal_hand::resolve(state, ability, events),
+        Effect::RevealFromHand { .. } => reveal_from_hand::resolve(state, ability, events),
         Effect::Reveal { .. } => reveal::resolve(state, ability, events),
         Effect::RevealTop { .. } => reveal_top::resolve(state, ability, events),
         Effect::ExileTop { .. } => exile_top::resolve(state, ability, events),
@@ -437,6 +440,18 @@ pub fn resolve_effect(
         }
         Effect::TakeTheInitiative => venture::resolve_take_initiative(state, ability, events),
         Effect::Conjure { .. } => conjure::resolve(state, ability, events),
+        Effect::ChooseOneOf { .. } => {
+            // CR 700.2: Runtime resolver for `ChooseOneOf` is not yet wired —
+            // full support requires a new `WaitingFor::ChooseOneOfBranch`
+            // state + effect resolver + UI integration. The typed shape is
+            // emitted by the parser (Highway Robbery and analogous binary
+            // "you may A or B" imperatives) so it is preserved in card data
+            // for future runtime activation. Treat as a no-op at resolution
+            // for now — the outer `optional: true` on the ability means the
+            // controller can simply decline.
+            eprintln!("Warning: ChooseOneOf resolver not yet implemented — treating as no-op");
+            Ok(())
+        }
         Effect::Unimplemented { name, .. } => {
             // Log warning and return Ok (no-op) for unimplemented effects
             eprintln!("Warning: Unimplemented effect: {}", name);
@@ -599,6 +614,57 @@ pub(crate) fn controller_for_relative_filter(
     }
 }
 
+/// CR 121.1 + CR 615.5 + CR 609.7: Resolve the acting player for an effect
+/// whose target slot may be a context-ref. Mirrors `life::resolve_life_loss_target`
+/// for the Draw/Scry/Surveil class — those handlers historically short-circuited
+/// to `ability.controller` whenever `target.is_context_ref()`, which is wrong
+/// for `PostReplacementSourceController` (the prevented event's source has its
+/// own controller, distinct from the replacement's controller).
+///
+/// Resolution order:
+/// 1. First `TargetRef::Player` in `ability.targets` (chosen at announcement).
+/// 2. `resolve_event_context_target` on the filter — reads `state` slots like
+///    `current_trigger_event` (TriggeringSpellController) and
+///    `post_replacement_event_source` (PostReplacementSourceController).
+/// 3. Fall back to `ability.controller` (preserves prior semantics for context
+///    refs whose state slots are empty in the current resolution window).
+pub(crate) fn resolve_player_for_context_ref(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    target_filter: &TargetFilter,
+) -> PlayerId {
+    // CR 115.1: For non-context-ref filters (e.g. `TargetFilter::Player` from
+    // "target player draws"), the drawing player was chosen at announcement
+    // and lives in `ability.targets`. Context-ref filters (Controller,
+    // PostReplacementSourceController, …) MUST NOT consult `ability.targets`:
+    // chain target-propagation (resolve_ability_chain) inherits parent targets
+    // into a sub-ability with empty targets, so a sub Draw whose filter is
+    // `Controller` would otherwise pick up the parent's Player target.
+    if !target_filter.is_context_ref() {
+        if let Some(player) = ability.targets.iter().find_map(|target| match target {
+            TargetRef::Player(player) => Some(*player),
+            _ => None,
+        }) {
+            return player;
+        }
+    }
+    if let Some(target_ref) = crate::game::targeting::resolve_event_context_target(
+        state,
+        target_filter,
+        ability.source_id,
+    ) {
+        return match target_ref {
+            TargetRef::Player(player) => player,
+            TargetRef::Object(id) => state
+                .objects
+                .get(&id)
+                .map(|obj| obj.controller)
+                .unwrap_or(ability.controller),
+        };
+    }
+    ability.controller
+}
+
 /// CR 117.3a: Determine which player receives the "may" prompt for an optional
 /// effect. Most optional effects go to the caster (CR 609.3). Subject-anchored
 /// optional effects — "its controller may search their library" (Assassin's
@@ -669,6 +735,11 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         | Effect::Discard { target, .. }
         | Effect::DiscardCard { target, .. }
         | Effect::Mill { target, .. }
+        // CR 121.1 + CR 603.7c: "they draw a card" off an opponent-subject
+        // trigger (Firemane Commando) carries `target: TriggeringPlayer`, which
+        // must auto-bind from the current trigger event so the drawing player
+        // is the acting opponent — not the trigger controller.
+        | Effect::Draw { target, .. }
         | Effect::Shuffle { target, .. }
         | Effect::GivePlayerCounter { target, .. }
         | Effect::LoseAllPlayerCounters { target, .. }
@@ -682,6 +753,15 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         | Effect::GiveControl { target, .. }
         | Effect::Detain { target, .. }
         | Effect::TargetOnly { target } => target,
+        // CR 603.7c + CR 608.2c: `GenericEffect` carries an optional `target` that may
+        // be an event-context ref (e.g., `TriggeringSource` for "that land doesn't untap
+        // during its controller's next untap step" on a TapsForMana trigger). Routing it
+        // through the event-context resolver binds the transient continuous effect to
+        // the specific triggering object, mirroring targeted pump/bounce semantics.
+        Effect::GenericEffect {
+            target: Some(ref filter),
+            ..
+        } => filter,
         Effect::Token { owner, .. } => owner,
         Effect::RevealTop { player, .. } => player,
         Effect::ExileTop { player, .. } => player,
@@ -1328,6 +1408,7 @@ pub fn resolve_ability_chain(
                 | WaitingFor::ExploreChoice { .. }
                 | WaitingFor::CopyRetarget { .. }
                 | WaitingFor::DistributeAmong { .. }
+                | WaitingFor::PayAmountChoice { .. }
                 | WaitingFor::RetargetChoice { .. }
                 | WaitingFor::ChooseFromZoneChoice { .. }
                 | WaitingFor::ManifestDreadChoice { .. }
@@ -1889,6 +1970,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -1917,6 +1999,7 @@ mod tests {
         let sub = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -1985,6 +2068,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(1),
@@ -2134,6 +2218,107 @@ mod tests {
             state.tracked_object_sets.is_empty(),
             "Should NOT record tracked set when uses_tracked_set is false"
         );
+    }
+
+    /// CR 608.2c building-block regression: a synchronous chain of
+    /// `ChangeZoneAll(Battlefield → Hand)` followed by
+    /// `Token { count: Ref(TrackedSetSize) }` produces one token per object
+    /// moved by the parent. CR 608.2c (verified via `grep '^608.2c'
+    /// docs/MagicCompRules.txt`) covers "instructions in the order written"
+    /// — the per-instruction-set basis for "this way" referencing. Covers the
+    /// "Return all <X> to their owners' hands. If you do, create N Treasure
+    /// tokens, where N is the number of permanents returned this way" pattern
+    /// (Item 1 of the design doc) at the primitive level — the parser arm is
+    /// deferred until a real card surfaces.
+    ///
+    /// Asserts both the K-object case and the K=0 case so the
+    /// `chain_tracked_set_id` plumbing can be trusted by future callers.
+    #[test]
+    fn change_zone_all_battlefield_to_hand_publishes_chain_for_tracked_set_size_cr_609_3() {
+        fn run_with_count(k: usize) -> (Vec<ObjectId>, GameState) {
+            let mut state = GameState::new_two_player(42);
+            let mut moving_ids = Vec::with_capacity(k);
+            for i in 0..k {
+                moving_ids.push(create_object(
+                    &mut state,
+                    CardId(100 + i as u64),
+                    PlayerId(0),
+                    format!("Equipment {i}"),
+                    Zone::Battlefield,
+                ));
+            }
+            let initial_battlefield = state.battlefield.len();
+
+            let token_sub = ResolvedAbility::new(
+                Effect::Token {
+                    name: "Treasure".to_string(),
+                    power: PtValue::Fixed(0),
+                    toughness: PtValue::Fixed(0),
+                    types: vec!["Artifact".to_string(), "Treasure".to_string()],
+                    colors: vec![],
+                    keywords: vec![],
+                    tapped: false,
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::TrackedSetSize,
+                    },
+                    owner: TargetFilter::Controller,
+                    attach_to: None,
+                    enters_attacking: false,
+                    supertypes: vec![],
+                    static_abilities: vec![],
+                    enter_with_counters: vec![],
+                },
+                vec![],
+                ObjectId(900),
+                PlayerId(0),
+            );
+            let ability = ResolvedAbility::new(
+                Effect::ChangeZoneAll {
+                    origin: Some(Zone::Battlefield),
+                    destination: Zone::Hand,
+                    target: TargetFilter::Any,
+                },
+                vec![],
+                ObjectId(900),
+                PlayerId(0),
+            )
+            .sub_ability(token_sub);
+
+            let mut events = Vec::new();
+            resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+            // Sanity: the K originals left the battlefield, the new tokens entered.
+            // Battlefield count = initial - K (originals returned) + K (tokens minted).
+            assert_eq!(state.battlefield.len(), initial_battlefield);
+            (moving_ids, state)
+        }
+
+        // Three objects → three Treasure tokens; originals are in Hand.
+        let (moved, state) = run_with_count(3);
+        for id in &moved {
+            assert_eq!(state.objects[id].zone, Zone::Hand);
+        }
+        let treasures: Vec<_> = state
+            .battlefield
+            .iter()
+            .filter_map(|id| state.objects.get(id))
+            .filter(|o| o.name == "Treasure")
+            .collect();
+        assert_eq!(
+            treasures.len(),
+            3,
+            "TrackedSetSize must equal the number of permanents moved by the parent ChangeZoneAll"
+        );
+
+        // Zero objects → zero Treasure tokens (no spurious creation when chain is empty).
+        let (_, state0) = run_with_count(0);
+        let treasures0 = state0
+            .battlefield
+            .iter()
+            .filter_map(|id| state0.objects.get(id))
+            .filter(|o| o.name == "Treasure")
+            .count();
+        assert_eq!(treasures0, 0, "Empty chain must mint zero tokens");
     }
 
     #[test]
@@ -2573,6 +2758,7 @@ mod tests {
         let base_chain = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -2583,6 +2769,7 @@ mod tests {
         let instead_chain = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -2650,6 +2837,7 @@ mod tests {
         let mut ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -2686,6 +2874,7 @@ mod tests {
                 random: false,
                 up_to: false,
                 unless_filter: None,
+                filter: None,
             },
             vec![],
             ObjectId(100),
@@ -2725,6 +2914,7 @@ mod tests {
         let mut ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -2771,6 +2961,7 @@ mod tests {
         let mut ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -2828,6 +3019,7 @@ mod tests {
         let mut ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -2892,6 +3084,7 @@ mod tests {
         let mut ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(100),
@@ -3056,7 +3249,7 @@ mod tests {
         state.objects.get_mut(&exiled_c).unwrap().mana_cost = ManaCost::generic(4);
         state.current_trigger_event = Some(GameEvent::ZoneChanged {
             object_id: source,
-            from: Zone::Battlefield,
+            from: Some(Zone::Battlefield),
             to: Zone::Graveyard,
             record: Box::new(crate::types::game_state::ZoneChangeRecord {
                 linked_exile_snapshot: vec![
@@ -3078,7 +3271,7 @@ mod tests {
                 ],
                 ..crate::types::game_state::ZoneChangeRecord::test_minimal(
                     source,
-                    Zone::Battlefield,
+                    Some(Zone::Battlefield),
                     Zone::Graveyard,
                 )
             }),
@@ -3171,6 +3364,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(1),
@@ -3193,6 +3387,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(1),
@@ -3208,6 +3403,7 @@ mod tests {
         let opponent_ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(2),
@@ -3226,6 +3422,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             vec![],
             ObjectId(1),
@@ -3313,7 +3510,7 @@ mod tests {
             "Spell".to_string(),
             Zone::Library,
         );
-        state.players[0].library.push(lib_card);
+        state.players[0].library.push_back(lib_card);
 
         // Grandchild: grant PlayFromExile to the tracked set. Forces every
         // zone-changing ancestor to publish (transitive descendant check).

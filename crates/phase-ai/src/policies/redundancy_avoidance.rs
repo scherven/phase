@@ -182,7 +182,7 @@ fn redundancy_delta(
             KIND_DEAL_DAMAGE_ZERO,
             /* delta= */ -3.0,
         ),
-        Effect::Draw { count } => zero_quantity_redundancy(
+        Effect::Draw { count, .. } => zero_quantity_redundancy(
             state,
             source_id,
             ai_player,
@@ -344,7 +344,14 @@ fn redundancy_delta(
         | Effect::MadnessCast { .. }
         // CR 122.1: LoseAllPlayerCounters is redundant only if no player in scope
         // has any counters. Not worth a dedicated predicate — fall through to None.
-        | Effect::LoseAllPlayerCounters { .. } => None,
+        | Effect::LoseAllPlayerCounters { .. }
+        // CR 701.20a: RevealFromHand prompts a reveal-or-decline choice; its value
+        // depends on the on_decline branch and game state — no simple redundancy signal.
+        | Effect::RevealFromHand { .. }
+        // CR 700.2: ChooseOneOf offers the controller a runtime choice between
+        // branches — redundancy would require evaluating each branch in turn,
+        // which is beyond this policy's scope. Fall through to None.
+        | Effect::ChooseOneOf { .. } => None,
     }
 }
 
@@ -643,6 +650,8 @@ fn animate_keyword_redundancy(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::cast_facts::cast_facts_for_action;
     use crate::config::AiConfig;
@@ -688,7 +697,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&obj_id).unwrap();
         obj.card_types.core_types.push(CoreType::Creature);
-        obj.abilities
+        Arc::make_mut(&mut obj.abilities)
             .push(AbilityDefinition::new(AbilityKind::Activated, effect));
         obj_id
     }
@@ -1095,9 +1104,10 @@ mod tests {
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 0 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         )));
-        obj.abilities.push(ability);
+        Arc::make_mut(&mut obj.abilities).push(ability);
 
         let config = AiConfig::default();
         let ai_ctx = AiContext::empty(&config.weights);

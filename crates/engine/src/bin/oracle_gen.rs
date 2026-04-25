@@ -38,6 +38,64 @@ struct CardExportEntry {
     rulings: Vec<Ruling>,
 }
 
+/// Insert a card face under its short-name key, resolving collisions when
+/// multiple MTGJSON entries map to the same lowercased face name. This happens
+/// when a new DFC has a back face whose name matches a classic standalone card
+/// — e.g. the Secrets of Strixhaven card `"Emeritus of Truce // Swords to
+/// Plowshares"` whose back-face name collides with the iconic paper
+/// `"Swords to Plowshares"`.
+///
+/// Winner selection is structural first, then by printings count:
+/// 1. An entry from a standalone MTGJSON key (`entry.layout.is_none()`) beats
+///    one from a multi-face `" // "` key. The canonical paper card always wins
+///    over a component of a compound card — not by popularity, but by origin.
+/// 2. Within the same structural class, the entry with more printings wins.
+/// 3. On a tie, the first-inserted entry is kept (iteration is sorted by
+///    MTGJSON key, so "first" is deterministic across machines).
+///
+/// Every collision emits a `warn!` so new MTGJSON data drops surface any
+/// overlap in the build log. `mtgjson_key` is the source key (e.g.
+/// `"Start // Fire"`) for actionable diagnostics.
+fn insert_face(
+    face_index: &mut BTreeMap<String, CardExportEntry>,
+    mtgjson_key: &str,
+    key: String,
+    entry: CardExportEntry,
+) {
+    let Some(existing) = face_index.get(&key) else {
+        face_index.insert(key, entry);
+        return;
+    };
+
+    let new_standalone = entry.layout.is_none();
+    let existing_standalone = existing.layout.is_none();
+    let new_wins = match (existing_standalone, new_standalone) {
+        (false, true) => true,
+        (true, false) => false,
+        _ => entry.printings.len() > existing.printings.len(),
+    };
+
+    let existing_oracle = existing.face.scryfall_oracle_id.as_deref();
+    let new_oracle = entry.face.scryfall_oracle_id.as_deref();
+    let existing_printings = existing.printings.len();
+    let new_printings = entry.printings.len();
+
+    if new_wins {
+        tracing::warn!(
+            "Face collision on '{key}': replacing prior entry ({existing_oracle:?}, \
+             {existing_printings} printings) with entry from MTGJSON key '{mtgjson_key}' \
+             ({new_oracle:?}, {new_printings} printings)"
+        );
+        face_index.insert(key, entry);
+    } else {
+        tracing::warn!(
+            "Face collision on '{key}': keeping prior entry ({existing_oracle:?}, \
+             {existing_printings} printings) over entry from MTGJSON key '{mtgjson_key}' \
+             ({new_oracle:?}, {new_printings} printings)"
+        );
+    }
+}
+
 fn build_export_layout(
     faces: &[AtomicCard],
     oracle_id: Option<String>,
@@ -211,7 +269,16 @@ fn main() {
     let mut total_cards = 0u32;
     let mut cards_with_unimplemented = 0u32;
 
-    for faces in atomic.data.values() {
+    // Sort MTGJSON keys for deterministic iteration. `atomic.data` is a
+    // `HashMap`, so raw `.values()` order is per-process random — that is
+    // the root cause behind flaky face-name collision outcomes (e.g. paper
+    // Brainstorm vs. the SOS DFC back-face Brainstorm picking different
+    // winners across builds). Deterministic iteration lets `insert_face`'s
+    // tiebreakers produce the same winner every time.
+    let mut atomic_keys: Vec<&String> = atomic.data.keys().collect();
+    atomic_keys.sort_unstable();
+    for mtgjson_key in atomic_keys {
+        let faces = &atomic.data[mtgjson_key];
         // --filter: skip cards not matching any filter name
         if !filter_names.is_empty() {
             let card_name = faces
@@ -269,7 +336,9 @@ fn main() {
                 } else {
                     Vec::new()
                 };
-                face_index.insert(
+                insert_face(
+                    &mut face_index,
+                    mtgjson_key.as_str(),
                     key,
                     CardExportEntry {
                         face,
@@ -293,7 +362,9 @@ fn main() {
                 cards_with_unimplemented += 1;
             }
 
-            face_index.insert(
+            insert_face(
+                &mut face_index,
+                mtgjson_key.as_str(),
                 key,
                 CardExportEntry {
                     face,
@@ -829,9 +900,123 @@ mod tests {
 
     use engine::database::mtgjson::{load_atomic_cards, AtomicCardsFile};
     use engine::types::ability::TargetFilter;
+    use engine::types::card::CardFace;
     use engine::types::keywords::Keyword;
 
     use super::*;
+
+    fn make_entry(oracle_id: &str, printings: &[&str], layout: Option<&str>) -> CardExportEntry {
+        CardExportEntry {
+            face: CardFace {
+                scryfall_oracle_id: Some(oracle_id.to_string()),
+                ..Default::default()
+            },
+            legalities: BTreeMap::new(),
+            layout: layout.map(|s| s.to_string()),
+            printings: printings.iter().map(|s| s.to_string()).collect(),
+            rulings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn insert_face_standalone_beats_multiface_even_with_fewer_printings() {
+        let mut map = BTreeMap::new();
+        // Insert the SOS DFC back-face first (wrong winner if we only looked at
+        // printings order of insertion).
+        insert_face(
+            &mut map,
+            "Emeritus of Truce // Swords to Plowshares",
+            "swords to plowshares".to_string(),
+            make_entry("sos-oracle", &["SOS"], Some("prepare")),
+        );
+        // Then insert paper Swords to Plowshares as a standalone.
+        insert_face(
+            &mut map,
+            "Swords to Plowshares",
+            "swords to plowshares".to_string(),
+            make_entry("paper-oracle", &["2ED", "ICE", "MMA"], None),
+        );
+        assert_eq!(
+            map["swords to plowshares"]
+                .face
+                .scryfall_oracle_id
+                .as_deref(),
+            Some("paper-oracle"),
+            "standalone MTGJSON entry must win over a multi-face back face"
+        );
+    }
+
+    #[test]
+    fn insert_face_standalone_insertion_order_does_not_matter() {
+        // Reverse order vs. the test above — paper first, then DFC.
+        let mut map = BTreeMap::new();
+        insert_face(
+            &mut map,
+            "Swords to Plowshares",
+            "swords to plowshares".to_string(),
+            make_entry("paper-oracle", &["2ED", "ICE", "MMA"], None),
+        );
+        insert_face(
+            &mut map,
+            "Emeritus of Truce // Swords to Plowshares",
+            "swords to plowshares".to_string(),
+            make_entry("sos-oracle", &["SOS"], Some("prepare")),
+        );
+        assert_eq!(
+            map["swords to plowshares"]
+                .face
+                .scryfall_oracle_id
+                .as_deref(),
+            Some("paper-oracle"),
+        );
+    }
+
+    #[test]
+    fn insert_face_within_same_class_more_printings_wins() {
+        // Both entries are multi-face (e.g., two unrelated split cards sharing
+        // a face name). Structural tiebreaker is a draw; printings count decides.
+        let mut map = BTreeMap::new();
+        insert_face(
+            &mut map,
+            "A // Shared",
+            "shared".to_string(),
+            make_entry("older", &["INV"], Some("split")),
+        );
+        insert_face(
+            &mut map,
+            "B // Shared",
+            "shared".to_string(),
+            make_entry("newer", &["MH1", "MH3"], Some("split")),
+        );
+        assert_eq!(
+            map["shared"].face.scryfall_oracle_id.as_deref(),
+            Some("newer"),
+        );
+    }
+
+    #[test]
+    fn insert_face_tied_printings_keep_first_inserted() {
+        // Iteration order of the caller is sorted, so "first-inserted" is
+        // deterministic. The Start // Finish vs. Start // Fire case.
+        let mut map = BTreeMap::new();
+        insert_face(
+            &mut map,
+            "Start // Finish",
+            "start".to_string(),
+            make_entry("finish-oracle", &["AKH", "PLST"], Some("aftermath")),
+        );
+        insert_face(
+            &mut map,
+            "Start // Fire",
+            "start".to_string(),
+            make_entry("fire-oracle", &["SOS", "PLST"], Some("split")),
+        );
+        assert_eq!(
+            map["start"].face.scryfall_oracle_id.as_deref(),
+            Some("finish-oracle"),
+            "on a tie, first-inserted wins"
+        );
+    }
 
     fn load_atomic_fixture() -> &'static AtomicCardsFile {
         static ATOMIC: OnceLock<AtomicCardsFile> = OnceLock::new();

@@ -3,6 +3,7 @@ import type {
   GameAction,
   GameObject,
   ManaCost,
+  ObjectId,
   SerializedAbility,
   SerializedAbilityCost,
 } from "../adapter/types.ts";
@@ -45,18 +46,69 @@ export function manaCostToShards(cost: ManaCost): string[] {
 }
 
 // Mirrors Rust AbilityCost serialization shape (serde tag = "type").
+// `amount`/`count` on PayLife/Discard are `QuantityExpr` (a typed enum), not
+// raw numbers — the engine serializes `{ type: "Fixed", value: N }` etc.
+type QuantityExpr =
+  | { type: "Fixed"; value: number }
+  | { type: "Ref"; qty: { type: string; [key: string]: unknown } }
+  | { type: "HalfRounded"; inner: QuantityExpr; rounding: string }
+  | { type: "Offset"; inner: QuantityExpr; offset: number }
+  | { type: "Multiply"; factor: number; inner: QuantityExpr };
+
 type SerializedCost = {
   type: string;
-  amount?: number;
-  count?: number;
+  amount?: QuantityExpr | number;
+  count?: QuantityExpr | number;
   costs?: SerializedCost[];
   cost?: { type: string; shards?: string[]; generic?: number };
 };
 
+/** Render a QuantityExpr (or legacy raw number) for display in cost labels. */
+function formatQuantity(q: QuantityExpr | number | undefined, fallback = 1): string {
+  if (q == null) return String(fallback);
+  if (typeof q === "number") return String(q);
+  switch (q.type) {
+    case "Fixed":
+      return String(q.value);
+    case "Ref":
+      return formatQuantityRef(q.qty);
+    case "HalfRounded": {
+      const dir = q.rounding === "Down" ? "rounded down" : "rounded up";
+      return `half ${formatQuantity(q.inner)} (${dir})`;
+    }
+    case "Offset": {
+      const sign = q.offset >= 0 ? "+" : "−";
+      return `${formatQuantity(q.inner)} ${sign} ${Math.abs(q.offset)}`;
+    }
+    case "Multiply":
+      if (q.factor === -1) return `−${formatQuantity(q.inner)}`;
+      if (q.factor === 2) return `twice ${formatQuantity(q.inner)}`;
+      return `${q.factor}× ${formatQuantity(q.inner)}`;
+  }
+}
+
+function formatQuantityRef(ref: { type: string; [key: string]: unknown }): string {
+  switch (ref.type) {
+    case "HandSize": return "cards in your hand";
+    case "LifeTotal": return "your life total";
+    case "GraveyardSize": return "cards in your graveyard";
+    case "StartingLifeTotal": return "starting life total";
+    default: return "X";
+  }
+}
+
+/** Numeric quantity check that works against either QuantityExpr or a raw number. */
+function quantityIsPlural(q: QuantityExpr | number | undefined): boolean {
+  if (q == null) return false;
+  if (typeof q === "number") return q > 1;
+  return q.type === "Fixed" ? q.value > 1 : true;
+}
+
 export function formatCost(cost: SerializedCost): string {
   switch (cost.type) {
     case "Loyalty": {
-      const amt = cost.amount ?? 0;
+      // CR 606.1: Loyalty cost is always a literal `i32` on the Rust side.
+      const amt = (typeof cost.amount === "number" ? cost.amount : 0);
       return amt > 0 ? `+${amt}` : `${amt}`;
     }
     case "Tap": return "{T}";
@@ -71,11 +123,11 @@ export function formatCost(cost: SerializedCost): string {
       }
       return parts.join("") || "{0}";
     }
-    case "PayLife": return `${cost.amount} life`;
+    case "PayLife": return `Pay ${formatQuantity(cost.amount, 1)} life`;
     case "Sacrifice": return "Sacrifice";
     case "Discard": {
-      const count = cost.count ?? 1;
-      return `Discard ${count} card${count > 1 ? "s" : ""}`;
+      const label = formatQuantity(cost.count, 1);
+      return `Discard ${label} card${quantityIsPlural(cost.count) ? "s" : ""}`;
     }
     case "Blight": return `Blight ${cost.count ?? 1}`;
     case "CollectEvidence":
@@ -100,7 +152,24 @@ const MANA_COLOR_ABBREVIATION: Record<string, string> = {
 export function abilityChoiceLabel(
   action: GameAction,
   object: GameObject,
+  objects?: Record<ObjectId, GameObject>,
 ): { label: string; description?: string } {
+  // CR 702.190a: Sneak — label identifies which unblocked attacker is
+  // returned to pay the Sneak cost. Include the Sneak mana cost from the
+  // spell's keyword metadata when available.
+  if (action.type === "CastSpellAsSneak") {
+    const returnedId = action.data.creature_to_return;
+    const returnedName = objects?.[returnedId]?.name ?? `creature #${returnedId}`;
+    const sneakKeyword = object.keywords.find(
+      (k): k is { Sneak: ManaCost } => typeof k === "object" && "Sneak" in k,
+    );
+    const costSymbols = sneakKeyword ? manaCostToShards(sneakKeyword.Sneak).map((s) => `{${s}}`).join("") : "";
+    const costSuffix = costSymbols ? ` (${costSymbols})` : "";
+    return {
+      label: `Sneak — return ${returnedName}${costSuffix}`,
+      description: `Cast ${object.name} by paying its sneak cost and returning ${returnedName} to your hand (CR 702.190a).`,
+    };
+  }
   if (action.type === "ActivateAbility") {
     const ability = object.abilities[action.data.ability_index];
     // For mana abilities, show what they produce (e.g., "Add {U}") instead of just the cost

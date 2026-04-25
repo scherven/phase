@@ -159,7 +159,32 @@ pub(crate) fn apply_damage_to_target(
         ReplacementResult::Execute(event) => Ok(apply_damage_after_replacement(
             state, ctx, event, is_combat, events,
         )),
-        ReplacementResult::Prevented => Ok(DamageResult::Applied(0)),
+        ReplacementResult::Prevented => {
+            // CR 615.5: A prevention effect's additional effect (e.g.
+            // Phyrexian Hydra's "Put a -1/-1 counter on ~ for each 1 damage
+            // prevented this way") is stashed as `post_replacement_effect` by
+            // the prevention applier. Resolve it inline here so the follow-up
+            // takes place "immediately afterward" as the rule requires. The
+            // applier already stamped `state.last_effect_count` with the
+            // prevented amount so `EventContextAmount` resolves correctly.
+            if let Some(effect_def) = state.post_replacement_effect.take() {
+                let source = state.post_replacement_source.take();
+                // CR 615.5 + CR 609.7: leave `post_replacement_event_source`
+                // populated for the call so `TargetFilter::PostReplacementSourceController`
+                // can resolve against the prevented event's damage source. Clear
+                // after the call to prevent leakage into unrelated later
+                // replacements.
+                let _ = crate::game::engine_replacement::apply_post_replacement_effect(
+                    state,
+                    &effect_def,
+                    source,
+                    None,
+                    events,
+                );
+                state.post_replacement_event_source = None;
+            }
+            Ok(DamageResult::Applied(0))
+        }
         ReplacementResult::NeedsChoice(player) => {
             // Only set waiting_for for non-combat damage; combat damage cannot pause mid-resolution.
             if !is_combat {
@@ -912,6 +937,144 @@ mod tests {
         );
     }
 
+    /// CR 615.5: Phyrexian Hydra — "If damage would be dealt to ~, prevent
+    /// that damage. Put a -1/-1 counter on ~ for each 1 damage prevented this
+    /// way." The prevention applier emits `DamagePrevented`, stamps
+    /// `last_effect_count`, and the post-replacement follow-up resolves
+    /// `EventContextAmount` against the prevented amount, putting one -1/-1
+    /// counter on the Hydra per prevented point of damage.
+    #[test]
+    fn phyrexian_hydra_prevention_puts_minus_counters_for_prevented_amount() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, DamageTargetFilter, PreventionAmount, QuantityExpr,
+            QuantityRef, ReplacementDefinition,
+        };
+        use crate::types::counter::CounterType;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let hydra = create_object(
+            &mut state,
+            CardId(42),
+            PlayerId(1),
+            "Phyrexian Hydra".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&hydra).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(7);
+            obj.toughness = Some(7);
+            obj.replacement_definitions.push(
+                ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                    .prevention_shield(PreventionAmount::All)
+                    .damage_target_filter(DamageTargetFilter::CreatureOnly)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::PutCounter {
+                            counter_type: "M1M1".to_string(),
+                            count: QuantityExpr::Ref {
+                                qty: QuantityRef::EventContextAmount,
+                            },
+                            target: TargetFilter::SelfRef,
+                        },
+                    ))
+                    .description("Phyrexian Hydra prevention shield".to_string()),
+            );
+        }
+
+        let ability = make_ability(3, vec![TargetRef::Object(hydra)]);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let hydra_obj = state.objects.get(&hydra).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GameEvent::DamagePrevented { amount: 3, .. })),
+            "expected DamagePrevented event with amount 3, got {:?}",
+            events
+        );
+        assert_eq!(
+            hydra_obj.damage_marked, 0,
+            "prevention must absorb the damage (no marked damage)"
+        );
+        assert_eq!(
+            hydra_obj
+                .counters
+                .get(&CounterType::Minus1Minus1)
+                .copied()
+                .unwrap_or(0),
+            3,
+            "expected 3 -1/-1 counters (one per damage prevented), events: {:?}",
+            events
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, GameEvent::DamageDealt { .. })),
+            "must not emit DamageDealt for fully prevented damage"
+        );
+    }
+
+    /// CR 615.5: A 0-damage event should not fire the post-replacement
+    /// follow-up — there is nothing to prevent and nothing to count.
+    #[test]
+    fn phyrexian_hydra_zero_damage_adds_zero_counters() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, DamageTargetFilter, PreventionAmount, QuantityExpr,
+            QuantityRef, ReplacementDefinition,
+        };
+        use crate::types::counter::CounterType;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let hydra = create_object(
+            &mut state,
+            CardId(42),
+            PlayerId(1),
+            "Phyrexian Hydra".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&hydra).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(7);
+            obj.toughness = Some(7);
+            obj.replacement_definitions.push(
+                ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                    .prevention_shield(PreventionAmount::All)
+                    .damage_target_filter(DamageTargetFilter::CreatureOnly)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::PutCounter {
+                            counter_type: "M1M1".to_string(),
+                            count: QuantityExpr::Ref {
+                                qty: QuantityRef::EventContextAmount,
+                            },
+                            target: TargetFilter::SelfRef,
+                        },
+                    ))
+                    .description("Phyrexian Hydra prevention shield".to_string()),
+            );
+        }
+
+        let ability = make_ability(0, vec![TargetRef::Object(hydra)]);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let hydra_obj = state.objects.get(&hydra).unwrap();
+        assert_eq!(
+            hydra_obj
+                .counters
+                .get(&CounterType::Minus1Minus1)
+                .copied()
+                .unwrap_or(0),
+            0,
+            "0 damage prevented → 0 counters added"
+        );
+    }
+
     #[test]
     fn damage_all_creatures() {
         let mut state = GameState::new_two_player(42);
@@ -1592,7 +1755,7 @@ mod tests {
                 .description("Shield".to_string()),
         );
         state.objects.insert(id, shield);
-        state.battlefield.push(id);
+        state.battlefield.push_back(id);
         id
     }
 

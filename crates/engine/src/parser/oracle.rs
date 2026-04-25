@@ -55,7 +55,7 @@ use super::oracle_special::{
 use super::oracle_static::{
     parse_static_line_multi, try_parse_graveyard_keyword_grant_clause, GraveyardGrantedKeywordKind,
 };
-use super::oracle_trigger::parse_trigger_lines;
+use super::oracle_trigger::parse_trigger_lines_at_index;
 use super::oracle_util::{
     normalize_card_name_refs, parse_mana_symbols, parse_number, strip_reminder_text, TextPair,
 };
@@ -628,7 +628,11 @@ pub fn parse_oracle_text(
             minimum,
             maximum,
         };
-        let mut triggers = parse_trigger_lines(ability_text, card_name);
+        // CR 707.9a: Thread the running trigger count as the base index so
+        // any "and it has this ability" except clause inside a leveler trigger
+        // body resolves to the correct printed-trigger slot.
+        let mut triggers =
+            parse_trigger_lines_at_index(ability_text, card_name, Some(result.triggers.len()));
         for trigger in &mut triggers {
             trigger.condition = Some(trigger_condition.clone());
         }
@@ -642,8 +646,11 @@ pub fn parse_oracle_text(
     // (CR 721.2b) is synthesized post-parse in `database::synthesis::synthesize_station`
     // where `face.power` / `face.toughness` are available for the base P/T.
     let spacecraft_consumed = if subtypes.iter().any(|s| s == "Spacecraft") {
+        // CR 707.9a: Pass the running trigger count so any "has this ability"
+        // retain modification inside a Spacecraft threshold trigger body
+        // resolves to the correct printed-trigger slot.
         let (sc_statics, sc_triggers, sc_abilities, consumed) =
-            parse_spacecraft_threshold_lines(&lines, card_name);
+            parse_spacecraft_threshold_lines(&lines, card_name, result.triggers.len());
         result.statics.extend(sc_statics);
         result.triggers.extend(sc_triggers);
         for mut def in sc_abilities {
@@ -920,9 +927,10 @@ pub fn parse_oracle_text(
                     .push(ActivationRestriction::IsSolved);
                 if constraints.sorcery_speed() {
                     def.sorcery_speed = true;
-                    def.activation_restrictions
-                        .push(ActivationRestriction::AsSorcery);
                 }
+                // CR 602.5d: `constraints.restrictions` already contains
+                // `AsSorcery` when the source text said "Activate only as a
+                // sorcery"; extend preserves it so the legality gate fires.
                 if !constraints.restrictions.is_empty() {
                     def.activation_restrictions.extend(constraints.restrictions);
                 }
@@ -1016,7 +1024,11 @@ pub fn parse_oracle_text(
         // CR 603.2: Compound triggers ("When X and when Y, effect") produce
         // multiple TriggerDefinitions sharing the same execute effect.
         if has_trigger_prefix(&lower) {
-            let mut triggers = parse_trigger_lines(&line, card_name);
+            // CR 707.9a: Pass the running trigger count as the base index so
+            // any "and it has this ability" except clause in this trigger's
+            // body resolves to the correct printed-trigger slot.
+            let mut triggers =
+                parse_trigger_lines_at_index(&line, card_name, Some(result.triggers.len()));
             i += 1;
             // CR 706: If the trigger's effect ends with "roll a dN", consume
             // subsequent d20 table lines and attach them as die result branches.
@@ -1038,7 +1050,12 @@ pub fn parse_oracle_text(
         if let Some((aw_name, effect_text)) = strip_ability_word_with_name(&line) {
             let effect_lower = effect_text.to_lowercase();
             if has_trigger_prefix(&effect_lower) {
-                let mut triggers = parse_trigger_lines(&effect_text, card_name);
+                // CR 707.9a: Thread the running trigger count as the base index.
+                let mut triggers = parse_trigger_lines_at_index(
+                    &effect_text,
+                    card_name,
+                    Some(result.triggers.len()),
+                );
                 // B7: Attach ability-word condition as fallback when extract_if_condition
                 // doesn't recognize the intervening-if pattern.
                 for trigger in &mut triggers {
@@ -1430,6 +1447,22 @@ pub fn parse_oracle_text(
             }
         }
 
+        // CR 702.27a: Buyback em-dash form — "Buyback—Sacrifice a land." (Constant
+        // Mists) etc. MTGJSON omits the Buyback keyword when the cost is non-mana,
+        // so `extract_keyword_line` bails and the line would otherwise fall through
+        // to the spell-effect catch-all and produce `Unimplemented`. Intercept here
+        // before the spell catch-all, mirroring the Flashback em-dash intercept above.
+        // structural: not dispatch — em-dash char presence gates the cost sub-parser,
+        // which uses nom combinators in `parse_buyback_cost` / `parse_oracle_cost`.
+        if lower_starts_with(&lower, "buyback") && line.contains('\u{2014}') {
+            let lower_clean = lower.trim_end_matches('.').trim();
+            if let Some(kw) = parse_keyword_from_oracle(lower_clean) {
+                result.extracted_keywords.push(kw);
+                i += 1;
+                continue;
+            }
+        }
+
         // Priority 9: Imperative verb for instants/sorceries
         if is_spell {
             // B7: Strip ability-word prefix and attach condition for spell effects.
@@ -1456,6 +1489,8 @@ pub fn parse_oracle_text(
                 &ParseContext {
                     subject: None,
                     card_name: Some(card_name.to_string()),
+                    actor: None,
+                    ..Default::default()
                 },
             );
             def.description = Some(line.to_string());
@@ -1609,7 +1644,12 @@ pub fn parse_oracle_text(
 
             // Try as trigger
             if has_trigger_prefix(&effect_lower) {
-                let mut triggers = parse_trigger_lines(&effect_text, card_name);
+                // CR 707.9a: Thread the running trigger count as the base index.
+                let mut triggers = parse_trigger_lines_at_index(
+                    &effect_text,
+                    card_name,
+                    Some(result.triggers.len()),
+                );
                 i += 1;
                 // CR 706: Consume subsequent d20 table lines for triggered die rolls.
                 if has_roll_die_pattern(&effect_lower) {
@@ -1647,6 +1687,8 @@ pub fn parse_oracle_text(
                 &ParseContext {
                     subject: None,
                     card_name: Some(card_name.to_string()),
+                    actor: None,
+                    ..Default::default()
                 },
             );
             if !has_unimplemented(&def) {
@@ -1735,6 +1777,7 @@ fn try_parse_loyalty_line(line: &str) -> Option<AbilityDefinition> {
                     let mut def = parse_effect_chain(effect_text, AbilityKind::Activated);
                     def.cost = Some(AbilityCost::Loyalty { amount });
                     def.description = Some(trimmed.to_string());
+                    apply_loyalty_restrictions(&mut def);
                     return Some(def);
                 }
             }
@@ -1756,12 +1799,42 @@ fn try_parse_loyalty_line(line: &str) -> Option<AbilityDefinition> {
                 let mut def = parse_effect_chain(effect_text, AbilityKind::Activated);
                 def.cost = Some(AbilityCost::Loyalty { amount });
                 def.description = Some(trimmed.to_string());
+                apply_loyalty_restrictions(&mut def);
                 return Some(def);
             }
         }
     }
 
     None
+}
+
+/// CR 606.3: A player may activate a loyalty ability only during a main phase
+/// of their turn with an empty stack, and only if no player has previously
+/// activated a loyalty ability of that permanent that turn. The planeswalker
+/// activation path (`game::planeswalker::can_activate_loyalty`) already gates
+/// this independently, but tagging the ability with `AsSorcery` +
+/// `OnlyOnceEachTurn` + the display flag keeps parser output self-describing
+/// and satisfies the shared invariant that every sorcery-speed activated
+/// ability carries `ActivationRestriction::AsSorcery`.
+fn apply_loyalty_restrictions(def: &mut AbilityDefinition) {
+    // CR 606.3: "...only during a main phase of their turn when the stack is empty..."
+    def.sorcery_speed = true;
+    if !def
+        .activation_restrictions
+        .contains(&ActivationRestriction::AsSorcery)
+    {
+        def.activation_restrictions
+            .push(ActivationRestriction::AsSorcery);
+    }
+    // CR 606.3: "...only if no player has previously activated a loyalty ability
+    // of that permanent that turn."
+    if !def
+        .activation_restrictions
+        .contains(&ActivationRestriction::OnlyOnceEachTurn)
+    {
+        def.activation_restrictions
+            .push(ActivationRestriction::OnlyOnceEachTurn);
+    }
 }
 
 /// Parse a loyalty number string like "+2", "−3", "0", "-1".
@@ -2607,12 +2680,187 @@ mod tests {
             &[],
         );
         assert_eq!(r.abilities.len(), 1);
-        assert!(matches!(
-            *r.abilities[0].effect,
-            Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+        let Effect::Draw { count, target } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Draw, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(*count, QuantityExpr::Fixed { value: 1 });
+        // CR 601.2c: "Target player draws ..." selects a player target during
+        // spell announcement — the parsed Draw must carry a Player filter, not
+        // Controller (which would always draw for the caster).
+        assert!(
+            matches!(target, TargetFilter::Player),
+            "expected TargetFilter::Player for 'Target player draws a card.', got {target:?}",
+        );
+    }
+
+    #[test]
+    fn ashlings_command_modal_target_player_draws_carries_player_filter() {
+        // CR 601.2c + CR 700.2: Each "target player" mode-clause of a modal
+        // spell is an independent target chosen during spell announcement.
+        // Mode 2 ("Target player draws two cards") MUST surface a Player
+        // target on the parsed Draw effect so `collect_target_slots` emits
+        // an independent slot per Draw mode (otherwise the caster always draws).
+        let r = parse(
+            "Choose two —\n\
+             • Create a token that's a copy of target Elemental you control.\n\
+             • Target player draws two cards.\n\
+             • Ashling's Command deals 2 damage to each creature target player controls.\n\
+             • Target player creates two Treasure tokens.",
+            "Ashling's Command",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        // Modal spell exposes one ability with chained sub_ability per mode.
+        // Find the Draw clause anywhere in the chain and assert its target.
+        fn find_draw(
+            ab: &crate::types::ability::AbilityDefinition,
+        ) -> Option<&crate::types::ability::TargetFilter> {
+            if let Effect::Draw { target, .. } = &*ab.effect {
+                return Some(target);
             }
-        ));
+            ab.sub_ability.as_deref().and_then(find_draw)
+        }
+        let mut draw_target = None;
+        for ab in r.abilities.iter() {
+            if let Some(t) = find_draw(ab) {
+                draw_target = Some(t);
+                break;
+            }
+        }
+        let target = draw_target.expect("expected a Draw effect somewhere in the modal chain");
+        assert!(
+            matches!(target, TargetFilter::Player),
+            "Mode 2 Draw must carry TargetFilter::Player so each modal mode \
+             surfaces an independent target slot, got {target:?}",
+        );
+    }
+
+    #[test]
+    fn ashlings_command_modal_target_player_creates_tokens_carries_player_filter() {
+        // CR 111.2 + CR 601.2c: Each "Target player creates ..." mode-clause
+        // of a modal spell is an independent target chosen during spell
+        // announcement. Mode 4 of Ashling's Command MUST surface a Player
+        // filter on the parsed Token effect's `owner` field so
+        // `collect_target_slots` emits an independent slot per token mode
+        // (otherwise the caster always creates the tokens).
+        let r = parse(
+            "Choose two —\n\
+             • Create a token that's a copy of target Elemental you control.\n\
+             • Target player draws two cards.\n\
+             • Ashling's Command deals 2 damage to each creature target player controls.\n\
+             • Target player creates two Treasure tokens.",
+            "Ashling's Command",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        fn find_token(
+            ab: &crate::types::ability::AbilityDefinition,
+        ) -> Option<&crate::types::ability::TargetFilter> {
+            if let Effect::Token { owner, .. } = &*ab.effect {
+                return Some(owner);
+            }
+            ab.sub_ability.as_deref().and_then(find_token)
+        }
+        // Find a Token effect whose owner is `Player` (mode 4). Mode 1 also
+        // creates a token but its owner is `Controller`, so we keep searching.
+        let mut owner_target = None;
+        for ab in r.abilities.iter() {
+            // Walk the entire chain, collecting any Player-owner Token we see.
+            let mut cur: Option<&crate::types::ability::AbilityDefinition> = Some(ab);
+            while let Some(node) = cur {
+                if let Some(t) = find_token(node) {
+                    if matches!(t, TargetFilter::Player) {
+                        owner_target = Some(t);
+                        break;
+                    }
+                }
+                cur = node.sub_ability.as_deref();
+            }
+            if owner_target.is_some() {
+                break;
+            }
+        }
+        let target = owner_target
+            .expect("expected a Token effect with TargetFilter::Player owner in the modal chain");
+        assert!(
+            matches!(target, TargetFilter::Player),
+            "Mode 4 Token must carry owner=TargetFilter::Player so each modal \
+             mode surfaces an independent target slot, got {target:?}",
+        );
+    }
+
+    #[test]
+    fn target_player_scrys_carries_player_filter() {
+        // CR 701.22a + CR 601.2c: "Target player scrys N" surfaces an
+        // independent player target on the parsed Scry effect — the resolver
+        // routes the scry to the chosen player, not the spell's controller.
+        let r = parse(
+            "Target player scries 2.",
+            "Test Permanent",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let Effect::Scry { count, target } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Scry, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(*count, QuantityExpr::Fixed { value: 2 });
+        assert!(
+            matches!(target, TargetFilter::Player),
+            "expected TargetFilter::Player for 'Target player scries 2.', got {target:?}",
+        );
+    }
+
+    #[test]
+    fn target_player_surveils_carries_player_filter() {
+        // CR 701.25a + CR 601.2c: "Target player surveils N" surfaces an
+        // independent player target on the parsed Surveil effect — the
+        // resolver routes the surveil to the chosen player, not the spell's
+        // controller. (Mirrors the Draw + Scry tests above.)
+        let r = parse(
+            "Target player surveils 2.",
+            "Test Permanent",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let Effect::Surveil { count, target } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Surveil, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(*count, QuantityExpr::Fixed { value: 2 });
+        assert!(
+            matches!(target, TargetFilter::Player),
+            "expected TargetFilter::Player for 'Target player surveils 2.', got {target:?}",
+        );
+    }
+
+    #[test]
+    fn target_player_mills_carries_player_filter() {
+        // CR 701.13a + CR 601.2c: "Target player mills N" surfaces an
+        // independent player target on the parsed Mill effect — the resolver
+        // routes the mill to the chosen player, not the spell's controller.
+        // Mirror coverage for the Scry/Surveil tests above so the conjugated
+        // verb path ("mills" via y/s normalization) is pinned for regression.
+        let r = parse(
+            "Target player mills 3.",
+            "Test Permanent",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let Effect::Mill { count, target, .. } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Mill, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(*count, QuantityExpr::Fixed { value: 3 });
+        assert!(
+            matches!(target, TargetFilter::Player),
+            "expected TargetFilter::Player for 'Target player mills 3.', got {target:?}",
+        );
     }
 
     #[test]
@@ -2628,7 +2876,8 @@ mod tests {
         assert!(matches!(
             *r.abilities[0].effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
     }
@@ -2897,7 +3146,8 @@ mod tests {
         assert!(matches!(
             *draw.effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
         let no_activate_tail = draw
@@ -3092,7 +3342,7 @@ mod tests {
         );
         assert_eq!(r.abilities.len(), 4);
         // All should be activated with loyalty costs
-        for ab in &r.abilities {
+        for ab in r.abilities.iter() {
             assert_eq!(ab.kind, AbilityKind::Activated);
         }
     }
@@ -3422,7 +3672,8 @@ mod tests {
         assert!(matches!(
             *r.abilities[0].effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
         assert!(matches!(
@@ -3450,7 +3701,8 @@ mod tests {
         assert!(matches!(
             *r.abilities[0].effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
         assert!(matches!(
@@ -3475,7 +3727,8 @@ mod tests {
         assert!(matches!(
             *r.abilities[0].effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
         assert!(matches!(
@@ -3761,7 +4014,8 @@ mod tests {
         assert!(matches!(
             *modal_def.mode_abilities[0].effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
         assert!(matches!(
@@ -4145,7 +4399,8 @@ mod tests {
             matches!(
                 effect,
                 Effect::Draw {
-                    count: QuantityExpr::Ref { .. }
+                    count: QuantityExpr::Ref { .. },
+                    ..
                 }
             ),
             "trailing 'for each' should produce dynamic Draw, got {:?}",
@@ -4268,7 +4523,8 @@ mod tests {
         assert!(matches!(
             &*def.effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
         assert_eq!(def.repeat_for, Some(QuantityExpr::Fixed { value: 2 }));
@@ -4820,6 +5076,63 @@ mod tests {
             }
             other => panic!("Expected Animate for chain earthbend, got {other:?}"),
         }
+    }
+
+    /// CR 122.1: Toph's "earthbend X, where X is the number of experience
+    /// counters you have" must thread the dynamic count through to PutCounter,
+    /// not collapse to Fixed { value: 0 }. Walks the parsed chain:
+    /// Animate → PutCounter (count = PlayerCounter Experience Controller) →
+    /// CreateDelayedTrigger.
+    #[test]
+    fn earthbend_x_where_x_is_experience_counters() {
+        use crate::parser::oracle_effect::parse_effect_chain;
+        use crate::types::ability::{CountScope, QuantityExpr, QuantityRef};
+        use crate::types::player::PlayerCounterKind;
+
+        let def = parse_effect_chain(
+            "Earthbend X, where X is the number of experience counters you have.",
+            crate::types::ability::AbilityKind::Spell,
+        );
+        assert!(
+            matches!(&*def.effect, Effect::Animate { .. }),
+            "outer effect should be Animate, got {:?}",
+            def.effect
+        );
+
+        let put_counters = def
+            .sub_ability
+            .as_deref()
+            .expect("Animate should have PutCounter sub_ability");
+        match &*put_counters.effect {
+            Effect::PutCounter {
+                counter_type,
+                count,
+                ..
+            } => {
+                assert_eq!(counter_type, "P1P1");
+                assert_eq!(
+                    *count,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::PlayerCounter {
+                            kind: PlayerCounterKind::Experience,
+                            scope: CountScope::Controller,
+                        },
+                    },
+                    "Toph's PutCounter count should be a typed PlayerCounter ref, not Fixed 0"
+                );
+            }
+            other => panic!("Expected PutCounter, got {other:?}"),
+        }
+
+        let delayed = put_counters
+            .sub_ability
+            .as_deref()
+            .expect("PutCounter should chain into the delayed return trigger");
+        assert!(
+            matches!(&*delayed.effect, Effect::CreateDelayedTrigger { .. }),
+            "expected CreateDelayedTrigger, got {:?}",
+            delayed.effect,
+        );
     }
 
     #[test]
@@ -6800,7 +7113,7 @@ mod tests {
         let r = parse(text, "Petrified Hamlet", &[], &["Land"], &[]);
 
         // No Unimplemented anywhere.
-        for a in &r.abilities {
+        for a in r.abilities.iter() {
             assert!(
                 !matches!(*a.effect, Effect::Unimplemented { .. }),
                 "ability Unimplemented: {:?}",

@@ -649,6 +649,14 @@ fn effect_references_target_player(effect: &Effect) -> bool {
     // target slots (PutCounterAll, DestroyAll, PumpAll, DamageAll, etc. —
     // their `target_filter()` returns None because the field is a mass
     // filter, not a targeting filter).
+    //
+    // CR 115.1 + CR 404 + CR 406: A mass filter set to `TargetFilter::Player`
+    // (e.g. `ChangeZoneAll { origin: Graveyard, target: Player }` for
+    // "exile target player's graveyard" — Nihil Spellbomb, Bojuka Bog,
+    // Tormod's Crypt class) parameterizes the scan by a player target. Surface
+    // the companion player slot so the resolver's `player_scope` branch
+    // reads the chosen target out of `ability.targets` instead of falling
+    // back to the activator's own graveyard.
     match effect {
         Effect::PutCounterAll { target, .. }
         | Effect::DestroyAll { target, .. }
@@ -657,7 +665,9 @@ fn effect_references_target_player(effect: &Effect) -> bool {
         | Effect::TapAll { target, .. }
         | Effect::UntapAll { target, .. }
         | Effect::ChangeZoneAll { target, .. }
-        | Effect::DoublePTAll { target, .. } => filter_references_target_player(target),
+        | Effect::DoublePTAll { target, .. } => {
+            matches!(target, TargetFilter::Player) || filter_references_target_player(target)
+        }
         _ => false,
     }
 }
@@ -1496,6 +1506,22 @@ fn assign_targets_recursive(
     targets: &[TargetRef],
     next_target: &mut usize,
 ) -> Result<(), EngineError> {
+    // CR 109.4 + CR 115.1: Mirror the companion-player slot pushed by
+    // `collect_target_slots` for effects whose filters reference
+    // `ControllerRef::TargetPlayer` (DamageAll, PutCounterAll, etc.). The
+    // selected player must be written onto THIS node's `targets` so the
+    // filter's `TargetPlayer` resolution at runtime (filter.rs) finds it.
+    // Slot order matches `collect_target_slots`: player slot before primary.
+    if effect_references_target_player(&ability.effect) {
+        if let Some(target) = targets.get(*next_target) {
+            ability.targets.push(target.clone());
+            *next_target += 1;
+        } else if !ability.optional_targeting {
+            return Err(EngineError::InvalidAction(
+                "Missing required target".to_string(),
+            ));
+        }
+    }
     if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
         if let Some(spec) = ability.multi_target.as_ref() {
             match spec.max {
@@ -1512,17 +1538,20 @@ fn assign_targets_recursive(
                             "Incorrect number of multi-target selections".to_string(),
                         ));
                     }
-                    ability.targets = targets[*next_target..*next_target + current_count].to_vec();
+                    // CR 109.4: Use `extend_from_slice` so a companion player target
+                    // pushed by the `effect_references_target_player` branch above
+                    // survives — both slots live on this node's `targets`.
+                    ability
+                        .targets
+                        .extend_from_slice(&targets[*next_target..*next_target + current_count]);
                     *next_target += current_count;
                 }
                 // CR 115.1d: unbounded multi-target — fall through to single-target path.
                 None => {
                     if let Some(target) = targets.get(*next_target) {
-                        ability.targets = vec![target.clone()];
+                        ability.targets.push(target.clone());
                         *next_target += 1;
-                    } else if ability.optional_targeting {
-                        ability.targets.clear();
-                    } else {
+                    } else if !ability.optional_targeting {
                         return Err(EngineError::InvalidAction(
                             "Missing required target".to_string(),
                         ));
@@ -1530,11 +1559,9 @@ fn assign_targets_recursive(
                 }
             }
         } else if let Some(target) = targets.get(*next_target) {
-            ability.targets = vec![target.clone()];
+            ability.targets.push(target.clone());
             *next_target += 1;
-        } else if ability.optional_targeting {
-            ability.targets.clear();
-        } else {
+        } else if !ability.optional_targeting {
             return Err(EngineError::InvalidAction(
                 "Missing required target".to_string(),
             ));
@@ -1554,6 +1581,26 @@ fn assign_selected_slots_recursive(
     selected_slots: &[Option<TargetRef>],
     next_slot: &mut usize,
 ) -> Result<(), EngineError> {
+    // CR 109.4 + CR 115.1: Mirror the companion-player slot pushed by
+    // `collect_target_slots` for `ControllerRef::TargetPlayer` filters
+    // (DamageAll, PutCounterAll, etc.). See `assign_targets_recursive`.
+    if effect_references_target_player(&ability.effect) {
+        let Some(selected_slot) = selected_slots.get(*next_slot) else {
+            return Err(EngineError::InvalidAction(
+                "Missing target selection".to_string(),
+            ));
+        };
+        match selected_slot {
+            Some(target) => ability.targets.push(target.clone()),
+            None if ability.optional_targeting => {}
+            None => {
+                return Err(EngineError::InvalidAction(
+                    "Missing required target".to_string(),
+                ));
+            }
+        }
+        *next_slot += 1;
+    }
     if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
         if let Some(spec) = ability.multi_target.as_ref() {
             match spec.max {
@@ -1569,7 +1616,7 @@ fn assign_selected_slots_recursive(
                             "Missing required target".to_string(),
                         ));
                     }
-                    ability.targets = window.iter().flatten().cloned().collect();
+                    ability.targets.extend(window.iter().flatten().cloned());
                     *next_slot = end_slot;
                 }
                 // CR 115.1d: unbounded multi-target — fall through to single-target path.
@@ -1580,8 +1627,8 @@ fn assign_selected_slots_recursive(
                         ));
                     };
                     match selected_slot {
-                        Some(target) => ability.targets = vec![target.clone()],
-                        None if ability.optional_targeting => ability.targets.clear(),
+                        Some(target) => ability.targets.push(target.clone()),
+                        None if ability.optional_targeting => {}
                         None => {
                             return Err(EngineError::InvalidAction(
                                 "Missing required target".to_string(),
@@ -1599,8 +1646,8 @@ fn assign_selected_slots_recursive(
             };
 
             match selected_slot {
-                Some(target) => ability.targets = vec![target.clone()],
-                None if ability.optional_targeting => ability.targets.clear(),
+                Some(target) => ability.targets.push(target.clone()),
+                None if ability.optional_targeting => {}
                 None => {
                     return Err(EngineError::InvalidAction(
                         "Missing required target".to_string(),
@@ -1651,6 +1698,13 @@ fn validate_target_constraints(
 }
 
 fn chain_has_target_sink(ability: &ResolvedAbility) -> bool {
+    // CR 109.4 + CR 115.1: A node also acts as a target sink when its filter
+    // references `ControllerRef::TargetPlayer` (DamageAll, PutCounterAll,
+    // etc.) — `collect_target_slots` pushes a companion player slot for it,
+    // and `assign_targets_recursive` consumes one target into this node.
+    if effect_references_target_player(&ability.effect) {
+        return true;
+    }
     if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
         return true;
     }
@@ -1664,6 +1718,14 @@ fn chain_has_target_sink(ability: &ResolvedAbility) -> bool {
 }
 
 fn minimum_targets_in_chain(ability: &ResolvedAbility) -> usize {
+    // CR 109.4: Companion player slot for `ControllerRef::TargetPlayer` filters
+    // contributes one required slot (or zero when targeting is optional).
+    let player_companion =
+        if effect_references_target_player(&ability.effect) && !ability.optional_targeting {
+            1
+        } else {
+            0
+        };
     let current = if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
         if let Some(spec) = ability
             .multi_target
@@ -1679,6 +1741,7 @@ fn minimum_targets_in_chain(ability: &ResolvedAbility) -> usize {
     } else {
         0
     };
+    let current = player_companion + current;
 
     let rest = if defers_sub_ability_target_selection(&ability.effect) {
         0
@@ -1821,6 +1884,7 @@ mod tests {
                 random: false,
                 up_to: true,
                 unless_filter: None,
+                filter: None,
             },
         );
         mode2.sub_ability = Some(Box::new(AbilityDefinition::new(
@@ -1829,6 +1893,7 @@ mod tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::EventContextAmount,
                 },
+                target: TargetFilter::Controller,
             },
         )));
 
@@ -1882,6 +1947,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         );
         let mode_discard = AbilityDefinition::new(
@@ -1892,6 +1958,7 @@ mod tests {
                 random: false,
                 up_to: false,
                 unless_filter: None,
+                filter: None,
             },
         );
         let abilities = vec![mode_destroy, mode_draw, mode_discard];
@@ -1917,6 +1984,129 @@ mod tests {
         assert!(
             matches!(discard_node.effect, Effect::Discard { .. }),
             "Third link should be mode 2 (Discard) — printed last"
+        );
+    }
+
+    #[test]
+    fn chained_draw_player_plus_damageall_targetplayer_assigns_both_targets() {
+        use crate::types::ability::{ControllerRef, TargetRef};
+        // Reproduce Ashling's Command modes 2 + 3 chained:
+        //   Mode 2: Draw 2, target: Player
+        //   Mode 3: DamageAll { target: Typed{ controller: TargetPlayer } }
+        // collect_target_slots emits 2 slots (one per mode). assign_targets_in_chain
+        // must distribute both selected players — one to Draw.targets, one to
+        // DamageAll.targets — so each effect's resolver sees the right player.
+        let mode_draw = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Player,
+            },
+        );
+        let mode_damageall = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DamageAll {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Typed(
+                    TypedFilter::creature().controller(ControllerRef::TargetPlayer),
+                ),
+                player_filter: None,
+            },
+        );
+
+        let abilities = vec![mode_draw, mode_damageall];
+        let mut chain =
+            build_chained_resolved(&abilities, &[0, 1], ObjectId(1), PlayerId(0)).unwrap();
+
+        let p_a = TargetRef::Player(PlayerId(0));
+        let p_b = TargetRef::Player(PlayerId(1));
+        let result = assign_targets_in_chain(&mut chain, &[p_a.clone(), p_b.clone()]);
+        assert!(
+            result.is_ok(),
+            "assigning two player targets to [Draw{{Player}}, DamageAll{{TargetPlayer}}] \
+             chain must succeed, got {result:?}"
+        );
+
+        // Draw root should have first selected player.
+        assert_eq!(chain.targets, vec![p_a.clone()], "Draw should get target 0");
+        // DamageAll sub should have second selected player so its
+        // `ControllerRef::TargetPlayer` filter resolves to the right player.
+        let sub = chain
+            .sub_ability
+            .as_deref()
+            .expect("sub_ability must exist");
+        assert_eq!(
+            sub.targets,
+            vec![p_b],
+            "DamageAll should get target 1 (the second player slot)"
+        );
+    }
+
+    #[test]
+    fn chained_token_player_plus_damageall_targetplayer_assigns_both_targets() {
+        // CR 111.2 + CR 601.2c: Mirror of the Draw chain test for the Token
+        // owner-target pathway. With Token{owner: Player} as mode 4 of a modal
+        // spell paired with DamageAll{controller: TargetPlayer} as mode 3,
+        // collect_target_slots must surface 2 slots (one per mode) and
+        // assign_targets_in_chain must distribute both selected players —
+        // one to Token.targets, one to DamageAll.targets.
+        let mode_token = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Token {
+                name: "Treasure".to_string(),
+                power: crate::types::ability::PtValue::Fixed(0),
+                toughness: crate::types::ability::PtValue::Fixed(0),
+                types: vec!["Artifact".to_string(), "Treasure".to_string()],
+                colors: vec![],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 2 },
+                owner: TargetFilter::Player,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+        );
+        let mode_damageall = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DamageAll {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Typed(
+                    TypedFilter::creature().controller(ControllerRef::TargetPlayer),
+                ),
+                player_filter: None,
+            },
+        );
+
+        let abilities = vec![mode_token, mode_damageall];
+        let mut chain =
+            build_chained_resolved(&abilities, &[0, 1], ObjectId(1), PlayerId(0)).unwrap();
+
+        let p_a = TargetRef::Player(PlayerId(0));
+        let p_b = TargetRef::Player(PlayerId(1));
+        let result = assign_targets_in_chain(&mut chain, &[p_a.clone(), p_b.clone()]);
+        assert!(
+            result.is_ok(),
+            "assigning two player targets to [Token{{Player}}, DamageAll{{TargetPlayer}}] \
+             chain must succeed, got {result:?}"
+        );
+
+        // Token root should have first selected player.
+        assert_eq!(
+            chain.targets,
+            vec![p_a.clone()],
+            "Token should get target 0"
+        );
+        let sub = chain
+            .sub_ability
+            .as_deref()
+            .expect("sub_ability must exist");
+        assert_eq!(
+            sub.targets,
+            vec![p_b],
+            "DamageAll should get target 1 (the second player slot)"
         );
     }
 
@@ -2613,6 +2803,43 @@ mod tests {
                 chosen.0
             );
         }
+    }
+
+    /// CR 115.1 + CR 404 + CR 406: Nihil Spellbomb / Bojuka Bog / Tormod's
+    /// Crypt regression guard. "Exile target player's graveyard" lowers to
+    /// `ChangeZoneAll { origin: Graveyard, destination: Exile, target: Player }`.
+    /// The mass `target: Player` filter parameterizes the scan by a player —
+    /// the resolver enumerates that player's graveyard at resolution time —
+    /// so a companion `TargetFilter::Player` slot must be surfaced; otherwise
+    /// `ability.targets` stays empty and `player_scope` falls back to the
+    /// activator, exiling the wrong (usually empty) graveyard.
+    #[test]
+    fn build_target_slots_surfaces_player_slot_for_change_zone_all_player_filter() {
+        let state = crate::types::game_state::GameState::new_two_player(42);
+
+        let ability = ResolvedAbility::new(
+            Effect::ChangeZoneAll {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Exile,
+                target: TargetFilter::Player,
+            },
+            vec![],
+            ObjectId(900),
+            PlayerId(0),
+        );
+
+        let slots = build_target_slots(&state, &ability).expect("should build");
+        assert_eq!(
+            slots.len(),
+            1,
+            "expected a single TargetFilter::Player slot for graveyard-mass exile"
+        );
+        assert!(slots[0]
+            .legal_targets
+            .contains(&TargetRef::Player(PlayerId(0))));
+        assert!(slots[0]
+            .legal_targets
+            .contains(&TargetRef::Player(PlayerId(1))));
     }
 
     /// CR 109.4 + CR 115.1 + CR 506.2: Karazikar regression guard.

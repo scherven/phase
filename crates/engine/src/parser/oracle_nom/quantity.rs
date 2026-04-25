@@ -18,6 +18,7 @@ use crate::types::ability::{
     AggregateFunction, ControllerRef, CountScope, FilterProp, ObjectProperty, QuantityExpr,
     QuantityRef, RoundingMode, TargetFilter, TypeFilter, TypedFilter, ZoneRef,
 };
+use crate::types::player::PlayerCounterKind;
 
 /// Parse a quantity expression: either a fractional expression, a dynamic reference,
 /// or a fixed number. Fractional forms ("half X, rounded up/down") compose over the
@@ -418,7 +419,17 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
     alt((
         parse_distinct_card_types_exiled_with_source,
         parse_distinct_card_types_in_zone,
+        // CR 122.1: "[kind] counters <possessor>" must be tried BEFORE the
+        // generic type-filter arm so the typed player-counter ref wins over a
+        // "[typeword] you control" misread (no `TypeFilter` for counter kinds).
+        parse_player_counter_ref_tail,
         parse_number_of_controlled_type,
+        // CR 109.4 + CR 115.7: "cards in their <zone>" / "cards in that player's <zone>"
+        // must be tried BEFORE the scoped-zone combinator so the target-referring
+        // possessive routes to `TargetZoneCardCount` (resolves against the player
+        // target in scope) instead of falling back to a controller-less
+        // `InZone` filter that counts every player's cards.
+        parse_number_of_cards_in_target_zone,
         parse_number_of_cards_in_zone,
         parse_number_of_opponents,
     ))
@@ -458,6 +469,24 @@ fn parse_number_of_controlled_type(input: &str) -> OracleResult<'_, QuantityRef>
 /// Parse "cards in your graveyard" / "creature cards in your graveyard" after "the number of".
 fn parse_number_of_cards_in_zone(input: &str) -> OracleResult<'_, QuantityRef> {
     parse_zone_card_count(input)
+}
+
+/// CR 109.4 + CR 115.7: Parse "cards in their <zone>" / "cards in that player's <zone>"
+/// into `QuantityRef::TargetZoneCardCount`. The possessive refers to the enclosing
+/// effect's player target (e.g., Sword of War and Peace's "deals damage to that
+/// player equal to the number of cards in their hand"), so the count must resolve
+/// against the first `TargetRef::Player` in `ability.targets`, not against a
+/// zone-wide `InZone` filter.
+///
+/// Mirrors `parse_their_tail` but is reachable after a leading `"cards in "`
+/// prefix — the compound form used by "the number of cards in ..." expressions.
+fn parse_number_of_cards_in_target_zone(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("cards in ").parse(input)?;
+    let (rest, _) = alt((tag("their "), tag("that player's "))).parse(rest)?;
+    map(parse_zone_ref_singular, |zone| {
+        QuantityRef::TargetZoneCardCount { zone }
+    })
+    .parse(rest)
 }
 
 fn parse_zone_card_count(input: &str) -> OracleResult<'_, QuantityRef> {
@@ -556,13 +585,32 @@ fn parse_card_word(input: &str) -> OracleResult<'_, ()> {
     .parse(input)
 }
 
+/// Parse a list of type filters joined by `" and "`, `" or "`, or `" and/or "`.
+///
+/// CR 604.3: In zone-count contexts ("two or more instant and/or sorcery cards
+/// in your graveyard"), the joining conjunction is semantically a disjunction
+/// — a card matches if it has any of the listed types. The result
+/// `Vec<TypeFilter>` is consumed by `matches_zone_card_filter`
+/// (`game/quantity.rs:1151`), which uses `.iter().any(...)` (logical OR).
+///
+/// All three separators (`and`, `or`, `and/or`) are accepted so the combinator
+/// covers the grammatical variants Wizards uses across templating eras
+/// (e.g. "instant and/or sorcery", "instant or sorcery", "creatures and
+/// artifacts"). The longest-prefix-first ordering (`and/or` before `and`) is
+/// load-bearing — without it, `tag(" and ")` would consume the `" and "` head
+/// of `" and/or "` and the `/or` tail would derail `parse_type_filter_word`.
 fn parse_type_filter_list(input: &str) -> OracleResult<'_, Vec<TypeFilter>> {
     let (mut rest, first) = parse_type_filter_word(input)?;
     let mut filters = vec![first];
-    while let Ok((next_rest, _)) =
-        tag::<_, _, nom_language::error::VerboseError<&str>>(" and ").parse(rest)
-    {
-        let (after_type, next) = parse_type_filter_word(next_rest)?;
+    loop {
+        let sep = tag::<_, _, nom_language::error::VerboseError<&str>>(" and/or ")
+            .parse(rest)
+            .or_else(|_| tag::<_, _, nom_language::error::VerboseError<&str>>(" and ").parse(rest))
+            .or_else(|_| tag::<_, _, nom_language::error::VerboseError<&str>>(" or ").parse(rest));
+        let Ok((next_rest, _)) = sep else { break };
+        let Ok((after_type, next)) = parse_type_filter_word(next_rest) else {
+            break;
+        };
         filters.push(next);
         rest = after_type;
     }
@@ -882,6 +930,54 @@ fn parse_speed_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     value(QuantityRef::Speed, tag("your speed")).parse(input)
 }
 
+/// CR 122.1: Parse "[kind] counters <possessor>" → `QuantityRef::PlayerCounter`.
+///
+/// Reached after `parse_the_number_of` consumes the leading `"the number of "`.
+/// Composes a typed kind alt and a typed possessor alt — no string matching
+/// downstream and no permutation-enumerated tag lists.
+fn parse_player_counter_ref_tail(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, kind) = parse_player_counter_kind(input)?;
+    let (rest, _) = tag(" counters ").parse(rest)?;
+    let (rest, scope) = parse_player_counter_possessor(rest)?;
+    Ok((rest, QuantityRef::PlayerCounter { kind, scope }))
+}
+
+/// CR 122.1: Parse the full "the number of [kind] counters <possessor>" phrase.
+///
+/// Public entry point used by trailing "where X is …" plumbing in the
+/// imperative parser (see `parse_earthbend_counter_count`). Mirrors the arm
+/// composed inside `parse_quantity_ref` so static and imperative parsing
+/// share a single grammar authority.
+pub fn parse_the_number_of_player_counters(input: &str) -> OracleResult<'_, QuantityRef> {
+    preceded(tag("the number of "), parse_player_counter_ref_tail).parse(input)
+}
+
+/// CR 122.1: Typed alt over named player-counter kinds. Each arm emits the
+/// `PlayerCounterKind` variant directly (no intermediate string).
+fn parse_player_counter_kind(input: &str) -> OracleResult<'_, PlayerCounterKind> {
+    alt((
+        value(PlayerCounterKind::Experience, tag("experience")),
+        value(PlayerCounterKind::Poison, tag("poison")),
+        value(PlayerCounterKind::Rad, tag("rad")),
+        value(PlayerCounterKind::Ticket, tag("ticket")),
+    ))
+    .parse(input)
+}
+
+/// CR 122.1 + CR 109.5: Typed possessor alt mapping to `CountScope`. Each arm
+/// emits the scope variant directly. Targeted-player phrasings ("target
+/// opponent has", "that player has") are intentionally not represented
+/// because no current card requires them; extending here is a typed
+/// addition, not a string-match retrofit.
+fn parse_player_counter_possessor(input: &str) -> OracleResult<'_, CountScope> {
+    alt((
+        value(CountScope::Controller, tag("you have")),
+        value(CountScope::Opponents, tag("each opponent has")),
+        value(CountScope::All, tag("each player has")),
+    ))
+    .parse(input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,6 +1020,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_quantity_ref_cards_in_their_hand_is_target_zone_count() {
+        // CR 109.4 + CR 115.7: "the number of cards in their hand" must resolve
+        // against the effect's player target, not count every hand in the game.
+        // Sword of War and Peace exemplar.
+        let (rest, q) = parse_quantity_ref("the number of cards in their hand").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::TargetZoneCardCount {
+                zone: ZoneRef::Hand,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_quantity_ref_cards_in_that_players_hand_is_target_zone_count() {
+        let (rest, q) = parse_quantity_ref("the number of cards in that player's hand").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::TargetZoneCardCount {
+                zone: ZoneRef::Hand,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
     fn test_parse_quantity_ref_self_power() {
         let (rest, q) = parse_quantity_ref("its power").unwrap();
         assert_eq!(q, QuantityRef::SelfPower);
@@ -958,6 +1081,101 @@ mod tests {
             }
         );
         assert_eq!(rest, " and");
+    }
+
+    /// CR 604.3: `" and/or "` joins multiple type filters as a disjunction,
+    /// matching cards with any of the listed types. Used by the Ghitu
+    /// Lavarunner / Magmatic Channeler / Curious Homunculus class ("instant
+    /// and/or sorcery cards in your graveyard").
+    #[test]
+    fn test_parse_quantity_ref_and_or_type_list_in_graveyard() {
+        let (rest, q) =
+            parse_quantity_ref("instant and/or sorcery cards in your graveyard").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: vec![TypeFilter::Instant, TypeFilter::Sorcery],
+                scope: CountScope::Controller,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    /// CR 604.3: Plain `" or "` joining is also valid in Oracle text — both
+    /// forms appear historically depending on era ("instant or sorcery
+    /// cards"). Resolves identically to the `and/or` form.
+    #[test]
+    fn test_parse_quantity_ref_or_type_list_in_graveyard() {
+        let (rest, q) = parse_quantity_ref("instant or sorcery cards in your graveyard").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: vec![TypeFilter::Instant, TypeFilter::Sorcery],
+                scope: CountScope::Controller,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    /// CR 604.3: `" and "` joining for compound type lists in zone-count
+    /// phrases ("artifact and creature cards in your graveyard"). Disjunction
+    /// at the count level (`matches_zone_card_filter` uses `.iter().any(...)`).
+    #[test]
+    fn test_parse_quantity_ref_and_type_list_in_graveyard() {
+        let (rest, q) =
+            parse_quantity_ref("artifact and creature cards in your graveyard").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: vec![TypeFilter::Artifact, TypeFilter::Creature],
+                scope: CountScope::Controller,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    /// CR 604.3: End-to-end through `parse_inner_condition`, the path used by
+    /// `parse_static_condition` for "as long as ..." gates. Pins the Ghitu
+    /// Lavarunner regression at the static-condition layer.
+    #[test]
+    fn test_parse_inner_condition_there_are_and_or() {
+        use crate::parser::oracle_nom::condition::parse_inner_condition;
+        use crate::types::ability::{Comparator, StaticCondition};
+
+        let (rest, cond) = parse_inner_condition(
+            "there are two or more instant and/or sorcery cards in your graveyard",
+        )
+        .unwrap();
+        assert_eq!(rest, "");
+        match cond {
+            StaticCondition::QuantityComparison {
+                lhs,
+                comparator,
+                rhs,
+            } => {
+                assert_eq!(comparator, Comparator::GE);
+                assert_eq!(rhs, QuantityExpr::Fixed { value: 2 });
+                match lhs {
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::ZoneCardCount {
+                                zone,
+                                card_types,
+                                scope,
+                            },
+                    } => {
+                        assert_eq!(zone, ZoneRef::Graveyard);
+                        assert_eq!(card_types, vec![TypeFilter::Instant, TypeFilter::Sorcery]);
+                        assert_eq!(scope, CountScope::Controller);
+                    }
+                    other => panic!("expected ZoneCardCount lhs, got {other:?}"),
+                }
+            }
+            other => panic!("expected QuantityComparison, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1309,6 +1527,75 @@ mod tests {
             QuantityRef::ZoneCardCount {
                 zone: ZoneRef::Hand,
                 card_types: Vec::new(),
+                scope: CountScope::Controller,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    /// CR 122.1: typed player-counter quantity refs cover every kind × scope
+    /// permutation through composed nom alts (no string permutation matrix).
+    #[test]
+    fn parses_player_counter_ref_for_each_kind_and_scope() {
+        let cases: &[(&str, PlayerCounterKind, CountScope)] = &[
+            (
+                "the number of experience counters you have",
+                PlayerCounterKind::Experience,
+                CountScope::Controller,
+            ),
+            (
+                "the number of poison counters you have",
+                PlayerCounterKind::Poison,
+                CountScope::Controller,
+            ),
+            (
+                "the number of rad counters you have",
+                PlayerCounterKind::Rad,
+                CountScope::Controller,
+            ),
+            (
+                "the number of ticket counters you have",
+                PlayerCounterKind::Ticket,
+                CountScope::Controller,
+            ),
+            (
+                "the number of experience counters each opponent has",
+                PlayerCounterKind::Experience,
+                CountScope::Opponents,
+            ),
+            (
+                "the number of poison counters each player has",
+                PlayerCounterKind::Poison,
+                CountScope::All,
+            ),
+        ];
+        for (phrase, kind, scope) in cases {
+            let (rest, q) = parse_quantity_ref(phrase).unwrap_or_else(|e| {
+                panic!("phrase `{phrase}` failed to parse: {e:?}");
+            });
+            assert_eq!(
+                q,
+                QuantityRef::PlayerCounter {
+                    kind: *kind,
+                    scope: scope.clone(),
+                },
+                "{phrase}"
+            );
+            assert_eq!(rest, "", "{phrase}");
+        }
+    }
+
+    /// CR 122.1: the public entry point accepts the full "the number of …"
+    /// phrase so the imperative-side `parse_earthbend_count_expr` can hook in.
+    #[test]
+    fn parses_player_counter_via_public_entry_point() {
+        let (rest, q) =
+            parse_the_number_of_player_counters("the number of experience counters you have")
+                .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::PlayerCounter {
+                kind: PlayerCounterKind::Experience,
                 scope: CountScope::Controller,
             }
         );

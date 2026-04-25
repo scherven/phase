@@ -24,6 +24,8 @@
 //! `iter_all`) are crate-visible so construction and layer recomputation
 //! can rebuild the collection; external read paths must use the helpers.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 /// Collection of ability definitions on a `GameObject`.
@@ -31,15 +33,52 @@ use serde::{Deserialize, Serialize};
 /// External iteration is deliberately not exposed — callers must go through
 /// `crate::game::functioning_abilities` so the CR 702.26b / CR 114.4 /
 /// CR 604.1 gates are applied consistently.
+///
+/// # Storage
+///
+/// Backed by `Arc<Vec<T>>` so `Clone` is a refcount bump rather than a
+/// deep-copy of the whole definition list. This matters because
+/// `GameState::clone()` runs constantly during AI search, and each
+/// `GameObject` holds three `Definitions<T>` fields. Mutations (`push`,
+/// `clear`, `retain`, positional `get_mut`) go through `Arc::make_mut`, so
+/// copy-on-write semantics preserve the previous observable behavior for
+/// shared state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Definitions<T>(pub(crate) Vec<T>);
+pub struct Definitions<T>(pub(crate) Arc<Vec<T>>);
 
 // Manual Default impl — the derive would require T: Default, but an empty
 // Definitions<T> is sensible for any T.
 impl<T> Default for Definitions<T> {
     fn default() -> Self {
-        Self(Vec::new())
+        Self(Arc::new(Vec::new()))
+    }
+}
+
+impl<T: Clone> Definitions<T> {
+    /// Append a new definition. Public because mutation is a legitimate cross-
+    /// crate operation (test fixtures, card construction, copy effects). The
+    /// single-authority invariant is guarded by the absence of public
+    /// iteration, not by restricting writes.
+    pub fn push(&mut self, item: T) {
+        Arc::make_mut(&mut self.0).push(item);
+    }
+
+    /// Remove every definition.
+    pub fn clear(&mut self) {
+        Arc::make_mut(&mut self.0).clear();
+    }
+
+    /// Keep only definitions matching `f`.
+    pub fn retain<F: FnMut(&T) -> bool>(&mut self, f: F) {
+        Arc::make_mut(&mut self.0).retain(f);
+    }
+
+    /// Positional mutable access — crate-visible so effects that need to
+    /// mutate a specific existing definition (regeneration shield consumption,
+    /// prevention-amount updates) can do so without bypassing the gated reads.
+    pub(crate) fn get_mut(&mut self, i: usize) -> Option<&mut T> {
+        Arc::make_mut(&mut self.0).get_mut(i)
     }
 }
 
@@ -60,13 +99,6 @@ impl<T> Definitions<T> {
         self.0.get(i)
     }
 
-    /// Positional mutable access — crate-visible so effects that need to
-    /// mutate a specific existing definition (regeneration shield consumption,
-    /// prevention-amount updates) can do so without bypassing the gated reads.
-    pub(crate) fn get_mut(&mut self, i: usize) -> Option<&mut T> {
-        self.0.get_mut(i)
-    }
-
     /// First definition, if any. Does not apply CR gating.
     pub fn first(&self) -> Option<&T> {
         self.0.first()
@@ -75,24 +107,6 @@ impl<T> Definitions<T> {
     /// Last definition, if any. Does not apply CR gating.
     pub fn last(&self) -> Option<&T> {
         self.0.last()
-    }
-
-    /// Append a new definition. Public because mutation is a legitimate cross-
-    /// crate operation (test fixtures, card construction, copy effects). The
-    /// single-authority invariant is guarded by the absence of public
-    /// iteration, not by restricting writes.
-    pub fn push(&mut self, item: T) {
-        self.0.push(item);
-    }
-
-    /// Remove every definition.
-    pub fn clear(&mut self) {
-        self.0.clear();
-    }
-
-    /// Keep only definitions matching `f`.
-    pub fn retain<F: FnMut(&T) -> bool>(&mut self, f: F) {
-        self.0.retain(f);
     }
 
     /// Iterate all definitions without applying any CR gate. Crate-visible —
@@ -125,21 +139,30 @@ impl<T> std::ops::Index<usize> for Definitions<T> {
     }
 }
 
-impl<T> std::ops::IndexMut<usize> for Definitions<T> {
+impl<T: Clone> std::ops::IndexMut<usize> for Definitions<T> {
     fn index_mut(&mut self, i: usize) -> &mut T {
-        &mut self.0[i]
+        &mut Arc::make_mut(&mut self.0)[i]
     }
 }
 
 impl<T> From<Vec<T>> for Definitions<T> {
     fn from(v: Vec<T>) -> Self {
+        Self(Arc::new(v))
+    }
+}
+
+impl<T> From<Arc<Vec<T>>> for Definitions<T> {
+    /// Share the underlying `Arc` directly — no clone of the inner vec. This
+    /// is the hot-path conversion from `GameObject::base_*` into the live
+    /// `Definitions<T>` wrapper during `layers.rs` reset.
+    fn from(v: Arc<Vec<T>>) -> Self {
         Self(v)
     }
 }
 
 impl<T> FromIterator<T> for Definitions<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self(Vec::from_iter(iter))
+        Self(Arc::new(Vec::from_iter(iter)))
     }
 }
 

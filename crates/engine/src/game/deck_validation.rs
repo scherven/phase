@@ -12,8 +12,6 @@ use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::match_config::MatchType;
 
-const BASIC_LANDS: [&str; 5] = ["Plains", "Island", "Swamp", "Mountain", "Forest"];
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeckCompatibilityRequest {
     #[serde(default)]
@@ -225,17 +223,29 @@ fn evaluate_constructed(
     }
 
     let mut illegal_cards = BTreeSet::new();
+    let mut restricted_canonical: HashSet<String> = HashSet::new();
     for name in all_deck_cards(request) {
         if unknown_cards.contains(name) {
             continue;
         }
-        match db.legality_status(resolve_card_name(db, name), legality_format) {
-            Some(status) if status.is_legal() => {}
+        let resolved = resolve_card_name(db, name);
+        match db.legality_status(resolved, legality_format) {
+            Some(LegalityStatus::Legal) => {}
+            // CR 100.2b: A card on a format's restricted list is legal but
+            // a deck may contain at most one copy of it. Vintage is the
+            // canonical user, but the rule is format-general — any format
+            // whose legality table marks a card `Restricted` follows the
+            // same 1-copy ceiling, enforced below. The card itself is not
+            // "illegal" — that was the bug that flagged Power 9 as banned
+            // in Vintage.
+            Some(LegalityStatus::Restricted) => {
+                restricted_canonical.insert(resolved.to_ascii_lowercase());
+            }
             Some(status) => {
                 illegal_cards.insert(format!("{name} ({})", status_label(status)));
             }
             None => {
-                illegal_cards.insert(format!("{name} (missing legality data)"));
+                illegal_cards.insert(format!("{name} (not legal in {format_label})"));
             }
         }
     }
@@ -244,6 +254,16 @@ fn evaluate_constructed(
         reasons.push(summarize_cards(
             &format!("Not {format_label} legal"),
             &illegal_cards,
+            6,
+        ));
+    }
+
+    // CR 100.2b: Restricted cards may appear at most once in a deck.
+    let restricted_violations = restricted_copy_violations(db, &counts, &restricted_canonical);
+    if !restricted_violations.is_empty() {
+        reasons.push(summarize_cards(
+            "More than 1 copy of a restricted card",
+            &restricted_violations,
             6,
         ));
     }
@@ -259,6 +279,33 @@ fn evaluate_commander(
     request: &DeckCompatibilityRequest,
     unknown_cards: &BTreeSet<String>,
 ) -> CompatibilityCheck {
+    evaluate_commander_with_format(
+        db,
+        request,
+        unknown_cards,
+        LegalityFormat::Commander,
+        "Commander",
+    )
+}
+
+/// Shared commander-variant validator. Commander, Duel Commander, and Pauper
+/// Commander all use 100-card-singleton deck shape with a command zone; only
+/// the legality table and display label differ. DuelCommander's 30-life /
+/// 1v1-only rules are expressed in `FormatConfig`, not deck validation.
+///
+/// Known gap for Pauper Commander (PDH): the PDH community rule that the
+/// commander must be an **uncommon** creature/planeswalker is not yet
+/// structurally enforced — `is_commander_eligible` is rarity-agnostic, and
+/// the card-pool check relies solely on `LegalityFormat::PauperCommander`
+/// status for non-commander slots. Pool legality works; commander rarity
+/// validation needs a future rarity-aware commander-eligibility predicate.
+fn evaluate_commander_with_format(
+    db: &CardDatabase,
+    request: &DeckCompatibilityRequest,
+    unknown_cards: &BTreeSet<String>,
+    legality_format: LegalityFormat,
+    format_label: &str,
+) -> CompatibilityCheck {
     let mut reasons = Vec::new();
 
     if !unknown_cards.is_empty() {
@@ -267,7 +314,7 @@ fn evaluate_commander(
 
     if request.commander.is_empty() || request.commander.len() > 2 {
         reasons.push(format!(
-            "Commander decks require 1 or 2 commanders (found {})",
+            "{format_label} decks require 1 or 2 commanders (found {})",
             request.commander.len()
         ));
     }
@@ -308,13 +355,11 @@ fn evaluate_commander(
         }
     }
 
-    // CR 903.5e: Commander games do not use sideboards.
-    if matches!(
-        GameFormat::Commander.sideboard_policy(),
-        SideboardPolicy::Forbidden
-    ) && !request.sideboard.is_empty()
-    {
-        reasons.push("Commander decks should not include a sideboard".to_string());
+    // CR 903.5e (+ variant rules): Commander-style formats do not use sideboards.
+    if !request.sideboard.is_empty() {
+        reasons.push(format!(
+            "{format_label} decks should not include a sideboard"
+        ));
     }
 
     let represented_in_main = request
@@ -330,7 +375,7 @@ fn evaluate_commander(
     let total_cards = request.main_deck.len() + (request.commander.len() - represented_in_main);
     if total_cards != 100 {
         reasons.push(format!(
-            "Commander deck must have exactly 100 cards (found {total_cards})"
+            "{format_label} deck must have exactly 100 cards (found {total_cards})"
         ));
     }
 
@@ -352,18 +397,22 @@ fn evaluate_commander(
         if unknown_cards.contains(name) {
             continue;
         }
-        match db.legality_status(resolve_card_name(db, name), LegalityFormat::Commander) {
+        match db.legality_status(resolve_card_name(db, name), legality_format) {
             Some(status) if status.is_legal() => {}
             Some(status) => {
                 illegal_cards.insert(format!("{name} ({})", status_label(status)));
             }
             None => {
-                illegal_cards.insert(format!("{name} (missing legality data)"));
+                illegal_cards.insert(format!("{name} (not legal in {format_label})"));
             }
         }
     }
     if !illegal_cards.is_empty() {
-        reasons.push(summarize_cards("Not Commander legal", &illegal_cards, 6));
+        reasons.push(summarize_cards(
+            &format!("Not {format_label} legal"),
+            &illegal_cards,
+            6,
+        ));
     }
 
     // CR 903.4: Each non-commander card's color identity must be a subset of
@@ -518,7 +567,7 @@ fn evaluate_brawl(
                 illegal_cards.insert(format!("{name} ({})", status_label(status)));
             }
             None => {
-                illegal_cards.insert(format!("{name} (missing legality data)"));
+                illegal_cards.insert(format!("{name} (not legal in {format_label})"));
             }
         }
     }
@@ -596,7 +645,13 @@ fn evaluate_selected_format(
             }
             commander.compatible
         }
-        GameFormat::Pioneer | GameFormat::Historic | GameFormat::Pauper => {
+        GameFormat::Pioneer
+        | GameFormat::Modern
+        | GameFormat::Legacy
+        | GameFormat::Vintage
+        | GameFormat::Historic
+        | GameFormat::Timeless
+        | GameFormat::Pauper => {
             let check = evaluate_constructed(
                 db,
                 request,
@@ -604,6 +659,23 @@ fn evaluate_selected_format(
                 format.legality_format().unwrap(),
                 format.label(),
                 format.sideboard_policy(),
+            );
+            if !check.compatible {
+                reasons.extend(check.reasons);
+            }
+            check.compatible
+        }
+        GameFormat::PauperCommander | GameFormat::DuelCommander => {
+            // Both variants share Commander's structural rules (100-card
+            // singleton, command zone). We route them through the existing
+            // Commander check against the format's own legality table — the
+            // card pool differs from Commander but the deck shape is identical.
+            let check = evaluate_commander_with_format(
+                db,
+                request,
+                unknown_cards,
+                format.legality_format().unwrap(),
+                format.label(),
             );
             if !check.compatible {
                 reasons.extend(check.reasons);
@@ -840,9 +912,13 @@ fn copy_limit_violations(
         if *count <= max_copies {
             continue;
         }
-        if BASIC_LANDS
-            .iter()
-            .any(|basic| basic.eq_ignore_ascii_case(canonical_name))
+        // CR 100.2a + CR 205.3i: Basic lands are exempt from copy limits.
+        // "Basic" is a supertype (covering Plains/Island/Swamp/Mountain/Forest,
+        // Snow-Covered variants, Wastes, and any future basic), not a fixed
+        // name allowlist — trust the MTGJSON-populated supertype field.
+        if db
+            .get_face_by_name(canonical_name)
+            .is_some_and(|face| face.card_type.supertypes.contains(&Supertype::Basic))
         {
             continue;
         }
@@ -856,6 +932,35 @@ fn copy_limit_violations(
             .get_face_by_name(canonical_name)
             .map(|f| f.name.clone())
             .unwrap_or_else(|| canonical_name.clone());
+        violations.insert(format!("{display} ({count} copies)"));
+    }
+    violations
+}
+
+/// CR 100.2b: Flag any card the active format marks as `Restricted` whose
+/// combined main+sideboard count exceeds 1. The 1-copy ceiling is
+/// format-general — Vintage is the canonical consumer, but the rule applies
+/// to any format whose legality table uses `Restricted`.
+/// `restricted_canonical` is the set of canonical (DFC-resolved, lowercased)
+/// names that the legality table marks as `Restricted` for the active format;
+/// `counts` is the combined main+sideboard map produced by `combined_copy_counts`.
+fn restricted_copy_violations(
+    db: &CardDatabase,
+    counts: &HashMap<String, u32>,
+    restricted_canonical: &HashSet<String>,
+) -> BTreeSet<String> {
+    let mut violations = BTreeSet::new();
+    for canonical in restricted_canonical {
+        let Some(count) = counts.get(canonical) else {
+            continue;
+        };
+        if *count <= 1 {
+            continue;
+        }
+        let display = db
+            .get_face_by_name(canonical)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| canonical.clone());
         violations.insert(format!("{display} ({count} copies)"));
     }
     violations
@@ -2309,5 +2414,261 @@ mod tests {
         assert!(result.is_err());
         let reasons = result.unwrap_err();
         assert!(reasons.iter().any(|r| r.contains("Singleton violations")));
+    }
+
+    /// CR 100.2a + CR 205.3i: Basic-lands exemption from singleton is driven
+    /// by the Basic *supertype*, not a fixed name allowlist. Snow-Covered
+    /// Plains and Wastes both carry the Basic supertype; Llanowar Elves does
+    /// not.
+    fn basic_supertype_test_db() -> String {
+        serde_json::json!({
+            "snow-covered plains": {
+                "name": "Snow-Covered Plains",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Basic", "Snow"],
+                    "core_types": ["Land"],
+                    "subtypes": ["Plains"]
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "plains": {
+                "name": "Plains",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Basic"],
+                    "core_types": ["Land"],
+                    "subtypes": ["Plains"]
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "wastes": {
+                "name": "Wastes",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Basic"],
+                    "core_types": ["Land"],
+                    "subtypes": []
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "llanowar elves": {
+                "name": "Llanowar Elves",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": [],
+                    "core_types": ["Creature"],
+                    "subtypes": ["Elf", "Druid"]
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            },
+            "legal commander": {
+                "name": "Legal Commander",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Legendary"],
+                    "core_types": ["Creature"],
+                    "subtypes": []
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "commander": "legal" }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn commander_singleton_permits_snow_covered_basic_duplicates() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = expand("Snow-Covered Plains", 10);
+        main.extend(expand("Plains", 89));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            result.commander.compatible,
+            "Snow-Covered Plains must be treated as basic; reasons: {:?}",
+            result.commander.reasons
+        );
+    }
+
+    #[test]
+    fn commander_singleton_permits_wastes_duplicates() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = expand("Wastes", 10);
+        main.extend(expand("Plains", 89));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            result.commander.compatible,
+            "Wastes (Basic supertype) must be treated as basic; reasons: {:?}",
+            result.commander.reasons
+        );
+    }
+
+    #[test]
+    fn commander_singleton_rejects_non_basic_duplicates() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = expand("Llanowar Elves", 2);
+        main.extend(expand("Plains", 97));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            !result.commander.compatible,
+            "duplicate non-basic must still fail singleton"
+        );
+        assert!(result
+            .commander
+            .reasons
+            .iter()
+            .any(|r| r.contains("Llanowar Elves")));
+    }
+
+    #[test]
+    fn commander_singleton_permits_mixed_basic_variants() {
+        let db = CardDatabase::from_json_str(&basic_supertype_test_db()).unwrap();
+        let mut main = vec!["Plains".to_string(), "Snow-Covered Plains".to_string()];
+        main.extend(expand("Wastes", 97));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: vec!["Legal Commander".to_string()],
+            selected_format: Some(GameFormat::Commander),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert!(
+            result.commander.compatible,
+            "1x Plains + 1x Snow-Covered Plains must pass; reasons: {:?}",
+            result.commander.reasons
+        );
+    }
+
+    fn vintage_test_db() -> String {
+        // Power-9-shaped fixture: a "restricted" Vintage card and a generic
+        // legal Vintage filler so we can build a 60-card deck.
+        serde_json::json!({
+            "black lotus": {
+                "name": "Black Lotus",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": [], "core_types": ["Artifact"], "subtypes": [] },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [],
+                "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "vintage": "restricted" }
+            },
+            "island": {
+                "name": "Island",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": {
+                    "supertypes": ["Basic"], "core_types": ["Land"], "subtypes": ["Island"]
+                },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [],
+                "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": { "vintage": "legal" }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn vintage_one_copy_of_restricted_card_is_legal() {
+        // CR 100.2b: A restricted card is legal in Vintage at no more than
+        // one copy. Regression for a bug where `is_legal()` rejected the
+        // `Restricted` status, marking Power 9 as illegal in Vintage decks.
+        let db = CardDatabase::from_json_str(&vintage_test_db()).unwrap();
+        let mut main = vec!["Black Lotus".to_string()];
+        main.extend(expand("Island", 59));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Vintage),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(
+            result.selected_format_compatible,
+            Some(true),
+            "1x restricted card must be legal in Vintage; reasons: {:?}",
+            result.selected_format_reasons
+        );
+    }
+
+    #[test]
+    fn vintage_two_copies_of_restricted_card_violate_one_copy_limit() {
+        // CR 100.2b: Two copies of a restricted card violate the 1-copy
+        // ceiling — the deck must be flagged, but the message is
+        // "More than 1 copy of a restricted card", not "banned".
+        let db = CardDatabase::from_json_str(&vintage_test_db()).unwrap();
+        let mut main = expand("Black Lotus", 2);
+        main.extend(expand("Island", 58));
+        let request = DeckCompatibilityRequest {
+            main_deck: main,
+            sideboard: Vec::new(),
+            commander: Vec::new(),
+            selected_format: Some(GameFormat::Vintage),
+            selected_match_type: None,
+        };
+        let result = evaluate_deck_compatibility(&db, &request);
+        assert_eq!(result.selected_format_compatible, Some(false));
+        assert!(
+            result
+                .selected_format_reasons
+                .iter()
+                .any(|r| r.contains("More than 1 copy of a restricted card")
+                    && r.contains("Black Lotus")),
+            "expected restricted-copy violation; reasons: {:?}",
+            result.selected_format_reasons
+        );
+        assert!(
+            !result
+                .selected_format_reasons
+                .iter()
+                .any(|r| r.contains("Not Vintage legal")),
+            "restricted card must not be flagged as illegal; reasons: {:?}",
+            result.selected_format_reasons
+        );
     }
 }

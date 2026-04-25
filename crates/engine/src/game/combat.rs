@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -6,7 +6,7 @@ use super::game_object::GameObject;
 use super::players;
 use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::parser::oracle_target::parse_target;
-use crate::types::card_type::CoreType;
+use crate::types::card_type::{CoreType, Supertype};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
@@ -48,6 +48,13 @@ pub struct CombatState {
     pub blocker_assignments: HashMap<ObjectId, Vec<ObjectId>>,
     /// blocker_id -> attacker_ids (reverse lookup; Vec supports multi-blocking via ExtraBlockers)
     pub blocker_to_attacker: HashMap<ObjectId, Vec<ObjectId>>,
+    /// Defending players who have declared blockers this step.
+    #[serde(default)]
+    pub blockers_declared_by: Vec<PlayerId>,
+    /// Blocker declaration events waiting for CR 509.2a trigger processing after
+    /// every defending player has declared blockers.
+    #[serde(default)]
+    pub pending_blocker_declaration_events: Vec<GameEvent>,
     pub damage_assignments: HashMap<ObjectId, Vec<DamageAssignment>>,
     pub first_strike_done: bool,
     /// Index into attacker list for resumable damage assignment iteration.
@@ -63,6 +70,8 @@ impl PartialEq for CombatState {
         self.attackers == other.attackers
             && self.blocker_assignments == other.blocker_assignments
             && self.blocker_to_attacker == other.blocker_to_attacker
+            && self.blockers_declared_by == other.blockers_declared_by
+            && self.pending_blocker_declaration_events == other.pending_blocker_declaration_events
             && self.first_strike_done == other.first_strike_done
     }
 }
@@ -213,6 +222,15 @@ pub fn place_attacking_alongside(
     if let Some(obj) = state.objects.get_mut(&object_id) {
         obj.tapped = true;
         obj.entered_battlefield_turn = Some(state.turn_number);
+        // CR 302.6: Ninjutsu/Sneak places a new permanent already attacking.
+        // The attack declaration itself bypasses the normal summoning-
+        // sickness check for attacking, but the flag remains true so {T}
+        // activations are still gated. Cannot call `reset_for_battlefield_entry`
+        // here because `cast_variant_paid` was set by the Sneak/Ninjutsu
+        // pipeline upstream and must be preserved (the reset clears it
+        // under CR 400.7's new-object semantics, but these keywords set it
+        // at entry time, not re-entry).
+        obj.summoning_sick = true;
     }
     if let Some(combat) = state.combat.as_mut() {
         combat.attackers.push(AttackerInfo::new(
@@ -288,17 +306,10 @@ pub fn validate_attackers(state: &GameState, attacker_ids: &[ObjectId]) -> Resul
             return Err(format!("{:?} is detained", id));
         }
 
-        // CR 302.6: Summoning sickness — must have haste or have been under controller's
-        // control since the beginning of the turn.
-        if !obj.has_keyword(&Keyword::Haste) {
-            if let Some(etb_turn) = obj.entered_battlefield_turn {
-                if etb_turn >= state.turn_number {
-                    return Err(format!("{:?} has summoning sickness", id));
-                }
-            } else {
-                // No ETB turn recorded -- treat as summoning sick
-                return Err(format!("{:?} has summoning sickness (no ETB turn)", id));
-            }
+        // CR 302.6: Summoning sickness — delegate to the canonical query
+        // (folds in Haste + non-creature short-circuits).
+        if has_summoning_sickness(obj) {
+            return Err(format!("{:?} has summoning sickness", id));
         }
     }
 
@@ -309,6 +320,17 @@ pub fn validate_attackers(state: &GameState, attacker_ids: &[ObjectId]) -> Resul
 /// Each assignment is (blocker_id, attacker_id).
 pub fn validate_blockers(
     state: &GameState,
+    assignments: &[(ObjectId, ObjectId)],
+) -> Result<(), String> {
+    let defending_player = next_defending_player_to_declare_blockers(state)
+        .unwrap_or_else(|| players::next_player(state, state.active_player));
+    validate_blockers_for_player(state, defending_player, assignments)
+}
+
+/// Validate one defending player's blocker declaration per CR 509.1 and CR 802.4.
+pub fn validate_blockers_for_player(
+    state: &GameState,
+    player: PlayerId,
     assignments: &[(ObjectId, ObjectId)],
 ) -> Result<(), String> {
     // Detect duplicate (blocker, attacker) pairs — the Vec-based blocker_to_attacker
@@ -347,21 +369,22 @@ pub fn validate_blockers(
             return Err(format!("{:?} is phased out", blocker_id));
         }
 
-        // CR 509.1a: Only untapped creatures controlled by the defending player may block.
-        if blocker.controller == state.active_player {
+        // CR 509.1a + CR 802.4a: Only untapped creatures controlled by this
+        // defending player may block in this declaration.
+        if blocker.controller != player {
             return Err(format!(
-                "{:?} is not controlled by defending player",
-                blocker_id
+                "{:?} is not controlled by defending player {:?}",
+                blocker_id, player
             ));
         }
 
-        // In multiplayer, blocker must be blocking an attacker that is attacking
-        // the blocker's controller
+        // CR 802.4a: In multiplayer, blocker must block a creature attacking
+        // this player, a planeswalker they control, or a battle they protect.
         if let Some(combat) = &state.combat {
             if let Some(attacker_info) =
                 combat.attackers.iter().find(|a| a.object_id == attacker_id)
             {
-                if attacker_info.defending_player != blocker.controller {
+                if attacker_info.defending_player != player {
                     return Err(format!(
                         "{:?} cannot block {:?} (not attacking this player)",
                         blocker_id, attacker_id
@@ -554,6 +577,16 @@ pub fn validate_blockers(
             ));
         }
 
+        // CR 702.14c: Landwalk — attacker can't be blocked as long as the
+        // defending player (blocker's controller per CR 509.1a) controls a land
+        // of the specified type.
+        if is_landwalk_unblockable(state, attacker, blocker.controller) {
+            return Err(format!(
+                "{:?} cannot block {:?} (landwalk: defending player controls a matching land)",
+                blocker_id, attacker_id
+            ));
+        }
+
         blockers_per_attacker
             .entry(attacker_id)
             .or_default()
@@ -609,6 +642,9 @@ pub fn validate_blockers(
             .collect();
 
         for attacker_info in &combat.attackers {
+            if attacker_info.defending_player != player {
+                continue;
+            }
             let attacker_id = attacker_info.object_id;
             let attacker = match state.objects.get(&attacker_id) {
                 Some(obj) => obj,
@@ -631,7 +667,6 @@ pub fn validate_blockers(
 
             // Check if any unassigned defending creature could legally block this attacker.
             // If so, the assignment is invalid because that creature should have been assigned.
-            let defending_player = attacker_info.defending_player;
             let has_available_blocker = state.battlefield.iter().any(|id| {
                 if assigned_blockers.contains(id) {
                     return false;
@@ -639,7 +674,7 @@ pub fn validate_blockers(
                 let Some(obj) = state.objects.get(id) else {
                     return false;
                 };
-                obj.controller == defending_player
+                obj.controller == player
                     && obj.card_types.core_types.contains(&CoreType::Creature)
                     && !obj.tapped
                     && can_block_pair(state, *id, attacker_id)
@@ -653,21 +688,15 @@ pub fn validate_blockers(
             }
         }
 
-        // CR 509.1c: Check MustBlock — creatures that must block if able.
+        // CR 509.1c + CR 802.4b: Check MustBlock only for this defending
+        // player's declaration.
         // If a defending creature has MustBlock and isn't assigned as a blocker,
         // verify it couldn't legally block any attacker.
-        // Collect all defending players from combat state (multiplayer-safe).
-        let defending_players: std::collections::HashSet<PlayerId> = combat
-            .attackers
-            .iter()
-            .map(|a| a.defending_player)
-            .collect();
-
         for &obj_id in &state.battlefield {
             let Some(obj) = state.objects.get(&obj_id) else {
                 continue;
             };
-            if !defending_players.contains(&obj.controller) {
+            if obj.controller != player {
                 continue;
             }
             if !obj.card_types.core_types.contains(&CoreType::Creature) {
@@ -1044,7 +1073,7 @@ pub fn declare_attackers(
             }
         }
         // CR 302.6: Summoning sickness — reuse existing helper.
-        if has_summoning_sickness(obj, state.turn_number) {
+        if has_summoning_sickness(obj) {
             continue;
         }
         // Creature could legally attack but wasn't declared
@@ -1246,7 +1275,19 @@ pub fn declare_blockers(
     assignments: &[(ObjectId, ObjectId)],
     events: &mut Vec<GameEvent>,
 ) -> Result<(), String> {
-    validate_blockers(state, assignments)?;
+    let defending_player = next_defending_player_to_declare_blockers(state)
+        .unwrap_or_else(|| players::next_player(state, state.active_player));
+    declare_blockers_for_player(state, defending_player, assignments, events)
+}
+
+/// Declare one defending player's blockers.
+pub fn declare_blockers_for_player(
+    state: &mut GameState,
+    player: PlayerId,
+    assignments: &[(ObjectId, ObjectId)],
+    events: &mut Vec<GameEvent>,
+) -> Result<(), String> {
+    validate_blockers_for_player(state, player, assignments)?;
 
     let combat = state
         .combat
@@ -1277,15 +1318,22 @@ pub fn declare_blockers(
             info.blocked = true;
         }
     }
+    if !combat.blockers_declared_by.contains(&player) {
+        combat.blockers_declared_by.push(player);
+    }
 
     // CR 509.1a: Record blocker object IDs for per-turn tracking.
     state
         .creatures_blocked_this_turn
         .extend(assignments.iter().map(|(blocker_id, _)| *blocker_id));
 
-    events.push(GameEvent::BlockersDeclared {
+    let event = GameEvent::BlockersDeclared {
         assignments: assignments.to_vec(),
-    });
+    };
+    combat
+        .pending_blocker_declaration_events
+        .push(event.clone());
+    events.push(event);
 
     Ok(())
 }
@@ -1306,17 +1354,24 @@ pub fn unblocked_attackers(state: &GameState) -> Vec<ObjectId> {
         .collect()
 }
 
-/// Check if a creature has summoning sickness (entered this turn without Haste).
-/// CR 302.6: Creature must have been under controller's control continuously since turn began.
-pub fn has_summoning_sickness(obj: &GameObject, turn_number: u32) -> bool {
+/// CR 302.6: Returns true iff this creature can't attack or pay `{T}`/`{Q}`
+/// costs due to summoning sickness — i.e., it has NOT been continuously under
+/// its controller's control since that player's most recent turn began.
+///
+/// Implementation reads the persistent `GameObject::summoning_sick` flag,
+/// which is set true on ETB (`reset_for_battlefield_entry` +
+/// `create_object_in_zone`) and cleared to false at the start of
+/// controller's next turn by `turns::start_next_turn`. Haste is folded in
+/// here at query time so dynamically-granted haste (e.g., "creatures you
+/// control gain haste" statics) takes effect without mutating the flag.
+pub fn has_summoning_sickness(obj: &GameObject) -> bool {
     if !obj.card_types.core_types.contains(&CoreType::Creature) {
         return false;
     }
     if obj.has_keyword(&Keyword::Haste) {
         return false;
     }
-    obj.entered_battlefield_turn
-        .is_some_and(|etb| etb >= turn_number)
+    obj.summoning_sick
 }
 
 /// CR 508.1a / CR 302.6: Untapped creature controlled since turn started, without Defender.
@@ -1361,12 +1416,76 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
         .collect()
 }
 
+/// CR 702.14c: A creature with landwalk can't be blocked as long as the defending
+/// player controls a land with the matching type/supertype. The `Keyword::Landwalk`
+/// variant's inner string is the qualifier: basic land subtypes ("Plains", "Island",
+/// "Swamp", "Mountain", "Forest"), other subtypes ("Desert"), or supertype qualifiers
+/// ("Legendary", "Snow", "Nonbasic").
+///
+/// Returns `true` if the attacker is unblockable by the defending player due to
+/// some form of landwalk.
+pub fn is_landwalk_unblockable(
+    state: &GameState,
+    attacker: &GameObject,
+    defending_player: PlayerId,
+) -> bool {
+    // Collect all landwalk qualifiers the attacker has. Multiple instances of the
+    // same landwalk are redundant (CR 702.14e) but multiple *kinds* can co-exist
+    // (e.g., "plainswalk and islandwalk") — any match makes the attacker unblockable.
+    let qualifiers: Vec<&str> = attacker
+        .keywords
+        .iter()
+        .filter_map(|kw| match kw {
+            Keyword::Landwalk(q) => Some(q.as_str()),
+            _ => None,
+        })
+        .collect();
+    if qualifiers.is_empty() {
+        return false;
+    }
+
+    // CR 702.14c: Check every land the defending player controls on the battlefield.
+    for &obj_id in &state.battlefield {
+        let Some(obj) = state.objects.get(&obj_id) else {
+            continue;
+        };
+        if obj.controller != defending_player {
+            continue;
+        }
+        if !obj.card_types.core_types.contains(&CoreType::Land) {
+            continue;
+        }
+        // CR 702.26b: Phased-out permanents don't exist for this check.
+        if obj.is_phased_out() {
+            continue;
+        }
+        for qualifier in &qualifiers {
+            if land_matches_landwalk_qualifier(obj, qualifier) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// CR 702.14a: Match a land against a landwalk qualifier.
+/// Basic/non-basic land subtypes match via `subtypes`; "Legendary"/"Snow" match via
+/// supertypes; "Nonbasic" matches any land lacking the Basic supertype.
+fn land_matches_landwalk_qualifier(land: &GameObject, qualifier: &str) -> bool {
+    match qualifier {
+        "Legendary" => land.card_types.supertypes.contains(&Supertype::Legendary),
+        "Snow" => land.card_types.supertypes.contains(&Supertype::Snow),
+        "Nonbasic" => !land.card_types.supertypes.contains(&Supertype::Basic),
+        subtype => land.card_types.subtypes.iter().any(|s| s == subtype),
+    }
+}
+
 /// Check per-pair blocking legality (evasion abilities, CR 509.1b).
 /// Does NOT check menace (which is a multi-blocker constraint).
 /// CR 509.1a–b: Check if a specific blocker can legally block a specific attacker,
 /// accounting for all blocking restrictions (CantBeBlocked, CantBeBlockedExceptBy,
 /// CantBeBlockedBy, Protection, Flying/Reach, Shadow, Fear, Intimidate, Skulk,
-/// Horsemanship, CantBlock/CantAttackOrBlock).
+/// Horsemanship, Landwalk, CantBlock/CantAttackOrBlock).
 pub fn can_block_pair(state: &GameState, blocker_id: ObjectId, attacker_id: ObjectId) -> bool {
     let Some(blocker) = state.objects.get(&blocker_id) else {
         return false;
@@ -1476,6 +1595,11 @@ pub fn can_block_pair(state: &GameState, blocker_id: ObjectId, attacker_id: Obje
     {
         return false;
     }
+    // CR 702.14c: Landwalk — unblockable as long as defending player (blocker's
+    // controller per CR 509.1a) controls a land of the matching type.
+    if is_landwalk_unblockable(state, attacker, blocker.controller) {
+        return false;
+    }
     true
 }
 
@@ -1525,6 +1649,62 @@ pub fn get_valid_block_targets(state: &GameState) -> HashMap<ObjectId, Vec<Objec
         }
     }
     result
+}
+
+/// For one defending player, compute which of their blockers can legally block which attackers.
+pub fn get_valid_block_targets_for_player(
+    state: &GameState,
+    player: PlayerId,
+) -> HashMap<ObjectId, Vec<ObjectId>> {
+    get_valid_block_targets(state)
+        .into_iter()
+        .filter(|(blocker_id, _)| {
+            state
+                .objects
+                .get(blocker_id)
+                .is_some_and(|blocker| blocker.controller == player)
+        })
+        .collect()
+}
+
+/// Return players who are actually defending this combat, in APNAP order.
+pub fn defending_players_in_turn_order(state: &GameState) -> Vec<PlayerId> {
+    let defending_players: HashSet<PlayerId> = state
+        .combat
+        .as_ref()
+        .map(|combat| {
+            combat
+                .attackers
+                .iter()
+                .map(|a| a.defending_player)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    players::apnap_order(state)
+        .into_iter()
+        .filter(|player| *player != state.active_player && defending_players.contains(player))
+        .collect()
+}
+
+/// Return the first player who is actually defending this combat, in APNAP order.
+pub fn first_defending_player_in_turn_order(state: &GameState) -> Option<PlayerId> {
+    defending_players_in_turn_order(state).into_iter().next()
+}
+
+/// Return the next defending player who still needs to declare blockers.
+pub fn next_defending_player_to_declare_blockers(state: &GameState) -> Option<PlayerId> {
+    let declared: HashSet<PlayerId> = state
+        .combat
+        .as_ref()?
+        .blockers_declared_by
+        .iter()
+        .copied()
+        .collect();
+
+    defending_players_in_turn_order(state)
+        .into_iter()
+        .find(|player| !declared.contains(player))
 }
 
 /// Return the IDs of all creatures that could legally be assigned as blockers.
@@ -1834,8 +2014,9 @@ mod tests {
     fn summoning_sick_creature_cannot_attack() {
         let mut state = setup();
         let id = create_creature(&mut state, PlayerId(0), "Bear", 2, 2);
-        // Entered this turn
-        state.objects.get_mut(&id).unwrap().entered_battlefield_turn = Some(2);
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.entered_battlefield_turn = Some(2);
+        obj.summoning_sick = true;
         assert!(validate_attackers(&state, &[id]).is_err());
     }
 
@@ -1906,6 +2087,191 @@ mod tests {
         assert!(validate_blockers(&state, &[(blocker1, attacker)]).is_err());
         // Two blockers: legal
         assert!(validate_blockers(&state, &[(blocker1, attacker), (blocker2, attacker)]).is_ok());
+    }
+
+    /// Helper for landwalk tests — create a land with the given subtypes/supertypes
+    /// on the battlefield controlled by `owner`.
+    fn create_land(
+        state: &mut GameState,
+        owner: PlayerId,
+        name: &str,
+        subtypes: &[&str],
+        supertypes: &[crate::types::card_type::Supertype],
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            crate::types::identifiers::CardId(state.next_object_id),
+            owner,
+            name.to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        for st in subtypes {
+            obj.card_types.subtypes.push((*st).to_string());
+        }
+        for sp in supertypes {
+            obj.card_types.supertypes.push(*sp);
+        }
+        id
+    }
+
+    /// CR 702.14c: Plainswalk makes an attacker unblockable when defender controls a Plains.
+    #[test]
+    fn plainswalk_unblockable_when_defender_controls_plains() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Plainswalker", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Landwalk("Plains".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        let _plains = create_land(&mut state, PlayerId(1), "Plains", &["Plains"], &[]);
+
+        assert!(!can_block_pair(&state, blocker, attacker));
+        assert!(validate_blockers(&state, &[(blocker, attacker)]).is_err());
+    }
+
+    /// CR 702.14c: Plainswalk does nothing when defender controls no Plains.
+    #[test]
+    fn plainswalk_blockable_when_defender_has_no_plains() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Plainswalker", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Landwalk("Plains".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+
+        assert!(can_block_pair(&state, blocker, attacker));
+        assert!(validate_blockers(&state, &[(blocker, attacker)]).is_ok());
+    }
+
+    /// CR 702.14c: Landwalk only cares about land type it specifies — islandwalk
+    /// is not evaded by the defender controlling a Plains.
+    #[test]
+    fn islandwalk_unaffected_by_plains() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Islandwalker", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Landwalk("Island".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        let _plains = create_land(&mut state, PlayerId(1), "Plains", &["Plains"], &[]);
+
+        assert!(can_block_pair(&state, blocker, attacker));
+    }
+
+    /// CR 702.14d: Landwalk only considers defending player's lands — if the
+    /// attacker's controller has a Plains, plainswalk does nothing.
+    #[test]
+    fn plainswalk_ignores_attackers_lands() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Plainswalker", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Landwalk("Plains".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        // Attacker's owner controls the Plains, not defender.
+        let _plains = create_land(&mut state, PlayerId(0), "Plains", &["Plains"], &[]);
+
+        assert!(can_block_pair(&state, blocker, attacker));
+    }
+
+    /// CR 702.14a: Multiple landwalk kinds — any matching type makes attacker unblockable.
+    #[test]
+    fn multiple_landwalk_any_match_unblockable() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Dual Walker", 2, 2);
+        let kws = &mut state.objects.get_mut(&attacker).unwrap().keywords;
+        kws.push(Keyword::Landwalk("Plains".to_string()));
+        kws.push(Keyword::Landwalk("Island".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        let _island = create_land(&mut state, PlayerId(1), "Island", &["Island"], &[]);
+
+        assert!(!can_block_pair(&state, blocker, attacker));
+    }
+
+    /// CR 702.14a: Legendary landwalk — defender controlling a legendary land makes
+    /// attacker unblockable regardless of subtype.
+    #[test]
+    fn legendary_landwalk_matches_legendary_land() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Legend Walker", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Landwalk("Legendary".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        let _karakas = create_land(
+            &mut state,
+            PlayerId(1),
+            "Karakas",
+            &["Plains"],
+            &[Supertype::Legendary],
+        );
+
+        assert!(!can_block_pair(&state, blocker, attacker));
+    }
+
+    /// CR 702.14a: Nonbasic landwalk — defender controlling any nonbasic land
+    /// (no Basic supertype) makes the attacker unblockable.
+    #[test]
+    fn nonbasic_landwalk_matches_nonbasic_land() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Nonbasic Walker", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Landwalk("Nonbasic".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        // Nonbasic land (no Basic supertype).
+        let _underground_sea = create_land(
+            &mut state,
+            PlayerId(1),
+            "Underground Sea",
+            &["Island", "Swamp"],
+            &[],
+        );
+
+        assert!(!can_block_pair(&state, blocker, attacker));
+    }
+
+    /// CR 702.14a: Nonbasic landwalk does nothing if defender only controls basic lands.
+    #[test]
+    fn nonbasic_landwalk_blockable_when_only_basics() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Nonbasic Walker", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Landwalk("Nonbasic".to_string()));
+        let blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        let _plains = create_land(
+            &mut state,
+            PlayerId(1),
+            "Plains",
+            &["Plains"],
+            &[Supertype::Basic],
+        );
+
+        assert!(can_block_pair(&state, blocker, attacker));
     }
 
     #[test]
@@ -2763,12 +3129,9 @@ mod tests {
     fn must_attack_enforcement_summoning_sick_exempt() {
         let mut state = setup_combat_phase();
         let must_attacker = create_must_attack_creature(&mut state, PlayerId(0));
-        // Set entered_battlefield_turn to current turn (summoning sick)
-        state
-            .objects
-            .get_mut(&must_attacker)
-            .unwrap()
-            .entered_battlefield_turn = Some(state.turn_number);
+        let obj = state.objects.get_mut(&must_attacker).unwrap();
+        obj.entered_battlefield_turn = Some(state.turn_number);
+        obj.summoning_sick = true;
         assert!(declare_attackers(&mut state, &[], &mut vec![]).is_ok());
     }
 
@@ -2863,12 +3226,9 @@ mod tests {
     fn goad_enforcement_summoning_sick_exempt() {
         let mut state = setup_combat_phase();
         let goaded = create_goaded_creature(&mut state, PlayerId(0), PlayerId(1));
-        // Set ETB turn to current turn → summoning sick.
-        state
-            .objects
-            .get_mut(&goaded)
-            .unwrap()
-            .entered_battlefield_turn = Some(state.turn_number);
+        let obj = state.objects.get_mut(&goaded).unwrap();
+        obj.entered_battlefield_turn = Some(state.turn_number);
+        obj.summoning_sick = true;
         assert!(declare_attackers(&mut state, &[], &mut vec![]).is_ok());
     }
 

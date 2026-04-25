@@ -90,6 +90,8 @@ impl TacticalPolicy for CardAdvantagePolicy {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -127,10 +129,11 @@ mod tests {
         );
         let obj = state.objects.get_mut(&spell).unwrap();
         obj.card_types.core_types.push(CoreType::Sorcery);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 2 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         ));
 
@@ -181,7 +184,7 @@ mod tests {
         );
         let obj = state.objects.get_mut(&spell).unwrap();
         obj.card_types.core_types.push(CoreType::Instant);
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value: 3 },

@@ -46,6 +46,7 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::ChooseLegend { .. }
             | WaitingFor::BattleProtectorChoice { .. }
             | WaitingFor::CategoryChoice { .. }
+            | WaitingFor::PayAmountChoice { .. }
     )
 }
 
@@ -76,7 +77,7 @@ pub(super) fn handle_resolution_choice(
                 player_state.library.insert(index, card_id);
             }
             for &card_id in &bottom_cards {
-                player_state.library.push(card_id);
+                player_state.library.push_back(card_id);
             }
             ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
         }
@@ -201,6 +202,7 @@ pub(super) fn handle_resolution_choice(
                         let draw = ResolvedAbility::new(
                             crate::types::ability::Effect::Draw {
                                 count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                                target: crate::types::ability::TargetFilter::Controller,
                             },
                             vec![],
                             ObjectId(0),
@@ -224,6 +226,7 @@ pub(super) fn handle_resolution_choice(
                     let draw_ability = ResolvedAbility::new(
                         crate::types::ability::Effect::Draw {
                             count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                            target: crate::types::ability::TargetFilter::Controller,
                         },
                         vec![],
                         ObjectId(0),
@@ -245,6 +248,49 @@ pub(super) fn handle_resolution_choice(
             GameAction::ChooseTopOrBottom { top },
         ) => {
             zones::move_to_library_position(state, object_id, top, events);
+            ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
+        }
+        // CR 107.1c + CR 107.14: Commit the chosen amount for a "pay any amount
+        // of X" prompt. Deducts the resource, emits the matching resource event,
+        // and stamps `last_effect_count` so the next chain step's
+        // `QuantityRef::EventContextAmount` resolves to the paid amount.
+        (
+            WaitingFor::PayAmountChoice {
+                player,
+                resource,
+                min,
+                max,
+            },
+            GameAction::SubmitPayAmount { amount },
+        ) => {
+            if amount < min || amount > max {
+                return Err(EngineError::InvalidAction(format!(
+                    "Submitted pay amount {} outside legal range [{}, {}]",
+                    amount, min, max
+                )));
+            }
+            match resource {
+                crate::types::game_state::PayableResource::Energy => {
+                    // CR 107.14: Remove N energy counters from the player.
+                    if let Some(p) = state.players.iter_mut().find(|p| p.id == player) {
+                        if p.energy < amount {
+                            return Err(EngineError::InvalidAction(format!(
+                                "Player {:?} has {} energy, cannot pay {}",
+                                player, p.energy, amount
+                            )));
+                        }
+                        p.energy -= amount;
+                        events.push(GameEvent::EnergyChanged {
+                            player,
+                            delta: -(amount as i32),
+                        });
+                    }
+                }
+            }
+            // CR 603.7c: Bind the paid amount for downstream chain steps that
+            // read `QuantityRef::EventContextAmount` (e.g. "deals that much
+            // damage"). `last_effect_count` is the documented fallback slot.
+            state.last_effect_count = Some(amount as i32);
             ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
         }
         (
@@ -389,9 +435,24 @@ pub(super) fn handle_resolution_choice(
                 player,
                 cards,
                 filter,
+                optional,
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
+            // CR 701.20a: Optional reveal prompts (e.g., reveal-lands like Port Town)
+            // accept an empty selection to signal "I decline to reveal." The source
+            // replacement's decline ability runs via `pending_continuation`, which the
+            // effect's resolver populated with the decline branch before the prompt.
+            if optional && chosen.is_empty() {
+                for &card_id in &cards {
+                    state.revealed_cards.remove(&card_id);
+                }
+                set_priority(state, player);
+                effects::drain_pending_continuation(state, events);
+                return Ok(ResolutionChoiceOutcome::WaitingFor(
+                    state.waiting_for.clone(),
+                ));
+            }
             if chosen.len() != 1 {
                 return Err(EngineError::InvalidAction(format!(
                     "Must select exactly 1 card, got {}",
@@ -422,7 +483,14 @@ pub(super) fn handle_resolution_choice(
             }
 
             set_priority(state, player);
-            if let Some(cont) = state.pending_continuation.as_mut() {
+            // CR 701.20a: For an optional reveal, the stashed continuation is the
+            // decline branch (e.g., Tap SelfRef for reveal-lands). The player picked,
+            // so decline must NOT run — drop the continuation. Non-optional reveals
+            // chain targets into the continuation so the follow-up effect operates
+            // on the revealed card (e.g., Thoughtseize's exile).
+            if optional {
+                state.pending_continuation = None;
+            } else if let Some(cont) = state.pending_continuation.as_mut() {
                 cont.chain.targets = vec![TargetRef::Object(chosen_id)];
             }
             effects::drain_pending_continuation(state, events);
@@ -434,12 +502,20 @@ pub(super) fn handle_resolution_choice(
                 cards,
                 count,
                 reveal,
+                up_to,
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
-            if chosen.len() != count {
+            // CR 107.1c + CR 701.23d: "up to N" / "any number of" accept 0..=count picks.
+            let valid = if up_to {
+                chosen.len() <= count
+            } else {
+                chosen.len() == count
+            };
+            if !valid {
                 return Err(EngineError::InvalidAction(format!(
-                    "Must select exactly {} card(s), got {}",
+                    "Must select {}{} card(s), got {}",
+                    if up_to { "up to " } else { "exactly " },
                     count,
                     chosen.len()
                 )));

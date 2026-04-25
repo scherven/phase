@@ -184,6 +184,8 @@ fn creature_stat_bonus(obj: &engine::game::game_object::GameObject) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::zones::create_object;
     use engine::types::ability::{
@@ -224,7 +226,7 @@ mod tests {
         let obj = state.objects.get_mut(&id).unwrap();
         obj.card_types.core_types.push(core_type);
         obj.mana_cost = ManaCost::zero();
-        obj.abilities = abilities;
+        obj.abilities = Arc::new(abilities);
         card_id
     }
 
@@ -359,7 +361,7 @@ mod tests {
         let mut state = make_state();
         state.active_player = PlayerId(1); // Opponent's turn
                                            // Put something on the stack so the counterspell has a target
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: ObjectId(999),
             source_id: ObjectId(998),
             controller: PlayerId(1),
@@ -368,6 +370,7 @@ mod tests {
                 ability: Some(ResolvedAbility::new(
                     Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
+                        target: engine::types::ability::TargetFilter::Controller,
                     },
                     Vec::new(),
                     ObjectId(998),
@@ -633,6 +636,7 @@ mod tests {
                 count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
                 reveal: false,
                 target_player: None,
+                up_to: false,
             })],
         );
 

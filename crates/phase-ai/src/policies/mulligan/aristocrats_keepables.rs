@@ -125,6 +125,8 @@ impl MulliganPolicy for AristocratsKeepablesMulligan {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::zones::create_object;
     use engine::types::ability::{
@@ -216,7 +218,7 @@ mod tests {
             ManaCost::generic(mana_value)
         };
         if let Some(a) = ability {
-            obj.abilities.push(a);
+            Arc::make_mut(&mut obj.abilities).push(a);
         }
         oid
     }

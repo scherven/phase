@@ -1,4 +1,5 @@
 pub(crate) mod animation;
+pub(crate) mod become_copy_except;
 mod conditions;
 pub(crate) mod counter;
 pub(crate) mod imperative;
@@ -26,8 +27,8 @@ use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::{parse_cda_quantity, parse_for_each_clause};
 use super::oracle_target::{parse_event_context_ref, parse_target, parse_type_phrase};
 use super::oracle_util::{
-    contains_possessive, has_unconsumed_conditional, parse_mana_symbols, starts_with_possessive,
-    strip_after, TextPair,
+    contains_possessive, has_unconsumed_conditional, parse_mana_symbols, split_around,
+    starts_with_possessive, strip_after, TextPair,
 };
 use crate::database::mtgjson::parse_mtgjson_mana_cost;
 use crate::parser::oracle_effect::subject::parse_subject_application;
@@ -37,8 +38,8 @@ use crate::types::ability::{
     ChooseFromZoneConstraint, ConjureCard, ContinuousModification, ControllerRef, DamageSource,
     DelayedTriggerCondition, Duration, Effect, FilterProp, GameRestriction, MultiTargetSpec,
     PlayerFilter, PtValue, QuantityExpr, QuantityRef, RestrictionExpiry, RestrictionPlayerScope,
-    RoundingMode, StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
-    UnlessCost,
+    RoundingMode, StaticCondition, StaticDefinition, TargetFilter, TriggerDefinition, TypeFilter,
+    TypedFilter, UnlessCost,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::game_state::{DistributionUnit, NextSpellModifier, RetargetScope};
@@ -47,6 +48,7 @@ use crate::types::keywords::Keyword;
 use crate::types::mana::ManaCost;
 use crate::types::phase::Phase;
 use crate::types::statics::StaticMode;
+use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
 pub(crate) use self::conditions::split_leading_conditional;
@@ -74,6 +76,38 @@ pub(crate) struct ParseContext {
     pub subject: Option<TargetFilter>,
     /// The card name for self-name effect parsing (e.g. "Exile Card Name.").
     pub card_name: Option<String>,
+    /// CR 707.9a + CR 603.1: Index of the printed trigger whose body is being
+    /// parsed, in the source object's `base_trigger_definitions` list. Set by
+    /// the trigger parser before invoking the effect chain. Consumed by the
+    /// `<subject pronoun> has this ability` arm of the BecomeCopy except-clause
+    /// parser to emit `RetainPrintedTriggerFromSource { source_trigger_index }`.
+    /// `None` for non-trigger contexts (replacements, instants, sorceries),
+    /// in which case the "has this ability" arm declines gracefully.
+    pub current_trigger_index: Option<usize>,
+    /// CR 701.21a + CR 608.2k: The actor performing the effect, when the effect
+    /// body has been stripped of an actor prefix ("you (may) ", "an opponent
+    /// (may) ", "each opponent ", "each player "). Used by targeted-action
+    /// parsers to default `TargetFilter::Typed.controller` from `None` to the
+    /// actor when the target phrase itself doesn't specify a controller (e.g.
+    /// "you may sacrifice a non-Demon creature" → `controller: Some(You)`).
+    /// CR 701.21a forbids sacrificing a permanent you don't control, so the
+    /// default must be enforced at parse time, not at resolution.
+    pub actor: Option<ControllerRef>,
+}
+
+/// CR 608.2k: True when `text` is a standalone object pronoun referring to
+/// the trigger/spell subject. Used by effect-target parsers that need to
+/// distinguish "verb + pronoun" (resolve against `ctx.subject` via
+/// `resolve_it_pronoun`) from "verb + target filter" (parse via
+/// `parse_target`, which defaults to `ParentTarget`).
+///
+/// Covers the full object-pronoun family: "it" / "itself", "him" / "himself",
+/// "her" / "herself", "them" / "themselves". Caller is responsible for trimming.
+pub(crate) fn is_bare_object_pronoun(text: &str) -> bool {
+    matches!(
+        text,
+        "it" | "itself" | "him" | "himself" | "her" | "herself" | "them" | "themselves"
+    )
 }
 
 /// CR 608.2k: Resolve bare pronoun ("it"/"itself"/"its") based on parser context.
@@ -980,7 +1014,12 @@ fn try_parse_earthbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
     let (_, rest) = nom_on_lower(tp.original, tp.lower, |i| {
         value((), tag("earthbend ")).parse(i)
     })?;
-    let (target, counters, _) = imperative::parse_earthbend_params(tp.original, rest);
+    // `rest` is the original-case remainder; lowercase it for the nom-based
+    // dispatcher inside `parse_earthbend_count_expr`, which expects already-lowered
+    // input (matches the convention used by `parse_earthbend_params`'s sole
+    // imperative caller, which passes a `rest_lower` slice).
+    let lower_rest = rest.to_ascii_lowercase();
+    let (target, counter_count) = imperative::parse_earthbend_count_expr(tp.original, &lower_rest);
 
     let register_bending = AbilityDefinition::new(
         AbilityKind::Spell,
@@ -1020,7 +1059,7 @@ fn try_parse_earthbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
         AbilityKind::Spell,
         Effect::PutCounter {
             counter_type: "P1P1".to_string(),
-            count: QuantityExpr::Fixed { value: counters },
+            count: counter_count,
             target: TargetFilter::ParentTarget,
         },
     )
@@ -1050,6 +1089,91 @@ fn try_parse_earthbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
 /// When this text appears on a permanent as a static ability, the static parser handles it.
 /// When it appears as an effect line in a spell or triggered ability (e.g., Choice of Fortunes),
 /// it needs to create an emblem to produce a persistent game-state effect.
+/// CR 700.2 + CR 608.2d: Detect inline binary-choice imperatives of the form
+/// "A or B" where both A and B parse independently as supported effects.
+/// Emits `Effect::ChooseOneOf { branches: [A, B] }` so the second branch is
+/// preserved in card data rather than silently dropped by the single-verb
+/// dispatch.
+///
+/// Highway Robbery ("discard a card or sacrifice a land") is the motivating
+/// case; the same shape applies to other "you may A or B" cards where the
+/// outer "you may" has already been stripped by `strip_optional_effect_prefix`.
+///
+/// Constraints (false-positive guards):
+///   1. Reject if the clause starts with "target " — "target creature or
+///      player" is a typed target, not a choice of effects.
+///   2. Reject if the first token is a modal header ("choose "), reminder/
+///      connector ("either"), or a non-imperative starter — this helper is
+///      a last-resort detector, not a general splitter.
+///   3. Reject unless BOTH halves independently parse to a non-`Unimplemented`
+///      effect. A half failing to parse means this isn't a true "A or B"
+///      choice — it's probably noun-phrase disjunction ("creature or land")
+///      inside a larger imperative.
+///   4. Only consider the FIRST `, or ` or first top-level ` or ` split. Cards
+///      with 3+ branches are rare and handled by bulleted modal text instead.
+fn try_parse_choose_one_of_inline(
+    tp: TextPair<'_>,
+    ctx: &ParseContext,
+) -> Option<ParsedEffectClause> {
+    // CR 115.1: bail on target phrases — "target creature or player" is a
+    // typed-target disjunction, not a choice between effects.
+    if tag::<_, _, VerboseError<&str>>("target ")
+        .parse(tp.lower)
+        .is_ok()
+    {
+        return None;
+    }
+
+    // Find the first top-level " or " split. Prefer a comma-qualified ", or "
+    // as the clearer form; fall back to bare " or " when the text is short
+    // enough that misreading intra-phrase "or" is unlikely. Each needle
+    // literal appears exactly once — the separator's length is implied by
+    // what's missing between the two returned halves.
+    let (before_lower, after_lower) =
+        split_around(tp.lower, ", or ").or_else(|| split_around(tp.lower, " or "))?;
+    let split_index = before_lower.len();
+    let after_offset = tp.lower.len() - after_lower.len();
+
+    let left_orig = tp.original[..split_index].trim();
+    let right_orig = tp.original[after_offset..].trim();
+
+    // Both halves must be non-empty and look like imperatives. The left half
+    // must not end with a subject marker that would make the "or" coordinate
+    // nouns (e.g., "target creature" should not split as a branch boundary).
+    if left_orig.is_empty() || right_orig.is_empty() {
+        return None;
+    }
+
+    // Attempt to parse each branch independently as a clause.
+    let left_clause = parse_effect_clause(left_orig, ctx);
+    let right_clause = parse_effect_clause(right_orig, ctx);
+
+    // Reject unless BOTH branches produce non-Unimplemented effects. This
+    // prevents false positives on noun-phrase disjunctions and "and/or"
+    // coordinations inside larger imperatives.
+    if matches!(left_clause.effect, Effect::Unimplemented { .. })
+        || matches!(right_clause.effect, Effect::Unimplemented { .. })
+    {
+        return None;
+    }
+
+    // Also reject if either branch is `TargetOnly` — that's a structural
+    // wrapper, not a terminal effect. A real binary choice needs two
+    // executable branches.
+    if matches!(left_clause.effect, Effect::TargetOnly { .. })
+        || matches!(right_clause.effect, Effect::TargetOnly { .. })
+    {
+        return None;
+    }
+
+    let left_def = AbilityDefinition::new(AbilityKind::Spell, left_clause.effect);
+    let right_def = AbilityDefinition::new(AbilityKind::Spell, right_clause.effect);
+
+    Some(parsed_clause(Effect::ChooseOneOf {
+        branches: vec![left_def, right_def],
+    }))
+}
+
 fn try_parse_no_max_hand_size_effect(tp: TextPair<'_>) -> Option<Effect> {
     // Strip optional "you " prefix, then match "have no maximum hand size"
     let after_you = nom_on_lower(tp.original, tp.lower, |i| value((), tag("you ")).parse(i));
@@ -1072,6 +1196,7 @@ fn try_parse_no_max_hand_size_effect(tp: TextPair<'_>) -> Option<Effect> {
 
     Some(Effect::CreateEmblem {
         statics: vec![StaticDefinition::new(StaticMode::NoMaximumHandSize)],
+        triggers: Vec::new(),
     })
 }
 
@@ -1253,6 +1378,19 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     // Single lowercase pass for all case-insensitive matching within this clause.
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
+
+    // CR 700.2 + CR 608.2d: Inline binary-choice imperative — "discard a card
+    // or sacrifice a land" (Highway Robbery) and analogous "A or B" patterns
+    // that are not bulleted `Choose one —` modals. The split happens BEFORE
+    // any single-verb dispatch so the second branch isn't silently dropped
+    // when the first matches ("discard ..." prefix consumes the whole text).
+    // Constrained to the narrow case where (a) exactly one ` or ` appears at
+    // clause top level, (b) both halves independently parse as a supported
+    // imperative — prevents false positives on intra-imperative "or" like
+    // "target creature or player".
+    if let Some(clause) = try_parse_choose_one_of_inline(tp, ctx) {
+        return clause;
+    }
 
     // CR 402.2 + CR 114.1: "you have no maximum hand size [for the rest of the game]" —
     // as an effect, this creates an emblem with NoMaximumHandSize static.
@@ -1741,6 +1879,17 @@ fn try_parse_have_redirection(text: &str, ctx: &ParseContext) -> Option<ParsedEf
         .parse(lower.as_str())
         .ok()?;
 
+    // CR 603.2 + CR 113.3a + CR 111.10: "have its controller <predicate>" —
+    // rebinds the acting player of the redirected sub-effect from the ability
+    // controller (default per CR 113.3a) to the triggering source's controller.
+    // "Its" refers to the triggering object (e.g., for Najeela, the attacking
+    // Warrior). At resolution, the redirected effect's player-scoped filter
+    // auto-resolves via `TargetFilter::TriggeringSource` (see
+    // `extract_event_context_filter` + `resolve_token_owner`).
+    if let Some(clause) = try_parse_have_its_controller(text, after_have, ctx) {
+        return Some(clause);
+    }
+
     // Guard: don't intercept if what follows "have" is not a recognizable subject reference.
     // Subject references start with: "target", "it", "that", "each", "all", "them",
     // "another target", "this", "~", "enchanted", "equipped".
@@ -1780,6 +1929,61 @@ fn try_parse_have_redirection(text: &str, ctx: &ParseContext) -> Option<ParsedEf
     }
 
     None
+}
+
+/// CR 603.2 + CR 111.10: Parse "have its controller <predicate>" — controller
+/// rebinding for token creation (and other player-scoped sub-effects) on a
+/// triggered ability. Najeela, the Blade-Blossom is the canonical case:
+/// "Whenever a Warrior attacks, you may have its controller create a 1/1
+/// white Warrior creature token that's tapped and attacking."
+///
+/// At resolution, `Effect::Token.owner` = `TargetFilter::TriggeringSource`
+/// causes `extract_event_context_filter` to populate `ability.targets` with
+/// the attacker's ObjectRef, and `resolve_token_owner`'s fallback arm reads
+/// the controller from that object — yielding the Warrior's controller,
+/// exactly as CR 111.10 requires.
+fn try_parse_have_its_controller(
+    original: &str,
+    after_have_lower: &str,
+    ctx: &ParseContext,
+) -> Option<ParsedEffectClause> {
+    // Nom dispatch: must match "its controller " exactly.
+    let (rest_lower, _) = tag::<_, _, VerboseError<&str>>("its controller ")
+        .parse(after_have_lower)
+        .ok()?;
+
+    // Recover the original-case remainder using the canonical `len - rest.len()`
+    // offset idiom. `after_have_lower` starts at the same offset in both slices
+    // (case-insensitive prefix "have " has no case-varying chars), so the offset
+    // into `original` is `original.len() - rest_lower.len()`.
+    let offset = original.len().checked_sub(rest_lower.len())?;
+    let redirected_text = original[offset..].trim();
+
+    // Parse the sub-effect through the full effect pipeline.
+    let clause = parse_effect_clause(redirected_text, ctx);
+    if matches!(clause.effect, Effect::Unimplemented { .. }) {
+        return None;
+    }
+
+    // Rebind the acting player of player-scoped sub-effects to the triggering
+    // source's controller. Token creation is the scope for this ticket; other
+    // rebinding sites can be added here as needed.
+    let rebound = rebind_controller_to_triggering_source(clause);
+    Some(rebound)
+}
+
+/// Rebind the player-facing filter of a parsed effect clause to
+/// `TargetFilter::TriggeringSource` so token owners (and similar "acting
+/// player" fields) resolve to the controller of the triggering object at
+/// runtime. Only effects whose player-scope field is currently the default
+/// `Controller` are touched — an explicit target/filter is preserved.
+fn rebind_controller_to_triggering_source(mut clause: ParsedEffectClause) -> ParsedEffectClause {
+    if let Effect::Token { ref mut owner, .. } = clause.effect {
+        if matches!(owner, TargetFilter::Controller) {
+            *owner = TargetFilter::TriggeringSource;
+        }
+    }
+    clause
 }
 
 /// Parse "it's still a/an [type]" and "that's still a/an [type]" type-retention clauses.
@@ -2024,7 +2228,12 @@ fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause
             target: TargetFilter::Controller,
             destination: Zone::Graveyard,
         })),
-        "draw" => Some(parsed_clause(Effect::Draw { count: qty })),
+        // CR 121.1 + CR 601.2c: Default Controller target — `inject_subject_target`
+        // upgrades to `TargetFilter::Player` for "target player draws ..." subjects.
+        "draw" => Some(parsed_clause(Effect::Draw {
+            count: qty,
+            target: TargetFilter::Controller,
+        })),
         _ => None,
     }
 }
@@ -2638,22 +2847,38 @@ fn thread_for_each_subject(effect: Effect, original: &str) -> Effect {
         return effect;
     }
 
-    let target = match parse_subject_application(subject_text, &ParseContext::default()) {
-        Some(app) => app.affected,
-        None => return effect,
-    };
+    let (target, is_targeted) =
+        match parse_subject_application(subject_text, &ParseContext::default()) {
+            Some(app) => (app.affected, app.target.is_some()),
+            None => return effect,
+        };
 
     // Only replace default/placeholder targets — leave already-resolved targets alone.
     match effect {
+        // CR 609 + CR 611.2: "All creatures get -1/-1 until end of turn for each Swamp
+        // you control" (Mutilate). When the subject filter identifies a class of
+        // permanents (not a single targeted object or single-object ref), lower to
+        // `Effect::PumpAll` so the continuous effect applies to every matching
+        // permanent — not a single target. Mirrors `subject::build_pump_effect`.
         Effect::Pump {
             power,
             toughness,
             target: TargetFilter::Any,
-        } => Effect::Pump {
-            power,
-            toughness,
-            target,
-        },
+        } => {
+            if is_targeted || subject::is_single_object_ref(&target) {
+                Effect::Pump {
+                    power,
+                    toughness,
+                    target,
+                }
+            } else {
+                Effect::PumpAll {
+                    power,
+                    toughness,
+                    target,
+                }
+            }
+        }
         Effect::Mill {
             count,
             target: TargetFilter::Controller,
@@ -2715,28 +2940,38 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &ParseContext) -> ParsedEffectClause {
     match ast {
         ClauseAst::Imperative { text } => {
             let mut clause = lower_imperative_clause(&text, ctx);
-            // "put target [type] on top/bottom of library" — the imperative parser
-            // returns PutAtLibraryPosition { target: Any } because it doesn't extract
-            // the target from between "put" and "on top/bottom". Extract it here.
+            // CR 701.24g: "put target [type] on top/bottom of library" — the imperative
+            // parser returns PutAtLibraryPosition { target: Any } because it dispatches
+            // on the positional suffix without extracting the target phrase. Covers:
+            //   - "put target X on top of Y's library"
+            //   - "put target X on the bottom of Y's library"
+            //   - "put target X into Y's library Nth from the top"  (e.g. Teferi, Hero of Dominaria)
             if let Effect::PutAtLibraryPosition { ref mut target, .. } = clause.effect {
                 if *target == TargetFilter::Any {
                     let lower = text.to_lowercase();
-                    // Check if text starts with "put " using nom tag, then use remainder.
-                    if tag::<_, _, VerboseError<&str>>("put ")
-                        .parse(lower.as_str())
-                        .is_ok()
-                    {
-                        let after_put = &lower["put ".len()..];
-                        let boundary = after_put
-                            .find(" on top of")
-                            .or_else(|| after_put.find(" on the bottom of"));
-                        if let Some(end) = boundary {
-                            let target_text = &after_put[..end];
-                            let (filter, _) = parse_target(target_text);
-                            if !matches!(filter, TargetFilter::Any) {
-                                *target = filter;
-                            }
+                    let extracted_target = (|| -> Option<TargetFilter> {
+                        let (after_put, _) = tag::<_, _, VerboseError<&str>>("put ")
+                            .parse(lower.as_str())
+                            .ok()?;
+                        // Boundary terminators, in priority order. Each is a positional
+                        // placement phrase that follows the target noun phrase.
+                        let before = [" on top of", " on the bottom of", " into "]
+                            .iter()
+                            .find_map(|term| {
+                                take_until::<_, _, VerboseError<&str>>(*term)
+                                    .parse(after_put)
+                                    .ok()
+                                    .map(|(_, before)| before)
+                            })?;
+                        let (filter, _) = parse_target(before);
+                        if matches!(filter, TargetFilter::Any) {
+                            None
+                        } else {
+                            Some(filter)
                         }
+                    })();
+                    if let Some(filter) = extracted_target {
+                        *target = filter;
                     }
                 }
             }
@@ -2758,10 +2993,33 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &ParseContext) -> ParsedEffectClause {
 
 #[tracing::instrument(level = "debug")]
 fn lower_imperative_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
+    // CR 106.1 + CR 109.1: "For each color among [X], add one mana of that color"
+    // (Faeburrow Elder). Must run before the generic for-each-prefix strip path,
+    // because "that color" anaphors a per-iteration color rather than the
+    // source's `ChosenAttribute::Color`. Emits a single mana ability producing
+    // one mana per distinct color among matching permanents.
+    if let Some(effect) = super::oracle_effect::mana::try_parse_for_each_color_mana_public(text) {
+        return parsed_clause(effect);
+    }
+
     // "Its controller gains life equal to its power/toughness" — subject must be preserved
     // because the life recipient is not the caster but the targeted permanent's controller.
     if let Some(clause) = try_parse_targeted_controller_gain_life(text) {
         return clause;
+    }
+
+    // CR 121.1 + CR 615.5: "{verb} cards equal to {quantity}" inside a
+    // subject-aware predicate (e.g. "the source's controller draws cards equal
+    // to the damage prevented this way" — Swans of Bryn Argoll). Mirrors the
+    // bare-imperative arm at `parse_effect_clause`: must run BEFORE the
+    // simpler "draw cards" matchers to avoid being dropped to a default
+    // count of 1.
+    {
+        let lower = text.to_lowercase();
+        let tp = TextPair::new(text, lower.as_str());
+        if let Some(clause) = try_parse_equal_to_quantity_effect(tp) {
+            return clause;
+        }
     }
 
     // Compound shuffle subjects: "shuffle ~ and target creature ... into their owners' libraries"
@@ -3978,6 +4236,46 @@ fn apply_anchor_subject(effect: &mut Effect, anchor: &TargetFilter) {
     }
 }
 
+/// CR 109.4: Map a player-reference `TargetFilter` to the `ControllerRef`
+/// variant a typed object filter should adopt to match "permanents that player
+/// controls". Only the two anaphoric variants used in trigger effects
+/// (`TriggeringPlayer`, `TargetPlayer`) produce a result — caster-scoped
+/// filters (`Controller`, `You`) should not rewrite an object filter because
+/// they reference the ability controller, not an acting player target.
+fn player_filter_as_controller_ref(filter: &TargetFilter) -> Option<ControllerRef> {
+    match filter {
+        TargetFilter::TriggeringPlayer => Some(ControllerRef::TargetPlayer),
+        TargetFilter::Typed(tf)
+            if tf.type_filters.is_empty()
+                && tf.controller.is_some()
+                && tf.properties.is_empty() =>
+        {
+            tf.controller.clone()
+        }
+        _ => None,
+    }
+}
+
+/// CR 109.4 + CR 115.7: Attach a controller constraint to a typed object
+/// filter that does not yet have one. Walks into `Or`/`And`/`Not` to cover
+/// compound filters like "target creature or planeswalker". Filters that
+/// already carry a controller constraint are left untouched so an explicit
+/// "creature you control" clause is never silently rewritten.
+pub(super) fn attach_controller_if_absent(filter: &mut TargetFilter, ctrl: ControllerRef) {
+    match filter {
+        TargetFilter::Typed(tf) if tf.controller.is_none() => {
+            tf.controller = Some(ctrl);
+        }
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            for inner in filters.iter_mut() {
+                attach_controller_if_absent(inner, ctrl.clone());
+            }
+        }
+        TargetFilter::Not { filter } => attach_controller_if_absent(filter, ctrl),
+        _ => {}
+    }
+}
+
 fn target_filter_can_target_player(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::Player
@@ -4003,6 +4301,11 @@ fn target_filter_can_target_player(filter: &TargetFilter) -> bool {
 fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
     let subject_filter = subject.target.as_ref().unwrap_or(&subject.affected).clone();
     match effect {
+        // CR 601.2c + CR 121.1: "Target player draws ..." — each Draw mode of a
+        // modal spell is its own targeting instance. The imperative path emits
+        // `target: TargetFilter::Controller` (the no-subject default); when a
+        // player-subject is parsed we promote that to the subject filter so
+        // `collect_target_slots` surfaces an independent slot per Draw mode.
         Effect::Connive { target, .. }
         | Effect::PhaseOut { target }
         | Effect::PhaseIn { target }
@@ -4011,6 +4314,9 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         | Effect::Goad { target }
         | Effect::Mill { target, .. }
         | Effect::Discard { target, .. }
+        | Effect::Draw { target, .. }
+        | Effect::Scry { target, .. }
+        | Effect::Surveil { target, .. }
         | Effect::PutAtLibraryPosition { target, .. }
             if *target == TargetFilter::Any || *target == TargetFilter::Controller =>
         {
@@ -4098,6 +4404,23 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         {
             *target = subject_filter;
         }
+        // CR 608.2k + CR 109.4: "that player sacrifices a non-Elf creature" /
+        // "each opponent sacrifices a creature they control". When the subject
+        // is a player reference (TriggeringPlayer / TargetPlayer / etc.) and
+        // the effect targets a TYPED object filter that has not been scoped to
+        // a controller, inject the controller constraint so the filter matches
+        // only permanents controlled by the acting player. Without this, a
+        // phase trigger like Ruthless Winnower's "that player sacrifices a
+        // non-Elf creature" would match any player's non-Elf creature instead
+        // of the sacrificing player's. Reached only when the earlier Any-only
+        // arm did not fire (target is a typed filter, not `Any`).
+        Effect::Sacrifice { target, .. }
+            if player_filter_as_controller_ref(&subject_filter).is_some() =>
+        {
+            if let Some(ctrl) = player_filter_as_controller_ref(&subject_filter) {
+                attach_controller_if_absent(target, ctrl);
+            }
+        }
         // CR 119.3 + CR 115.1d: "they lose N life" — inject subject's player reference.
         // LoseLife.target is Option<TargetFilter>, unlike other effects' non-optional targets.
         // Guard on is_none() to only inject when no target was explicitly parsed.
@@ -4147,17 +4470,45 @@ fn try_parse_emblem_creation(lower: &str, original: &str) -> Option<Effect> {
         return None;
     }
 
-    // Try to parse the emblem text as a static ability line
+    // CR 113.1c + CR 114.4: An emblem's ability may be a triggered ability
+    // ("Whenever ...", "At the beginning of ..."), a static ability, or the
+    // Unknown fallback. Try the triggered-ability parser first; fall through
+    // to the static-ability parser only if `parse_trigger_lines` does not
+    // recognise a trigger phrase (returns `TriggerMode::Unknown`). Both
+    // detectors ARE the parsers — no string heuristics.
+    let trig_defs = super::oracle_trigger::parse_trigger_lines(inner, "~");
+    let all_known = !trig_defs.is_empty()
+        && trig_defs
+            .iter()
+            .all(|t| !matches!(t.mode, TriggerMode::Unknown(_)));
+    if all_known {
+        // CR 114.4: An emblem's triggers function in the command zone, so the
+        // `collect_matching_triggers` zone guard must admit them. Declare
+        // `trigger_zones = [Zone::Command]` explicitly (the default empty
+        // vector is interpreted as battlefield-only by the scanner).
+        let triggers: Vec<TriggerDefinition> = trig_defs
+            .into_iter()
+            .map(|t| t.trigger_zones(vec![Zone::Command]))
+            .collect();
+        return Some(Effect::CreateEmblem {
+            statics: Vec::new(),
+            triggers,
+        });
+    }
+
+    // Try to parse the emblem text as a static ability line.
     if let Some(static_def) = super::oracle_static::parse_static_line(inner) {
         Some(Effect::CreateEmblem {
             statics: vec![static_def],
+            triggers: Vec::new(),
         })
     } else {
-        // Fallback: create an emblem with an unimplemented static
+        // Fallback: create an emblem with an unimplemented static.
         Some(Effect::CreateEmblem {
             statics: vec![
                 StaticDefinition::new(StaticMode::EmblemStatic).description(inner.to_string())
             ],
+            triggers: Vec::new(),
         })
     }
 }
@@ -4805,6 +5156,60 @@ fn each_quantity_expr_mut(effect: &mut Effect, f: &mut impl FnMut(&mut QuantityE
     }
 }
 
+/// CR 109.4 + CR 608.2c: Apply `f` to every `TargetFilter` reachable through
+/// the common target-bearing fields of an `Effect`. Companion to
+/// `each_quantity_expr_mut`; used by callers that need to rewrite target slots
+/// across an effect chain (e.g. the prevention follow-up call site rewrites
+/// `ParentTargetController` → `PostReplacementSourceController` so "the source's
+/// controller draws cards" resolves against the prevented event's damage source).
+///
+/// Pragmatic visitor — covers the subset of `Effect` variants whose target
+/// slots are statically declared as `TargetFilter` or `Option<TargetFilter>`.
+/// Variants not listed here keep their target slots untouched; **add an arm
+/// when introducing a new target-bearing variant** so future rewrites cover it.
+/// Variant list mirrors `replace_target_with_parent` plus a handful of
+/// player-targetable effects (Draw, LoseLife, Discard, Mill, Scry, Surveil,
+/// RevealFromHand) whose `target` field is a `TargetFilter` and can therefore
+/// hold a player ref like `ParentTargetController`.
+pub(crate) fn each_target_filter_mut(effect: &mut Effect, f: &mut impl FnMut(&mut TargetFilter)) {
+    match effect {
+        Effect::Tap { target }
+        | Effect::Untap { target }
+        | Effect::Destroy { target, .. }
+        | Effect::Regenerate { target, .. }
+        | Effect::Sacrifice { target, .. }
+        | Effect::GainControl { target }
+        | Effect::Fight { target, .. }
+        | Effect::Bounce { target, .. }
+        | Effect::DealDamage { target, .. }
+        | Effect::Pump { target, .. }
+        | Effect::Attach { target, .. }
+        | Effect::Counter { target, .. }
+        | Effect::Transform { target, .. }
+        | Effect::Connive { target, .. }
+        | Effect::PhaseOut { target }
+        | Effect::ForceBlock { target }
+        | Effect::Draw { target, .. }
+        | Effect::Discard { target, .. }
+        | Effect::Mill { target, .. }
+        | Effect::Scry { target, .. }
+        | Effect::Surveil { target, .. } => f(target),
+        Effect::PutCounter { target, .. }
+        | Effect::AddCounter { target, .. }
+        | Effect::RemoveCounter { target, .. } => f(target),
+        Effect::ChangeZone { target, .. } | Effect::ChangeZoneAll { target, .. } => f(target),
+        Effect::LoseLife {
+            target: Some(target),
+            ..
+        } => f(target),
+        Effect::GenericEffect {
+            target: Some(target),
+            ..
+        } => f(target),
+        _ => {}
+    }
+}
+
 /// CR 608.2 + CR 107.2: Rewrite target-scoped `QuantityRef` variants to their
 /// controller-scoped equivalents across an ability tree. Under
 /// `player_scope: All` / `Opponent` / etc., the resolver rebinds
@@ -5270,7 +5675,8 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
                 }
             }
         }
-        let (is_optional, opponent_may_scope, text) = strip_optional_effect_prefix(&text);
+        let (is_optional, opponent_may_scope, implicit_player_scope, text) =
+            strip_optional_effect_prefix(&text);
         let (repeat_for, text) = strip_for_each_prefix(&text);
         // CR 609.3: "twice" / "N times" suffix — same mechanism as "for each" prefix.
         let (repeat_count, text) = if repeat_for.is_none() {
@@ -5280,6 +5686,41 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         };
         let repeat_for = repeat_for.or(repeat_count);
         let (player_scope, text) = strip_player_scope_subject(&text);
+        // CR 608.2d: When the optional prefix ("each opponent may") carries an
+        // implicit per-player iteration, propagate it to the ability so the
+        // OptionalEffectChoice is emitted once per matching player.
+        let player_scope = player_scope.or(implicit_player_scope);
+
+        // CR 701.21a + CR 608.2k: Derive the actor performing this chunk's effect
+        // from any actor prefix that was just stripped ("you (may) ", "an
+        // opponent (may) ", "each opponent ", "each player "). Threaded via
+        // `ParseContext.actor` so targeted-action parsers can default
+        // `TargetFilter::Typed.controller` to the actor when the target phrase
+        // itself doesn't specify one (e.g. "you may sacrifice a non-Demon
+        // creature" → controller defaults to You). Without this default, the
+        // resolver would treat `controller: None` as Any and let the actor
+        // sacrifice an opponent's permanent — violating CR 701.21a.
+        let chunk_actor = match (is_optional, opponent_may_scope, player_scope) {
+            (true, None, None) => Some(ControllerRef::You),
+            (true, Some(_), _) => Some(ControllerRef::Opponent),
+            (_, _, Some(PlayerFilter::Opponent)) => Some(ControllerRef::Opponent),
+            (_, _, Some(PlayerFilter::Controller)) => Some(ControllerRef::You),
+            _ => None,
+        }
+        .or_else(|| ctx.actor.clone());
+        let chunk_ctx = ParseContext {
+            subject: ctx.subject.clone(),
+            card_name: ctx.card_name.clone(),
+            // CR 707.9a + CR 603.1: propagate the trigger index from the parent
+            // ctx — `current_trigger_index` is a property of the whole trigger
+            // body, not of an individual chunk, so all chunks inside a trigger
+            // share the same index for the BecomeCopy except-clause parser to
+            // reference via `RetainPrintedTriggerFromSource`. Actor, by contrast,
+            // is per-chunk (re-derived from each chunk's stripped prefix above).
+            current_trigger_index: ctx.current_trigger_index,
+            actor: chunk_actor,
+        };
+        let ctx = &chunk_ctx;
 
         // CR 603.7a: Check for temporal prefix before suffix. When present, parse the
         // inner effect through the full pipeline and wrap in CreateDelayedTrigger.
@@ -5681,6 +6122,13 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
                     }
                 }
             }
+            // A node attached as a `sub_ability` is a resolution continuation
+            // of its parent, not an independently activatable ability.
+            // Normalize its kind to `Spell` (the "resolves alongside parent"
+            // kind) before linking. This matches the convention used by
+            // dedicated clause builders that construct sub-abilities directly
+            // (e.g., `try_parse_pump_with_damage_sub` at line 3220).
+            chain.kind = AbilityKind::Spell;
             if prev.sub_ability.is_some() {
                 // Walk to the deepest sub_ability and append there
                 let mut cursor = &mut prev;
@@ -6027,30 +6475,48 @@ pub(crate) fn capitalize(s: &str) -> String {
     }
 }
 
-/// Strip "you may " prefix, returning whether the effect is optional.
+/// Strip optional-effect prefixes, returning whether the effect is optional,
+/// which opponent-may scope applies (if any), and an implicit player_scope to
+/// propagate to the containing ability (set when the prefix itself carries a
+/// per-player iteration, e.g. "each opponent may").
+///
+/// CR 608.2d + CR 603.2: "each opponent may X" differs from "any opponent
+/// may X" — every opponent independently decides yes/no, rather than first
+/// accept wins. It lowers to `optional: true` + `player_scope: Opponent`:
+/// the outer `player_scope` iteration rebinds controller to each opponent,
+/// and each scoped clone enters the standard OptionalEffectChoice prompt.
 fn strip_optional_effect_prefix(
     text: &str,
 ) -> (
     bool,
     Option<crate::types::ability::OpponentMayScope>,
+    Option<PlayerFilter>,
     String,
 ) {
     let lower = text.to_lowercase();
-    // CR 608.2d: "any opponent may" — opponent-choice optional effect.
+    // CR 608.2d: "each opponent may" — per-opponent optional effect.
+    // "any opponent may" — first-accept-wins opponent-choice optional effect.
     // "you may" — standard optional effect prefix.
-    if let Some((scope, rest)) = nom_on_lower(text, &lower, |input| {
+    if let Some(((scope, player_scope), rest)) = nom_on_lower(text, &lower, |input| {
         alt((
             value(
-                Some(crate::types::ability::OpponentMayScope::AnyOpponent),
+                (None, Some(PlayerFilter::Opponent)),
+                tag("each opponent may "),
+            ),
+            value(
+                (
+                    Some(crate::types::ability::OpponentMayScope::AnyOpponent),
+                    None,
+                ),
                 tag("any opponent may "),
             ),
-            value(None, tag("you may ")),
+            value((None, None), tag("you may ")),
         ))
         .parse(input)
     }) {
-        (true, scope, rest.to_string())
+        (true, scope, player_scope, rest.to_string())
     } else {
-        (false, None, text.to_string())
+        (false, None, None, text.to_string())
     }
 }
 
@@ -6063,6 +6529,20 @@ fn strip_for_each_prefix(text: &str) -> (Option<QuantityExpr>, String) {
         let rest_lower = &lower[text.len() - rest.len()..];
         if let Some((clause, remainder)) = rest_lower.split_once(", ") {
             if let Some(qty) = parse_for_each_clause(clause) {
+                // CR 106.1: "for each color among [X], add one mana of that color"
+                // must NOT be split into (repeat_for, "add one mana of that color").
+                // The "that color" anaphors the per-iteration color, not the
+                // source's `ChosenAttribute::Color`. Let the full text flow
+                // through to `try_parse_for_each_color_mana_public` which emits
+                // a single `DistinctColorsAmongPermanents` mana ability.
+                if matches!(qty, QuantityRef::DistinctColorsAmongPermanents { .. })
+                    && remainder
+                        .trim_end_matches('.')
+                        .trim()
+                        .eq_ignore_ascii_case("add one mana of that color")
+                {
+                    return (None, text.to_string());
+                }
                 let offset = text.len() - remainder.len();
                 return (Some(QuantityExpr::Ref { qty }), text[offset..].to_string());
             }
@@ -6421,6 +6901,25 @@ fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerCondition>) 
                 player: crate::types::player::PlayerId(0),
             },
         ),
+        // CR 505.1 + CR 603.7a: Symmetric to the prefix form at
+        // `strip_temporal_prefix`. Greasefang's "return it to its owner's hand
+        // at the beginning of your next end step" uses this suffix shape; the
+        // player placeholder is rewritten to `ability.controller` at resolve
+        // time alongside the main-phase and upkeep variants.
+        (
+            " at the beginning of your next end step",
+            DelayedTriggerCondition::AtNextPhaseForPlayer {
+                phase: Phase::End,
+                player: crate::types::player::PlayerId(0),
+            },
+        ),
+        (
+            " at the beginning of your next upkeep",
+            DelayedTriggerCondition::AtNextPhaseForPlayer {
+                phase: Phase::Upkeep,
+                player: crate::types::player::PlayerId(0),
+            },
+        ),
     ] {
         if lower.ends_with(suffix) {
             let end = text.len() - suffix.len();
@@ -6463,6 +6962,17 @@ fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerCondition>) 
                     player: crate::types::player::PlayerId(0),
                 },
                 tag("at the beginning of your next end step, "),
+            ),
+            // CR 500.8 + CR 603.7a: "at the beginning of that combat" refers to an
+            // additional combat phase just scheduled by the parent effect
+            // (e.g., Moraug, Fury of Akoum's landfall trigger). The additional
+            // combat is pushed as the very next phase, so we fire on the next
+            // BeginCombat.
+            value(
+                DelayedTriggerCondition::AtNextPhase {
+                    phase: Phase::BeginCombat,
+                },
+                tag("at the beginning of that combat, "),
             ),
         ))
         .parse(i)
@@ -7509,7 +8019,7 @@ fn apply_where_x_effect_expression(effect: &mut Effect, where_x_expression: Opti
         | Effect::GainLife { amount, .. }
         | Effect::LoseLife { amount, .. }
         | Effect::IncreaseSpeed { amount, .. }
-        | Effect::Draw { count: amount }
+        | Effect::Draw { count: amount, .. }
         | Effect::Mill { count: amount, .. }
         | Effect::PutCounter { count: amount, .. }
         | Effect::PutCounterAll { count: amount, .. }
@@ -7721,7 +8231,15 @@ pub(crate) fn normalize_verb_token(token: &str) -> String {
         "does" => "do".to_string(),
         "has" => "have".to_string(),
         "is" => "be".to_string(),
-        "copies" => "copy".to_string(),
+        // English consonant-y → ies plural (copy→copies, scry→scries, try→tries).
+        // Vowel-y verbs (play→plays) take regular -s and fall through. Result is
+        // checked against `PREDICATE_VERBS`; false positives like "series→sery"
+        // are silent (no allowlist hit, no behavior change).
+        // allow-noncombinator: verb-morphology suffix check on pre-tokenized word (PATTERNS.md §9)
+        _ if token.ends_with("ies") && token.len() > 3 => {
+            format!("{}y", &token[..token.len() - 3])
+        }
+        // allow-noncombinator: verb-morphology suffix check on pre-tokenized word
         _ if token.ends_with('s') && !token.ends_with("ss") => token[..token.len() - 1].to_string(),
         _ => token.to_string(),
     }
@@ -8438,7 +8956,8 @@ mod tests {
             matches!(
                 *sub.effect,
                 Effect::Scry {
-                    count: QuantityExpr::Fixed { value: 1 }
+                    count: QuantityExpr::Fixed { value: 1 },
+                    ..
                 }
             ),
             "sub_ability: {:?}",
@@ -8641,6 +9160,41 @@ mod tests {
                 }
             ),
             "exile their graveyard should be ChangeZoneAll with origin=Graveyard, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn effect_exile_target_player_graveyard_is_change_zone_all() {
+        // CR 400.12 + CR 404 + CR 406: "exile target player's graveyard" must
+        // act on every card in that zone — Nihil Spellbomb / Bojuka Bog class.
+        let e = parse_effect("exile target player's graveyard");
+        assert!(
+            matches!(
+                e,
+                Effect::ChangeZoneAll {
+                    origin: Some(Zone::Graveyard),
+                    destination: Zone::Exile,
+                    target: TargetFilter::Player,
+                }
+            ),
+            "exile target player's graveyard should be ChangeZoneAll with origin=Graveyard, target=Player, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn effect_exile_target_opponent_graveyard_is_change_zone_all() {
+        // CR 400.12: "exile target opponent's graveyard" — same class.
+        let e = parse_effect("exile target opponent's graveyard");
+        assert!(
+            matches!(
+                e,
+                Effect::ChangeZoneAll {
+                    origin: Some(Zone::Graveyard),
+                    destination: Zone::Exile,
+                    ..
+                }
+            ),
+            "exile target opponent's graveyard should be ChangeZoneAll with origin=Graveyard, got {e:?}"
         );
     }
 
@@ -8897,6 +9451,46 @@ mod tests {
         ));
     }
 
+    /// CR 701.10b: "double ~'s power" — self-reference possessive form
+    /// (Devilish Valet, Okaun, Casey Jones, Grunn, Overclocked Electromancer class).
+    /// `~` is the parser's normalized form of the card's own name.
+    #[test]
+    fn effect_double_self_ref_power() {
+        let e = parse_effect("double ~'s power");
+        assert!(matches!(
+            e,
+            Effect::DoublePT {
+                mode: DoublePTMode::Power,
+                target: TargetFilter::SelfRef,
+            }
+        ));
+    }
+
+    #[test]
+    fn effect_double_self_ref_power_and_toughness() {
+        let e = parse_effect("double ~'s power and toughness");
+        assert!(matches!(
+            e,
+            Effect::DoublePT {
+                mode: DoublePTMode::PowerAndToughness,
+                target: TargetFilter::SelfRef,
+            }
+        ));
+    }
+
+    /// "double target creature's power" — Bulk Up class possessive form.
+    #[test]
+    fn effect_double_target_creatures_power() {
+        let e = parse_effect("Double target creature's power");
+        assert!(matches!(
+            e,
+            Effect::DoublePT {
+                mode: DoublePTMode::Power,
+                target: TargetFilter::Typed(_),
+            }
+        ));
+    }
+
     #[test]
     fn effect_gain_life() {
         let e = parse_effect("You gain 3 life");
@@ -8958,7 +9552,8 @@ mod tests {
         assert!(matches!(
             e,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 2 }
+                count: QuantityExpr::Fixed { value: 2 },
+                ..
             }
         ));
     }
@@ -8969,7 +9564,8 @@ mod tests {
         assert!(matches!(
             e,
             Effect::Scry {
-                count: QuantityExpr::Fixed { value: 2 }
+                count: QuantityExpr::Fixed { value: 2 },
+                ..
             }
         ));
     }
@@ -8983,7 +9579,8 @@ mod tests {
                 Effect::Draw {
                     count: QuantityExpr::Ref {
                         qty: QuantityRef::Variable { .. }
-                    }
+                    },
+                    ..
                 }
             ),
             "Expected Draw with Variable, got {:?}",
@@ -9000,7 +9597,8 @@ mod tests {
                 Effect::Scry {
                     count: QuantityExpr::Ref {
                         qty: QuantityRef::Variable { .. }
-                    }
+                    },
+                    ..
                 }
             ),
             "Expected Scry with Variable, got {:?}",
@@ -9239,7 +9837,8 @@ mod tests {
         assert!(matches!(
             *def.sub_ability.unwrap().effect,
             Effect::Draw {
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
             }
         ));
     }
@@ -9292,7 +9891,8 @@ mod tests {
             matches!(
                 &*sub.effect,
                 Effect::Draw {
-                    count: QuantityExpr::Fixed { value: 7 }
+                    count: QuantityExpr::Fixed { value: 7 },
+                    ..
                 }
             ),
             "sub_ability should be Draw(7), got {:?}",
@@ -9898,6 +10498,8 @@ mod tests {
             &ParseContext {
                 subject: Some(TargetFilter::SelfRef),
                 card_name: None,
+                actor: None,
+                ..Default::default()
             },
         );
         let sub = clause.sub_ability.expect("should have sub_ability");
@@ -9922,6 +10524,8 @@ mod tests {
             &ParseContext {
                 subject: Some(TargetFilter::SelfRef),
                 card_name: None,
+                actor: None,
+                ..Default::default()
             },
         );
         let sub = def.sub_ability.expect("should have sub_ability");
@@ -10779,7 +11383,7 @@ mod tests {
     fn effect_emblem_ninjas_get_plus_one() {
         let e = parse_effect("You get an emblem with \"Ninjas you control get +1/+1.\"");
         match e {
-            Effect::CreateEmblem { statics } => {
+            Effect::CreateEmblem { statics, .. } => {
                 assert_eq!(statics.len(), 1);
                 let def = &statics[0];
                 assert_eq!(def.mode, StaticMode::Continuous);
@@ -10803,7 +11407,7 @@ mod tests {
         // of the game" creates an emblem with NoMaximumHandSize.
         let e = parse_effect("You have no maximum hand size for the rest of the game.");
         match e {
-            Effect::CreateEmblem { statics } => {
+            Effect::CreateEmblem { statics, .. } => {
                 assert_eq!(statics.len(), 1);
                 assert_eq!(statics[0].mode, StaticMode::NoMaximumHandSize);
             }
@@ -10816,11 +11420,54 @@ mod tests {
         // Bare form without "for the rest of the game" suffix.
         let e = parse_effect("You have no maximum hand size.");
         match e {
-            Effect::CreateEmblem { statics } => {
+            Effect::CreateEmblem { statics, .. } => {
                 assert_eq!(statics.len(), 1);
                 assert_eq!(statics[0].mode, StaticMode::NoMaximumHandSize);
             }
             other => panic!("expected CreateEmblem, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn effect_emblem_with_whenever_trigger_extracts_trigger_definition() {
+        // CR 113.1c + CR 114.4: Emblem-hosted triggers must be extracted as
+        // typed `TriggerDefinition`s, not dropped into `EmblemStatic` blobs.
+        // Chandra, Torch of Defiance −7 is the canonical example.
+        let e = parse_effect(
+            "You get an emblem with \"Whenever you cast a spell, this emblem deals 5 damage to any target.\"",
+        );
+        match e {
+            Effect::CreateEmblem { statics, triggers } => {
+                assert!(
+                    statics.is_empty(),
+                    "trigger-only emblem should not install statics, got {statics:?}"
+                );
+                assert_eq!(triggers.len(), 1);
+                let t = &triggers[0];
+                assert!(
+                    !matches!(t.mode, crate::types::triggers::TriggerMode::Unknown(_)),
+                    "emblem trigger must not be Unknown, got {:?}",
+                    t.mode
+                );
+                // CR 114.4: trigger_zones must include Command so the
+                // scanner's zone guard admits the fire.
+                assert_eq!(t.trigger_zones, vec![Zone::Command]);
+            }
+            other => panic!("expected CreateEmblem with triggers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effect_emblem_with_static_still_parses_as_static() {
+        // Regression: pure static emblems continue to lower to `statics`
+        // even after the trigger-first dispatch.
+        let e = parse_effect("You get an emblem with \"Ninjas you control get +1/+1.\"");
+        match e {
+            Effect::CreateEmblem { statics, triggers } => {
+                assert_eq!(statics.len(), 1);
+                assert!(triggers.is_empty());
+            }
+            other => panic!("expected CreateEmblem static-only, got {other:?}"),
         }
     }
 
@@ -13017,6 +13664,63 @@ mod tests {
         );
     }
 
+    // CR 603.2 + CR 111.10: Najeela, the Blade-Blossom — "have its controller
+    // create a ... token ..." rebinds token.owner to TriggeringSource so at
+    // runtime the token is put onto the battlefield under the attacking
+    // Warrior's controller, not Najeela's controller.
+    #[test]
+    fn have_its_controller_create_token_rebinds_owner_to_triggering_source() {
+        let e = parse_effect(
+            "have its controller create a 1/1 white Warrior creature token that's tapped and attacking",
+        );
+        match e {
+            Effect::Token {
+                ref owner,
+                tapped,
+                enters_attacking,
+                ref types,
+                ref colors,
+                ..
+            } => {
+                assert_eq!(
+                    owner,
+                    &TargetFilter::TriggeringSource,
+                    "expected owner rebound to TriggeringSource, got {owner:?}"
+                );
+                assert!(tapped, "token should enter tapped");
+                assert!(enters_attacking, "token should enter attacking");
+                assert!(types.contains(&"Creature".to_string()));
+                assert!(types.contains(&"Warrior".to_string()));
+                assert_eq!(colors, &vec![ManaColor::White]);
+            }
+            other => panic!("expected Effect::Token, got {other:?}"),
+        }
+    }
+
+    // CR 508.4 + CR 506.3a: The inline "that's tapped and attacking" clause
+    // inside a token description phrase must set BOTH `tapped` and
+    // `enters_attacking`. Previously the suffix was silently dropped for
+    // ~10 cards (Captain's Claws, Battle Cry Goblin, General Kreat,
+    // Indulge, etc.), producing rules-incorrect tokens.
+    #[test]
+    fn token_thats_tapped_and_attacking_suffix_sets_flags() {
+        let e = parse_effect("create a 1/1 red Goblin creature token that's tapped and attacking");
+        match e {
+            Effect::Token {
+                tapped,
+                enters_attacking,
+                ..
+            } => {
+                assert!(tapped, "expected tapped=true from inline suffix");
+                assert!(
+                    enters_attacking,
+                    "expected enters_attacking=true from inline suffix"
+                );
+            }
+            other => panic!("expected Effect::Token, got {other:?}"),
+        }
+    }
+
     // --- Restriction clause extensions ---
 
     #[test]
@@ -13362,6 +14066,36 @@ mod tests {
         assert!(def.optional);
         let sub = def.sub_ability.as_ref().expect("should have sub_ability");
         assert_eq!(sub.condition, Some(AbilityCondition::IfAPlayerDoes));
+    }
+
+    /// CR 608.2d + CR 603.2: "each opponent may X" — each opponent independently
+    /// decides yes/no. Lowered to `optional: true` + `player_scope: Opponent`
+    /// (not `OpponentMayScope::AnyOpponent`, which is first-accept-wins).
+    /// At runtime the outer player_scope iteration rebinds controller per
+    /// opponent, and each scoped clone enters OptionalEffectChoice for that
+    /// opponent. Source: Fandaniel, Telophoroi Ascian Oracle.
+    #[test]
+    fn each_opponent_may_sets_optional_with_opponent_scope() {
+        let def = parse_effect_chain(
+            "each opponent may sacrifice a nontoken creature of their choice",
+            AbilityKind::Spell,
+        );
+        assert!(def.optional, "expected optional=true, got {def:?}");
+        assert_eq!(
+            def.optional_for, None,
+            "each-opponent-may must NOT set optional_for (which is AnyOpponent-only)"
+        );
+        assert_eq!(
+            def.player_scope,
+            Some(PlayerFilter::Opponent),
+            "expected player_scope=Opponent, got {:?}",
+            def.player_scope
+        );
+        assert!(
+            matches!(*def.effect, Effect::Sacrifice { .. }),
+            "effect should be Sacrifice, got {:?}",
+            def.effect
+        );
     }
 
     #[test]
@@ -14767,7 +15501,8 @@ mod tests {
             matches!(
                 *def.effect,
                 Effect::Draw {
-                    count: QuantityExpr::Fixed { value: 1 }
+                    count: QuantityExpr::Fixed { value: 1 },
+                    ..
                 }
             ),
             "expected Draw 1, got: {:?}",
@@ -14783,6 +15518,50 @@ mod tests {
         // replace Any with SelfRef from the subject.
         let clause =
             parse_effect_clause("~ gets +2/+2 until end of turn", &ParseContext::default());
+        assert!(
+            matches!(
+                clause.effect,
+                Effect::Pump {
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            ),
+            "expected Pump with SelfRef target, got: {:?}",
+            clause.effect
+        );
+    }
+
+    #[test]
+    fn mutilate_all_creatures_for_each_is_pump_all() {
+        // CR 609 + CR 611.2: "All creatures get -1/-1 until end of turn for each
+        // Swamp you control" (Mutilate). The "all creatures" subject is a class
+        // filter, so the for-each effect must lower to `Effect::PumpAll`, not
+        // `Effect::Pump` with a single target — otherwise the engine prompts
+        // for one target and only that creature shrinks.
+        let clause = parse_effect_clause(
+            "All creatures get -1/-1 until end of turn for each Swamp you control.",
+            &ParseContext::default(),
+        );
+        match &clause.effect {
+            Effect::PumpAll { target, .. } => {
+                assert!(
+                    matches!(target, TargetFilter::Typed(t) if t.type_filters.contains(&crate::types::ability::TypeFilter::Creature)),
+                    "expected PumpAll target TypedFilter::Creature, got {target:?}"
+                );
+            }
+            other => panic!("expected PumpAll, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn self_ref_for_each_stays_pump() {
+        // Preserves single-object promotion: "~ gets +1/+0 until end of turn for
+        // each card in your graveyard" (Skeletal Changeling-style) must remain
+        // `Effect::Pump` with `SelfRef` — not `PumpAll`.
+        let clause = parse_effect_clause(
+            "~ gets +1/+0 until end of turn for each card in your graveyard.",
+            &ParseContext::default(),
+        );
         assert!(
             matches!(
                 clause.effect,
@@ -15419,5 +16198,96 @@ mod tests {
             ],
         };
         assert_eq!(target, &expected);
+    }
+
+    // ------------------------------------------------------------------
+    // CR 700.2 + CR 608.2d: ChooseOneOf inline binary-choice regression.
+    // ------------------------------------------------------------------
+
+    /// Highway Robbery's spell text "You may discard a card or sacrifice a
+    /// land" produces a `ChooseOneOf` with two branches (Discard + Sacrifice),
+    /// wrapped in an optional outer ability.
+    #[test]
+    fn choose_one_of_detects_highway_robbery_pattern() {
+        let ability = parse_effect_chain(
+            "You may discard a card or sacrifice a land.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            ability.optional,
+            "outer 'you may' must mark ability optional"
+        );
+        match &*ability.effect {
+            Effect::ChooseOneOf { branches } => {
+                assert_eq!(branches.len(), 2, "Highway Robbery has exactly 2 branches");
+                assert!(
+                    matches!(&*branches[0].effect, Effect::Discard { .. }),
+                    "first branch is Discard"
+                );
+                assert!(
+                    matches!(&*branches[1].effect, Effect::Sacrifice { .. }),
+                    "second branch is Sacrifice"
+                );
+            }
+            other => panic!("expected ChooseOneOf, got {other:?}"),
+        }
+    }
+
+    /// False-positive guard: "target creature or player" is a typed-target
+    /// disjunction inside an imperative, NOT a binary choice of effects.
+    #[test]
+    fn choose_one_of_rejects_target_disjunction() {
+        let ability = parse_effect_chain(
+            "deal 3 damage to target creature or player",
+            AbilityKind::Spell,
+        );
+        // Must parse as DealDamage, NOT ChooseOneOf.
+        assert!(
+            !matches!(&*ability.effect, Effect::ChooseOneOf { .. }),
+            "target-phrase disjunction must not be split into ChooseOneOf"
+        );
+    }
+
+    /// CR 701.21a + CR 608.2k: Promise of Aclazotz / Burnt Offering / Greater
+    /// Good class — when the chunk loop strips a "you may " optional prefix,
+    /// the chunk-scoped `ParseContext.actor = Some(You)` is consumed by the
+    /// Sacrifice arm of `parse_targeted_action_ast` so the parsed
+    /// `TargetFilter::Typed.controller` defaults to ControllerRef::You.
+    /// Without this default the resolver treats `controller: None` as Any and
+    /// lets the actor sacrifice an opponent's creature, violating CR 701.21a.
+    #[test]
+    fn parse_effect_chain_actor_default_propagates_through_you_may() {
+        let ability =
+            parse_effect_chain("you may sacrifice a non-Demon creature", AbilityKind::Spell);
+        assert!(
+            ability.optional,
+            "'you may' prefix must mark the ability optional"
+        );
+        match &*ability.effect {
+            Effect::Sacrifice { target, .. } => match target {
+                TargetFilter::Typed(tf) => assert_eq!(
+                    tf.controller,
+                    Some(ControllerRef::You),
+                    "actor=You must be applied as default Sacrifice target controller, got {tf:?}"
+                ),
+                other => panic!("expected Typed Sacrifice target, got {other:?}"),
+            },
+            other => panic!("expected Effect::Sacrifice, got {other:?}"),
+        }
+    }
+
+    /// False-positive guard: if only one half parses (the other is
+    /// Unimplemented), the detector must bail and let the normal dispatch
+    /// handle it — better to get a partial/Unimplemented than a fake choice.
+    #[test]
+    fn choose_one_of_rejects_when_second_half_unparseable() {
+        let ability = parse_effect_chain(
+            "discard a card or <gibberish nonsense phrase>",
+            AbilityKind::Spell,
+        );
+        assert!(
+            !matches!(&*ability.effect, Effect::ChooseOneOf { .. }),
+            "must not emit ChooseOneOf when one branch fails to parse"
+        );
     }
 }

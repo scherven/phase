@@ -111,6 +111,11 @@ impl ContinuousModification {
             | ContinuousModification::AssignNoCombatDamage => Layer::Ability,
             // CR 613.2: Control-changing effects are applied in Layer 2.
             ContinuousModification::ChangeController => Layer::Control,
+            // CR 707.9a: A copy effect that grants "this ability" makes that
+            // ability part of the copiable values. Applied at Layer 1 alongside
+            // CopyValues / SetName so downstream copy effects observe the
+            // retained ability when reading copiable values.
+            ContinuousModification::RetainPrintedTriggerFromSource { .. } => Layer::Copy,
         }
     }
 }
@@ -181,7 +186,7 @@ mod tests {
                     toughness: None,
                     loyalty: None,
                     keywords: vec![],
-                    abilities: vec![],
+                    abilities: Default::default(),
                     trigger_definitions: Default::default(),
                     replacement_definitions: Default::default(),
                     static_definitions: Default::default(),

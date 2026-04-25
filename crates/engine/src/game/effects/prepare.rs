@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetRef};
 use crate::types::card::LayoutKind;
 use crate::types::events::GameEvent;
@@ -276,7 +278,7 @@ pub fn cast_prepared_copy(
     copy_obj.card_types = back.card_types.clone();
     copy_obj.mana_cost = back.mana_cost.clone();
     copy_obj.keywords = back.keywords.clone();
-    copy_obj.abilities = back.abilities.clone();
+    copy_obj.abilities = Arc::new(back.abilities.clone());
     copy_obj.color = back.color.clone();
     copy_obj.printed_ref = back.printed_ref.clone();
     copy_obj.controller = controller;
@@ -296,7 +298,7 @@ pub fn cast_prepared_copy(
     // normal casting (see `ability_utils`).
     let resolved = build_resolved_from_def(&ability_def, copy_id, controller);
 
-    state.stack.push(StackEntry {
+    state.stack.push_back(StackEntry {
         id: copy_id,
         source_id: copy_id,
         controller,
@@ -455,12 +457,13 @@ mod tests {
         let resolved = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
             Vec::new(),
             copy_id,
             PlayerId(0),
         );
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: copy_id,
             source_id: copy_id,
             controller: PlayerId(0),
@@ -519,7 +522,7 @@ mod tests {
             copy_id,
             PlayerId(0),
         );
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: copy_id,
             source_id: copy_id,
             controller: PlayerId(0),

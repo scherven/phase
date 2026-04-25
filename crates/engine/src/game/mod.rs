@@ -1,4 +1,5 @@
 pub mod ability_utils;
+pub mod arithmetic;
 pub mod bending;
 pub mod casting;
 pub(crate) mod casting_costs;
@@ -13,6 +14,7 @@ pub mod day_night;
 pub mod deck_loading;
 pub mod deck_validation;
 pub mod derived;
+pub mod derived_views;
 pub mod devotion;
 pub mod dungeon;
 pub mod effects;
@@ -66,9 +68,12 @@ pub mod turns;
 pub mod visibility;
 pub mod zones;
 
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
 pub use deck_loading::{
-    create_commander_from_card_face, load_deck_into_state, resolve_deck_list,
-    resolve_player_deck_list, DeckEntry, DeckList, DeckPayload, PlayerDeckList,
+    create_commander_from_card_face, load_and_hydrate_decks, load_deck_into_state,
+    resolve_deck_list, resolve_player_deck_list, DeckEntry, DeckList, DeckPayload, PlayerDeckList,
 };
 pub use deck_validation::{
     evaluate_deck_compatibility, is_commander_eligible, validate_deck_for_format,

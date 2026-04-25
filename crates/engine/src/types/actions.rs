@@ -146,18 +146,32 @@ pub enum GameAction {
     ChooseEvokeCost {
         use_evoke: bool,
     },
+    /// CR 702.96a: Choose normal cast (false) or Overload cast (true) from hand.
+    /// Overload cast substitutes the overload mana cost and transforms every
+    /// "target" in the spell's text to "each" (CR 702.96b-c).
+    ChooseOverloadCost {
+        use_overload: bool,
+    },
     /// CR 702.49: Activate a Ninjutsu-family keyword from hand or command zone during combat.
     ActivateNinjutsu {
         ninjutsu_card_id: CardId,
         /// The creature to return — unblocked attacker (Ninjutsu) or tapped creature (WebSlinging).
         creature_to_return: ObjectId,
     },
-    /// CR 702.190a: Cast a creature card from graveyard via Sneak alt-cost.
-    /// Legal only during the declare-blockers step. The returned creature
-    /// must be an unblocked attacker controlled by the casting player; it is
-    /// bounced to its owner's hand as part of paying the Sneak cost.
+    /// CR 702.190a: Cast a spell from HAND via the Sneak alternative cost.
+    /// Legal only during the declare-blockers step (CR 702.190a). Applies to
+    /// any card type (creature, artifact, sorcery, instant, …) — the printed
+    /// keyword's cost grants permission regardless of the card's core type.
+    ///
+    /// `creature_to_return` must be an unblocked attacker controlled by the
+    /// casting player; it is returned to its owner's hand as part of paying
+    /// the Sneak cost (CR 702.190a).
+    ///
+    /// CR 702.190b applies only to permanent spells: they enter tapped and
+    /// attacking alongside the returned creature. Non-permanent Sneak casts
+    /// resolve normally.
     CastSpellAsSneak {
-        gy_object: ObjectId,
+        hand_object: ObjectId,
         card_id: CardId,
         creature_to_return: ObjectId,
     },
@@ -265,6 +279,13 @@ pub enum GameAction {
     },
     /// Cancel any active auto-pass for the acting player.
     CancelAutoPass,
+    /// Replace the acting player's phase-stop preference list. Phase stops
+    /// interrupt an `UntilEndOfTurn` auto-pass session and prevent the engine
+    /// from auto-submitting empty blocker declarations during the named phases.
+    /// Legal in any WaitingFor state — pure preference propagation.
+    SetPhaseStops {
+        stops: Vec<super::phase::Phase>,
+    },
     /// CR 510.1c/d: Assign damage from an attacker to its blockers (and optionally
     /// the defending player/PW with trample, plus PW controller with trample-over-PW).
     AssignCombatDamage {
@@ -279,6 +300,12 @@ pub enum GameAction {
     /// CR 601.2d: Distribute N among targets at casting time.
     DistributeAmong {
         distribution: Vec<(TargetRef, u32)>,
+    },
+    /// CR 107.1c + CR 107.14: Submit the chosen amount for a
+    /// `WaitingFor::PayAmountChoice` prompt ("pay any amount of {E}" and
+    /// similar resource-choice patterns).
+    SubmitPayAmount {
+        amount: u32,
     },
     /// CR 115.7: Choose new target(s) for a spell or ability on the stack.
     RetargetSpell {
@@ -401,7 +428,7 @@ impl GameAction {
         match self {
             GameAction::PlayLand { object_id, .. } => Some(*object_id),
             GameAction::CastSpell { object_id, .. } => Some(*object_id),
-            GameAction::CastSpellAsSneak { gy_object, .. } => Some(*gy_object),
+            GameAction::CastSpellAsSneak { hand_object, .. } => Some(*hand_object),
             GameAction::CastSpellForFree { object_id, .. } => Some(*object_id),
             GameAction::CastSpellAsMiracle { object_id, .. } => Some(*object_id),
             GameAction::CastSpellAsMadness { object_id, .. } => Some(*object_id),
@@ -439,6 +466,7 @@ impl GameAction {
             | GameAction::ChooseModalFace { .. }
             | GameAction::ChooseWarpCost { .. }
             | GameAction::ChooseEvokeCost { .. }
+            | GameAction::ChooseOverloadCost { .. }
             | GameAction::ActivateNinjutsu { .. }
             | GameAction::DecideOptionalEffect { .. }
             | GameAction::PayUnlessCost { .. }
@@ -454,8 +482,10 @@ impl GameAction {
             | GameAction::ChooseBattleProtector { .. }
             | GameAction::SetAutoPass { .. }
             | GameAction::CancelAutoPass
+            | GameAction::SetPhaseStops { .. }
             | GameAction::AssignCombatDamage { .. }
             | GameAction::DistributeAmong { .. }
+            | GameAction::SubmitPayAmount { .. }
             | GameAction::RetargetSpell { .. }
             | GameAction::LearnDecision { .. }
             | GameAction::SelectCategoryPermanents { .. }

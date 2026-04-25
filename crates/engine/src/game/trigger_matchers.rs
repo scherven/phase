@@ -520,6 +520,7 @@ pub(super) fn target_filter_matches_object(
         | TargetFilter::DefendingPlayer
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetController
+        | TargetFilter::PostReplacementSourceController
         | TargetFilter::StackAbility
         | TargetFilter::StackSpell
         | TargetFilter::Owner => false,
@@ -567,13 +568,28 @@ pub(super) fn match_changes_zone(
         // precedence over single-zone `origin` when non-empty — this supports
         // "put into exile from your library and/or your graveyard" where the
         // source zone can be one of several zones.
-        if !trigger.origin_zones.is_empty() {
-            if !trigger.origin_zones.contains(from) {
-                return false;
+        //
+        // CR 111.1 + CR 603.6a: `from = None` means the object was created
+        // directly in `to` (token creation / emblem). Any trigger that names
+        // a specific origin zone cannot match such an event; a trigger with
+        // no origin filter (e.g. Elvish Vanguard's "whenever another Elf
+        // enters") falls through these guards and matches.
+        match from {
+            Some(from_zone) => {
+                if !trigger.origin_zones.is_empty() {
+                    if !trigger.origin_zones.contains(from_zone) {
+                        return false;
+                    }
+                } else if let Some(origin) = &trigger.origin {
+                    if origin != from_zone {
+                        return false;
+                    }
+                }
             }
-        } else if let Some(origin) = &trigger.origin {
-            if origin != from {
-                return false;
+            None => {
+                if !trigger.origin_zones.is_empty() || trigger.origin.is_some() {
+                    return false;
+                }
             }
         }
         // Check destination zone using typed field
@@ -1429,7 +1445,7 @@ pub(super) fn match_milled(
         ..
     } = event
     {
-        if *from != Zone::Library || *to != Zone::Graveyard {
+        if *from != Some(Zone::Library) || *to != Zone::Graveyard {
             return false;
         }
         if !valid_card_matches(trigger, state, *object_id, source_id) {
@@ -1482,6 +1498,9 @@ pub(super) fn match_attached(
 }
 
 /// Unattach: fires when attachment is removed from a permanent.
+/// CR 303.4 + CR 301.5: Only fires when the host was an object that left the
+/// battlefield. A player host (Curse cycle) leaves via game-loss, which is a
+/// different SBA path (CR 704.5m for the Aura) — not modeled by this matcher.
 pub(super) fn match_unattach(
     event: &GameEvent,
     _trigger: &TriggerDefinition,
@@ -1491,12 +1510,13 @@ pub(super) fn match_unattach(
     match event {
         GameEvent::ZoneChanged {
             object_id, from, ..
-        } if *from == Zone::Battlefield => {
+        } if *from == Some(Zone::Battlefield) => {
             // Check if source was attached to the object that left
             state
                 .objects
                 .get(&source_id)
                 .and_then(|obj| obj.attached_to)
+                .and_then(|t| t.as_object())
                 .map(|attached| attached == *object_id)
                 .unwrap_or(false)
         }
@@ -1800,7 +1820,7 @@ pub(super) fn match_leaves_battlefield(
         object_id, from, ..
     } = event
     {
-        if *from != Zone::Battlefield {
+        if *from != Some(Zone::Battlefield) {
             return false;
         }
         valid_card_matches(trigger, state, *object_id, source_id)
@@ -2502,13 +2522,13 @@ mod tests {
     ) -> GameEvent {
         GameEvent::ZoneChanged {
             object_id,
-            from,
+            from: Some(from),
             to,
             record: Box::new(ZoneChangeRecord {
                 name: "Test Object".to_string(),
                 core_types,
                 subtypes: subtypes.into_iter().map(str::to_string).collect(),
-                ..ZoneChangeRecord::test_minimal(object_id, from, to)
+                ..ZoneChangeRecord::test_minimal(object_id, Some(from), to)
             }),
         }
     }
@@ -2650,6 +2670,126 @@ mod tests {
             Vec::new(),
         );
         assert!(match_changes_zone(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn changes_zone_attached_to_matches_via_record_snapshot() {
+        // CR 603.10a + CR 603.6e + CR 702.6: Skullclamp's "whenever equipped
+        // creature dies" fires off the dying creature's zone-change record.
+        // The record's `attachments` snapshot captures Skullclamp before SBA
+        // (CR 704.5n) clears the live `attached_to` pointer. `AttachedTo`
+        // matches when the snapshot contains the trigger source.
+        use crate::types::ability::AttachmentKind;
+        use crate::types::game_state::AttachmentSnapshot;
+
+        let mut state = setup();
+        let skullclamp = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Skullclamp".to_string(),
+            Zone::Battlefield,
+        );
+        let creature = ObjectId(99);
+
+        let mut trigger = make_trigger(TriggerMode::ChangesZone);
+        trigger.origin = Some(Zone::Battlefield);
+        trigger.destination = Some(Zone::Graveyard);
+        trigger.valid_card = Some(TargetFilter::AttachedTo);
+
+        // Event: equipped creature dies; snapshot carries Skullclamp as an
+        // Equipment attachment that was on the creature at the instant of
+        // the zone change.
+        let event = GameEvent::ZoneChanged {
+            object_id: creature,
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                attachments: vec![AttachmentSnapshot {
+                    object_id: skullclamp,
+                    controller: PlayerId(0),
+                    kind: AttachmentKind::Equipment,
+                }],
+                ..ZoneChangeRecord::test_minimal(creature, Some(Zone::Battlefield), Zone::Graveyard)
+            }),
+        };
+
+        assert!(match_changes_zone(&event, &trigger, skullclamp, &state));
+    }
+
+    #[test]
+    fn changes_zone_attached_to_no_match_when_not_attached() {
+        // CR 603.10a: An unequipped Skullclamp observing a different creature
+        // die must not trigger — the record's attachment snapshot does not
+        // contain the Equipment.
+        let mut state = setup();
+        let skullclamp = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Skullclamp".to_string(),
+            Zone::Battlefield,
+        );
+        let creature = ObjectId(99);
+
+        let mut trigger = make_trigger(TriggerMode::ChangesZone);
+        trigger.origin = Some(Zone::Battlefield);
+        trigger.destination = Some(Zone::Graveyard);
+        trigger.valid_card = Some(TargetFilter::AttachedTo);
+
+        // No attachments on the dying creature — attachments snapshot empty.
+        let event = GameEvent::ZoneChanged {
+            object_id: creature,
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord::test_minimal(
+                creature,
+                Some(Zone::Battlefield),
+                Zone::Graveyard,
+            )),
+        };
+
+        assert!(!match_changes_zone(&event, &trigger, skullclamp, &state));
+    }
+
+    #[test]
+    fn changes_zone_attached_to_matches_aura_look_back() {
+        // CR 603.6e + CR 603.10a: "Whenever enchanted creature dies" — the
+        // Aura's trigger source resolves identically to Equipment, via the
+        // attachments snapshot.
+        use crate::types::ability::AttachmentKind;
+        use crate::types::game_state::AttachmentSnapshot;
+
+        let mut state = setup();
+        let aura = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Test Aura".to_string(),
+            Zone::Battlefield,
+        );
+        let creature = ObjectId(42);
+
+        let mut trigger = make_trigger(TriggerMode::ChangesZone);
+        trigger.origin = Some(Zone::Battlefield);
+        trigger.destination = Some(Zone::Graveyard);
+        trigger.valid_card = Some(TargetFilter::AttachedTo);
+
+        let event = GameEvent::ZoneChanged {
+            object_id: creature,
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                attachments: vec![AttachmentSnapshot {
+                    object_id: aura,
+                    controller: PlayerId(0),
+                    kind: AttachmentKind::Aura,
+                }],
+                ..ZoneChangeRecord::test_minimal(creature, Some(Zone::Battlefield), Zone::Graveyard)
+            }),
+        };
+
+        assert!(match_changes_zone(&event, &trigger, aura, &state));
     }
 
     #[test]
@@ -2815,13 +2955,17 @@ mod tests {
         // A 2/2 dying should not fire.
         let event_2 = GameEvent::ZoneChanged {
             object_id: ObjectId(501),
-            from: Zone::Battlefield,
+            from: Some(Zone::Battlefield),
             to: Zone::Graveyard,
             record: Box::new(ZoneChangeRecord {
                 core_types: vec![CoreType::Creature],
                 power: Some(2),
                 toughness: Some(2),
-                ..ZoneChangeRecord::test_minimal(ObjectId(501), Zone::Battlefield, Zone::Graveyard)
+                ..ZoneChangeRecord::test_minimal(
+                    ObjectId(501),
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
             }),
         };
         assert!(!match_changes_zone(&event_2, &trigger, source_id, &state));
@@ -3120,7 +3264,7 @@ mod tests {
             "Forest".to_string(),
             Zone::Battlefield,
         );
-        state.objects.get_mut(&aura).unwrap().attached_to = Some(enchanted_land);
+        state.objects.get_mut(&aura).unwrap().attached_to = Some(enchanted_land.into());
 
         let event = GameEvent::ManaAdded {
             player_id: PlayerId(0),
@@ -3635,7 +3779,7 @@ mod tests {
     fn setup_with_spell_on_stack() -> (GameState, ObjectId) {
         let mut state = setup();
         let spell_id = ObjectId(50);
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: spell_id,
             source_id: spell_id,
             controller: PlayerId(0),
@@ -3644,6 +3788,7 @@ mod tests {
                 ability: Some(ResolvedAbility::new(
                     crate::types::ability::Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: crate::types::ability::TargetFilter::Controller,
                     },
                     vec![],
                     spell_id,
@@ -3659,7 +3804,7 @@ mod tests {
     fn setup_with_ability_on_stack() -> (GameState, ObjectId) {
         let mut state = setup();
         let ability_id = ObjectId(60);
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: ability_id,
             source_id: ObjectId(10),
             controller: PlayerId(1),
@@ -3668,6 +3813,7 @@ mod tests {
                 ability: ResolvedAbility::new(
                     crate::types::ability::Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: crate::types::ability::TargetFilter::Controller,
                     },
                     vec![],
                     ObjectId(10),
@@ -4621,6 +4767,209 @@ mod tests {
             player_id: PlayerId(1),
         };
         assert!(match_sacrificed(&event_opp, &trigger, source_id, &state));
+    }
+
+    // CR 603.2 + CR 701.21: "Whenever you sacrifice a <subtype>" — the valid_card
+    // filter must consult the sacrificed object's subtypes and its controller.
+    // Astrid Peth shape: "Whenever you sacrifice a Clue or Food, ~ explores."
+    #[test]
+    fn sacrifice_subtype_trigger_fires_when_controller_sacs_matching_subtype() {
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Astrid Peth".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, source_id);
+        let trigger = parse_trigger_line(
+            "Whenever you sacrifice a Clue or Food, ~ explores.",
+            "Astrid Peth",
+        );
+
+        // You sacrifice a Food token → fires.
+        let food = create_object(
+            &mut state,
+            CardId(301),
+            PlayerId(0),
+            "Food Token".to_string(),
+            Zone::Graveyard,
+        );
+        if let Some(obj) = state.objects.get_mut(&food) {
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Food".to_string());
+            obj.is_token = true;
+        }
+        let food_event = GameEvent::PermanentSacrificed {
+            object_id: food,
+            player_id: PlayerId(0),
+        };
+        assert!(match_sacrificed(&food_event, &trigger, source_id, &state));
+
+        // You sacrifice a Clue token → fires (disjunction branch).
+        let clue = create_object(
+            &mut state,
+            CardId(302),
+            PlayerId(0),
+            "Clue Token".to_string(),
+            Zone::Graveyard,
+        );
+        if let Some(obj) = state.objects.get_mut(&clue) {
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Clue".to_string());
+            obj.is_token = true;
+        }
+        let clue_event = GameEvent::PermanentSacrificed {
+            object_id: clue,
+            player_id: PlayerId(0),
+        };
+        assert!(match_sacrificed(&clue_event, &trigger, source_id, &state));
+    }
+
+    #[test]
+    fn sacrifice_subtype_trigger_rejects_non_matching_subtype() {
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(310),
+            PlayerId(0),
+            "Astrid Peth".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, source_id);
+        let trigger = parse_trigger_line(
+            "Whenever you sacrifice a Clue or Food, ~ explores.",
+            "Astrid Peth",
+        );
+
+        // You sacrifice a Treasure (different subtype) → does NOT fire.
+        let treasure = create_object(
+            &mut state,
+            CardId(311),
+            PlayerId(0),
+            "Treasure Token".to_string(),
+            Zone::Graveyard,
+        );
+        if let Some(obj) = state.objects.get_mut(&treasure) {
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Treasure".to_string());
+            obj.is_token = true;
+        }
+        let event = GameEvent::PermanentSacrificed {
+            object_id: treasure,
+            player_id: PlayerId(0),
+        };
+        assert!(!match_sacrificed(&event, &trigger, source_id, &state));
+
+        // You sacrifice a plain creature (no Food subtype) → does NOT fire.
+        let creature = create_object(
+            &mut state,
+            CardId(312),
+            PlayerId(0),
+            "Bear".to_string(),
+            Zone::Graveyard,
+        );
+        make_creature(&mut state, creature);
+        let event = GameEvent::PermanentSacrificed {
+            object_id: creature,
+            player_id: PlayerId(0),
+        };
+        assert!(!match_sacrificed(&event, &trigger, source_id, &state));
+    }
+
+    #[test]
+    fn sacrifice_subtype_trigger_rejects_opponent_sacrifice() {
+        // CR 109.4: "you sacrifice" scopes to the source's controller. An opponent
+        // sacrificing a matching token must NOT fire the controller's trigger.
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(320),
+            PlayerId(0),
+            "Astrid Peth".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, source_id);
+        let trigger = parse_trigger_line(
+            "Whenever you sacrifice a Clue or Food, ~ explores.",
+            "Astrid Peth",
+        );
+
+        // Opponent sacrifices their Food → does NOT fire.
+        let opp_food = create_object(
+            &mut state,
+            CardId(321),
+            PlayerId(1),
+            "Opponent Food".to_string(),
+            Zone::Graveyard,
+        );
+        if let Some(obj) = state.objects.get_mut(&opp_food) {
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Food".to_string());
+            obj.is_token = true;
+        }
+        let event = GameEvent::PermanentSacrificed {
+            object_id: opp_food,
+            player_id: PlayerId(1),
+        };
+        assert!(!match_sacrificed(&event, &trigger, source_id, &state));
+    }
+
+    #[test]
+    fn sacrifice_blood_token_trigger_honors_token_property() {
+        // CR 111.1 + CR 603.2 + CR 701.21: "Whenever you sacrifice a Blood token"
+        // parses with FilterProp::Token, so a non-token object that happens to be a
+        // Blood (hypothetical; future-proofs the filter composition) must NOT match.
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(330),
+            PlayerId(0),
+            "Vampire".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, source_id);
+        let trigger = parse_trigger_line(
+            "Whenever you sacrifice a Blood token, you gain 1 life.",
+            "Vampire",
+        );
+
+        // Controller sacrifices a Blood token → fires.
+        let blood_token = create_object(
+            &mut state,
+            CardId(331),
+            PlayerId(0),
+            "Blood Token".to_string(),
+            Zone::Graveyard,
+        );
+        if let Some(obj) = state.objects.get_mut(&blood_token) {
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Blood".to_string());
+            obj.is_token = true;
+        }
+        let event = GameEvent::PermanentSacrificed {
+            object_id: blood_token,
+            player_id: PlayerId(0),
+        };
+        assert!(match_sacrificed(&event, &trigger, source_id, &state));
+
+        // Controller sacrifices a non-token artifact (no Blood subtype) → no fire.
+        let artifact = create_object(
+            &mut state,
+            CardId(332),
+            PlayerId(0),
+            "Random Artifact".to_string(),
+            Zone::Graveyard,
+        );
+        if let Some(obj) = state.objects.get_mut(&artifact) {
+            obj.card_types.core_types.push(CoreType::Artifact);
+        }
+        let event = GameEvent::PermanentSacrificed {
+            object_id: artifact,
+            player_id: PlayerId(0),
+        };
+        assert!(!match_sacrificed(&event, &trigger, source_id, &state));
     }
 
     // CR 701.62 + CR 701.62b: Manifest Dread actor-side trigger.

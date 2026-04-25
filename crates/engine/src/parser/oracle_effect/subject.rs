@@ -173,7 +173,7 @@ fn try_parse_subject_become_clause(text: &str, ctx: &ParseContext) -> Option<Par
         .parse(predicate_lower.as_str())
         .ok()?;
     let application = parse_subject_application(subject, ctx)?;
-    build_become_clause(application, &predicate)
+    build_become_clause(application, &predicate, ctx)
 }
 
 fn try_parse_subject_restriction_clause(
@@ -692,6 +692,23 @@ pub(super) fn parse_subject_application(
         let original_rest = &subject[consumed..];
         let (filter, rem) = parse_type_phrase(original_rest);
         if rem.trim().is_empty() && !matches!(filter, TargetFilter::Any) {
+            // CR 603.7c + CR 608.2c: Inside a trigger effect, "that [type]" is an
+            // anaphoric back-reference to the triggering event's subject object (the
+            // land that was tapped, the creature that was blocked, etc.) — NOT a
+            // broadcast over all matching permanents. Set `target: TriggeringSource`
+            // so the resolver (extract_event_context_filter in effects/mod.rs) binds
+            // the transient effect to the specific triggering object via SpecificObject.
+            // Outside triggers, fall back to the type filter (anaphor resolves via
+            // `inherits_parent` + ParentTarget at the call site).
+            if ctx.subject.is_some() {
+                return Some(SubjectApplication {
+                    affected: filter,
+                    target: Some(TargetFilter::TriggeringSource),
+                    multi_target: None,
+                    inherits_parent: true,
+                    is_optional: false,
+                });
+            }
             return Some(SubjectApplication {
                 affected: filter,
                 target: None,
@@ -828,30 +845,48 @@ fn merge_partial_type_phrase_filter(filter: TargetFilter, remainder: &str) -> Ta
 }
 
 /// Build a Pump or PumpAll effect from a subject application and P/T values.
+///
+/// CR 608.2c: Single-object subject references (`SelfRef`, `TriggeringSource`,
+/// `AttachedTo`, `ParentTarget`) identify one specific permanent and must
+/// lower to `Effect::Pump`. Only class filters (e.g., `Typed { Creature, You }`)
+/// that match multiple permanents lower to `Effect::PumpAll`.
 fn build_pump_effect(
     application: &SubjectApplication,
     power: PtValue,
     toughness: PtValue,
 ) -> Effect {
     if let Some(target) = application.target.clone() {
-        Effect::Pump {
+        return Effect::Pump {
             power,
             toughness,
             target,
-        }
-    } else if application.affected == TargetFilter::SelfRef {
-        Effect::Pump {
-            power,
-            toughness,
-            target: TargetFilter::SelfRef,
-        }
-    } else {
-        Effect::PumpAll {
+        };
+    }
+    if is_single_object_ref(&application.affected) {
+        return Effect::Pump {
             power,
             toughness,
             target: application.affected.clone(),
-        }
+        };
     }
+    Effect::PumpAll {
+        power,
+        toughness,
+        target: application.affected.clone(),
+    }
+}
+
+/// Returns `true` when a `TargetFilter` refers to exactly one object at
+/// resolution time (not a class filter). Used by `build_pump_effect` and other
+/// builders that must distinguish single-target from class-targeting effects.
+pub(super) fn is_single_object_ref(filter: &TargetFilter) -> bool {
+    matches!(
+        filter,
+        TargetFilter::SelfRef
+            | TargetFilter::TriggeringSource
+            | TargetFilter::AttachedTo
+            | TargetFilter::ParentTarget
+    )
 }
 
 /// Split compound predicates like "get +1/+1 until end of turn and you gain 1 life"
@@ -1011,6 +1046,7 @@ fn strip_for_each_for_duration(text: &str) -> &str {
 fn build_become_clause(
     application: SubjectApplication,
     predicate: &str,
+    ctx: &ParseContext,
 ) -> Option<ParsedEffectClause> {
     let normalized = deconjugate_verb(predicate);
     let (predicate, duration) = super::strip_trailing_duration(&normalized);
@@ -1080,19 +1116,43 @@ fn build_become_clause(
 
     // CR 707.2 / CR 613.1a: "become a copy of [target]" — copy copiable characteristics.
     // Must intercept before parse_animation_spec which rejects "copy of" patterns.
-    const COPY_PREFIX: &str = "a copy of ";
-    if let Some(copy_target_text) = become_text
-        .get(..COPY_PREFIX.len())
-        .filter(|s| s.eq_ignore_ascii_case(COPY_PREFIX))
-        .map(|_| &become_text[COPY_PREFIX.len()..])
+    //
+    // Mirrors `parse_clone_replacement` in `oracle_replacement.rs` but for the
+    // triggered / spell-effect form. Both paths produce `Effect::BecomeCopy`
+    // with the same `additional_modifications` shape; the only grammatical
+    // difference is the trigger frame ("Irma becomes a copy of …") vs the
+    // replacement frame ("you may have ~ enter as a copy of …"). The shared
+    // `, except <body>` clause parser (CR 707.9) lives in the
+    // `become_copy_except` module so the trigger and replacement paths
+    // contribute to the same building block.
+    if let Ok((after_copy, _)) =
+        tag::<_, _, VerboseError<&str>>("a copy of ").parse(become_lower.as_str())
     {
-        let (target, _) = parse_target(copy_target_text);
+        // `parse_target` lower-cases internally; pass it the lowercase tail so
+        // its returned remainder is also lowercase (we'll feed that to
+        // `parse_except_clause` whose tags are lowercase).
+        let (target, remainder) = parse_target(after_copy);
+        // CR 707.9: optional `, except <body> [and <body>]*`. The card name
+        // for any SetName override comes from the parse context (set by
+        // `parse_oracle_text`). When `ctx.card_name` is `None` or empty
+        // (e.g. a test calling the chain parser without threading a card
+        // name), the body parser's `parse_name_override` arm declines —
+        // emitting `SetName { name: "" }` would silently set `obj.name = ""`
+        // at Layer 1, strictly worse than dropping the override entirely.
+        let card_name = ctx.card_name.as_deref().unwrap_or("");
+        let except_ctx = super::become_copy_except::ExceptClauseContext {
+            current_trigger_index: ctx.current_trigger_index,
+        };
+        let additional_modifications =
+            super::become_copy_except::parse_except_clause(remainder, card_name, except_ctx)
+                .map(|(_, mods)| mods)
+                .unwrap_or_default();
         return Some(ParsedEffectClause {
             effect: Effect::BecomeCopy {
                 target,
                 duration: duration.clone(),
                 mana_value_limit: None,
-                additional_modifications: Vec::new(),
+                additional_modifications,
             },
             duration,
             sub_ability: None,
@@ -1631,6 +1691,16 @@ pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
             value((), tag("that ")),
             value((), tag("the chosen ")),
             value((), tag("the player ")),
+            // CR 609.7 + CR 615.5: "the source's controller" / "the source's
+            // owner" as a subject in a damage-prevention follow-up (Swans of
+            // Bryn Argoll, Eye for an Eye class). The "that source's …" form
+            // is already covered by the bare `tag("that ")` arm above.
+            // `parse_subject_application` recognizes the full phrase via the
+            // generic "[the|that] <noun>'s controller" path and emits
+            // `TargetFilter::ParentTargetController`; the prevention call site
+            // then rewrites that to `PostReplacementSourceController`.
+            value((), tag("the source's controller ")),
+            value((), tag("the source's owner ")),
             value((), tag("they ")),
             value((), tag("this ")),
             value((), tag("those ")),

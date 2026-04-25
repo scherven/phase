@@ -305,8 +305,7 @@ mod tests {
     ) -> ObjectId {
         let oid = add_instant(state, card_idx, mv);
         let obj = state.objects.get_mut(&oid).unwrap();
-        obj.abilities
-            .push(AbilityDefinition::new(AbilityKind::Spell, effect));
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(AbilityKind::Spell, effect));
         oid
     }
 
@@ -391,6 +390,7 @@ mod tests {
             1,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         );
         let (context, config) = make_context(0.8);
@@ -425,12 +425,13 @@ mod tests {
         let dummy_ability = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
             Vec::new(),
             ObjectId(999),
             AI,
         );
-        state.stack.push(StackEntry {
+        state.stack.push_back(StackEntry {
             id: ObjectId(9000),
             source_id: ObjectId(999),
             controller: AI,
@@ -496,7 +497,7 @@ mod tests {
             subtypes: Vec::new(),
         };
         obj.mana_cost = ManaCost::generic(5); // not low-curve
-        obj.abilities.push(AbilityDefinition::new(
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::CopySpell {
                 target: TargetFilter::Any,

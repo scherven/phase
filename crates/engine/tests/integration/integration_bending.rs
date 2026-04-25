@@ -15,6 +15,7 @@ use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -305,7 +306,7 @@ fn test_mana_payment_finalization() {
     runner
         .state_mut()
         .stack
-        .push(engine::types::game_state::StackEntry {
+        .push_back(engine::types::game_state::StackEntry {
             id: spell_id,
             source_id: spell_id,
             controller: P0,
@@ -354,6 +355,7 @@ fn test_mana_payment_cancel_clears_pending_cast() {
     let ability = ResolvedAbility::new(
         Effect::Draw {
             count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
         },
         vec![],
         spell_id,
@@ -950,6 +952,7 @@ fn test_search_changezone_shuffle_continuation_completes() {
             count: QuantityExpr::Fixed { value: 1 },
             reveal: false,
             target_player: None,
+            up_to: false,
         },
         sub_ability: Some(Box::new(change_zone_ability)),
         ..ResolvedAbility::new(
@@ -964,6 +967,7 @@ fn test_search_changezone_shuffle_continuation_completes() {
                 count: QuantityExpr::Fixed { value: 1 },
                 reveal: false,
                 target_player: None,
+                up_to: false,
             },
             vec![],
             source_id,
@@ -1175,7 +1179,7 @@ fn test_earthbender_ascension_etb_completes_with_landfall() {
             )
             .execute(landfall_execute);
         obj.trigger_definitions.push(landfall_trigger.clone());
-        obj.base_trigger_definitions.push(landfall_trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(landfall_trigger);
     }
 
     // Sazh's Chocobo — another Landfall trigger on the board
@@ -1216,7 +1220,7 @@ fn test_earthbender_ascension_etb_completes_with_landfall() {
                 },
             ));
         obj.trigger_definitions.push(chocobo_trigger.clone());
-        obj.base_trigger_definitions.push(chocobo_trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(chocobo_trigger);
     }
 
     // Build the ETB chain: Animate(earthbend) → SearchLibrary → ChangeZone → Shuffle
@@ -1272,6 +1276,7 @@ fn test_earthbender_ascension_etb_completes_with_landfall() {
             count: QuantityExpr::Fixed { value: 1 },
             reveal: false,
             target_player: None,
+            up_to: false,
         },
         sub_ability: Some(Box::new(change_zone_ability)),
         ..ResolvedAbility::new(
@@ -1286,6 +1291,7 @@ fn test_earthbender_ascension_etb_completes_with_landfall() {
                 count: QuantityExpr::Fixed { value: 1 },
                 reveal: false,
                 target_player: None,
+                up_to: false,
             },
             vec![],
             enchantment_id,
@@ -1529,7 +1535,7 @@ fn test_earthbender_landfall_trigger_resolves_without_hang() {
             )
             .execute(landfall_execute);
         obj.trigger_definitions.push(landfall_trigger.clone());
-        obj.base_trigger_definitions.push(landfall_trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(landfall_trigger);
     }
 
     // A land in hand to play
@@ -1734,7 +1740,7 @@ fn test_ai_passes_priority_on_earthbender_landfall() {
             )
             .execute(landfall_execute);
         obj.trigger_definitions.push(landfall_trigger.clone());
-        obj.base_trigger_definitions.push(landfall_trigger);
+        Arc::make_mut(&mut obj.base_trigger_definitions).push(landfall_trigger);
     }
 
     let land_id = create_object(&mut state, CardId(10), P0, "Forest".to_string(), Zone::Hand);
@@ -1857,7 +1863,7 @@ fn install_shock_land(state: &mut GameState, card_id: CardId, zone: Zone, name: 
     obj.base_card_types = obj.card_types.clone();
     let repl = shock_land_replacement();
     obj.replacement_definitions.push(repl.clone());
-    obj.base_replacement_definitions.push(repl);
+    Arc::make_mut(&mut obj.base_replacement_definitions).push(repl);
     land_id
 }
 

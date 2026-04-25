@@ -189,6 +189,7 @@ mod tests {
             AbilityKind::Activated,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         );
         ability.cost = Some(AbilityCost::Composite {
@@ -306,11 +307,7 @@ mod tests {
             "Goblin Bombardment".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&outlet_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&outlet_id).unwrap().abilities)
             .push(make_free_outlet_ability());
         // Add death-trigger payoff to battlefield.
         let _payoff = create_object(
@@ -362,11 +359,7 @@ mod tests {
             "Goblin Bombardment".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&outlet_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&outlet_id).unwrap().abilities)
             .push(make_free_outlet_ability());
 
         let candidate = activate_candidate(outlet_id, 0);
@@ -408,11 +401,7 @@ mod tests {
             "Costly Outlet".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&outlet_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&outlet_id).unwrap().abilities)
             .push(make_mana_outlet_ability());
 
         let candidate = activate_candidate(outlet_id, 0);
@@ -453,11 +442,7 @@ mod tests {
             "Forest".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&land_id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&land_id).unwrap().abilities)
             .push(make_mana_tap_ability());
 
         let candidate = activate_candidate(land_id, 0);

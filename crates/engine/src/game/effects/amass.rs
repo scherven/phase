@@ -104,7 +104,10 @@ fn create_army_token(
         obj.base_card_types = obj.card_types.clone();
         obj.color = vec![ManaColor::Black];
         obj.base_color = vec![ManaColor::Black];
-        obj.entered_battlefield_turn = Some(state.turn_number);
+        // CR 400.7 + CR 302.6: Single authority for ETB state — sets
+        // `entered_battlefield_turn`, `summoning_sick`, and clears transient
+        // fields (tapped, damage_marked, etc.) in one place.
+        obj.reset_for_battlefield_entry(state.turn_number);
     }
 
     obj_id

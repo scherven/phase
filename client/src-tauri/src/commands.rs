@@ -1,12 +1,14 @@
 use std::sync::Mutex;
 
-use engine::ai_support::legal_actions;
-use engine::game::combat::has_summoning_sickness;
-use engine::game::coverage::unimplemented_mechanics;
+use engine::ai_support::{auto_pass_recommended, legal_actions_full};
+use engine::database::CardDatabase;
+use engine::types::identifiers::ObjectId;
+use engine::types::mana::ManaCost;
+use std::collections::HashMap;
+use serde::Serialize;
+use engine::game::derived::derive_display_state;
 use engine::game::engine::apply;
-use engine::game::static_abilities::{check_static_ability, StaticCheckContext};
-use engine::types::statics::StaticMode;
-use engine::game::{load_deck_into_state, start_game, DeckPayload};
+use engine::game::{load_and_hydrate_decks, start_game, DeckPayload};
 use engine::types::game_state::ActionResult;
 use engine::types::match_config::MatchConfig;
 use engine::types::player::PlayerId;
@@ -17,6 +19,12 @@ use phase_ai::config::{create_config_for_players, AiDifficulty, Platform};
 
 pub struct AppState {
     pub game: Mutex<Option<GameState>>,
+    /// Loaded by the frontend at adapter init via `load_card_database`.
+    /// Needed by `initialize_game` so `load_and_hydrate_decks` can populate
+    /// `back_face` on dual-faced cards (Adventure, Omen, MDFC, Transform,
+    /// Meld, Prepare). Without it, dual-faced-card behavior silently no-ops
+    /// on desktop. Mirrors `CARD_DB` in the WASM bridge.
+    pub card_db: Mutex<Option<CardDatabase>>,
 }
 
 #[tauri::command]
@@ -31,13 +39,37 @@ pub fn initialize_game(
     game.match_config = match_config.unwrap_or_default();
 
     if let Some(payload) = deck_data {
-        load_deck_into_state(&mut game, &payload);
+        // Canonical init sequence shared with WASM + server-core transports.
+        // Passes the CardDatabase so `load_and_hydrate_decks` can populate
+        // `back_face` on dual-faced cards (Adventure, Omen, MDFC, Transform,
+        // Meld, Prepare). Frontend loads the DB once at adapter startup via
+        // `load_card_database` — if that hasn't happened yet, `db` is None
+        // and `load_and_hydrate_decks` logs a once-per-process warn.
+        let db_guard = state.card_db.lock().map_err(|e| e.to_string())?;
+        load_and_hydrate_decks(&mut game, &payload, db_guard.as_ref());
     }
 
     let result = start_game(&mut game);
     *state.game.lock().map_err(|e| e.to_string())? = Some(game);
 
     Ok(result)
+}
+
+/// Parse `card-data.json` contents into a `CardDatabase` and stash it on
+/// `AppState`. Frontend calls this once at adapter init so `initialize_game`
+/// can rehydrate dual-faced cards. Returns the number of faces loaded so
+/// the frontend can sanity-check the parse. Mirrors the WASM bridge's
+/// `load_card_database`.
+#[tauri::command]
+pub fn load_card_database(
+    state: tauri::State<AppState>,
+    json_str: String,
+) -> Result<u32, String> {
+    let db = CardDatabase::from_json_str(&json_str)
+        .map_err(|e| format!("Failed to parse card database: {e}"))?;
+    let count = db.card_count() as u32;
+    *state.card_db.lock().map_err(|e| e.to_string())? = Some(db);
+    Ok(count)
 }
 
 #[tauri::command]
@@ -62,47 +94,63 @@ pub fn submit_action(
 }
 
 #[tauri::command]
-pub fn get_game_state(state: tauri::State<AppState>) -> Result<GameState, String> {
+pub fn get_game_state(
+    state: tauri::State<AppState>,
+) -> Result<engine::game::derived_views::ClientGameState, String> {
     let mut guard = state.game.lock().map_err(|e| e.to_string())?;
     let game = guard.as_mut().ok_or("Game not initialized")?;
 
-    // Compute derived fields (same as WASM bridge)
-    let turn = game.turn_number;
-    for obj in game.objects.values_mut() {
-        obj.unimplemented_mechanics = unimplemented_mechanics(obj);
-        obj.has_summoning_sickness = has_summoning_sickness(obj, turn);
-    }
+    // Populate display-only derived fields (unimplemented_mechanics,
+    // has_summoning_sickness, devotion, commander_tax, per-player
+    // can_look_at_top_of_library). Canonical implementation shared with
+    // the WASM bridge — see `engine::game::derived::derive_display_state`.
+    // Inline re-implementation was the source of CR-drift after the
+    // `has_summoning_sickness` signature change; one authority avoids it.
+    derive_display_state(game);
 
-    let peek_flags: Vec<bool> = game
-        .players
-        .iter()
-        .map(|p| {
-            let ctx = StaticCheckContext {
-                player_id: Some(p.id),
-                ..Default::default()
-            };
-            check_static_ability(game, StaticMode::MayLookAtTopOfLibrary, &ctx)
-        })
-        .collect();
-    for (i, flag) in peek_flags.into_iter().enumerate() {
-        game.players[i].can_look_at_top_of_library = flag;
-    }
+    // Return the wire envelope `{ state, derived }` — same shape produced
+    // by the engine-wasm getter, so the frontend adapter unwraps identically
+    // regardless of platform.
+    let derived = engine::game::derived_views::derive_views(game);
+    Ok(engine::game::derived_views::ClientGameState {
+        state: game.clone(),
+        derived,
+    })
+}
 
-    Ok(game.clone())
+/// Mirror of the `LegalActionsResult` shape exposed by `engine-wasm`. Keeps
+/// the Tauri desktop adapter aligned with the browser/WASM path so the
+/// frontend's `collectObjectActions(legalActionsByObject, objectId)` lookup
+/// works identically on both transports.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegalActionsPayload {
+    actions: Vec<GameAction>,
+    auto_pass_recommended: bool,
+    spell_costs: HashMap<ObjectId, ManaCost>,
+    legal_actions_by_object: HashMap<ObjectId, Vec<GameAction>>,
 }
 
 #[tauri::command]
-pub fn get_legal_actions(state: tauri::State<AppState>) -> Result<Vec<GameAction>, String> {
+pub fn get_legal_actions(state: tauri::State<AppState>) -> Result<LegalActionsPayload, String> {
     let guard = state.game.lock().map_err(|e| e.to_string())?;
     let game = guard.as_ref().ok_or("Game not initialized")?;
 
-    Ok(legal_actions(game))
+    let (actions, spell_costs, legal_actions_by_object) = legal_actions_full(game);
+    let auto_pass_recommended = auto_pass_recommended(game, &actions);
+    Ok(LegalActionsPayload {
+        actions,
+        auto_pass_recommended,
+        spell_costs,
+        legal_actions_by_object,
+    })
 }
 
 #[tauri::command]
 pub fn get_ai_action(
     state: tauri::State<AppState>,
     difficulty: String,
+    player_id: u8,
 ) -> Result<Option<GameAction>, String> {
     let guard = state.game.lock().map_err(|e| e.to_string())?;
     let game = guard.as_ref().ok_or("Game not initialized")?;
@@ -120,7 +168,7 @@ pub fn get_ai_action(
         create_config_for_players(ai_difficulty, Platform::Native, game.players.len() as u8);
     let mut rng = rand::rng();
 
-    Ok(choose_action(game, PlayerId(1), &config, &mut rng))
+    Ok(choose_action(game, PlayerId(player_id), &config, &mut rng))
 }
 
 #[tauri::command]

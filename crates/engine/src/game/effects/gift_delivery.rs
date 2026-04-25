@@ -159,14 +159,29 @@ fn create_gift_token(
         obj.base_card_types = card_type;
     }
 
-    // Set entered_battlefield_turn for summoning sickness (relevant for creature tokens).
+    // CR 400.7 + CR 302.6 + CR 603.6a: Single authority for ETB state.
     if let Some(obj) = state.objects.get_mut(&obj_id) {
-        obj.entered_battlefield_turn = Some(state.turn_number);
+        obj.reset_for_battlefield_entry(state.turn_number);
     }
 
     state.layers_dirty = true;
     crate::game::restrictions::record_battlefield_entry(state, obj_id);
     crate::game::restrictions::record_token_created(state, obj_id);
+
+    // CR 111.1 + CR 603.6a: Token creation is a zone change from outside the
+    // game — emit `ZoneChanged { from: None }` so ETB triggers (Soul Warden,
+    // Panharmonicon, etc.) fire for gift tokens through the normal code path.
+    let zone_change_record = state
+        .objects
+        .get(&obj_id)
+        .expect("token just created")
+        .snapshot_for_zone_change(obj_id, None, Zone::Battlefield);
+    events.push(GameEvent::ZoneChanged {
+        object_id: obj_id,
+        from: None,
+        to: Zone::Battlefield,
+        record: Box::new(zone_change_record),
+    });
 
     events.push(GameEvent::TokenCreated {
         object_id: obj_id,

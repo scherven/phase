@@ -130,6 +130,8 @@ impl MulliganPolicy for AggroKeepablesMulligan {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::features::aggro_pressure::AggroPressureFeature;
     use crate::features::DeckFeatures;
@@ -231,7 +233,7 @@ mod tests {
                     subtypes: Vec::new(),
                 };
                 obj.mana_cost = ManaCost::generic(1);
-                obj.abilities.push(ability);
+                Arc::make_mut(&mut obj.abilities).push(ability);
                 oid
             }
             Card::ExpensiveCreature => {

@@ -4,7 +4,7 @@ use crate::game::deck_loading::DeckEntry;
 use crate::types::card::CardFace;
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
-use crate::types::format::GameFormat;
+use crate::types::format::SideboardPolicy;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::keywords::{CompanionCondition, Keyword};
 use crate::types::mana::ManaCostShard;
@@ -192,10 +192,14 @@ pub fn find_eligible_companions(
 /// CR 702.139a: Check if a player has eligible companions from their sideboard.
 /// Returns CompanionReveal WaitingFor if eligible companions exist, otherwise None.
 pub fn check_companion_reveal(state: &GameState, player: PlayerId) -> Option<WaitingFor> {
-    // CR 702.139: Commander and Brawl formats have no sideboard — companions not applicable.
+    // CR 702.139a: Companions are revealed from the sideboard. Formats with no
+    // sideboard (Commander, Duel Commander, Pauper Commander, Brawl, Historic
+    // Brawl) categorically cannot use companions. Rather than enumerate the
+    // format list here — which has drifted in the past as commander variants
+    // were added — defer to the engine's single authority for sideboard rules.
     if matches!(
-        state.format_config.format,
-        GameFormat::Commander | GameFormat::Brawl | GameFormat::HistoricBrawl
+        state.format_config.format.sideboard_policy(),
+        SideboardPolicy::Forbidden
     ) {
         return None;
     }
@@ -255,10 +259,13 @@ pub fn handle_declare_companion(
             if *sb_idx < pool.current_sideboard.len() {
                 // Remove the companion from the sideboard
                 let card_entry = pool.current_sideboard[*sb_idx].clone();
-                if pool.current_sideboard[*sb_idx].count > 1 {
-                    pool.current_sideboard[*sb_idx].count -= 1;
+                // CR 702.139: Companion promotion mutates the sideboard; first
+                // mutation of the shared Arc triggers copy-on-write via make_mut.
+                let sideboard = std::sync::Arc::make_mut(&mut pool.current_sideboard);
+                if sideboard[*sb_idx].count > 1 {
+                    sideboard[*sb_idx].count -= 1;
                 } else {
-                    pool.current_sideboard.remove(*sb_idx);
+                    sideboard.remove(*sb_idx);
                 }
 
                 // Set companion on the player

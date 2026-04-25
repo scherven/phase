@@ -94,6 +94,8 @@ fn has_worthy_removal_target(ctx: &PolicyContext<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -147,7 +149,7 @@ mod tests {
         if let Some(ref sub) = sub_effect {
             abilities.push(AbilityDefinition::new(AbilityKind::Spell, sub.clone()));
         }
-        state.objects.get_mut(&spell_id).unwrap().abilities = abilities;
+        state.objects.get_mut(&spell_id).unwrap().abilities = Arc::new(abilities);
 
         let decision = AiDecisionContext {
             waiting_for: WaitingFor::Priority {

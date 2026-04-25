@@ -221,6 +221,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 1 },
                 reveal: false,
                 target_player: None,
+                up_to: false,
             },
         );
         ability.cost = Some(AbilityCost::Composite {
@@ -314,11 +315,7 @@ mod tests {
 
     fn add_fetch_to_battlefield(state: &mut GameState, name: &str, card_id: CardId) -> ObjectId {
         let id = create_object(state, card_id, AI, name.to_string(), Zone::Battlefield);
-        state
-            .objects
-            .get_mut(&id)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&id).unwrap().abilities)
             .push(make_fetch_ability());
         id
     }
@@ -399,11 +396,7 @@ mod tests {
             "Forest".to_string(),
             Zone::Battlefield,
         );
-        state
-            .objects
-            .get_mut(&land)
-            .unwrap()
-            .abilities
+        Arc::make_mut(&mut state.objects.get_mut(&land).unwrap().abilities)
             .push(make_mana_ability());
         let candidate = activate_candidate(land, 0);
         let decision = decision();

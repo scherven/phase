@@ -117,6 +117,8 @@ impl MulliganPolicy for RampKeepablesMulligan {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use engine::game::zones::create_object;
     use engine::types::ability::{
@@ -176,6 +178,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 1 },
                 reveal: false,
                 target_player: None,
+                up_to: false,
             },
         );
         ability.sub_ability = Some(Box::new(AbilityDefinition::new(
@@ -202,6 +205,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: engine::types::ability::TargetFilter::Controller,
             },
         )
     }
@@ -241,7 +245,7 @@ mod tests {
         };
         obj.mana_cost = ManaCost::NoCost;
         if let Some(a) = ability {
-            obj.abilities.push(a);
+            Arc::make_mut(&mut obj.abilities).push(a);
         }
         oid
     }

@@ -127,6 +127,8 @@ fn upsert_keyword(keywords: &mut Vec<Keyword>, keyword: Keyword) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -283,21 +285,23 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         let card_id = create_card(&mut state, PlayerId(0), "Viral Spawning", Zone::Graveyard);
 
-        state
-            .objects
-            .get_mut(&card_id)
-            .unwrap()
-            .base_static_definitions
-            .push(
-                StaticDefinition::continuous()
-                    .affected(TargetFilter::SelfRef)
-                    .modifications(vec![ContinuousModification::AddKeyword {
-                        keyword: Keyword::Flashback(FlashbackCost::Mana(ManaCost::Cost {
-                            generic: 2,
-                            shards: vec![ManaCostShard::Green],
-                        })),
-                    }]),
-            );
+        Arc::make_mut(
+            &mut state
+                .objects
+                .get_mut(&card_id)
+                .unwrap()
+                .base_static_definitions,
+        )
+        .push(
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .modifications(vec![ContinuousModification::AddKeyword {
+                    keyword: Keyword::Flashback(FlashbackCost::Mana(ManaCost::Cost {
+                        generic: 2,
+                        shards: vec![ManaCostShard::Green],
+                    })),
+                }]),
+        );
         let base_static_definitions = state
             .objects
             .get(&card_id)
@@ -305,7 +309,7 @@ mod tests {
             .base_static_definitions
             .clone();
         state.objects.get_mut(&card_id).unwrap().static_definitions =
-            base_static_definitions.into();
+            (*base_static_definitions).clone().into();
 
         assert_eq!(
             effective_off_zone_keyword(&state, card_id, KeywordKind::Flashback),
@@ -416,7 +420,7 @@ mod tests {
             .objects
             .get_mut(&card_id)
             .unwrap()
-            .base_static_definitions = vec![static_def];
+            .base_static_definitions = Arc::new(vec![static_def]);
         state
             .objects
             .get_mut(&card_id)

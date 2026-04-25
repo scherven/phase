@@ -1,5 +1,6 @@
 #![allow(unused_imports)]
 use super::*;
+use std::sync::Arc;
 
 use engine::types::ability::{Effect, TargetFilter, TargetRef, TypedFilter};
 use engine::types::game_state::StackEntryKind;
@@ -128,14 +129,13 @@ fn no_legal_targets_prevents_casting() {
         obj.card_types
             .core_types
             .push(engine::types::card_type::CoreType::Instant);
-        obj.abilities
-            .push(engine::types::ability::AbilityDefinition::new(
-                engine::types::ability::AbilityKind::Spell,
-                Effect::Destroy {
-                    target: TargetFilter::Typed(TypedFilter::creature()),
-                    cant_regenerate: false,
-                },
-            ));
+        Arc::make_mut(&mut obj.abilities).push(engine::types::ability::AbilityDefinition::new(
+            engine::types::ability::AbilityKind::Spell,
+            Effect::Destroy {
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                cant_regenerate: false,
+            },
+        ));
     }
 
     // Try to cast with no creatures on the battlefield
