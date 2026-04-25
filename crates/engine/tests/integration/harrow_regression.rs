@@ -1,4 +1,4 @@
-//! CR 117.9 / CR 601.2b regression guard for Harrow's "sacrifice a land"
+//! CR 601.2h / CR 601.2b regression guard for Harrow's "sacrifice a land"
 //! additional cost. Two assertions:
 //!
 //! 1. **Parser-level** — the full Oracle Additional-Cost line parses to
@@ -58,13 +58,14 @@ fn harrow_additional_cost_parses_required_sacrifice_land_cr_601_2f() {
     );
 }
 
-/// CR 117.9 + CR 601.2b: A required additional cost whose choice-of-object
-/// is unavailable makes the spell uncastable. The legality gate is
-/// `AbilityCost::is_payable` in `game/cost_payability.rs:58` — the same
-/// predicate `casting_costs::check_additional_cost_or_pay_with_distribute`
+/// CR 601.2h + CR 601.2b: A required additional cost whose choice-of-object
+/// is unavailable makes the spell uncastable ("Unpayable costs can't be paid",
+/// CR 601.2h, verified via `grep '^601.2h' docs/MagicCompRules.txt`). The
+/// legality gate is `AbilityCost::is_payable` in `game/cost_payability.rs:58`
+/// — the same predicate `casting_costs::check_additional_cost_or_pay_with_distribute`
 /// calls at line 640.
 #[test]
-fn harrow_sacrifice_land_unpayable_with_no_lands_cr_117_9() {
+fn harrow_sacrifice_land_unpayable_with_no_lands_cr_601_2h() {
     let state = GameState::new_two_player(42);
     let dummy_source = ObjectId(0);
 
@@ -74,11 +75,11 @@ fn harrow_sacrifice_land_unpayable_with_no_lands_cr_117_9() {
     );
 }
 
-/// CR 117.9 + CR 601.2b: Same predicate accepts when at least one matching
+/// CR 601.2h + CR 601.2b: Same predicate accepts when at least one matching
 /// permanent exists. Together with the negative case above, this proves the
 /// engine — not AI/FE — owns the cast-legality decision.
 #[test]
-fn harrow_sacrifice_land_payable_with_a_forest_cr_117_9() {
+fn harrow_sacrifice_land_payable_with_a_forest_cr_601_2h() {
     let mut state = GameState::new_two_player(42);
 
     let forest = create_object(

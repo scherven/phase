@@ -2439,8 +2439,10 @@ fn parse_token_replacement_shape(lower: &str) -> Option<TokenReplacementShape> {
 /// CR 614.1a + CR 111.1: Parse Xorn-class subtype-gated additional-token
 /// replacements. Matches the shape:
 ///
-///     "If you would create one or more <subtype> tokens, instead create
-///      those tokens plus an additional <subtype> token."
+/// ```text
+/// "If you would create one or more <subtype> tokens, instead create
+///  those tokens plus an additional <subtype> token."
+/// ```
 ///
 /// Differs from `parse_token_replacement` (Chatterfang) in two ways:
 /// (1) the original event already creates tokens of the listed subtype, so a
@@ -2544,8 +2546,10 @@ fn canonicalize_subtype(s: &str) -> String {
 /// CR 614.1a + CR 111.1: Parse Manufactor-class ensure-all token replacements.
 /// Matches the shape:
 ///
-///     "If you would create a <S1>, <S2>, or <S3> token, instead create
-///      one of each."
+/// ```text
+/// "If you would create a <S1>, <S2>, or <S3> token, instead create
+///  one of each."
+/// ```
 ///
 /// (or any 2+ subtype list with `, or ` before the final entry). Returns a
 /// `ReplacementDefinition` whose:
@@ -2606,8 +2610,10 @@ fn parse_manufactor_ensure_all_token_replacement(
 /// Split a Manufactor-style subtype list ("clue, food, or treasure") into
 /// individual entries via nom combinators. Grammar:
 ///
-///     list  := entry ( ", " ( "or " )? entry )+
-///     entry := word
+/// ```text
+/// list  := entry ( ", " ( "or " )? entry )+
+/// entry := word
+/// ```
 ///
 /// The entry parser optionally consumes a leading "or " so the Oxford form
 /// ("a, b, or c") and the simple form ("a, b") share one rule. Single-word
@@ -5607,9 +5613,12 @@ mod tests {
         assert!(def.additional_token_spec.is_none());
     }
 
-    /// CR 614.1a + CR 111.1 + CR 111.10p: Xorn's full Oracle text parses to a
+    /// CR 614.1a + CR 111.1 + CR 111.10a: Xorn's full Oracle text parses to a
     /// CreateToken replacement with a `TokenSubtypeMatches { ["Treasure"] }`
     /// gate and an `additional_token_spec` carrying the Treasure spec.
+    /// (CR 111.10a defines the Treasure token, verified via
+    /// `grep '^111.10a' docs/MagicCompRules.txt` — earlier "111.10p" was wrong;
+    /// 111.10p is the Virtuous Role token.)
     #[test]
     fn parses_xorn_additional_treasure_token_replacement_cr_614_1a() {
         let text = "If you would create one or more Treasure tokens, instead create those tokens plus an additional Treasure token.";

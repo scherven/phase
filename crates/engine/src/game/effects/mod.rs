@@ -2164,13 +2164,16 @@ mod tests {
         );
     }
 
-    /// CR 609.3 + CR 608.2c building-block regression: a synchronous chain of
+    /// CR 608.2c building-block regression: a synchronous chain of
     /// `ChangeZoneAll(Battlefield → Hand)` followed by
     /// `Token { count: Ref(TrackedSetSize) }` produces one token per object
-    /// moved by the parent. Covers the "Return all <X> to their owners' hands.
-    /// If you do, create N Treasure tokens, where N is the number of permanents
-    /// returned this way" pattern (Item 1 of the design doc) at the
-    /// primitive level — the parser arm is deferred until a real card surfaces.
+    /// moved by the parent. CR 608.2c (verified via `grep '^608.2c'
+    /// docs/MagicCompRules.txt`) covers "instructions in the order written"
+    /// — the per-instruction-set basis for "this way" referencing. Covers the
+    /// "Return all <X> to their owners' hands. If you do, create N Treasure
+    /// tokens, where N is the number of permanents returned this way" pattern
+    /// (Item 1 of the design doc) at the primitive level — the parser arm is
+    /// deferred until a real card surfaces.
     ///
     /// Asserts both the K-object case and the K=0 case so the
     /// `chain_tracked_set_id` plumbing can be trusted by future callers.
