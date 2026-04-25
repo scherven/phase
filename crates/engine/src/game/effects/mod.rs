@@ -684,6 +684,11 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         | Effect::Discard { target, .. }
         | Effect::DiscardCard { target, .. }
         | Effect::Mill { target, .. }
+        // CR 121.1 + CR 603.7c: "they draw a card" off an opponent-subject
+        // trigger (Firemane Commando) carries `target: TriggeringPlayer`, which
+        // must auto-bind from the current trigger event so the drawing player
+        // is the acting opponent — not the trigger controller.
+        | Effect::Draw { target, .. }
         | Effect::Shuffle { target, .. }
         | Effect::GivePlayerCounter { target, .. }
         | Effect::LoseAllPlayerCounters { target, .. }

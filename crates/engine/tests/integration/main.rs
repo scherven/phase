@@ -5,6 +5,7 @@ mod elusive_otter_repro;
 #[cfg(feature = "proptest")]
 mod engine_invariants;
 mod export_runtime_canaries;
+mod exquisite_blood_routing;
 mod floodpits_drowner;
 mod gran_gran_integration;
 mod harrow_regression;
