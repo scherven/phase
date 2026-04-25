@@ -3,7 +3,7 @@ use std::str::FromStr;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::char;
-use nom::combinator::{opt, value};
+use nom::combinator::{opt, peek, value};
 use nom::sequence::preceded;
 use nom::Parser;
 use nom_language::error::VerboseError;
@@ -2494,7 +2494,9 @@ fn parse_xorn_subtype_token_replacement(
         ))
         .parse(i)?;
         let start_offset = total_len - i.len();
-        let needs_article = !i.starts_with("a ") && !i.starts_with("an ");
+        let (i, article) =
+            peek(opt(alt((tag::<_, _, VerboseError<&str>>("a "), tag("an "))))).parse(i)?;
+        let needs_article = article.is_none();
         let (i, descriptor) = alt((
             take_until::<_, _, VerboseError<&str>>("."),
             nom::combinator::rest,
