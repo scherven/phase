@@ -5711,6 +5711,13 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         let chunk_ctx = ParseContext {
             subject: ctx.subject.clone(),
             card_name: ctx.card_name.clone(),
+            // CR 707.9a + CR 603.1: propagate the trigger index from the parent
+            // ctx — `current_trigger_index` is a property of the whole trigger
+            // body, not of an individual chunk, so all chunks inside a trigger
+            // share the same index for the BecomeCopy except-clause parser to
+            // reference via `RetainPrintedTriggerFromSource`. Actor, by contrast,
+            // is per-chunk (re-derived from each chunk's stripped prefix above).
+            current_trigger_index: ctx.current_trigger_index,
             actor: chunk_actor,
         };
         let ctx = &chunk_ctx;

@@ -464,6 +464,7 @@ pub(crate) fn parse_trigger_line_with_index(
         subject: Some(trigger_subject),
         card_name: Some(card_name.to_string()),
         current_trigger_index,
+        ..Default::default()
     };
 
     // CR 109.4 + CR 115.1 + CR 506.2: When the trigger condition introduces a
