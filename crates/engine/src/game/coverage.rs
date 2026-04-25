@@ -330,6 +330,8 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::Suspected => parts.push("suspected".into()),
             // CR 700.9
             FilterProp::Modified => parts.push("modified".into()),
+            // CR 700.6
+            FilterProp::Historic => parts.push("historic".into()),
             FilterProp::ToughnessGTPower => parts.push("toughness > power".into()),
             FilterProp::DifferentNameFrom { .. } => parts.push("different name".into()),
             FilterProp::Other { value } => parts.push(value.clone()),

@@ -331,8 +331,10 @@ fn condition_introduces_target_player(cond_lower: &str) -> bool {
         .parse(input)
     }
 
-    /// CR 119.1 + CR 109.4: "deals [combat] damage to a player" also introduces
-    /// a player target, so "that player controls" in the effect refers to it
+    /// CR 120.3: "deals [combat] damage to a player" — damage dealt to a player
+    /// causes that player to lose life (CR 120.3a) and introduces the damaged
+    /// player as the target-referring player, so "that player controls" in the
+    /// effect refers to it
     /// (Dokuchi Silencer's "destroy target creature or planeswalker that player
     /// controls"). Mirrors `parse_attack_verb` — both verbs produce the same
     /// downstream scope.
@@ -363,7 +365,7 @@ fn condition_introduces_target_player(cond_lower: &str) -> bool {
                 }
             }
         }
-        // CR 119.1: "[anything] deals [combat] damage to a player" — introduces
+        // CR 120.3: "[anything] deals [combat] damage to a player" — introduces
         // the damaged player as the target-referring player. The subject can be
         // SelfRef ("~"), equipped creature ("equipped creature"), or any typed
         // subject, so match on the verb phrase alone.
@@ -2813,7 +2815,7 @@ fn try_parse_event(
         return Some((mode, def));
     }
 
-    // CR 120.1 + CR 603.2: "Whenever [subject] draws a card" — generic draw trigger
+    // CR 121.1 + CR 603.2: "Whenever [subject] draws a card" — generic draw trigger
     // (e.g. Rhystic Study, Sylvan Library patterns where subject is `a player`; Sheoldred's
     // first trigger where subject is `~`/you). Subject filter flows into `valid_target`
     // so `match_drawn` correctly scopes to the right player.
@@ -4228,7 +4230,7 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
     }
 
     if scan_contains(lower, "you draw a card") {
-        // CR 120.1 + CR 603.2: "Whenever you draw a card" — scope to the trigger's
+        // CR 121.1 + CR 603.2: "Whenever you draw a card" — scope to the trigger's
         // controller. Without this filter, `match_drawn` would fire for all players'
         // draws (Sheoldred's first trigger misfires on opponent draws).
         let mut def = make_base();
@@ -6078,6 +6080,55 @@ mod tests {
         assert_eq!(result, "Whenever ~ or another creature enters");
     }
 
+    /// CR 700.6: Arbaaz Mir's "Whenever ~ or another nontoken historic
+    /// permanent you control enters" must parse cleanly into a ChangesZone
+    /// trigger whose `valid_card` is an `Or { SelfRef, Typed[Permanent,
+    /// Non(Token), controller=You, [Historic, Another]] }`. Regression for
+    /// the previously-Unknown trigger phrase.
+    #[test]
+    fn trigger_self_or_another_nontoken_historic_permanent_arbaaz() {
+        use crate::types::ability::{FilterProp, TypeFilter};
+        let def = parse_trigger_line(
+            "Whenever Arbaaz Mir or another nontoken historic permanent you control enters, Arbaaz Mir deals 1 damage to each opponent and you gain 1 life.",
+            "Arbaaz Mir",
+        );
+        assert_eq!(def.mode, TriggerMode::ChangesZone);
+        assert_eq!(def.destination, Some(Zone::Battlefield));
+        let TargetFilter::Or { ref filters } = def.valid_card.as_ref().expect("valid_card present")
+        else {
+            panic!("Expected Or filter, got {:?}", def.valid_card);
+        };
+        assert_eq!(filters.len(), 2, "expected 2-leg Or, got {filters:#?}");
+        assert_eq!(filters[0], TargetFilter::SelfRef);
+        let TargetFilter::Typed(ref tf) = filters[1] else {
+            panic!("Expected Typed second leg, got {:?}", filters[1]);
+        };
+        assert_eq!(tf.controller, Some(ControllerRef::You));
+        assert!(
+            tf.type_filters.contains(&TypeFilter::Permanent),
+            "expected Permanent in {:?}",
+            tf.type_filters,
+        );
+        assert!(
+            tf.type_filters
+                .contains(&TypeFilter::Non(Box::new(TypeFilter::Subtype(
+                    "Token".to_string()
+                )))),
+            "expected Non(Subtype(Token)) in {:?}",
+            tf.type_filters,
+        );
+        assert!(
+            tf.properties.contains(&FilterProp::Historic),
+            "expected Historic in {:?}",
+            tf.properties,
+        );
+        assert!(
+            tf.properties.contains(&FilterProp::Another),
+            "expected Another in {:?}",
+            tf.properties,
+        );
+    }
+
     #[test]
     fn trigger_first_word_short_name_enters() {
         let def = parse_trigger_line(
@@ -7301,7 +7352,7 @@ mod tests {
 
     #[test]
     fn trigger_you_draw_a_card_scopes_to_controller() {
-        // CR 120.1 + CR 603.2: Sheoldred's first trigger must scope to the
+        // CR 121.1 + CR 603.2: Sheoldred's first trigger must scope to the
         // controller so it does not fire on opponent draws.
         let def = parse_trigger_line(
             "Whenever you draw a card, you gain 2 life.",

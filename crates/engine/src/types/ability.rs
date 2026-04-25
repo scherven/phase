@@ -1305,6 +1305,16 @@ pub enum FilterProp {
     /// `FilterProp::Modified` for "modified creature(s)" subjects, analogous
     /// to how `FilterProp::Suspected` models CR 701.60b's "suspected" status.
     Modified,
+    /// CR 700.6: An object is historic if it has the legendary supertype, the
+    /// artifact card type, or the Saga subtype.
+    ///
+    /// Modeled as a first-class typed predicate rather than an `AnyOf`
+    /// composite because CR 700.6 names "historic" as a distinct concept and
+    /// the three legs share a single runtime match arm. Parser dispatch emits
+    /// `FilterProp::Historic` for "historic permanent" / "historic spell" /
+    /// "historic card" subjects, mirroring `FilterProp::Modified` for
+    /// CR 700.9's "modified" predicate.
+    Historic,
     /// Matches objects whose name differs from all objects matching the inner filter
     /// that the evaluating controller controls on the battlefield.
     /// Used for "with a different name than each [type] you control" (e.g. Light-Paws).
